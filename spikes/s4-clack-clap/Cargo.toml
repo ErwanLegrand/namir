@@ -1,0 +1,15 @@
+[package]
+name = "s4-clack-clap"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+baseview = "0.2"
+clack-extensions = { version = "0.1.1", features = ["clack-plugin", "gui", "raw-window-handle_06"] }
+clack-plugin = "0.1.1"
+egui = "0.35"
+egui-baseview = "0.6"
+raw-window-handle = "0.6"

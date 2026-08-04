@@ -1,0 +1,9 @@
+[package]
+name = "s3-egui-baseview"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+baseview = "0.2"
+egui = "0.35"
+egui-baseview = "0.6"

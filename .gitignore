@@ -1,0 +1,18 @@
+# Rust build artefacts
+target/
+
+# Cargo.lock is intentionally committed: NFR-BUILD-010 requires every dependency to be
+# pinned by a lockfile, and the spikes' lockfiles are the record of exactly which
+# versions the S-3 and S-4 results were measured against.
+
+# Editors
+.vscode/
+.idea/
+*.iml
+*.swp
+*~
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
