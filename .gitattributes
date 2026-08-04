@@ -1,0 +1,13 @@
+# NFR-PORT-050 requires line endings to be handled so that files written on one platform
+# are identical on another. Normalise everything to LF in the repository; Git may still
+# check out CRLF locally where the platform expects it.
+* text=auto eol=lf
+
+# Golden-reference audio, models and impulse responses are binary and must never be
+# transformed. Corrupting a test fixture by line-ending translation would produce test
+# failures that look like DSP bugs.
+*.wav  binary
+*.aiff binary
+*.flac binary
+*.nam  binary
+*.bin  binary
