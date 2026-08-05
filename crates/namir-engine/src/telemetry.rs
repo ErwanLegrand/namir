@@ -11,7 +11,9 @@
 /// all formatting and allocation off the audio thread, so the audio side writes only numbers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TelemetryEntry {
+    /// Which signal this sample is (meter level, gate reduction, fault code, xrun count, ...).
     pub id: u32,
+    /// The sample's numeric value; interpretation depends on `id`.
     pub value: f32,
 }
 
@@ -25,6 +27,8 @@ pub struct TelemetrySink<'a> {
 }
 
 impl<'a> TelemetrySink<'a> {
+    /// Wraps `buffer` as an initially-empty ring; capacity is fixed to `buffer.len()` for the
+    /// sink's lifetime.
     pub fn new(buffer: &'a mut [TelemetryEntry]) -> Self {
         Self {
             buffer,
@@ -44,14 +48,17 @@ impl<'a> TelemetrySink<'a> {
         self.len = (self.len + 1).min(self.buffer.len());
     }
 
+    /// Number of entries currently held, up to `capacity`.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Whether no entries have been pushed yet.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// The fixed capacity `buffer` was constructed with.
     pub fn capacity(&self) -> usize {
         self.buffer.len()
     }

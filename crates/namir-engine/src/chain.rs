@@ -12,16 +12,20 @@ pub struct Chain {
 }
 
 impl Chain {
+    /// Wraps an already-`prepare`d stage list. Building that list is the caller's job; see this
+    /// struct's doc comment.
     pub fn new(stages: Vec<Box<dyn Stage>>) -> Self {
         Self { stages }
     }
 
+    /// Runs every stage in order, on the audio thread (RT).
     pub fn process(&mut self, io: &mut StageIo<'_>) {
         for stage in &mut self.stages {
             stage.process(io);
         }
     }
 
+    /// Resets every stage's internal state, e.g. on transport stop/reposition.
     pub fn reset(&mut self) {
         for stage in &mut self.stages {
             stage.reset();

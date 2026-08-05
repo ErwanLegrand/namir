@@ -1,0 +1,274 @@
+# CI gates named in docs/02-architecture.md D-18.1, sequenced/scoped per
+# docs/03-implementation-roadmap.md §5 (M1). Every job here is scoped to what M1 can gate today;
+# see each job's own comments for exactly which slice of D-18.1 it covers.
+#
+# Deliberately NOT here: a network-free build configuration (D-18.2). D-18.2 itself frames that
+# as a permanent target "once RD-1 exists" (§18) and the roadmap's M7 section says building that
+# infrastructure now, before there is a network feature for a flag to gate, is premature --
+# "there's no network feature yet for a feature flag to gate; building that infrastructure now,
+# once, is cheaper than guessing at its shape earlier." This is a decision, not an oversight;
+# revisit at M7.
+#
+# `cargo-fuzz` needs a nightly toolchain and a bounded-time run, which reads more cleanly as its
+# own file than as one more job squeezed into a stable-toolchain matrix -- see fuzz.yml.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Covers D-18.1's "build + test on Windows/Linux/macOS" and "formatting and lints as errors"
+  # (NFR-QUAL-060). Also covers D-18.1's "the RT-allocation harness": D-7.5's harness is just
+  # #[cfg(test)] tests inside namir-engine (and the crates that exercise it) that run as part of
+  # `cargo test --workspace` below -- there is no separate RT-harness step because there is no
+  # separate RT-harness binary; do not read its absence as a missing gate.
+  build-test:
+    name: build + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        # S-4 (docs/02-architecture.md §19) found that on Windows/MSVC, the linker writes to
+        # stdout and Cargo surfaces this as a `linker_messages` warning on every `cdylib` build,
+        # which a bare `-D warnings` gate would then fail on. There is no `cdylib` target in the
+        # workspace yet (namir-clap, the only crate that will produce one, is M6), so this cannot
+        # actually fire today -- nothing to allow-list yet. Left here as a pointer so whoever
+        # adds namir-clap doesn't have to rediscover S-4's finding: when that crate lands, this
+        # step will need `-A linker_messages` (or an equivalent explicit allow) for Windows
+        # specifically, not a workaround, and not silence-by-ignoring-all-warnings.
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  # Covers D-18.1's "the layering lint" (D-5.2) and "the params.lock diff" (FR-PARAM-020).
+  # Pure static checks over the dependency graph and a checked-in manifest -- not
+  # platform-dependent, so one OS is enough.
+  layering-and-params:
+    name: layering + params.lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: xtask layering (D-5.2)
+        run: cargo run -p xtask -- layering
+
+      - name: xtask params-lock (FR-PARAM-020)
+        run: cargo run -p xtask -- params-lock
+
+  # Covers D-18.1's "cargo-deny licence audit" (NFR-LIC-020). deny.toml already exists at the
+  # repo root; this job just runs it in CI instead of by hand.
+  license-audit:
+    name: cargo-deny license audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+  # Covers D-18.1's "an MSRV pin ... enforced" (NFR-PORT-010). The pinned version is read out of
+  # root Cargo.toml's [workspace.package].rust-version at run time rather than hardcoded here, so
+  # this job can't silently drift out of sync the way a copy-pasted version string could (the
+  # exact failure mode §4 of the roadmap warns about for gate configuration in general).
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read rust-version from root Cargo.toml
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')
+          if [ -z "$version" ]; then
+            echo "::error::could not extract rust-version from Cargo.toml"
+            exit 1
+          fi
+          echo "pinned MSRV: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check --workspace --all-targets (on the MSRV toolchain)
+        run: cargo check --workspace --all-targets
+
+  # Covers D-18.1's "a build in a container with no C++ compiler present" (NFR-PORT-040's
+  # verification clause). NFR-PORT-040 says Namir "shall not require a C++ toolchain" -- that
+  # means no C++ *compiler* (g++/clang++) specifically, not no C compiler at all: rustc's default
+  # Linux linker driver is `cc` (a C compiler, gcc), which every build needs regardless of
+  # language and which this job deliberately leaves in place. Only g++/clang++ are removed, then
+  # asserted absent rather than just hoped absent.
+  no-cxx-toolchain:
+    name: build with no C++ compiler (NFR-PORT-040)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Remove g++/clang++ (leave gcc/cc in place)
+        run: |
+          sudo apt-get remove -y g++ 'g++-*' clang++ 'clang++-*' || true
+          sudo apt-get autoremove -y || true
+
+      - name: Assert no C++ compiler remains
+        run: |
+          if command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1; then
+            echo "::error::a C++ compiler is still on PATH after removal"
+            exit 1
+          fi
+          echo "confirmed: no g++/clang++ on PATH (cc/gcc left in place)"
+
+      - name: cargo build --workspace --all-targets
+        # Checked by hand against every dependency in the current tree (namir-core/dsp/nam/
+        # engine/fixtures/params/platform + blake3, serde, serde_json, rand, rand_pcg, realfft,
+        # rustfft, assert_no_alloc): none of them need g++/clang++ specifically. One caveat worth
+        # flagging rather than discovering silently if this job ever goes red: blake3's optional
+        # accelerated backends *do* shell out to a C compiler via the `cc` crate on some targets
+        # (confirmed locally while building this workflow -- see mobile-cross-build below, where
+        # it actually bites on aarch64). That's still a C compiler, not C++, so it does not trip
+        # this job's specific gate on this job's native x86_64 target, but it is the kind of
+        # thing this comment exists to flag rather than let be a surprise.
+        run: cargo build --workspace --all-targets
+
+  # Covers D-18.1's "cross-build of the mobile-capable crates for aarch64-linux-android and
+  # aarch64-apple-ios" (NFR-PORT-030's verification clause), scoped to D-5.1's "builds for
+  # mobile: yes" crates that exist as of M1: namir-core, namir-params, namir-dsp, namir-nam,
+  # namir-engine, namir-platform (namir-fixtures is dev/test tooling, not in D-5.1's table, so
+  # it's excluded). This list grows incrementally as M2+ lands namir-ir, then M5's namir-state/
+  # namir-library, then M6's namir-worker/namir-ui -- update the `-p` list in both jobs below
+  # (and check it against D-5.1's actual table) each time a new crate is marked "builds for
+  # mobile: yes", per the roadmap's own framing of this gate as incremental, not built once.
+  #
+  # These are library-only builds (no bins), so in principle they don't need a working final
+  # linker for the target platform -- an rlib build has no link step. That reasoning holds for
+  # the *link* step. It does NOT extend to every build-script compile step upstream of it: see
+  # the Android job's own comment below for a real counter-example found while writing this file.
+  mobile-cross-build-android:
+    name: mobile cross-build (aarch64-linux-android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Point cc-rs at the preinstalled Android NDK
+        # Verified locally while writing this workflow (this machine has no NDK installed): a
+        # plain `cargo build --target aarch64-linux-android -p namir-core` fails, because blake3
+        # (a namir-core dependency, pulled in transitively by every crate below) auto-enables its
+        # NEON-accelerated backend on aarch64 targets and compiles a small C source file for it
+        # via the `cc` crate -- which needs an actual C cross-compiler for the target and errors
+        # with "failed to find tool aarch64-linux-android-clang" when none is configured. This
+        # contradicts the "no linker needed for an rlib build" assumption above at the build-script
+        # level specifically, not the final-link level.
+        #
+        # GitHub-hosted ubuntu-latest runners ship a full Android SDK + NDK preinstalled
+        # (actions/runner-images), with ANDROID_NDK_HOME/ANDROID_NDK_LATEST_HOME pointing at it,
+        # so the fix is to point cc-rs's CC_<target> override at that existing toolchain rather
+        # than install anything new. NOT verified against the real GitHub-hosted runner image
+        # (no CI execution available while authoring this) -- verified only that this is the
+        # failure being worked around, and that CC_aarch64_linux_android is the exact env var
+        # cc-rs checks (visible in the local failure's own diagnostic output).
+        run: |
+          NDK_ROOT="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+          if [ -z "$NDK_ROOT" ]; then
+            echo "::error::no Android NDK found via ANDROID_NDK_HOME/ANDROID_NDK_LATEST_HOME"
+            exit 1
+          fi
+          TOOLCHAIN_BIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CC_aarch64_linux_android=$TOOLCHAIN_BIN/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$TOOLCHAIN_BIN/llvm-ar" >> "$GITHUB_ENV"
+
+      - name: cargo build --target aarch64-linux-android (library crates only)
+        run: >
+          cargo build --target aarch64-linux-android
+          -p namir-core -p namir-params -p namir-dsp -p namir-nam -p namir-engine -p namir-platform
+
+  mobile-cross-build-ios:
+    name: mobile cross-build (aarch64-apple-ios)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --target aarch64-apple-ios (library crates only)
+        # Unlike the Android job, this needs no extra env wiring: macos-latest ships Xcode, and
+        # Xcode's `clang` cross-compiles to iOS out of the box via `xcrun` without a separate NDK
+        # -- so blake3's NEON C backend (see the Android job's comment) finds a working C
+        # compiler for aarch64-apple-ios with no extra setup. Not verified locally the way the
+        # Android finding was: this authoring machine is Windows and cannot run Xcode/xcrun at
+        # all, so this is inference from Apple's documented toolchain behaviour, not a local
+        # repro. Flagging the asymmetry rather than implying both jobs were equally checked.
+        run: >
+          cargo build --target aarch64-apple-ios
+          -p namir-core -p namir-params -p namir-dsp -p namir-nam -p namir-engine -p namir-platform
+
+  # Covers docs/03-implementation-roadmap.md §5's "a cargo-llvm-cov coverage report generated on
+  # every push, informational only, no blocking threshold". Deliberately no pass/fail condition
+  # on the coverage number anywhere in this job -- §4 of the roadmap: "it does not block a
+  # milestone or a merge", because this project's actual quality bar is NFR-QUAL-010's
+  # per-requirement traceability, not a line-coverage percentage. Do not "fix" this job by adding
+  # a threshold; that would contradict a deliberate decision, not correct an oversight.
+  coverage:
+    name: coverage (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo llvm-cov --workspace
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov.info
+          path: lcov.info

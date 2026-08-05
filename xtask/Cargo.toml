@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+namir-params = { path = "../crates/namir-params" }
+cargo_metadata = "0.19"
+walkdir = "2"

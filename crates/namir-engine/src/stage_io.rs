@@ -30,18 +30,24 @@ impl<'a> StageIo<'a> {
         Self { channels, frames }
     }
 
+    /// Number of valid frames in this block; may be less than a channel buffer's own length
+    /// (see this struct's doc comment) but never more.
     pub fn frames(&self) -> usize {
         self.frames
     }
 
+    /// Number of channels.
     pub fn channel_count(&self) -> usize {
         self.channels.len()
     }
 
+    /// The `frames`-length prefix of channel `index`. Panics on an out-of-range `index`, the
+    /// same call-site-error contract as slice indexing.
     pub fn channel(&mut self, index: usize) -> &mut [f32] {
         &mut self.channels[index][..self.frames]
     }
 
+    /// The `frames`-length prefix of every channel, in channel order.
     pub fn channels_mut(&mut self) -> impl Iterator<Item = &mut [f32]> {
         let frames = self.frames;
         self.channels.iter_mut().map(move |c| &mut c[..frames])
