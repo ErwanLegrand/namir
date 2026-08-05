@@ -71,17 +71,15 @@ mod tests {
 
     #[test]
     fn zero_max_block_size_is_rejected() {
-        let err =
-            PrepareContext::new(SampleRate::new(48_000).unwrap(), 0, ChannelConfig::Stereo)
-                .unwrap_err();
+        let err = PrepareContext::new(SampleRate::new(48_000).unwrap(), 0, ChannelConfig::Stereo)
+            .unwrap_err();
         assert_eq!(err.code.id, error_codes::MAX_BLOCK_SIZE_ZERO.id);
     }
 
     #[test]
     fn nonzero_max_block_size_is_accepted() {
-        let ctx =
-            PrepareContext::new(SampleRate::new(48_000).unwrap(), 64, ChannelConfig::Stereo)
-                .unwrap();
+        let ctx = PrepareContext::new(SampleRate::new(48_000).unwrap(), 64, ChannelConfig::Stereo)
+            .unwrap();
         assert_eq!(ctx.max_block_size(), 64);
         assert_eq!(ctx.channel_config(), ChannelConfig::Stereo);
         assert_eq!(ctx.sample_rate().hz(), 48_000);

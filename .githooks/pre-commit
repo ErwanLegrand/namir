@@ -1,0 +1,26 @@
+#!/bin/sh
+# Fast, local pre-commit checks for Namir. Complements CI (docs/02-architecture.md D-18.1) —
+# does not replace it. Deliberately runs only `cargo fmt` and `cargo check`, not `clippy` or the
+# test suite: those are slow enough that putting them on the commit-time path would make
+# `--no-verify` tempting, which is worse for quality than clippy running one step later in CI.
+#
+# Enable once per clone with:
+#   git config core.hooksPath .githooks
+
+set -e
+
+echo "pre-commit: cargo fmt --check"
+if ! cargo fmt --all -- --check; then
+    echo
+    echo "pre-commit: formatting check failed. Run 'cargo fmt --all' to fix, then re-stage." >&2
+    exit 1
+fi
+
+echo "pre-commit: cargo check --workspace --all-targets"
+if ! cargo check --workspace --all-targets; then
+    echo
+    echo "pre-commit: compile check failed. Fix the errors above before committing." >&2
+    exit 1
+fi
+
+exit 0

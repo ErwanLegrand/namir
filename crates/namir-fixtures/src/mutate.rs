@@ -24,7 +24,12 @@ pub enum Mutation {
 }
 
 /// All four kinds, in a stable order — useful for building a corpus that covers each once.
-pub const ALL: [Mutation; 4] = [Mutation::ByteFlip, Mutation::Truncate, Mutation::DropField, Mutation::CorruptNumber];
+pub const ALL: [Mutation; 4] = [
+    Mutation::ByteFlip,
+    Mutation::Truncate,
+    Mutation::DropField,
+    Mutation::CorruptNumber,
+];
 
 /// Applies `mutation` to `data` with a seeded RNG; same `(data, mutation, seed)` always produces
 /// the same output.
@@ -42,7 +47,10 @@ pub fn mutate(data: &[u8], mutation: Mutation, seed: u64) -> Vec<u8> {
 /// is reproducible but each member is distinct even when the underlying `data` is small enough
 /// that two mutation kinds might otherwise collide.
 pub fn seeded_corpus(data: &[u8], seed: u64) -> Vec<Vec<u8>> {
-    ALL.iter().enumerate().map(|(i, &m)| mutate(data, m, seed.wrapping_add(i as u64))).collect()
+    ALL.iter()
+        .enumerate()
+        .map(|(i, &m)| mutate(data, m, seed.wrapping_add(i as u64)))
+        .collect()
 }
 
 fn byte_flip(data: &[u8], rng: &mut impl Rng) -> Vec<u8> {
@@ -173,7 +181,11 @@ mod tests {
         let data = sample_nam_json();
         let mutated = mutate(&data, Mutation::ByteFlip, 1);
         assert_eq!(data.len(), mutated.len());
-        let diff_bits: u32 = data.iter().zip(&mutated).map(|(a, b)| (a ^ b).count_ones()).sum();
+        let diff_bits: u32 = data
+            .iter()
+            .zip(&mutated)
+            .map(|(a, b)| (a ^ b).count_ones())
+            .sum();
         assert_eq!(diff_bits, 1);
     }
 
@@ -201,7 +213,10 @@ mod tests {
         let mutated = mutate(&data, Mutation::DropField, 1);
         let original: Value = serde_json::from_slice(&data).unwrap();
         let after: Value = serde_json::from_slice(&mutated).unwrap();
-        assert_ne!(original, after, "expected the mutated JSON to differ from the original");
+        assert_ne!(
+            original, after,
+            "expected the mutated JSON to differ from the original"
+        );
     }
 
     #[test]
@@ -215,7 +230,10 @@ mod tests {
             after.pointer("/config/layers/0/channels").is_none()
                 || after.pointer("/config/layers/0/kernel_size").is_none()
         });
-        assert!(hit_nested, "expected at least one seed (of 50) to drop a nested field");
+        assert!(
+            hit_nested,
+            "expected at least one seed (of 50) to drop a nested field"
+        );
     }
 
     #[test]

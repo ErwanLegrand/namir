@@ -110,10 +110,26 @@ struct ShapeParams {
 impl WaveNetShape {
     fn params(self) -> ShapeParams {
         match self {
-            WaveNetShape::Standard => ShapeParams { channels1: 16, channels2: 8, layers: 10 },
-            WaveNetShape::Lite => ShapeParams { channels1: 12, channels2: 6, layers: 8 },
-            WaveNetShape::Feather => ShapeParams { channels1: 8, channels2: 4, layers: 6 },
-            WaveNetShape::Nano => ShapeParams { channels1: 4, channels2: 2, layers: 4 },
+            WaveNetShape::Standard => ShapeParams {
+                channels1: 16,
+                channels2: 8,
+                layers: 10,
+            },
+            WaveNetShape::Lite => ShapeParams {
+                channels1: 12,
+                channels2: 6,
+                layers: 8,
+            },
+            WaveNetShape::Feather => ShapeParams {
+                channels1: 8,
+                channels2: 4,
+                layers: 6,
+            },
+            WaveNetShape::Nano => ShapeParams {
+                channels1: 4,
+                channels2: 2,
+                layers: 4,
+            },
         }
     }
 
@@ -189,11 +205,12 @@ const SAMPLE_RATE: u32 = 48_000;
 /// the RMS calibration pass even runs. Biases start at zero.
 fn build_weights(specs: &[LayerArrayConfig], rng: &mut impl Rng, head_scale: f32) -> Vec<f32> {
     let mut w = Vec::new();
-    let push_uniform = |rng: &mut dyn rand::RngCore, out: &mut Vec<f32>, count: usize, scale: f32| {
-        for _ in 0..count {
-            out.push(rng.gen_range(-scale..scale));
-        }
-    };
+    let push_uniform =
+        |rng: &mut dyn rand::RngCore, out: &mut Vec<f32>, count: usize, scale: f32| {
+            for _ in 0..count {
+                out.push(rng.gen_range(-scale..scale));
+            }
+        };
     let push_zeros = |out: &mut Vec<f32>, count: usize| out.resize(out.len() + count, 0.0);
 
     for spec in specs {
@@ -202,7 +219,12 @@ fn build_weights(specs: &[LayerArrayConfig], rng: &mut impl Rng, head_scale: f32
 
         for _ in &spec.dilations {
             let s = 1.0 / ((spec.channels * spec.kernel_size) as f32).sqrt();
-            push_uniform(rng, &mut w, spec.channels * spec.channels * spec.kernel_size, s);
+            push_uniform(
+                rng,
+                &mut w,
+                spec.channels * spec.channels * spec.kernel_size,
+                s,
+            );
             push_zeros(&mut w, spec.channels);
 
             let s = 1.0 / (spec.condition_size as f32).sqrt();
@@ -232,7 +254,8 @@ fn calibration_probe(seed: u64) -> Vec<f32> {
     (0..n)
         .map(|i| {
             let t = i as f32 / SAMPLE_RATE as f32;
-            0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin() + 0.05 * rng.gen_range(-1.0f32..1.0)
+            0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                + 0.05 * rng.gen_range(-1.0f32..1.0)
         })
         .collect()
 }
@@ -248,7 +271,11 @@ fn build_model(shape: WaveNetShape, weights: Vec<f32>, head_scale: f32) -> NamMo
     NamModel {
         version: "0.5.5".to_string(),
         architecture: "WaveNet".to_string(),
-        config: WaveNetConfig { layers, head_scale, head: None },
+        config: WaveNetConfig {
+            layers,
+            head_scale,
+            head: None,
+        },
         weights,
         sample_rate: SAMPLE_RATE,
         metadata: NamMetadata {
@@ -292,7 +319,9 @@ pub fn generate(shape: WaveNetShape, seed: u64) -> Result<NamModel, DegenerateFi
 
     let calibrated_rms = measure_output_rms(&model, &probe);
     if !calibrated_rms.is_finite() || calibrated_rms <= 1e-4 || calibrated_rms >= 10.0 {
-        return Err(DegenerateFixtureError { measured_rms: calibrated_rms });
+        return Err(DegenerateFixtureError {
+            measured_rms: calibrated_rms,
+        });
     }
 
     Ok(model)
@@ -304,7 +333,12 @@ mod tests {
 
     #[test]
     fn generates_without_error_for_all_shapes() {
-        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+        for shape in [
+            WaveNetShape::Standard,
+            WaveNetShape::Lite,
+            WaveNetShape::Feather,
+            WaveNetShape::Nano,
+        ] {
             generate(shape, 1).unwrap_or_else(|e| panic!("{shape:?}: {e}"));
         }
     }
@@ -325,18 +359,31 @@ mod tests {
 
     #[test]
     fn shapes_have_decreasing_channel_counts() {
-        let sizes: Vec<usize> = [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano]
-            .iter()
-            .map(|&s| generate(s, 1).unwrap().weights.len())
-            .collect();
+        let sizes: Vec<usize> = [
+            WaveNetShape::Standard,
+            WaveNetShape::Lite,
+            WaveNetShape::Feather,
+            WaveNetShape::Nano,
+        ]
+        .iter()
+        .map(|&s| generate(s, 1).unwrap().weights.len())
+        .collect();
         for w in sizes.windows(2) {
-            assert!(w[0] > w[1], "expected strictly decreasing weight counts: {sizes:?}");
+            assert!(
+                w[0] > w[1],
+                "expected strictly decreasing weight counts: {sizes:?}"
+            );
         }
     }
 
     #[test]
     fn model_round_trips_through_json() {
-        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+        for shape in [
+            WaveNetShape::Standard,
+            WaveNetShape::Lite,
+            WaveNetShape::Feather,
+            WaveNetShape::Nano,
+        ] {
             let model = generate(shape, 7).unwrap();
             let bytes = model.to_json_bytes();
             let parsed = NamModel::from_json_bytes(&bytes).expect("round trip parses");
@@ -350,7 +397,12 @@ mod tests {
         // divergent, making an RMS-relative accuracy metric meaningless. This is the actual
         // point of the generator's constrained-init + calibration design, not incidental.
         let probe = calibration_probe(999);
-        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+        for shape in [
+            WaveNetShape::Standard,
+            WaveNetShape::Lite,
+            WaveNetShape::Feather,
+            WaveNetShape::Nano,
+        ] {
             let model = generate(shape, 999).unwrap();
             let rms = measure_output_rms(&model, &probe);
             assert!(rms.is_finite(), "{shape:?}: non-finite RMS");
@@ -361,10 +413,18 @@ mod tests {
 
     #[test]
     fn layer_array_chaining_invariant_holds() {
-        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+        for shape in [
+            WaveNetShape::Standard,
+            WaveNetShape::Lite,
+            WaveNetShape::Feather,
+            WaveNetShape::Nano,
+        ] {
             let layers = shape.layer_configs();
             for w in layers.windows(2) {
-                assert_eq!(w[0].head_size, w[1].channels, "{shape:?}: head_size/channels mismatch");
+                assert_eq!(
+                    w[0].head_size, w[1].channels,
+                    "{shape:?}: head_size/channels mismatch"
+                );
             }
         }
     }
