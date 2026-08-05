@@ -3,12 +3,16 @@
 /// property of every configuration, not a fourth thing to track.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelConfig {
+    /// One input channel, one output channel.
     Mono,
+    /// One input channel widened to two identical output channels.
     MonoToStereo,
+    /// Two input channels, two output channels.
     Stereo,
 }
 
 impl ChannelConfig {
+    /// Number of input channels this configuration reads.
     pub const fn input_channels(self) -> u16 {
         match self {
             ChannelConfig::Mono => 1,
@@ -22,6 +26,7 @@ impl ChannelConfig {
         1
     }
 
+    /// Number of output channels this configuration produces.
     pub const fn output_channels(self) -> u16 {
         match self {
             ChannelConfig::Mono => 1,

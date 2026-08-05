@@ -7,6 +7,7 @@ use rand::Rng;
 use rand::SeedableRng;
 use serde_json::Value;
 
+/// One deterministic corpus-seeding mutation `mutate` can apply to a valid `.nam` byte buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mutation {
     /// Flips one random bit in one random byte. Length-preserving.

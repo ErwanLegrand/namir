@@ -1,14 +1,30 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "xtask"]
 # Spikes are throwaway (§19: "not carried forward") and each pins its own Cargo.lock as a
 # measurement record — they must not be swept into this workspace by Cargo's upward workspace
 # discovery.
-exclude = ["spikes"]
+# crates/namir-nam/fuzz is a cargo-fuzz project: it carries its own empty [workspace] table (the
+# standard cargo-fuzz convention) so it's already its own workspace root, but this exclude is
+# belt-and-suspenders against upward discovery, matching the spikes/ convention above.
+exclude = ["spikes", "crates/namir-nam/fuzz"]
 
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
+# NFR-PORT-010: MSRV stated in the manifest and enforced in CI (the CI job itself is the next
+# stage of M1, not built here). Pinned to the toolchain actually in use rather than an old floor:
+# this is a brand-new project with zero external users yet, and edition 2024 already forces a
+# fairly recent compiler, so there is nothing gained by floor-testing against something older
+# than what's installed. Per NFR-PORT-010, once set this must not be raised in a patch release.
+rust-version = "1.97"
 
 [workspace.lints.rust]
 unsafe_code = "forbid" # D-5.3 default; namir-platform, namir-clap and SIMD kernels override per-crate.
+# NFR-DOC-020: "every public API item in every published crate shall carry documentation,
+# enforced mechanically." `warn`, not `deny`/`forbid`, because this is being retroactively added
+# across five-plus existing crates in one pass — a hair-trigger `deny` would break the next
+# unrelated PR that adds one `pub` item without knowing this lint now exists mid-milestone. Every
+# crate this pass touches is made warning-clean anyway (the `-D warnings` clippy gate makes that
+# true in practice today), so `warn` costs nothing now and just avoids being a landmine later.
+missing_docs = "warn"

@@ -3,6 +3,9 @@
 //! (`params.lock`, D-10.1) and the stage-instance index D-10.2 reserves for RD-2's dynamic chain
 //! are all out of scope here — none of them are needed to define what `Stage::apply` receives.
 
+/// D-10.2's stable `u32` parameter identifier, as carried across the RT boundary. The
+/// string-namespace-to-`u32` derivation itself lives outside this crate (see this module's doc
+/// comment); this is just the id type `Stage::apply` receives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ParamId(pub u32);
 
@@ -11,7 +14,10 @@ pub struct ParamId(pub u32);
 /// this layer yet — a stage that needs to avoid a zipper on this value ramps internally.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParamChange {
+    /// Which parameter changed.
     pub id: ParamId,
+    /// The new value, always `f32` at this layer (see this struct's doc comment for the
+    /// stepped/discrete-parameter gap that leaves open).
     pub value: f32,
 }
 

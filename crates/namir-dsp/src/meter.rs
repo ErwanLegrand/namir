@@ -14,6 +14,8 @@ fn one_pole_coeff(time_constant_ms: f64, sample_rate_hz: f64) -> f32 {
     (1.0 - (-1.0 / tau_samples).exp()) as f32
 }
 
+/// Level meter: fast-attack/slow-release peak, a short-term average, a latching peak-hold, and a
+/// latching clip indicator (FR-IN-020/030, FR-OUT-020).
 pub struct Meter {
     release_coeff: f32,
     /// Fast-attack / slow-release peak follower, linear.
@@ -31,6 +33,8 @@ pub struct Meter {
 }
 
 impl Meter {
+    /// Builds a meter at zero/silent readings, with the release time constant fixed to
+    /// `sample_rate` for its lifetime.
     pub fn new(sample_rate: SampleRate) -> Self {
         Self {
             release_coeff: one_pole_coeff(TIME_CONSTANT_MS, sample_rate.hz_f64()),
@@ -66,22 +70,29 @@ impl Meter {
         }
     }
 
+    /// Fast-attack/slow-release peak reading, in dB.
     pub fn peak_db(&self) -> f32 {
         linear_to_db(self.peak)
     }
 
+    /// Short-term RMS-like average reading, in dB.
     pub fn average_db(&self) -> f32 {
         linear_to_db(self.avg_sq.sqrt())
     }
 
+    /// Latched peak-hold reading, in dB; see this struct's `peak_hold` field doc for the
+    /// latching contract.
     pub fn peak_hold_db(&self) -> f32 {
         linear_to_db(self.peak_hold)
     }
 
+    /// Whether any sample since construction or the last `reset`/`reset_clip` reached or
+    /// exceeded full scale.
     pub fn clipped(&self) -> bool {
         self.clipped
     }
 
+    /// Clears the clip latch without touching peak, average, or peak-hold.
     pub fn reset_clip(&mut self) {
         self.clipped = false;
     }

@@ -43,9 +43,13 @@ impl Default for GateParams {
 /// is tracked internally instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateStatus {
+    /// Fully attenuating; gain is `0.0`.
     Closed,
+    /// Ramping gain upward on attack, having just crossed the open threshold.
     Opening,
+    /// Fully passing (gain `1.0`), whether or not a hold countdown is in progress.
     Open,
+    /// Ramping gain downward on release, having exhausted hold without re-opening.
     Closing,
 }
 
@@ -75,6 +79,8 @@ fn ms_to_samples(ms: f32, sample_rate_hz: f64) -> u32 {
     n.max(0.0) as u32
 }
 
+/// A hysteretic, sample-accurate noise gate (FR-GATE-010..040); see this module's doc comment
+/// for its position relative to input trim in the assembled chain.
 pub struct NoiseGate {
     sample_rate: SampleRate,
     params: GateParams,
@@ -95,6 +101,7 @@ pub struct NoiseGate {
 }
 
 impl NoiseGate {
+    /// Builds a closed gate at `GateParams::default()`, fixed to `sample_rate` for its lifetime.
     pub fn new(sample_rate: SampleRate) -> Self {
         let detector_coeff = one_pole_coeff(DETECTOR_TIME_CONSTANT_MS, sample_rate.hz_f64());
         let mut gate = Self {
@@ -198,6 +205,7 @@ impl NoiseGate {
         linear_to_db(self.gain)
     }
 
+    /// The gate's current state-machine position; see `GateStatus`.
     pub fn status(&self) -> GateStatus {
         self.status
     }

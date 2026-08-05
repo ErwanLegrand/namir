@@ -429,6 +429,58 @@ coefficient computation are `f64`.
 *Rationale:* `f32` matches every host's buffer format and halves memory traffic in the
 convolution's inner loop. The two exceptions are where `f32` demonstrably loses precision.
 
+### 9.4 Verification strategy
+
+**Decision D-9.11 (resolves NFR-QUAL-030's wording)** — NFR-QUAL-030's text stands unchanged.
+This decision records that its intent — a stated, numerical, reproducible correctness reference,
+never a claim verified "by ear" — is already satisfied by S-1's cross-implementation NAM parity
+result and D-9.5's direct time-domain convolution reference, not by literally-worded "golden
+reference audio held in the repository."
+
+*Rationale:* NFR-QUAL-030 was written to forbid one specific failure mode: a DSP correctness claim
+resting on someone having listened to it and judged it "close enough," with no stated number and
+no way for a later contributor to re-check the claim. The literal phrase "golden reference audio"
+names the mechanism the FRS's author had in mind for preventing that failure mode, not the failure
+mode itself. D-19.1 (§19), decided for an unrelated reason (AQ-1, redistributability), commits
+this project to *no* captured audio in the repository at all — every fixture is generated from a
+seed. Taken literally, "golden reference audio held in the repository" and "no captured audio in
+the repository" are in tension. Taken as intent, they are not: S-1 (§19) compares Rust WaveNet
+inference against an independent, from-scratch reference implementation
+(`NeuralAmpModelerCore`) to a numerically stated tolerance (-131 dB measured, 90 dB floor), and
+D-9.5 compares the partitioned convolution against a direct time-domain reference to a numerically
+stated tolerance, retained permanently in the test suite. Both are stated numbers, both are
+reproducible from a seed on any machine without access to any author's hardware, and both are
+strictly harder to satisfy by accident than "sounds right to me" — an independent
+cross-implementation or a direct time-domain computation cannot silently agree with a subtly wrong
+result the way a human ear can. Neither is "audio held in the repository" in the literal sense,
+and neither needs to be: the actual thing NFR-QUAL-030 protects against is unverifiable
+correctness claims, and both routes already close that gap numerically.
+
+*Consequence:* Every future DSP stage follows the same pattern, not the literal wording. Gate and
+EQ at M2, and LSTM at M3, are each verified against either an analytic target (a closed-form
+filter response, a designed test signal) or an independent cross-implementation, compared
+numerically, with the tolerance stated and the comparison kept in the permanent test suite — never
+against a captured recording treated as ground truth. A DSP stage whose correctness argument comes
+down to "an author listened to it" still fails NFR-QUAL-030, exactly as a literal reading would
+forbid — the standard did not weaken, only its concrete realization changed to match D-19.1.
+
+*Consequence:* This decision does not rewrite NFR-QUAL-030's text in `01-functional-requirements.md`.
+The FRS is the governing document (its own §1.1), and a requirement's wording, once assigned an
+ID, is a stable handle other documents cite by number, not free text a lower-authority document is
+entitled to silently edit. What changes is the *recorded route to satisfaction*, exactly as this
+document already does for AQ-2 and AQ-5 (§21) — the open question raised against a requirement is
+resolved in place, with a decision that records how the requirement is met, and the requirement's
+own text is left alone.
+
+*Rejected:* Amending NFR-QUAL-030's wording directly (e.g. to read "verified to a stated numerical
+tolerance, either against an independent cross-implementation or an analytically-derived
+reference" in place of "golden reference audio held in the repository") — rejected because it
+would mean a document lower in the authority order (02, "how") editing a document higher in the
+authority order (01, "what") to make itself consistent, which is backwards: per §1, where the two
+disagree, the FRS wins and this document is the defect. The correct fix for an apparent conflict
+is to show the FRS's intent is already met, not to rewrite the FRS to match this document's
+implementation choice.
+
 ---
 
 ## 10. Parameter system
@@ -1113,3 +1165,4 @@ FRS §10 and NFR-QUAL-010, and is not maintained by hand in this document.
 | 0.6 | 2026-08-05 | **S-1 executed: PASS, with a recorded follow-up.** OQ-1 decided in favour of Rust: FR-NAM-030 met with wide margin (-131 dB vs. a 90 dB floor); D-9.1's weight/state-coupling concern confirmed against `NeuralAmpModelerCore` source (no sharing mechanism exists, would need modification for FR-CLAP-090); NFR-PERF-010's 99.9th-percentile gate is not met by the unoptimized reference implementation (41 % vs. 25 %) despite being competitive with Eigen at the median, so R-4 is downgraded, not retired, pending a SIMD pass recorded as required pre-1.0 work. FR-NAM-030 and NFR-PERF-010 placeholders both retained as-is (OQ-2 resolved for NAM; IR-stage share still pending S-2). Scope note: S-1 covered WaveNet only, per its own Method — LSTM is unaddressed. |
 | 0.7 | 2026-08-05 | **S-2 executed: PASS, with a significant recorded follow-up. All four spikes now complete.** D-9.6 finalised: growth factor 2, max partition 8192 samples, verified correct against a direct-convolution reference (480/480 cases, worst error -119.91 dB) and confirming D-9.4's non-uniform-over-uniform rationale by direct measurement (uniform's worst case ran 44-48 ms/block vs. non-uniform's much lower figures). **New finding: same-size partitions trigger their FFT in lockstep** (all start accumulating at stream time zero), so a multi-second IR's dozens of same-size partitions at the schedule's ceiling dump their combined cost onto one recurring block — measured to cost 90-400 % of a 32-sample block's entire period even at FR-IR-050's own 2 s minimum, across every `max_partition` from 256 to 32,768 tested. **New risk R-8** records this: schedule tuning alone cannot fix it — the proper fix (phase-staggering / amortized computation) is required pre-1.0 work, not implemented in this spike. OQ-2 now fully resolved: the IR stage alone measures 56-94 % of the 25 % NFR-PERF-010 budget at its own literal test condition, and NAM (S-1, 41 %) plus IR already exceed the total budget before gate or EQ; the 25 % placeholder is retained, not loosened, per the same reasoning as S-1. |
 | 0.8 | 2026-08-05 | **Implementation begins.** Cargo workspace created (`crates/`, excluding `spikes/` from workspace discovery). `namir-core` (D-5.1's shared vocabulary types), `namir-engine` (D-6.1's `Stage`/`StagePrep` split, `Chain`, and D-7.5's RT-allocation test harness), and `namir-fixtures` (D-19.1's generator: WaveNet fixture shapes, all four D-9.5 convolution fixtures including a new minimum-phase design via the complex-cepstrum method, and fuzz-mutation seeding) built test-first. §17 gains `assert_no_alloc` (dev-dependency only) — D-7.5's harness needs a custom `GlobalAlloc`, and D-5.3's workspace-wide `forbid(unsafe_code)` cannot be locally overridden even in tests, so the `unsafe impl` lives in this dependency instead of in `namir-engine`. |
+| 0.9 | 2026-08-05 | **D-9.11 added, resolving the M1-flagged NFR-QUAL-030 wording question (roadmap §15 item 1).** Records that the requirement's intent — a stated, numerical, reproducible correctness reference, never "by ear" — is already satisfied by S-1's cross-implementation NAM parity result and D-9.5's direct-convolution IR reference, not by literal "golden reference audio held in the repository," which is in tension with D-19.1's no-captured-audio commitment. No code changed; NFR-QUAL-030's text in the FRS is left as written. |

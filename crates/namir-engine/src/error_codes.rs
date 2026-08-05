@@ -4,6 +4,7 @@
 
 use namir_core::{ErrorCode, Severity};
 
+/// `PrepareContext::new` was called with a `max_block_size` of zero.
 pub const MAX_BLOCK_SIZE_ZERO: ErrorCode = ErrorCode {
     id: "engine.prepare.max_block_size_zero",
     severity: Severity::Error,

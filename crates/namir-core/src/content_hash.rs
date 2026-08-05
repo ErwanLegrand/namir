@@ -5,10 +5,12 @@
 pub struct ContentHash([u8; 32]);
 
 impl ContentHash {
+    /// Hashes `bytes` (the whole file's raw contents) into its content identity.
     pub fn of(bytes: &[u8]) -> Self {
         Self(*blake3::hash(bytes).as_bytes())
     }
 
+    /// The raw 32-byte BLAKE3 digest, for callers that need it outside the hex `Display` form.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

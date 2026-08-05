@@ -10,10 +10,15 @@ use namir_core::SampleRate;
 /// The five FR-EQ-010 band shapes this crate can design a biquad for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
+    /// Passes frequencies below the cutoff, attenuates above it.
     LowPass,
+    /// Attenuates frequencies below the cutoff, passes above it.
     HighPass,
+    /// Flat above the corner, applies `gain_db` below it.
     LowShelf,
+    /// Flat below the corner, applies `gain_db` above it.
     HighShelf,
+    /// Flat away from the center frequency, applies `gain_db` at it (bell curve).
     Peaking,
 }
 
