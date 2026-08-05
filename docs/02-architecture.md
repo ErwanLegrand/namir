@@ -393,7 +393,11 @@ complexity safe to take on.
 
 **Decision D-9.6** — FFTs use `rustfft` / `realfft`. The partition schedule (first-partition size,
 growth factor, maximum partition) is a tunable recorded in the architecture, defaulted from S-2's
-measurements, not guessed.
+measurements, not guessed. **S-2 result, 2026-08-05: growth factor 2, maximum partition 8192
+samples** (first partition equals the host block size per D-9.4). See §19 for the measurements
+behind this default and R-8 for the follow-up work — phase-staggering same-size partitions —
+required before the IR stage can meet NFR-PERF-010 at small block sizes regardless of this
+tunable's value.
 
 **Decision D-9.7** — FR-IR-050's open choice — truncate long IRs or process them in full — is
 resolved as: **process in full up to a documented ceiling of 10 seconds at the engine rate; beyond
@@ -842,6 +846,86 @@ block sizes 32–2048 and rates 44.1–192 kHz?
 
 **Produces:** the default partition schedule; the IR-stage share of NFR-PERF-010.
 
+**Result — 2026-08-05. PASS, with a significant recorded follow-up.** Spike at
+`spikes/s2-ir-convolution/`.
+
+A from-scratch Rust implementation of D-9.4's non-uniform partitioned convolution (direct
+time-domain head partition equal to the block size, geometrically-growing FFT-based partitions
+after it, via `rustfft`/`realfft` per D-9.6) was verified against a straightforward
+time-domain reference (D-9.5) and then measured across the required matrix: IRs of 0.1–10 s,
+block sizes 32–2048, rates 44.1–192 kHz. Fixtures — delta, delayed delta, decaying noise — are
+generated per D-19.1, since convolution cost is a function of IR length, not tap values.
+Sample rate decouples from the cost measurement itself (the engine has no notion of Hz; rate
+only rescales the block period used to turn a raw time figure into a D-2.1 percentage), so the
+sweep varied IR length directly in samples and re-derived each rate's percentage afterwards —
+a legitimate 4x reduction in sweep size, not a narrowing of coverage.
+
+**D-9.5 (correctness).** 480 cases (3 fixture kinds × 8 IR lengths × 5 block sizes × 4
+schedules, including the uniform degenerate case) against the direct-convolution reference: **0
+failures, worst error −119.91 dB** against a −100 dB tolerance itself well past any audible
+threshold. The partitioning arithmetic — including the causality requirement that a size-*P*
+partition at IR offset *off* is only computable in time if *off* ≥ *P*, which the schedule
+guarantees by growing partition size only after exactly `growth_factor` partitions of the
+current size, not a fixed count — is correct.
+
+**Uniform partitioning is measurably the worst choice**, confirming D-9.4's rationale by
+direct measurement rather than arithmetic alone: worst observed per-block cost ~44–48 ms,
+several times any non-uniform candidate tested.
+
+**Key finding, not anticipated going in, and the main result of this spike: same-size
+partitions fire in lockstep.** Every FFT partition starts accumulating input at stream time
+zero, independent of its own tap offset into the IR — so every partition of a given nominal
+size completes its input window, and triggers its FFT, on the *same* block, forever. For a
+multi-second IR under a schedule with a partition-size ceiling (`max_partition`), there can be
+dozens of same-size partitions at that ceiling, and their entire combined FFT cost lands on one
+recurring block instead of being spread out. This dominates worst-case cost far more than the
+precise choice of `growth_factor` or `max_partition` within any reasonable range once the
+same-size groups get large; `growth_factor` values above 2 make it *worse* (more partitions per
+level piling onto the same block), and `growth_factor ≤ 2` consistently ties-or-beats 3, 4 and
+8 across the grid.
+
+**Consequence — this is not an edge-case finding, it reproduces at FR-IR-050's own Must
+minimum.** At a 32-sample block against a 2-second IR (48 kHz — the *minimum* FR-IR-050
+requires Namir to accept, paired with the *smallest* Must block size) the periodic same-tier
+pileup alone costs on the order of 90–400% of that block's entire period across 44.1–192 kHz.
+This was checked directly against `max_partition` values spanning 256 to 32,768 with **no
+material improvement at any of them** — not assumed, measured. At longer IRs and block sizes up
+to 128–256 it is far worse (many hundreds to several thousand percent over budget). Only at the
+large-block end (1024–2048 samples) does the picture become "over budget by a factor of 2–4"
+rather than catastrophic, because a bigger block gives each pileup more time to hide inside.
+
+**This is a real gap in the naive synchronous scheme implemented here, not a flaw in D-9.4's
+decision to go non-uniform** — uniform partitioning is strictly worse at every point measured.
+The standard fix, out of scope for this spike, is to stagger same-size partitions' trigger
+phases (equivalently: amortize each large FFT's computation across several block calls instead
+of computing it synchronously in one), spreading a size-*P* group's cost across roughly
+*P*/block_size blocks instead of concentrating it on one. Recorded as required follow-up work
+before 1.0 — see R-8, §22 — the IR-stage analogue of R-4's NAM-vectorization gap from S-1.
+
+**Decision on D-9.6: `growth_factor = 2`, `max_partition = 8192` samples.** Among the
+candidates clustered near the achievable optimum (`max_partition` 4096–32768 at `growth_factor`
+2 or 4, all within ~15% of each other at both the NFR-PERF-010 canonical condition and the
+worst grid point), 8192 was marginally best or tied-best at NFR-PERF-010's own literal test
+condition and carries the smallest FFT working-set memory among the close contenders.
+
+**NFR-PERF-010 IR-stage share (resolves the remainder of OQ-2).** Measured single-core-pinned
+per D-2.1/D-2.2 at the chosen default (block counts adapted from D-2.2's flat ≥100,000 per a
+documented and reasoned deviation in `bench.rs` — the worst case here is *periodic*, not rare,
+so far fewer samples give an equally reliable percentile; see the spike README):
+
+| Condition | p99.9 | max |
+|---|---|---|
+| NFR-PERF-010's own condition (48 kHz, 64-sample block, 2 s IR) | 56% of one core | 94% of one core |
+| Worst grid point (2048-sample block, 10 s IR, 192 kHz) | 254% of one core | 259% of one core |
+| FR-IR-050 floor at the smallest block (32-sample block, 2 s IR, 48 kHz) | 99% of one core | 193% of one core |
+
+**The IR stage alone, at NFR-PERF-010's own literal condition, already consumes roughly 2–4×
+the entire 25% engine budget**, before adding NAM's own measured 41% (S-1), gate, or EQ. **The
+25% NFR-PERF-010 placeholder is retained, not loosened** — matching S-1's precedent: OQ-2 exists
+to establish the real numbers, not to move the target to fit an unoptimized reference
+implementation. Closing this gap needs both R-4 (NAM SIMD) and R-8 (IR-stage phase-staggering)
+before 1.0.
+
 ### S-3 — egui in an embedded plugin window (validates D-15.1, D-15.2)
 
 **Question:** Can egui render into a baseview window parented to a CLAP host's window, on Windows
@@ -947,7 +1031,8 @@ is silently invisible, with no error anywhere. The paths that work are the CLAP-
 See D-13.3.
 
 **Sequencing:** S-3 and S-4 are cheap and de-risk the two high-risk dependencies; run them first.
-S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 remains.
+S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 is also **complete,
+2026-08-05.** All four spikes are done.
 
 ---
 
@@ -956,7 +1041,7 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 | OQ | Status | Where |
 |---|---|---|
 | OQ-1 — Rust vs C++ inference | Decided — Rust, S-1 PASS with a recorded performance follow-up (R-4) | §9.1, §19 |
-| OQ-2 — real numbers for placeholders | Decided for NAM (S-1): FR-NAM-030 90 dB and NFR-PERF-010 25 % both retained as-is. **Pending — S-2** for the IR-stage share | §2, §19 |
+| OQ-2 — real numbers for placeholders | Decided, S-1 and S-2 both complete: FR-NAM-030 90 dB and NFR-PERF-010 25 % both retained as-is. Measured shares — NAM 41 % (S-1), IR stage 56–94 % at NFR-PERF-010's own condition and up to several thousand percent at small block sizes (S-2) — already exceed the 25 % total on their own; closing the gap is required pre-1.0 work (R-4, R-8) | §2, §19 |
 | OQ-3 — GUI approach | Decided — egui + baseview, S-3 validating | D-15.1, D-15.2 |
 | OQ-4 — convolution partitioning | Decided — non-uniform, with a direct reference | D-9.4, D-9.5 |
 | OQ-5 — glitch-free handover | Decided — four-step prepare/offer/crossfade/retire | D-8.1 |
@@ -991,6 +1076,7 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 | R-5 | FR-IO-070 device-removal handling is weak in any cross-platform audio library. | Medium | Test with a failable virtual device, not the happy path. |
 | R-6 | `hound` unmaintained since 2023. | Low | WAV is frozen; we own any bug. Vendoring is a viable last resort. |
 | R-7 | Crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget. | Medium | The benchmark measures the crossfade, not just steady state (D-8.1). |
+| R-8 | **New, from S-2, 2026-08-05.** Same-size IR partitions all start accumulating input at stream time zero, so every partition at a given size — including every partition at `max_partition`, of which a multi-second IR can have dozens — triggers its FFT on the *same* block, forever. Measured directly: at a 32-sample block against a 2 s IR (48 kHz — FR-IR-050's own Must minimum, paired with the smallest Must block size), this alone costs 90–400 % of that block's entire period, tested across `max_partition` 256–32,768 with no material improvement at any value. Schedule tuning (D-9.6) cannot fix this; it is a gap in the synchronous, non-staggered scheme itself. | High (for the small end of the required block-size range) | Stagger same-size partitions' trigger phases, or equivalently amortize each large FFT's computation across the ~`P`/block_size blocks its slack provides, instead of computing it synchronously in one. Not implemented in S-2; required before 1.0. |
 
 ---
 
@@ -1012,3 +1098,4 @@ FRS §10 and NFR-QUAL-010, and is not maintained by hand in this document.
 | 0.4 | 2026-08-04 | **S-4 part 1 executed: PASS.** Minimal clack plugin passes clap-validator 15/15 with 0 failures; clack-extensions confirmed to cover every FRS-required extension. R-2 downgraded High → Medium. Two CI constraints recorded: clap-validator must be installed from git (not on crates.io), and the MSVC `linker_messages` warning must be explicitly allowed under NFR-QUAL-060. |
 | 0.5 | 2026-08-04 | **S-3 and S-4 complete: all parts PASS.** Plugin loads in Reaper with an embedded egui editor rendering live. **R-1 and R-2 both retired** — the two High risks in the design are gone. D-13.3 added, fixing CLAP install paths after Reaper was found to silently ignore `UserPlugins\CLAP`. Remaining spikes: S-1 and S-2. |
 | 0.6 | 2026-08-05 | **S-1 executed: PASS, with a recorded follow-up.** OQ-1 decided in favour of Rust: FR-NAM-030 met with wide margin (-131 dB vs. a 90 dB floor); D-9.1's weight/state-coupling concern confirmed against `NeuralAmpModelerCore` source (no sharing mechanism exists, would need modification for FR-CLAP-090); NFR-PERF-010's 99.9th-percentile gate is not met by the unoptimized reference implementation (41 % vs. 25 %) despite being competitive with Eigen at the median, so R-4 is downgraded, not retired, pending a SIMD pass recorded as required pre-1.0 work. FR-NAM-030 and NFR-PERF-010 placeholders both retained as-is (OQ-2 resolved for NAM; IR-stage share still pending S-2). Scope note: S-1 covered WaveNet only, per its own Method — LSTM is unaddressed. |
+| 0.7 | 2026-08-05 | **S-2 executed: PASS, with a significant recorded follow-up. All four spikes now complete.** D-9.6 finalised: growth factor 2, max partition 8192 samples, verified correct against a direct-convolution reference (480/480 cases, worst error -119.91 dB) and confirming D-9.4's non-uniform-over-uniform rationale by direct measurement (uniform's worst case ran 44-48 ms/block vs. non-uniform's much lower figures). **New finding: same-size partitions trigger their FFT in lockstep** (all start accumulating at stream time zero), so a multi-second IR's dozens of same-size partitions at the schedule's ceiling dump their combined cost onto one recurring block — measured to cost 90-400 % of a 32-sample block's entire period even at FR-IR-050's own 2 s minimum, across every `max_partition` from 256 to 32,768 tested. **New risk R-8** records this: schedule tuning alone cannot fix it — the proper fix (phase-staggering / amortized computation) is required pre-1.0 work, not implemented in this spike. OQ-2 now fully resolved: the IR stage alone measures 56-94 % of the 25 % NFR-PERF-010 budget at its own literal test condition, and NAM (S-1, 41 %) plus IR already exceed the total budget before gate or EQ; the 25 % placeholder is retained, not loosened, per the same reasoning as S-1. |
