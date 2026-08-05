@@ -661,8 +661,9 @@ such rather than overclaimed.
 
 ## 17. Dependency register
 
-All facts verified 2026-08-04 against crates.io and GitHub. NFR-LIC-020 requires this to be
-mechanically re-checked in CI (`cargo-deny`), not maintained by hand.
+All facts verified 2026-08-04 against crates.io and GitHub, except `assert_no_alloc` (added
+2026-08-05, verified the same day). NFR-LIC-020 requires this to be mechanically re-checked in CI
+(`cargo-deny`), not maintained by hand.
 
 | Crate | Version | Licence | Verified activity | Role | Risk |
 |---|---|---|---|---|---|
@@ -675,6 +676,7 @@ mechanically re-checked in CI (`cargo-deny`), not maintained by hand.
 | `clack-plugin` | 0.1.1 | MIT OR Apache-2.0 | 2026-07-29, ~9.8 k | CLAP binding | **High — pre-1.0, low adoption.** See D-14.2 |
 | `baseview` | 0.3.0 | MIT OR Apache-2.0 | 2026-08-02, ~4.4 k | Plugin windowing | **High — low adoption; integration unverified.** See D-15.2 |
 | `symphonia` | 0.6.0 | **MPL-2.0** | 2026-05-15, ~3.3 M | *Candidate* for FR-IR-020 (AIFF/FLAC, a **Should**) | **Licence caveat — see below** |
+| `assert_no_alloc` | 1.1.2 | BSD-1-Clause | 2021-08-03, ~1.6 M recent downloads | D-7.5's RT-allocation test harness in `namir-engine`. **Dev-dependency only — never linked into a release build.** | Low — stale (no release since 2021) but small, single-purpose, and off the shipped binary entirely |
 
 **Decision D-17.1** — `symphonia` is **not** adopted for 1.0. FR-IR-010 (WAV) is a **Must** and is
 served by `hound` (Apache-2.0). FR-IR-020 (AIFF/FLAC) is a **Should**.
@@ -691,6 +693,17 @@ attribution file (NFR-LIC-030). Recorded because a reviewer will reasonably ask.
 
 **Note on `hound`:** last published 2023. WAV is a stable format and the crate is widely used, so
 the staleness is acceptable — but it means we own any bug we find. §22 records this.
+
+**Note on `assert_no_alloc`:** D-7.5's RT-safety harness needs a `GlobalAlloc` that panics on
+allocation while an "audio section" marker is active. D-5.3's workspace-wide `unsafe_code =
+"forbid"` cannot be locally overridden even inside `#[cfg(test)]` — `forbid` is stronger than
+`deny` specifically so that a later `#[allow]` is a hard error, not a suppressible one — so
+implementing `GlobalAlloc` (an `unsafe trait`) inside `namir-engine` itself is not an option.
+`assert_no_alloc` puts that `unsafe impl` in its own crate instead, which is consistent with
+D-5.3's isolation intent even though it isn't the literal case D-5.3 anticipated (a dependency
+carrying the unsafe rather than a designated in-tree crate). It runs with its `warn_debug`
+feature (count violations rather than aborting the process), so the harness's own test can turn
+a violation into an ordinary `#[should_panic]`.
 
 ---
 
@@ -1099,3 +1112,4 @@ FRS §10 and NFR-QUAL-010, and is not maintained by hand in this document.
 | 0.5 | 2026-08-04 | **S-3 and S-4 complete: all parts PASS.** Plugin loads in Reaper with an embedded egui editor rendering live. **R-1 and R-2 both retired** — the two High risks in the design are gone. D-13.3 added, fixing CLAP install paths after Reaper was found to silently ignore `UserPlugins\CLAP`. Remaining spikes: S-1 and S-2. |
 | 0.6 | 2026-08-05 | **S-1 executed: PASS, with a recorded follow-up.** OQ-1 decided in favour of Rust: FR-NAM-030 met with wide margin (-131 dB vs. a 90 dB floor); D-9.1's weight/state-coupling concern confirmed against `NeuralAmpModelerCore` source (no sharing mechanism exists, would need modification for FR-CLAP-090); NFR-PERF-010's 99.9th-percentile gate is not met by the unoptimized reference implementation (41 % vs. 25 %) despite being competitive with Eigen at the median, so R-4 is downgraded, not retired, pending a SIMD pass recorded as required pre-1.0 work. FR-NAM-030 and NFR-PERF-010 placeholders both retained as-is (OQ-2 resolved for NAM; IR-stage share still pending S-2). Scope note: S-1 covered WaveNet only, per its own Method — LSTM is unaddressed. |
 | 0.7 | 2026-08-05 | **S-2 executed: PASS, with a significant recorded follow-up. All four spikes now complete.** D-9.6 finalised: growth factor 2, max partition 8192 samples, verified correct against a direct-convolution reference (480/480 cases, worst error -119.91 dB) and confirming D-9.4's non-uniform-over-uniform rationale by direct measurement (uniform's worst case ran 44-48 ms/block vs. non-uniform's much lower figures). **New finding: same-size partitions trigger their FFT in lockstep** (all start accumulating at stream time zero), so a multi-second IR's dozens of same-size partitions at the schedule's ceiling dump their combined cost onto one recurring block — measured to cost 90-400 % of a 32-sample block's entire period even at FR-IR-050's own 2 s minimum, across every `max_partition` from 256 to 32,768 tested. **New risk R-8** records this: schedule tuning alone cannot fix it — the proper fix (phase-staggering / amortized computation) is required pre-1.0 work, not implemented in this spike. OQ-2 now fully resolved: the IR stage alone measures 56-94 % of the 25 % NFR-PERF-010 budget at its own literal test condition, and NAM (S-1, 41 %) plus IR already exceed the total budget before gate or EQ; the 25 % placeholder is retained, not loosened, per the same reasoning as S-1. |
+| 0.8 | 2026-08-05 | **Implementation begins.** Cargo workspace created (`crates/`, excluding `spikes/` from workspace discovery). `namir-core` (D-5.1's shared vocabulary types), `namir-engine` (D-6.1's `Stage`/`StagePrep` split, `Chain`, and D-7.5's RT-allocation test harness), and `namir-fixtures` (D-19.1's generator: WaveNet fixture shapes, all four D-9.5 convolution fixtures including a new minimum-phase design via the complex-cepstrum method, and fuzz-mutation seeding) built test-first. §17 gains `assert_no_alloc` (dev-dependency only) — D-7.5's harness needs a custom `GlobalAlloc`, and D-5.3's workspace-wide `forbid(unsafe_code)` cannot be locally overridden even in tests, so the `unsafe impl` lives in this dependency instead of in `namir-engine`. |
