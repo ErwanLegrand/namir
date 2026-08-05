@@ -82,10 +82,7 @@ mod tests {
             got,
             vec![
                 TelemetryEntry { id: 1, value: 0.5 },
-                TelemetryEntry {
-                    id: 2,
-                    value: -1.0
-                },
+                TelemetryEntry { id: 2, value: -1.0 },
             ]
         );
     }

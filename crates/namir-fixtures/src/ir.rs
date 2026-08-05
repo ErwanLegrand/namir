@@ -192,7 +192,10 @@ mod tests {
 
     #[test]
     fn minimum_phase_lowpass_of_zero_length_does_not_panic() {
-        assert_eq!(minimum_phase_lowpass(0, 48_000.0, 2_000.0, 4), Vec::<f32>::new());
+        assert_eq!(
+            minimum_phase_lowpass(0, 48_000.0, 2_000.0, 4),
+            Vec::<f32>::new()
+        );
     }
 
     #[test]

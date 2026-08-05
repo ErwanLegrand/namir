@@ -97,7 +97,10 @@ mod tests {
                 latency: 10,
                 tail: 0,
             }),
-            Box::new(ConstantTail { latency: 5, tail: 0 }),
+            Box::new(ConstantTail {
+                latency: 5,
+                tail: 0,
+            }),
         ];
         let chain = Chain::new(stages);
         assert_eq!(chain.latency_samples(), 15);

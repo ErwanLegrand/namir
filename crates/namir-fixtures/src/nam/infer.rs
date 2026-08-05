@@ -30,7 +30,14 @@ impl<'a> WeightReader<'a> {
 }
 
 /// `weight`: row-major `[out_ch][in_ch]`. `input`/return: flat `[ch * n]`.
-fn conv1x1(weight: &[f32], bias: Option<&[f32]>, out_ch: usize, in_ch: usize, input: &[f32], n: usize) -> Vec<f32> {
+fn conv1x1(
+    weight: &[f32],
+    bias: Option<&[f32]>,
+    out_ch: usize,
+    in_ch: usize,
+    input: &[f32],
+    n: usize,
+) -> Vec<f32> {
     let mut out = vec![0f32; out_ch * n];
     for oc in 0..out_ch {
         let b = bias.map_or(0.0, |b| b[oc]);
@@ -54,7 +61,15 @@ fn conv1x1(weight: &[f32], bias: Option<&[f32]>, out_ch: usize, in_ch: usize, in
 /// per the S-1 spike's confirmed reading of the reference implementation). Channel count in
 /// equals channel count out: this generator never emits gated models, whose dilated conv would
 /// double the output channel count.
-fn dilated_conv(weight: &[f32], bias: &[f32], channels: usize, kernel_size: usize, dilation: usize, input: &[f32], n: usize) -> Vec<f32> {
+fn dilated_conv(
+    weight: &[f32],
+    bias: &[f32],
+    channels: usize,
+    kernel_size: usize,
+    dilation: usize,
+    input: &[f32],
+    n: usize,
+) -> Vec<f32> {
     let hl = (kernel_size - 1) * dilation;
     let pn = hl + n;
     let mut padded = vec![0f32; channels * pn];
@@ -106,20 +121,45 @@ fn run_array(
     head_seed: &[f32],
     n: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    assert_eq!(cfg.activation, "Tanh", "generator never emits non-Tanh models");
+    assert_eq!(
+        cfg.activation, "Tanh",
+        "generator never emits non-Tanh models"
+    );
     assert!(!cfg.gated, "generator never emits gated models");
 
     let rechannel_w = r.take(cfg.channels * cfg.input_size);
-    let mut trunk = conv1x1(rechannel_w, None, cfg.channels, cfg.input_size, array_input, n);
+    let mut trunk = conv1x1(
+        rechannel_w,
+        None,
+        cfg.channels,
+        cfg.input_size,
+        array_input,
+        n,
+    );
 
     let mut head_sum = head_seed.to_vec();
     for &dilation in &cfg.dilations {
         let dilated_w = r.take(cfg.channels * cfg.channels * cfg.kernel_size);
         let dilated_b = r.take(cfg.channels);
-        let mut z = dilated_conv(dilated_w, dilated_b, cfg.channels, cfg.kernel_size, dilation, &trunk, n);
+        let mut z = dilated_conv(
+            dilated_w,
+            dilated_b,
+            cfg.channels,
+            cfg.kernel_size,
+            dilation,
+            &trunk,
+            n,
+        );
 
         let mixin_w = r.take(cfg.channels * cfg.condition_size);
-        let mixin = conv1x1(mixin_w, None, cfg.channels, cfg.condition_size, condition, n);
+        let mixin = conv1x1(
+            mixin_w,
+            None,
+            cfg.channels,
+            cfg.condition_size,
+            condition,
+            n,
+        );
         for (a, b) in z.iter_mut().zip(mixin.iter()) {
             *a += b;
         }
@@ -131,14 +171,25 @@ fn run_array(
 
         let residual_w = r.take(cfg.channels * cfg.channels);
         let residual_b = r.take(cfg.channels);
-        let residual = conv1x1(residual_w, Some(residual_b), cfg.channels, cfg.channels, &z, n);
+        let residual = conv1x1(
+            residual_w,
+            Some(residual_b),
+            cfg.channels,
+            cfg.channels,
+            &z,
+            n,
+        );
         for (t, v) in trunk.iter_mut().zip(residual.iter()) {
             *t += v;
         }
     }
 
     let head_w = r.take(cfg.head_size * cfg.channels);
-    let head_b = if cfg.head_bias { Some(r.take(cfg.head_size)) } else { None };
+    let head_b = if cfg.head_bias {
+        Some(r.take(cfg.head_size))
+    } else {
+        None
+    };
     let head_out = conv1x1(head_w, head_b, cfg.head_size, cfg.channels, &head_sum, n);
 
     (trunk, head_out)
@@ -149,7 +200,10 @@ fn run_array(
 /// function only ever runs against this crate's own generator output, never external input.
 pub(super) fn run(model: &NamModel, input: &[f32]) -> Vec<f32> {
     let n = input.len();
-    let mut r = WeightReader { weights: &model.weights, pos: 0 };
+    let mut r = WeightReader {
+        weights: &model.weights,
+        pos: 0,
+    };
 
     let mut cur_trunk = input.to_vec();
     // Doubles as both "seed for the next array's head accumulator" and, after the loop, the
@@ -157,7 +211,11 @@ pub(super) fn run(model: &NamModel, input: &[f32]) -> Vec<f32> {
     let mut head_out = Vec::new();
     for (i, cfg) in model.config.layers.iter().enumerate() {
         let array_input: &[f32] = if i == 0 { input } else { &cur_trunk };
-        let head_seed = if i == 0 { vec![0f32; cfg.channels * n] } else { head_out };
+        let head_seed = if i == 0 {
+            vec![0f32; cfg.channels * n]
+        } else {
+            head_out
+        };
         let (trunk, next_head_out) = run_array(cfg, &mut r, array_input, input, &head_seed, n);
         cur_trunk = trunk;
         head_out = next_head_out;
