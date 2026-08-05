@@ -54,6 +54,16 @@ pub struct NamMetadata {
     pub description: String,
 }
 
+/// A thin public re-export of `infer::run`, exposed *specifically* as a cross-crate numeric
+/// parity oracle for `namir-nam`'s independently-written WaveNet implementation: two
+/// from-scratch Rust ports of the same algorithm agreeing tightly is strong evidence neither has
+/// a subtle bug. This does not change `infer.rs`'s own stated scope — it still only ever needs to
+/// handle this crate's own generator output (ungated, `Tanh`-only), so no new capability is added
+/// here, only visibility of the one function that already existed.
+pub fn reference_infer(model: &NamModel, input: &[f32]) -> Vec<f32> {
+    infer::run(model, input)
+}
+
 impl NamModel {
     pub fn to_json_bytes(&self) -> Vec<u8> {
         serde_json::to_vec_pretty(self).expect("NamModel always serializes")

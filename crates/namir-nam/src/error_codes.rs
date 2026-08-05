@@ -1,0 +1,155 @@
+//! Local error catalogue for `namir-nam`, following the pattern `namir_core::error`'s module doc
+//! describes (D-16.1) and the same shape `namir-engine/src/error_codes.rs` uses: `ErrorCode` is a
+//! shared *type*, not a closed enum, so each crate defines its own consts for its own failure
+//! modes rather than pushing them up into `namir-core`.
+//!
+//! This catalogue exists to satisfy FR-NAM-040 ("A model file that is malformed, truncated, of an
+//! unknown architecture, or whose declared configuration is inconsistent with its weight count,
+//! shall be rejected with a message naming ... the specific reason") and P6 ("untrusted input is
+//! parsed in one hardened place per format, and that place is fuzzed"): every way `.nam` bytes can
+//! fail to become a `PreparedNam` maps to exactly one of these stable ids.
+
+use namir_core::{ErrorCode, Severity};
+
+/// The bytes handed to `NamFile::parse` are not valid JSON at all (FR-NAM-040: "malformed").
+pub const MALFORMED_JSON: ErrorCode = ErrorCode {
+    id: "nam.load.malformed_json",
+    severity: Severity::Error,
+    message_template: "The model file is not valid JSON.",
+};
+
+/// `architecture` is not `"WaveNet"` (FR-NAM-040: "of an unknown architecture"). LSTM is a
+/// documented open scope gap (see the crate doc comment), not a bug, so it also lands here.
+pub const UNSUPPORTED_ARCHITECTURE: ErrorCode = ErrorCode {
+    id: "nam.load.unsupported_architecture",
+    severity: Severity::Error,
+    message_template: "This model's architecture is not supported by this build of Namir.",
+};
+
+/// `config.head` is present (non-null). Ordinary exported WaveNet models leave it null; a
+/// populated post-stack head config is a real NAM feature this crate does not implement, ported
+/// as a scope limit directly from the S-1 spike (see `spikes/s1-nam-inference/src/lib.rs`).
+pub const UNSUPPORTED_HEAD_CONFIG: ErrorCode = ErrorCode {
+    id: "nam.load.unsupported_head_config",
+    severity: Severity::Error,
+    message_template: "This model uses a post-stack head configuration, which is not supported.",
+};
+
+/// A layer array's `activation` string is not one of `Tanh`, `ReLU`, `Sigmoid`, `Identity`.
+pub const UNSUPPORTED_ACTIVATION: ErrorCode = ErrorCode {
+    id: "nam.load.unsupported_activation",
+    severity: Severity::Error,
+    message_template: "This model uses an activation function that is not supported.",
+};
+
+/// `config.layers` is empty — there is no WaveNet stack to build at all.
+pub const EMPTY_LAYER_ARRAYS: ErrorCode = ErrorCode {
+    id: "nam.load.empty_layer_arrays",
+    severity: Severity::Error,
+    message_template: "This model declares no WaveNet layer arrays.",
+};
+
+/// A layer array's `condition_size != 1`. This implementation always feeds the raw mono input as
+/// the sole conditioning signal (matching every real WaveNet export); a different declared
+/// condition size isn't representable by this code and must be rejected cleanly rather than
+/// silently misinterpreted (e.g. by reading past the intended condition data).
+pub const UNSUPPORTED_CONDITION_SIZE: ErrorCode = ErrorCode {
+    id: "nam.load.unsupported_condition_size",
+    severity: Severity::Error,
+    message_template: "This model's conditioning signal size is not supported.",
+};
+
+/// The flat `weights` array's length doesn't match what the declared config implies (FR-NAM-040:
+/// "whose declared configuration is inconsistent with its weight count"), accounting for the
+/// trailing `head_scale` float that may or may not be present as an extra element.
+pub const WEIGHT_COUNT_MISMATCH: ErrorCode = ErrorCode {
+    id: "nam.load.weight_count_mismatch",
+    severity: Severity::Error,
+    message_template: "This model's weight count does not match its declared configuration.",
+};
+
+/// Adjacent layer arrays' `head_size`/`channels`/`input_size` don't chain correctly (see the S-1
+/// spike's confirmed reading of `NeuralAmpModelerCore`'s `WaveNet`/`LayerArray` construction).
+pub const LAYER_ARRAY_CHAINING_MISMATCH: ErrorCode = ErrorCode {
+    id: "nam.load.layer_array_chaining_mismatch",
+    severity: Severity::Error,
+    message_template: "This model's layer arrays do not chain together correctly.",
+};
+
+/// A declared dimension (channels, head_size, input_size, condition_size, kernel_size,
+/// dilations-per-array, layer array count, or total weight count) exceeds this crate's documented
+/// ceiling (NFR-SEC-020). Checked *before* any arithmetic or allocation is derived from the
+/// dimension, so a hostile file that declares e.g. `channels: 4_000_000_000` is rejected instantly
+/// instead of causing a multi-gigabyte or overflowing allocation attempt.
+pub const DIMENSION_LIMIT_EXCEEDED: ErrorCode = ErrorCode {
+    id: "nam.load.dimension_limit_exceeded",
+    severity: Severity::Error,
+    message_template: "This model declares a dimension larger than Namir's supported limit.",
+};
+
+/// `sample_rate` is present but zero. Distinct from `WEIGHT_COUNT_MISMATCH`: this is a
+/// self-contained field-level problem, not a cross-field consistency problem.
+pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode {
+    id: "nam.load.invalid_sample_rate",
+    severity: Severity::Error,
+    message_template: "This model declares a sample rate of 0 Hz, which is not valid.",
+};
+
+/// Carries a `namir_core::ErrorCode` (D-16.1) plus a `detail` string naming the specific reason
+/// (FR-NAM-040 requires the rejection message to name "the specific reason"). This crate only
+/// ever sees bytes, not a file path, so `detail` carries whatever numbers/names are relevant to
+/// the failure (e.g. `"expected 1234 weights, found 1200"`); a caller that knows the file path
+/// prepends it when presenting this to a user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamLoadError {
+    pub code: ErrorCode,
+    pub detail: String,
+}
+
+impl std::fmt::Display for NamLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: {} ({})",
+            self.code.id, self.code.message_template, self.detail
+        )
+    }
+}
+
+impl std::error::Error for NamLoadError {}
+
+#[cfg(test)]
+const ALL: &[ErrorCode] = &[
+    MALFORMED_JSON,
+    UNSUPPORTED_ARCHITECTURE,
+    UNSUPPORTED_HEAD_CONFIG,
+    UNSUPPORTED_ACTIVATION,
+    EMPTY_LAYER_ARRAYS,
+    UNSUPPORTED_CONDITION_SIZE,
+    WEIGHT_COUNT_MISMATCH,
+    LAYER_ARRAY_CHAINING_MISMATCH,
+    DIMENSION_LIMIT_EXCEEDED,
+    INVALID_SAMPLE_RATE,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use namir_core::assert_unique_ids;
+
+    #[test]
+    fn catalogue_ids_are_unique() {
+        assert_unique_ids(ALL);
+    }
+
+    #[test]
+    fn display_includes_code_id_and_detail() {
+        let err = NamLoadError {
+            code: MALFORMED_JSON,
+            detail: "unexpected end of input".to_string(),
+        };
+        let s = err.to_string();
+        assert!(s.contains("nam.load.malformed_json"));
+        assert!(s.contains("unexpected end of input"));
+    }
+}

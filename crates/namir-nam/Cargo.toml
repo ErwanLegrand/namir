@@ -1,0 +1,17 @@
+[package]
+name = "namir-nam"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+namir-fixtures = { path = "../namir-fixtures" }
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
