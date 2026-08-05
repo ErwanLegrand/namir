@@ -5,6 +5,10 @@ target/
 # pinned by a lockfile, and the spikes' lockfiles are the record of exactly which
 # versions the S-3 and S-4 results were measured against.
 
+# Generated spike fixtures (S-1): reproducible from a seed per D-19.1, not captured data,
+# and not worth carrying as binary blobs in history.
+spikes/*/fixtures/
+
 # Editors
 .vscode/
 .idea/
