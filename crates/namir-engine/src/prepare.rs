@@ -36,14 +36,17 @@ impl PrepareContext {
         })
     }
 
+    /// The engine sample rate a stage's `prepare` should size itself for.
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
+    /// The block-size ceiling a stage's scratch buffers (D-6.2) should be sized to.
     pub fn max_block_size(&self) -> usize {
         self.max_block_size
     }
 
+    /// The channel layout (FR-CHAIN-060) a stage's `prepare` should size itself for.
     pub fn channel_config(&self) -> ChannelConfig {
         self.channel_config
     }
@@ -54,6 +57,7 @@ impl PrepareContext {
 /// still resolve to the same catalogue-driven diagnostics as everything else (FR-ERR-020).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrepareError {
+    /// Which catalogue entry this failure maps to.
     pub code: ErrorCode,
 }
 

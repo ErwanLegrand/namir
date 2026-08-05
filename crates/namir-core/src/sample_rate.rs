@@ -6,14 +6,18 @@ use std::num::NonZeroU32;
 pub struct SampleRate(NonZeroU32);
 
 impl SampleRate {
+    /// Builds a `SampleRate` from a rate in Hz, or `None` if `hz` is zero.
     pub fn new(hz: u32) -> Option<Self> {
         NonZeroU32::new(hz).map(Self)
     }
 
+    /// The rate in Hz.
     pub fn hz(self) -> u32 {
         self.0.get()
     }
 
+    /// The rate in Hz as `f64`, for callers doing floating-point time-constant math (e.g.
+    /// `GainRamp`) that would otherwise repeat this cast at every call site.
     pub fn hz_f64(self) -> f64 {
         f64::from(self.0.get())
     }

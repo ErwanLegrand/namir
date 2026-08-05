@@ -10,6 +10,8 @@ use namir_core::SampleRate;
 const MIN_R: f64 = 0.9;
 const MAX_R: f64 = 0.9999;
 
+/// Stateful 1-pole DC-blocking high-pass filter; see this module's doc comment for the
+/// difference equation and FR-IN-040's corner-frequency requirement.
 pub struct DcBlocker {
     r: f32,
     x1: f32,
@@ -17,6 +19,8 @@ pub struct DcBlocker {
 }
 
 impl DcBlocker {
+    /// Builds a blocker with pole `r` derived from `corner_hz` at `sample_rate`, clamped to
+    /// `MIN_R..=MAX_R` against a pathological `corner_hz`.
     pub fn new(sample_rate: SampleRate, corner_hz: f32) -> Self {
         let r = 1.0 - (2.0 * std::f64::consts::PI * corner_hz as f64 / sample_rate.hz_f64());
         let r = r.clamp(MIN_R, MAX_R);
@@ -38,6 +42,7 @@ impl DcBlocker {
         }
     }
 
+    /// Zeroes the filter state (`x1`, `y1`).
     pub fn reset(&mut self) {
         self.x1 = 0.0;
         self.y1 = 0.0;

@@ -1,0 +1,28 @@
+[package]
+name = "namir-nam-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standard cargo-fuzz convention: an empty [workspace] table makes this Cargo.toml its own
+# workspace root, so Cargo's upward workspace discovery does not pull it into the parent Namir
+# workspace's unified resolution/lockfile (the same reason spikes/*/Cargo.toml files stay
+# detached, just achieved from the child's side here instead of the parent's `exclude`). Belt-
+# and-suspenders: this directory is also listed in the root Cargo.toml's `exclude` array.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.namir-nam]
+path = ".."
+
+[[bin]]
+name = "load_nam"
+path = "fuzz_targets/load_nam.rs"
+test = false
+doc = false
+bench = false

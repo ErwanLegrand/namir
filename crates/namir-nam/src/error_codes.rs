@@ -102,7 +102,10 @@ pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode {
 /// prepends it when presenting this to a user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamLoadError {
+    /// Which catalogue entry this failure maps to.
     pub code: ErrorCode,
+    /// The specific reason, e.g. `"expected 1234 weights, found 1200"`; see this struct's doc
+    /// comment for what it does and does not carry.
     pub detail: String,
 }
 

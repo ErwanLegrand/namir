@@ -1,0 +1,114 @@
+//! Local error catalogue for `namir-params`, following the pattern `namir_core::error`'s module
+//! doc describes (D-16.1) and the same shape `namir-nam`/`namir-engine` use: `ErrorCode` is a
+//! shared *type*, not a closed enum, so each crate defines its own consts for its own failure
+//! modes rather than pushing them up into `namir-core`.
+//!
+//! Every way [`crate::check_manifest`] can reject a `params.lock` diff (FR-PARAM-020: "a checked-
+//! in parameter manifest is diffed in CI; a changed or reused identifier fails the build") maps to
+//! exactly one of these stable ids.
+
+use namir_core::{ErrorCode, Severity};
+
+/// A key that was live in the old manifest now derives a different id (D-10.2's derivation must
+/// be pure; if this fires against a real diff, either the key text changed under a fixed id
+/// expectation, or the derivation itself changed — both forbidden by FR-PARAM-020).
+pub const ID_CHANGED: ErrorCode = ErrorCode {
+    id: "params.manifest.id_changed",
+    severity: Severity::Error,
+    message_template: "A parameter's identifier changed from its manifest entry.",
+};
+
+/// An id that the old manifest already tombstoned (whether under the same key or, via an FNV
+/// collision, a different one) appears live in the new descriptor set. FR-PARAM-020: "removed
+/// ... shall have its identifier retired permanently, never reassigned."
+pub const TOMBSTONE_REUSED: ErrorCode = ErrorCode {
+    id: "params.manifest.tombstone_reused",
+    severity: Severity::Error,
+    message_template: "A parameter reuses an identifier that was already tombstoned.",
+};
+
+/// A key stayed live across old and new manifests but its kind shape (continuous vs. stepped)
+/// changed. D-10.1: changing an existing entry's type fails the build; retiring it needs a
+/// tombstone plus a new key instead.
+pub const KIND_CHANGED: ErrorCode = ErrorCode {
+    id: "params.manifest.kind_changed",
+    severity: Severity::Error,
+    message_template: "A live parameter changed kind (continuous/stepped) in place.",
+};
+
+/// Two descriptors in the same new descriptor set derive the same id (an FNV-1a collision between
+/// two distinct keys, or the same key declared twice under different constants).
+pub const DUPLICATE_ID: ErrorCode = ErrorCode {
+    id: "params.manifest.duplicate_id",
+    severity: Severity::Error,
+    message_template: "Two parameters in the new descriptor set derive the same identifier.",
+};
+
+/// The same key string appears more than once in the same new descriptor set.
+pub const DUPLICATE_KEY: ErrorCode = ErrorCode {
+    id: "params.manifest.duplicate_key",
+    severity: Severity::Error,
+    message_template: "A key is declared more than once in the new descriptor set.",
+};
+
+/// A key was live in the old manifest and is absent from the new descriptor set without ever
+/// being tombstoned — a silent drop, which FR-PARAM-020 forbids ("never reassigned" presumes the
+/// old identifier is still accounted for, not simply gone).
+pub const DROPPED: ErrorCode = ErrorCode {
+    id: "params.manifest.dropped",
+    severity: Severity::Error,
+    message_template: "A parameter live in the old manifest is missing from the new descriptor \
+        set. Retire it with a tombstone entry instead of deleting its line.",
+};
+
+/// A line in the old manifest text didn't parse as either a comment, the `format_version` line,
+/// or a well-formed `key id kind tombstoned` data line.
+pub const MALFORMED_LINE: ErrorCode = ErrorCode {
+    id: "params.manifest.malformed_line",
+    severity: Severity::Error,
+    message_template: "A line in the manifest text could not be parsed.",
+};
+
+/// One diagnosed manifest problem: a catalogued [`ErrorCode`] plus a `detail` string naming the
+/// specific key/id/line involved (mirrors `namir_nam::NamLoadError`'s shape).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestViolation {
+    /// Which catalogue entry this violation maps to.
+    pub code: ErrorCode,
+    /// The specific key/id/line involved, e.g. `"key=gate.threshold, old_id=..., new_id=..."`.
+    pub detail: String,
+}
+
+impl std::fmt::Display for ManifestViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: {} ({})",
+            self.code.id, self.code.message_template, self.detail
+        )
+    }
+}
+
+impl std::error::Error for ManifestViolation {}
+
+#[cfg(test)]
+const ALL: &[ErrorCode] = &[
+    ID_CHANGED,
+    TOMBSTONE_REUSED,
+    KIND_CHANGED,
+    DUPLICATE_ID,
+    DUPLICATE_KEY,
+    DROPPED,
+    MALFORMED_LINE,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use namir_core::assert_unique_ids;
+
+    #[test]
+    fn catalogue_ids_are_unique() {
+        assert_unique_ids(ALL);
+    }
+}
