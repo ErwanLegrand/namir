@@ -114,6 +114,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "namir-dsp"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "namir-core",
+]
+
+[[package]]
 name = "namir-engine"
 version = "0.1.0"
 dependencies = [
@@ -129,6 +137,17 @@ dependencies = [
  "rand_pcg",
  "realfft",
  "rustfft",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "namir-nam"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "namir-core",
+ "namir-fixtures",
  "serde",
  "serde_json",
 ]
