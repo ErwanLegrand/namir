@@ -10,20 +10,29 @@
 //! namir-core enumerating the whole system. This is a design call the architecture document
 //! doesn't spell out to this level of detail; recorded here so it isn't rediscovered.
 
+/// How urgent an `ErrorCode` is, ordered ascending by urgency (`Info < Warning < Error <
+/// Fault`) so callers can threshold with a plain comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
+    /// Purely informational; no degradation and nothing the user need act on.
     Info,
+    /// Something is off but the engine's output is still trustworthy.
     Warning,
+    /// The engine's output for the affected stage or file is not trustworthy as-is.
     Error,
     /// A fault the engine cannot continue from without degrading (P8) — a stage silencing
     /// itself, not the host process.
     Fault,
 }
 
+/// One entry in a crate's error catalogue (D-16.1): a stable identifier, a severity, and a
+/// message template — never a formatted string, so the audio thread never allocates or formats
+/// one (D-16.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ErrorCode {
     /// Stable identifier (FR-PARAM-020-style: never reused, never repurposed).
     pub id: &'static str,
+    /// How urgent this error is; see `Severity`.
     pub severity: Severity,
     /// A `{placeholder}`-style template the UI fills in — the audio thread never formats
     /// anything (D-16.2); this template is read only off the RT path.

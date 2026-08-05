@@ -1,0 +1,8 @@
+# namir-params manifest (params.lock) -- machine-generated, do not hand-edit except to flip a
+# retired parameter's line from "live" to "tombstoned" (D-10.1). Regenerate the "live" lines
+# with `cargo test -p namir-params --lib -- --ignored generate_params_lock`, which calls
+# render_manifest(REGISTRY) (see crates/namir-params/src/manifest.rs) and writes this file.
+#
+# Columns: key id kind live|tombstoned. One line per parameter, sorted by key. Tombstoned lines
+# are retained forever -- a parameter is retired here, never deleted (FR-PARAM-020).
+format_version 1

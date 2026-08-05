@@ -3,6 +3,7 @@
 //! which matters because meters (FR-IN-020 etc.) read this every UI frame and must never format
 //! a NaN.
 
+/// Converts a decibel value to a linear amplitude multiplier (0 dB -> 1.0).
 pub fn db_to_linear(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
@@ -11,6 +12,8 @@ pub fn db_to_linear(db: f32) -> f32 {
 /// producing `-inf`/`NaN`, since this feeds meters that must always format to something readable.
 const MIN_DB: f32 = -600.0;
 
+/// Converts a linear amplitude to decibels, floored at `MIN_DB` for silent or negative input
+/// instead of returning `-inf`/`NaN` (see this module's doc comment).
 pub fn linear_to_db(linear: f32) -> f32 {
     if linear.abs() <= f32::MIN_POSITIVE {
         return MIN_DB;

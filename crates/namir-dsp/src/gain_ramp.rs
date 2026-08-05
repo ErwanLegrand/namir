@@ -24,6 +24,8 @@ const RECOMMENDED_TIME_CONSTANT_MS: f32 = 25.0;
 /// a safety net, per this crate's "clamp, don't fail" rule.
 const MIN_TIME_CONSTANT_MS: f32 = 1e-3;
 
+/// A one-pole gain smoother; see this module's doc comment for why the smoothing runs in the
+/// linear rather than dB domain.
 pub struct GainRamp {
     /// Current linear gain.
     current: f32,
@@ -64,6 +66,7 @@ impl GainRamp {
         }
     }
 
+    /// The current linear gain, converted to dB for display/metering.
     pub fn current_db(&self) -> f32 {
         linear_to_db(self.current)
     }

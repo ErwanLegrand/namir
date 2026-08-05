@@ -13,39 +13,65 @@ use serde::Deserialize;
 
 use crate::error_codes::{self, NamLoadError};
 
+/// Top-level `.nam` JSON document, deserialized as directly as possible (see this module's doc
+/// comment).
 #[derive(Debug, Clone, Deserialize)]
 pub struct NamFile {
+    /// The exporter's format version string, when present. Not itself validated here.
     #[serde(default)]
     pub version: Option<String>,
+    /// The model architecture name (e.g. `"WaveNet"`). Semantic validation of the value is
+    /// `wavenet::PreparedNam::from_file`'s job, not this module's.
     pub architecture: String,
+    /// The WaveNet topology and weights layout, unvalidated beyond JSON shape.
     pub config: WaveNetConfig,
+    /// The flat weight vector, in the order `wavenet::PreparedNam::from_file` expects to consume
+    /// it. Not shape-checked here.
     pub weights: Vec<f32>,
     /// Real files may omit this; FR §2's definitions note the model sample rate is "typically 48
     /// kHz", which `wavenet::PreparedNam::from_file` uses as the fallback when absent.
     #[serde(default)]
     pub sample_rate: Option<u32>,
+    /// Display-only metadata (FR-NAM-080); see `NamMetadata`.
     #[serde(default)]
     pub metadata: NamMetadata,
 }
 
+/// The WaveNet model's top-level configuration: its stack of layer arrays plus the output head.
 #[derive(Debug, Clone, Deserialize)]
 pub struct WaveNetConfig {
+    /// The model's layer-array stack, in evaluation order.
     pub layers: Vec<LayerArrayConfig>,
+    /// Output scaling applied after the head.
     pub head_scale: f32,
+    /// Opaque head configuration, kept as raw JSON since this module does not interpret it —
+    /// only `wavenet::PreparedNam::from_file` does.
     #[serde(default)]
     pub head: Option<serde_json::Value>,
 }
 
+/// One WaveNet layer array's hyperparameters, as exported in the `.nam` JSON — field names match
+/// the exporter's schema, not this crate's own naming.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LayerArrayConfig {
+    /// Number of input channels into this layer array.
     pub input_size: usize,
+    /// Number of conditioning channels feeding this layer array.
     pub condition_size: usize,
+    /// Number of channels feeding the array's head.
     pub head_size: usize,
+    /// Number of channels each layer in the array carries internally.
     pub channels: usize,
+    /// Convolution kernel width shared by every layer in the array.
     pub kernel_size: usize,
+    /// Per-layer dilation factors, one entry per layer in the array.
     pub dilations: Vec<usize>,
+    /// Activation function name (e.g. `"Tanh"`), interpreted by
+    /// `wavenet::PreparedNam::from_file`.
     pub activation: String,
+    /// Whether the layer array uses gated activation.
     pub gated: bool,
+    /// Whether the array's head applies a bias term.
     pub head_bias: bool,
 }
 
@@ -54,14 +80,19 @@ pub struct LayerArrayConfig {
 /// default to empty since real files may omit any of them.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct NamMetadata {
+    /// The model's display name.
     #[serde(default)]
     pub name: String,
+    /// Author/creator credit, per FR-NAM-080's "author (`modeled_by`)".
     #[serde(default)]
     pub modeled_by: String,
+    /// Modeled gear's make/model/type, as free text.
     #[serde(default)]
     pub gear_type: String,
+    /// Modeled gear's tone type (e.g. "clean", "high gain"), as free text.
     #[serde(default)]
     pub tone_type: String,
+    /// Free-text description, shown as-is.
     #[serde(default)]
     pub description: String,
 }

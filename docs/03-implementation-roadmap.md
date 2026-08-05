@@ -501,11 +501,11 @@ Small, cheap to resolve, but genuinely unresolved by the architecture document a
 flagged here so they're made deliberately rather than defaulted into by whoever writes the code
 that happens to depend on them first.
 
-1. **NFR-QUAL-030's wording vs. the project's actual verification strategy.** D-19.1 already
+1. ~~**NFR-QUAL-030's wording vs. the project's actual verification strategy.** D-19.1 already
    commits to generated-not-captured fixtures verified analytically or by independent
    cross-implementation, which is arguably a stronger standard than "golden reference audio" but
    is literally different wording. Resolve during M1 with a short addendum to
-   `02-architecture.md`, not new code.
+   `02-architecture.md`, not new code.~~ **Resolved:** `02-architecture.md` D-9.11 (§9.4).
 2. **AQ-3** (embedded index store for `namir-library`, D-12.3) — due at M5, constrained but not
    decided.
 3. **AQ-4** (licence of NAM's standardized capture input signal) — due before M8, blocks factory
