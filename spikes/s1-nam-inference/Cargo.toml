@@ -1,0 +1,35 @@
+[package]
+name = "s1-nam-inference"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "generate-fixture"
+path = "src/bin/generate_fixture.rs"
+
+[[bin]]
+name = "render"
+path = "src/bin/render.rs"
+
+[[bin]]
+name = "compare"
+path = "src/bin/compare.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hound = "3.5"
+rand = "0.8"
+rand_pcg = "0.3"
+core_affinity = "0.8"
+mimalloc = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
