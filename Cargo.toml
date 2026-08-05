@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Spikes are throwaway (§19: "not carried forward") and each pins its own Cargo.lock as a
+# measurement record — they must not be swept into this workspace by Cargo's upward workspace
+# discovery.
+exclude = ["spikes"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid" # D-5.3 default; namir-platform, namir-clap and SIMD kernels override per-crate.

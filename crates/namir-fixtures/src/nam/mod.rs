@@ -1,0 +1,361 @@
+//! Generated `.nam` WaveNet fixtures (D-19.1's parity and performance rows), ported from the
+//! S-1 spike's constrained-init, RMS-calibrated generator (`spikes/s1-nam-inference`).
+//!
+//! D-19.1's real hazard: naive random weights can leave a network's output near-silent or
+//! divergent, which makes an RMS-relative error metric meaningless. [`generate`] guards against
+//! this the same way the S-1 spike did — constrained (fan-in-scaled) initialisation to keep
+//! activations in a sane range, then a calibration pass that rescales `head_scale` to hit a
+//! target output RMS and verifies the result is neither silent nor exploding before returning it.
+
+mod infer;
+
+use rand::Rng;
+use rand::SeedableRng;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NamModel {
+    pub version: String,
+    pub architecture: String,
+    pub config: WaveNetConfig,
+    pub weights: Vec<f32>,
+    pub sample_rate: u32,
+    pub metadata: NamMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WaveNetConfig {
+    pub layers: Vec<LayerArrayConfig>,
+    pub head_scale: f32,
+    pub head: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LayerArrayConfig {
+    pub input_size: usize,
+    pub condition_size: usize,
+    pub head_size: usize,
+    pub channels: usize,
+    pub kernel_size: usize,
+    pub dilations: Vec<usize>,
+    pub activation: String,
+    pub gated: bool,
+    pub head_bias: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NamMetadata {
+    pub name: String,
+    pub modeled_by: String,
+    pub gear_type: String,
+    pub tone_type: String,
+    pub description: String,
+}
+
+impl NamModel {
+    pub fn to_json_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec_pretty(self).expect("NamModel always serializes")
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+/// The four WaveNet architecture shapes NFR-PERF-010's performance fixtures need (D-19.1:
+/// "Realistic architecture shapes... Cost follows topology, not weight values").
+///
+/// **Assumption, not a researched fact:** only "standard" comes from a verified source (the S-1
+/// spike's `generate_fixture.rs`, itself confirmed against `neural-amp-modeler`'s
+/// `get_wavenet_config`). The real NAM ecosystem's lite/feather/nano channel counts are not
+/// specified anywhere in this repo's docs, so lite/feather/nano below are *this crate's own*
+/// progressive down-scaling of "standard" — chosen only to give a plausible, monotonically
+/// decreasing relative cost across the four shapes, and must not be read as verified against any
+/// real NAM preset. If real preset numbers surface later, replace these, not the topology shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveNetShape {
+    /// The S-1 spike's verified shape: 2 layer arrays, channels 16/8, kernel_size 3, 10 dilated
+    /// layers each (dilations 1..512). Confirmed against `neural-amp-modeler`'s
+    /// `get_wavenet_config` (v0.10.0) — see `spikes/s1-nam-inference/README.md`.
+    Standard,
+    /// Unverified down-scaling of `Standard` (see the enum doc comment): channels 12/6, 8 layers.
+    Lite,
+    /// Unverified down-scaling of `Standard`: channels 8/4, 6 layers.
+    Feather,
+    /// Unverified down-scaling of `Standard`: channels 4/2, 4 layers.
+    Nano,
+}
+
+/// Fixed 2-layer-array topology parameters for one [`WaveNetShape`]: `channels1` feeds
+/// `channels2` via `head_size1`, which the chaining invariant (checked in [`generate`]) requires
+/// to equal `channels2`.
+struct ShapeParams {
+    channels1: usize,
+    channels2: usize,
+    layers: usize,
+}
+
+impl WaveNetShape {
+    fn params(self) -> ShapeParams {
+        match self {
+            WaveNetShape::Standard => ShapeParams { channels1: 16, channels2: 8, layers: 10 },
+            WaveNetShape::Lite => ShapeParams { channels1: 12, channels2: 6, layers: 8 },
+            WaveNetShape::Feather => ShapeParams { channels1: 8, channels2: 4, layers: 6 },
+            WaveNetShape::Nano => ShapeParams { channels1: 4, channels2: 2, layers: 4 },
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            WaveNetShape::Standard => "standard",
+            WaveNetShape::Lite => "lite",
+            WaveNetShape::Feather => "feather",
+            WaveNetShape::Nano => "nano",
+        }
+    }
+
+    /// The two `LayerArrayConfig`s for this shape: array 1 rechannels the mono input to
+    /// `channels1` and hands its `head_size` (== `channels2`) forward as array 2's `channels`
+    /// (the trunk/head chaining invariant `PreparedWaveNet::from_nam_file`-style loaders check).
+    fn layer_configs(self) -> Vec<LayerArrayConfig> {
+        let p = self.params();
+        let dilations: Vec<usize> = (0..p.layers).map(|i| 1usize << i).collect();
+        vec![
+            LayerArrayConfig {
+                input_size: 1,
+                condition_size: 1,
+                head_size: p.channels2,
+                channels: p.channels1,
+                kernel_size: 3,
+                dilations: dilations.clone(),
+                activation: "Tanh".to_string(),
+                gated: false,
+                head_bias: false,
+            },
+            LayerArrayConfig {
+                input_size: p.channels1,
+                condition_size: 1,
+                head_size: 1,
+                channels: p.channels2,
+                kernel_size: 3,
+                dilations,
+                activation: "Tanh".to_string(),
+                gated: false,
+                head_bias: true,
+            },
+        ]
+    }
+}
+
+#[derive(Debug)]
+pub struct DegenerateFixtureError {
+    measured_rms: f32,
+}
+
+impl fmt::Display for DegenerateFixtureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "generated fixture is degenerate (output RMS = {}): near-silent or divergent, per \
+             D-19.1's explicit hazard — try a different seed",
+            self.measured_rms
+        )
+    }
+}
+impl Error for DegenerateFixtureError {}
+
+const SAMPLE_RATE: u32 = 48_000;
+
+/// Builds the flat weight array in the order `infer::run` (and any real `.nam` reader) consumes
+/// it: per array `[rechannel(w, no bias), per-layer[dilated(w,b), mixin(w), residual(w,b)],
+/// head_rechannel(w[, b])]`, then a trailing `head_scale` float.
+///
+/// Constrained init (D-19.1's accepted fallback to training against an analytic nonlinearity):
+/// every weight is uniform over `[-s, s]` with `s = 1/sqrt(fan_in)`, the standard variance-
+/// preserving scale — the same reasoning a default PyTorch `Conv1d` init uses. This is what keeps
+/// activations from blowing up or collapsing layer over layer purely from initialisation, before
+/// the RMS calibration pass even runs. Biases start at zero.
+fn build_weights(specs: &[LayerArrayConfig], rng: &mut impl Rng, head_scale: f32) -> Vec<f32> {
+    let mut w = Vec::new();
+    let push_uniform = |rng: &mut dyn rand::RngCore, out: &mut Vec<f32>, count: usize, scale: f32| {
+        for _ in 0..count {
+            out.push(rng.gen_range(-scale..scale));
+        }
+    };
+    let push_zeros = |out: &mut Vec<f32>, count: usize| out.resize(out.len() + count, 0.0);
+
+    for spec in specs {
+        let s = 1.0 / (spec.input_size as f32).sqrt();
+        push_uniform(rng, &mut w, spec.channels * spec.input_size, s);
+
+        for _ in &spec.dilations {
+            let s = 1.0 / ((spec.channels * spec.kernel_size) as f32).sqrt();
+            push_uniform(rng, &mut w, spec.channels * spec.channels * spec.kernel_size, s);
+            push_zeros(&mut w, spec.channels);
+
+            let s = 1.0 / (spec.condition_size as f32).sqrt();
+            push_uniform(rng, &mut w, spec.channels * spec.condition_size, s);
+
+            let s = 1.0 / (spec.channels as f32).sqrt();
+            push_uniform(rng, &mut w, spec.channels * spec.channels, s);
+            push_zeros(&mut w, spec.channels);
+        }
+
+        let s = 1.0 / (spec.channels as f32).sqrt();
+        push_uniform(rng, &mut w, spec.head_size * spec.channels, s);
+        if spec.head_bias {
+            push_zeros(&mut w, spec.head_size);
+        }
+    }
+    w.push(head_scale);
+    w
+}
+
+/// A short, seeded calibration probe: a low tone plus a little noise, comparable in spirit to
+/// the S-1 spike's, just shorter (this crate's `run` is unoptimized/whole-signal, so keeping the
+/// probe short matters for test speed — a few thousand samples is already a stable RMS estimate).
+fn calibration_probe(seed: u64) -> Vec<f32> {
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(seed ^ 0xC411_B4A7);
+    let n = 8_000;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin() + 0.05 * rng.gen_range(-1.0f32..1.0)
+        })
+        .collect()
+}
+
+fn measure_output_rms(model: &NamModel, probe: &[f32]) -> f32 {
+    let out = infer::run(model, probe);
+    let sum_sq: f64 = out.iter().map(|&v| (v as f64) * (v as f64)).sum();
+    ((sum_sq / out.len() as f64).sqrt()) as f32
+}
+
+fn build_model(shape: WaveNetShape, weights: Vec<f32>, head_scale: f32) -> NamModel {
+    let layers = shape.layer_configs();
+    NamModel {
+        version: "0.5.5".to_string(),
+        architecture: "WaveNet".to_string(),
+        config: WaveNetConfig { layers, head_scale, head: None },
+        weights,
+        sample_rate: SAMPLE_RATE,
+        metadata: NamMetadata {
+            name: format!("namir-fixtures generated {} WaveNet", shape.name()),
+            modeled_by: "namir-fixtures".to_string(),
+            gear_type: "amp".to_string(),
+            tone_type: "clean".to_string(),
+            description: "Seeded, constrained-init WaveNet (D-19.1): not trained, tonal realism \
+                is irrelevant, only architecture and weights matter for a parity test."
+                .to_string(),
+        },
+    }
+}
+
+/// Generates a deterministic, RMS-calibrated `.nam` WaveNet fixture: same `(shape, seed)` always
+/// produces byte-identical weights and output.
+///
+/// Two passes: build weights with constrained init and a placeholder `head_scale`, measure the
+/// resulting output RMS over a calibration probe, then rescale `head_scale` so the *calibrated*
+/// output lands at a fixed target RMS. Returns [`DegenerateFixtureError`] if calibration still
+/// can't produce a finite, sane RMS (D-19.1's hazard) — the caller should try a different seed.
+pub fn generate(shape: WaveNetShape, seed: u64) -> Result<NamModel, DegenerateFixtureError> {
+    let specs = shape.layer_configs();
+    let base_head_scale = 0.02f32;
+
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(seed);
+    let weights = build_weights(&specs, &mut rng, base_head_scale);
+    let model = build_model(shape, weights, base_head_scale);
+
+    let probe = calibration_probe(seed);
+    let measured_rms = measure_output_rms(&model, &probe);
+    if !measured_rms.is_finite() || measured_rms <= 1e-6 {
+        return Err(DegenerateFixtureError { measured_rms });
+    }
+
+    let target_rms = 0.15f32;
+    let calibrated_head_scale = base_head_scale * (target_rms / measured_rms);
+    let mut weights = model.weights;
+    *weights.last_mut().expect("head_scale weight present") = calibrated_head_scale;
+    let model = build_model(shape, weights, calibrated_head_scale);
+
+    let calibrated_rms = measure_output_rms(&model, &probe);
+    if !calibrated_rms.is_finite() || calibrated_rms <= 1e-4 || calibrated_rms >= 10.0 {
+        return Err(DegenerateFixtureError { measured_rms: calibrated_rms });
+    }
+
+    Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generates_without_error_for_all_shapes() {
+        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+            generate(shape, 1).unwrap_or_else(|e| panic!("{shape:?}: {e}"));
+        }
+    }
+
+    #[test]
+    fn generation_is_deterministic_for_a_given_seed() {
+        let a = generate(WaveNetShape::Standard, 42).unwrap();
+        let b = generate(WaveNetShape::Standard, 42).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_seeds_produce_different_weights() {
+        let a = generate(WaveNetShape::Standard, 1).unwrap();
+        let b = generate(WaveNetShape::Standard, 2).unwrap();
+        assert_ne!(a.weights, b.weights);
+    }
+
+    #[test]
+    fn shapes_have_decreasing_channel_counts() {
+        let sizes: Vec<usize> = [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano]
+            .iter()
+            .map(|&s| generate(s, 1).unwrap().weights.len())
+            .collect();
+        for w in sizes.windows(2) {
+            assert!(w[0] > w[1], "expected strictly decreasing weight counts: {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn model_round_trips_through_json() {
+        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+            let model = generate(shape, 7).unwrap();
+            let bytes = model.to_json_bytes();
+            let parsed = NamModel::from_json_bytes(&bytes).expect("round trip parses");
+            assert_eq!(model, parsed, "{shape:?} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn generated_models_have_bounded_nondegenerate_rms() {
+        // D-19.1's explicit hazard: naive random weights can leave a network near-silent or
+        // divergent, making an RMS-relative accuracy metric meaningless. This is the actual
+        // point of the generator's constrained-init + calibration design, not incidental.
+        let probe = calibration_probe(999);
+        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+            let model = generate(shape, 999).unwrap();
+            let rms = measure_output_rms(&model, &probe);
+            assert!(rms.is_finite(), "{shape:?}: non-finite RMS");
+            assert!(rms > 1e-4, "{shape:?}: near-silent, RMS = {rms}");
+            assert!(rms < 10.0, "{shape:?}: divergent, RMS = {rms}");
+        }
+    }
+
+    #[test]
+    fn layer_array_chaining_invariant_holds() {
+        for shape in [WaveNetShape::Standard, WaveNetShape::Lite, WaveNetShape::Feather, WaveNetShape::Nano] {
+            let layers = shape.layer_configs();
+            for w in layers.windows(2) {
+                assert_eq!(w[0].head_size, w[1].channels, "{shape:?}: head_size/channels mismatch");
+            }
+        }
+    }
+}

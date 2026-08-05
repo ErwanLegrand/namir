@@ -1,0 +1,18 @@
+[package]
+name = "namir-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+
+[dev-dependencies]
+# D-7.5's RT-allocation test harness (see src/rt_harness.rs's module doc for why an external
+# crate is used here rather than a hand-rolled `GlobalAlloc`: this crate's `unsafe_code =
+# "forbid"` rules out implementing that trait ourselves). Dev-dependency only, so it is never
+# linked into a release build of this crate.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
