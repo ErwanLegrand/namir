@@ -433,10 +433,27 @@ impl IrStage {
         None
     }
 
-    /// M5, red-first: placeholder, mirroring `nam.rs`'s identical stub — see
-    /// [`crate::stages::nam::NamStage::unload`]'s doc comment for why this does nothing yet and
-    /// what the real implementation must be.
-    pub(crate) fn unload(&mut self) {}
+    /// **RT-safe.** FR-STATE-070's "the state shall load with that stage empty", mirroring
+    /// `nam.rs`'s `unload` exactly — see that method's doc comment for the full rationale.
+    pub(crate) fn unload(&mut self) {
+        if self.retired.is_some() {
+            debug_assert!(
+                false,
+                "unload with a retirement still parked: the engine's drain gate should \
+                 have held this command back"
+            );
+            return;
+        }
+        let inactive = 1 - self.active;
+        if let Some(displaced) = self.slots[inactive].take() {
+            self.retired = Some(Resource::ir(displaced, self.prepared_for));
+        }
+        self.crossfade = Some(Crossfade {
+            remaining: self.crossfade_total_samples,
+            total: self.crossfade_total_samples,
+        });
+        self.recompute_mix_target();
+    }
 
     /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
     /// identical rule to `nam.rs`'s `recompute_mix_target`.
