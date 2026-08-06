@@ -13,6 +13,14 @@ namir-core = { path = "../namir-core" }
 namir-params = { path = "../namir-params" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# FR-STATE-080's embedded model/IR data (base64 inside the JSON document, D-11.1's format).
+# Checked against this workspace's adoption bar (the criteria that admitted `rtrb`, §17):
+# MIT OR Apache-2.0 (already on deny.toml's allow list), zero transitive dependencies, no build
+# script, MSRV 1.71 (far below this workspace's 1.97), no_std-capable. `default-features = false`
+# with only the `alloc` feature: the default `simd-unsafe` feature is not needed at the volumes
+# this crate handles and this way the dependency carries no unsafe SIMD path at all, not merely
+# one this crate doesn't call into.
+base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 # Deliberately absent, each a decision rather than an oversight:
 #  - no filesystem/path-resolution crate: D-5.1 forbids this crate from touching a filesystem at
 #    all (resolve.rs's FileResolver port is the seam; namir-library implements it, namir-worker
