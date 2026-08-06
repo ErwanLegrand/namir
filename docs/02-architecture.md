@@ -100,6 +100,53 @@ fallback (the standard way to keep old-hardware support, but it needs either `un
 duplicated, separately-parity-tested kernel per feature level, for hardware nobody is going to run
 this on).
 
+**Decision D-2.4** — D-2.2's 99.9th-percentile gate is **kept exactly as written**. What is added
+is the set of **measurement conditions under which that percentile is valid**, plus a mandatory
+**validity check** that must accompany any quoted figure. Added during M3, after that milestone
+spent most of its effort attributing to Namir a tail that was not Namir's.
+
+*Rationale:* M3 briefly appeared to force a choice between two statistics — the literal p99.9 (17%
+to 52% across identical runs, unusable as a gate) and a contamination-immune per-residue-minimum
+estimator (~15.2%, reproducible). Choosing the second because it passed would have been picking
+the flattering measurement, which this project's methodology refuses. That dilemma turned out to be
+false: p99.9 was unstable because of *how* it was being measured, not because the metric is wrong.
+Measured under the conditions below, the same benchmark reports p99.9 = 16.5-17.1% across repeated
+runs and agrees with the estimator to within ~1.8 points. A metric that is reproducible when
+measured correctly does not need replacing — it needs its preconditions written down. This also
+keeps NFR-PERF-010 verifiable exactly as the FRS specifies it ("*Verify:* B, as a CI regression
+gate"), which a hand-computed estimator would not.
+
+*Consequence:* every quoted NFR-PERF-010 figure must satisfy all of:
+
+1. **Pinned away from cores that carry device interrupts.** Logical CPU 0 on the §2 machine absorbs
+   `dxgkrnl.sys`'s ISRs (128-512 µs, ~165/second, zero on all other cores — measured by an elevated
+   `xperf -on Latency` trace). ISRs run at DIRQL, above every thread priority, so this cannot be
+   mitigated in software from user mode. CPU 2 carries the heaviest kernel DPC load and is likewise
+   avoided. Benchmarks default to core 4; see `pin_to_measurement_core`.
+2. **No unrelated load on the machine, verified rather than assumed.** M3 measured its own tooling
+   (background agents, concurrent `cargo` builds) doubling p50 and tripling p99.9. "The machine
+   looked idle" is not evidence; check what is actually running.
+3. **At least five repetitions**, with the spread reported, never a single run. Four separate
+   conclusions in M3 were announced from unreplicated readings and each had to be retracted.
+4. **The validity check:** run `namir-engine/benches/tail_structure.rs` alongside, and compare its
+   per-residue-minimum estimate against the raw p99.9. That estimator is immune to interference
+   (interference is additive and aperiodic; the IR schedule is periodic, so the cheapest occurrence
+   of each residue is the uncontaminated one). **If raw p99.9 substantially exceeds the estimator,
+   the run was contaminated and the figure must be discarded, not quoted.** A clean run has the two
+   within a couple of percentage points.
+
+The estimator is therefore promoted to a permanent part of the methodology — not as the gate, but
+as the instrument that tells you whether the gate's reading means anything. Reporting p99.9 without
+it is how M3 lost several days to a GPU driver.
+
+*Rejected:* replacing p99.9 with the estimator (drops a real property — that the *observed* worst
+case matters to users — and departs from the FRS's own wording for no reason once the metric is
+measured properly); gating on end-to-end latency including OS interference (that is a property of
+the host machine, not of Namir, and directly contradicts D-2.1's framing of the budget as
+per-instance and single-core; it is also unbounded by anything the project can engineer — the right
+home for it is M6's thread-priority/affinity work and a deployment note, not this requirement);
+loosening the 25% budget (nothing measured justifies it — the chain passes).
+
 ---
 
 ## 3. Architectural principles
