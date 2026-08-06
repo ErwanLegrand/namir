@@ -56,3 +56,9 @@ harness = false
 [[bench]]
 name = "per_stage_cost"
 harness = false
+
+# Diagnostic (M3): is the chain's p99.9 tail code-driven or environmental? See the file's
+# own doc comment. Gates nothing.
+[[bench]]
+name = "tail_structure"
+harness = false
