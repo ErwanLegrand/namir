@@ -13,6 +13,7 @@
 mod chain;
 mod param;
 mod prepare;
+mod ring;
 mod stage;
 mod stage_io;
 mod telemetry;
@@ -28,6 +29,7 @@ mod test_support;
 pub use chain::Chain;
 pub use param::{ParamChange, ParamId};
 pub use prepare::{PrepareContext, PrepareError};
+pub use ring::{RingConsumer, RingProducer, ring};
 pub use stage::{Stage, StagePrep};
 pub use stage_io::StageIo;
 pub use stages::build_default_chain;
