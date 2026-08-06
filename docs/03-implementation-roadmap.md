@@ -861,8 +861,8 @@ stage/product) / **Not started**.
 | 5.1 CHAIN | 7 | 0 | 2 | 5 |
 | 5.2 IN | 3 | 0 | 3 | 0 |
 | 5.3 GATE | 3 | 0 | 3 | 0 |
-| 5.4 NAM | 11 | 2 | 5 | 4 |
-| 5.5 IR | 7 | 0 | 0 | 7 |
+| 5.4 NAM | 11 | 3 | 4 | 4 |
+| 5.5 IR | 7 | 1 | 0 | 6 |
 | 5.6 EQ | 3 | 0 | 3 | 0 |
 | 5.7 OUT | 2 | 0 | 1 | 1 |
 | 5.8 PARAM | 5 | 0 | 1 | 4 |
@@ -872,7 +872,7 @@ stage/product) / **Not started**.
 | 5.12 CLAP | 10 | 0 | 0 | 10 |
 | 5.13 UI | 7 | 0 | 0 | 7 |
 | 5.14 ERR | 6 | 0 | 4 | 2 |
-| 6.1 RT | 4 | 0 | 1 | 3 |
+| 6.1 RT | 4 | 1 | 2 | 1 |
 | 6.2 PERF | 6 | 1 | 0 | 5 |
 | 6.3 PORT | 5 | 0 | 4 | 1 |
 | 6.4 QUAL | 6 | 0 | 4 | 2 |
@@ -904,6 +904,27 @@ do not: the disagreement was an artifact of measuring while this project's own t
 the machine, and D-2.4 records the conditions that prevent a repeat. The other five Musts in 6.2
 (NFR-PERF-020 latency, 030-060) are untouched by M3 and stay Not-started -- only the one cell M3's
 evidence directly justifies moves, matching how 5.4 NAM was handled above.
+
+**Three further live updates, made in the M4 session**, following the same rule — only cells this
+milestone's own evidence directly justifies, each named:
+
+- **5.4 NAM Done 2 -> 3, Partial 5 -> 4.** FR-NAM-070 (glitch-free crossfaded model swap) closes,
+  verified by its own literal *Verify: I* method in
+  `namir-engine/src/engine.rs`'s `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`.
+- **5.5 IR Done 0 -> 1, Not-started 7 -> 6.** FR-IR-060 closes, same method, same file.
+- **6.1 RT Done 0 -> 1, Partial 1 -> 2, Not-started 3 -> 1.** NFR-RT-020 (wait-free from the audio
+  thread's side) closes: there is now a real ring to verify rather than an absence, and its
+  *Verify: S plus code review* is met by the type-level SPSC split plus the D-7.5 harness covering
+  every ring operation. **NFR-RT-010 moves Not-started -> Partial, deliberately not Done** — M4
+  closed the one known audio-thread allocation and drives a complete handover inside the harness,
+  but the requirement's *Verify* clause also demands a stress test "with concurrent model loading,
+  preset recall and library scanning", and preset recall is M5's `namir-state` while scanning is
+  M5's `namir-library`. Neither exists, so only the model-loading axis is covered. Recorded as
+  Partial rather than claimed.
+
+**Not moved, and worth stating so nobody moves it:** 5.12 CLAP stays 0 Done. FR-CLAP-090's
+cross-instance sharing mechanism is built and tested at the worker level, but §8's own acceptance
+text says it "isn't exercised for real until M6's `namir-clap`", and that remains true.
 
 ---
 
