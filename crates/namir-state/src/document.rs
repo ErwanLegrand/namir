@@ -274,4 +274,84 @@ mod tests {
         doc.set_section("parameters", params.clone());
         assert_eq!(doc.section("parameters"), Some(&params));
     }
+
+    #[test]
+    fn merge_section_creates_the_section_when_absent() {
+        let mut doc = Document::empty();
+        let mut additions = Map::new();
+        additions.insert("a".to_string(), Value::from(1));
+        doc.merge_section("parameters", additions.clone());
+        assert_eq!(doc.section("parameters"), Some(&additions));
+    }
+
+    #[test]
+    fn merge_section_preserves_keys_it_does_not_mention() {
+        let mut doc = Document::empty();
+        let mut original = Map::new();
+        original.insert("kept".to_string(), Value::from("stays"));
+        original.insert("overwritten".to_string(), Value::from("old"));
+        doc.set_section("parameters", original);
+
+        let mut additions = Map::new();
+        additions.insert("overwritten".to_string(), Value::from("new"));
+        doc.merge_section("parameters", additions);
+
+        let merged = doc.section("parameters").unwrap();
+        assert_eq!(merged.get("kept"), Some(&Value::from("stays")));
+        assert_eq!(merged.get("overwritten"), Some(&Value::from("new")));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // NFR-PORT-050: "byte order, path separators, line endings and text encoding shall be
+    // handled such that preset and state files written on one platform load identically on
+    // another." The path-separator half is `reference.rs`'s `RelPath`'s job, added later in
+    // this milestone; the invariants below are the half this module owns: the byte shape of
+    // the document itself, independent of anything it stores.
+    // -----------------------------------------------------------------------------------
+
+    #[test]
+    fn written_bytes_never_contain_a_carriage_return() {
+        // A regression that started emitting CRLF would previously have been silently repaired
+        // by this repository's own `* text=auto eol=lf` .gitattributes rule on commit -- masking
+        // exactly the bug this test exists to catch. That gap is why `*.namirpreset` is now
+        // listed `binary` in `.gitattributes` (D-2.5/M5's correction) rather than left to text
+        // normalisation, and why this assertion runs directly on the writer's raw output bytes
+        // rather than on whatever Git decided to store.
+        let bytes = Document::empty().to_pretty_bytes();
+        assert!(
+            !bytes.contains(&b'\r'),
+            "output must be LF-only, found a CR byte"
+        );
+    }
+
+    #[test]
+    fn written_bytes_carry_no_byte_order_mark() {
+        const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+        let bytes = Document::empty().to_pretty_bytes();
+        assert!(
+            !bytes.starts_with(&UTF8_BOM),
+            "output must not carry a UTF-8 BOM"
+        );
+    }
+
+    #[test]
+    fn written_bytes_are_valid_utf8() {
+        let bytes = Document::empty().to_pretty_bytes();
+        assert!(std::str::from_utf8(&bytes).is_ok());
+    }
+
+    /// Canonical float formatting: `serde_json`'s number writer always uses `.` as the decimal
+    /// separator regardless of host locale (JSON's own grammar has no other option — this is a
+    /// property of the format, not of this crate's code — but it is exactly the kind of "surely
+    /// that's fine" assumption NFR-PORT-050 asks to have verified rather than trusted).
+    #[test]
+    fn numbers_use_a_period_as_the_decimal_separator() {
+        let mut doc = Document::empty();
+        let mut params = Map::new();
+        params.insert("trim.gain_db".to_string(), Value::from(2.5_f64));
+        doc.set_section("parameters", params);
+        let text = String::from_utf8(doc.to_pretty_bytes()).unwrap();
+        assert!(text.contains("2.5"));
+        assert!(!text.contains("2,5"));
+    }
 }
