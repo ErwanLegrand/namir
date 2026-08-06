@@ -67,7 +67,7 @@ use namir_params::stages::ir::{
 use crate::command::RetireSink;
 use crate::param::{ParamChange, ParamId};
 use crate::prepare::{PrepareContext, PrepareError};
-use crate::resource::Resource;
+use crate::resource::{Resource, ResourceKind};
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
 use crate::stages::HANDOVER_CROSSFADE_MS;
@@ -433,6 +433,11 @@ impl IrStage {
         None
     }
 
+    /// M5, red-first: placeholder, mirroring `nam.rs`'s identical stub — see
+    /// [`crate::stages::nam::NamStage::unload`]'s doc comment for why this does nothing yet and
+    /// what the real implementation must be.
+    pub(crate) fn unload(&mut self) {}
+
     /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
     /// identical rule to `nam.rs`'s `recompute_mix_target`.
     fn recompute_mix_target(&mut self) {
@@ -769,6 +774,14 @@ impl Stage for IrStage {
             && let Err(back) = out.push(resource)
         {
             self.retired = Some(back);
+        }
+    }
+
+    /// M5: FR-STATE-070's "the state shall load with that stage empty", entry point. Mirrors
+    /// `nam.rs`'s identical override.
+    fn unload_resource(&mut self, kind: ResourceKind) {
+        if kind == ResourceKind::Ir {
+            self.unload();
         }
     }
 }

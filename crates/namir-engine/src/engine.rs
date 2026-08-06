@@ -221,7 +221,11 @@ impl AudioEngine {
         }
     }
 
-    /// Drains up to [`MAX_COMMANDS_PER_BLOCK`] commands, and at most one resource offer per kind.
+    /// Drains up to [`MAX_COMMANDS_PER_BLOCK`] commands, and at most one resource offer or
+    /// unload per target stage. M5's `Unload` shares a target's `*_offered` flag and headroom
+    /// check with its `Load` counterpart, because both start a crossfade and can produce a
+    /// retirement in the same stage — the gate cannot tell them apart for headroom purposes and
+    /// does not try to.
     ///
     /// # The drain gate, and the head-of-line cost it accepts
     ///
@@ -255,9 +259,15 @@ impl AudioEngine {
             let Some(kind) = self.commands.peek().map(Command::kind) else {
                 return;
             };
-            if matches!(kind, CommandKind::LoadNam | CommandKind::LoadIr) {
+            if matches!(
+                kind,
+                CommandKind::LoadNam
+                    | CommandKind::LoadIr
+                    | CommandKind::UnloadNam
+                    | CommandKind::UnloadIr
+            ) {
                 let already = match kind {
-                    CommandKind::LoadNam => nam_offered,
+                    CommandKind::LoadNam | CommandKind::UnloadNam => nam_offered,
                     _ => ir_offered,
                 };
                 if already || self.retire_backlog || self.retire.slots() < RETIRE_HEADROOM_PER_OFFER
@@ -266,7 +276,7 @@ impl AudioEngine {
                     return;
                 }
                 match kind {
-                    CommandKind::LoadNam => nam_offered = true,
+                    CommandKind::LoadNam | CommandKind::UnloadNam => nam_offered = true,
                     _ => ir_offered = true,
                 }
             }
@@ -285,6 +295,7 @@ impl AudioEngine {
             Command::SetGlobalBypass(on) => self.chain.set_global_bypass(on),
             Command::SetOutputCeilingDb(db) => self.chain.set_output_ceiling_db(db),
             Command::Reset => self.chain.reset(),
+            Command::Unload(kind) => self.chain.unload(kind),
             Command::Load(resource) => {
                 let mut offer = Some(resource);
                 self.chain.offer(&mut offer);
@@ -344,6 +355,7 @@ impl AudioEngine {
 mod tests {
     use super::*;
     use crate::param::{ParamChange, ParamId};
+    use crate::resource::ResourceKind;
     use crate::rt_harness::audio_section;
     use namir_core::{ChannelConfig, SampleRate};
     use namir_fixtures::ir::decaying_noise;
@@ -566,6 +578,117 @@ mod tests {
         assert!(
             worker.retire.try_pop().is_some(),
             "the outgoing IR slot should have arrived on the return ring"
+        );
+    }
+
+    /// **M5, FR-STATE-070: "the state shall load with that stage empty."** `Command::Unload`
+    /// must crossfade smoothly to dry — no click — and must retire the outgoing slot through the
+    /// return ring exactly as a `Load` handover does; it must not simply drop it. Same
+    /// self-calibrating-threshold shape as `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`
+    /// above: what's being measured is the sample-to-sample jump at the transition, not the
+    /// absolute level either side of it (a wet-to-dry transition is expected to change level; it
+    /// must not click while doing so).
+    ///
+    /// Committed red-first (NFR-QUAL-020): at this commit, `NamStage::unload` is a no-op stub,
+    /// so this test must fail — no crossfade starts, the model never leaves, and nothing reaches
+    /// the return ring.
+    #[test]
+    fn command_unload_nam_crossfades_to_dry_and_retires_the_slot() {
+        const DISCONTINUITY_FACTOR: f32 = 3.0;
+        const BLOCKS: usize = 200; // ~267 ms, well past the 20 ms fade
+        const SWAP_AT: usize = 100;
+
+        let c = ctx();
+
+        // Baselines, exactly as fr_nam_070's: the model loaded the whole run, and nothing ever
+        // loaded at all -- neither one changes state at SWAP_AT, so the "jump" measured there is
+        // just each signal's own steady-state roughness, establishing the noise floor a genuine
+        // unload's transition must not exceed by more than DISCONTINUITY_FACTOR.
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        submit(&mut worker, Command::load_nam(model(1), &c));
+        let baseline_loaded = run_sine(&mut engine, BLOCKS, 220.0, |_| {});
+        let (mut engine, _worker) = build_default_engine(&c).unwrap();
+        let baseline_empty = run_sine(&mut engine, BLOCKS, 220.0, |_| {});
+        let baseline_jump = max_abs_first_difference(&baseline_loaded[SWAP_AT * BLOCK..])
+            .max(max_abs_first_difference(&baseline_empty[SWAP_AT * BLOCK..]));
+
+        // The real thing: loaded, then unloaded mid-stream.
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        submit(&mut worker, Command::load_nam(model(1), &c));
+        let unloaded = run_sine(&mut engine, BLOCKS, 220.0, |b| {
+            if b == SWAP_AT {
+                submit(&mut worker, Command::Unload(ResourceKind::Nam));
+            }
+        });
+        let unload_jump = max_abs_first_difference(&unloaded[SWAP_AT * BLOCK..]);
+
+        assert!(
+            unload_jump <= DISCONTINUITY_FACTOR * baseline_jump,
+            "unload introduced a discontinuity of {unload_jump} against a baseline of \
+             {baseline_jump} (allowed {DISCONTINUITY_FACTOR}x)"
+        );
+
+        // No dropout: the fade must keep processing, not go silent, throughout the transition.
+        let post = &unloaded[SWAP_AT * BLOCK..];
+        for (i, window) in post.chunks(32).enumerate() {
+            let peak = window.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            assert!(
+                peak > 1e-4,
+                "window {i} after the unload went silent (peak {peak}): a dropout"
+            );
+        }
+
+        // And the worker gets the retired slot back -- an unload must not simply drop it.
+        assert!(
+            worker.retire.try_pop().is_some(),
+            "the unloaded slot should have arrived on the return ring (D-8.1 step 4)"
+        );
+    }
+
+    /// **M5's Ir mirror of the Nam unload test above.** Same shape, same threshold.
+    #[test]
+    fn command_unload_ir_crossfades_to_dry_and_retires_the_slot() {
+        const DISCONTINUITY_FACTOR: f32 = 3.0;
+        const BLOCKS: usize = 200;
+        const SWAP_AT: usize = 100;
+
+        let c = ctx();
+
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        submit(&mut worker, Command::load_ir(ir(11), &c));
+        let baseline_loaded = run_sine(&mut engine, BLOCKS, 220.0, |_| {});
+        let (mut engine, _worker) = build_default_engine(&c).unwrap();
+        let baseline_empty = run_sine(&mut engine, BLOCKS, 220.0, |_| {});
+        let baseline_jump = max_abs_first_difference(&baseline_loaded[SWAP_AT * BLOCK..])
+            .max(max_abs_first_difference(&baseline_empty[SWAP_AT * BLOCK..]));
+
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        submit(&mut worker, Command::load_ir(ir(11), &c));
+        let unloaded = run_sine(&mut engine, BLOCKS, 220.0, |b| {
+            if b == SWAP_AT {
+                submit(&mut worker, Command::Unload(ResourceKind::Ir));
+            }
+        });
+        let unload_jump = max_abs_first_difference(&unloaded[SWAP_AT * BLOCK..]);
+
+        assert!(
+            unload_jump <= DISCONTINUITY_FACTOR * baseline_jump,
+            "IR unload introduced a discontinuity of {unload_jump} against a baseline of \
+             {baseline_jump} (allowed {DISCONTINUITY_FACTOR}x)"
+        );
+
+        let post = &unloaded[SWAP_AT * BLOCK..];
+        for (i, window) in post.chunks(32).enumerate() {
+            let peak = window.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            assert!(
+                peak > 1e-4,
+                "window {i} after the IR unload went silent (peak {peak}): a dropout"
+            );
+        }
+
+        assert!(
+            worker.retire.try_pop().is_some(),
+            "the unloaded IR slot should have arrived on the return ring"
         );
     }
 
