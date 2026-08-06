@@ -29,10 +29,9 @@
 //!    [`Stage::tail_samples`]'s impl below.
 //!
 //! Everything else — the two-fades-composed reasoning, the `mix_target` recomputation triggers,
-//! the known M2 gap where completing a real-to-real handover drops the outgoing slot's `Arc` (and
-//! here, its `IrState` scratch/ring buffers) on the audio thread absent M4's return ring — is
-//! identical in spirit to `nam.rs`'s own module doc comment; read that first, this doc comment
-//! only covers what differs.
+//! and D-8.1's four-step handover including the two audio-thread drop sites M4 closed (a completing
+//! handover's outgoing slot, and a displaced still-fading-in slot) — is identical in spirit to
+//! `nam.rs`'s own module doc comment; read that first, this doc comment only covers what differs.
 //!
 //! # The handover crossfade is per physical channel, not mono-core
 //!
@@ -65,8 +64,10 @@ use namir_params::stages::ir::{
     ENABLED, HIGH_CUT_ENABLED, HIGH_CUT_FREQ_HZ, LEVEL_DB, LOW_CUT_ENABLED, LOW_CUT_FREQ_HZ,
 };
 
+use crate::command::RetireSink;
 use crate::param::{ParamChange, ParamId};
 use crate::prepare::{PrepareContext, PrepareError};
+use crate::resource::Resource;
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
 use crate::telemetry::{TelemetryEntry, TelemetrySink};
@@ -111,6 +112,11 @@ const HIGH_CUT_FREQ_HZ_ID: ParamId = ParamId(HIGH_CUT_FREQ_HZ.id.0);
 /// whichever slot a handover is fading into). Derived the same namespaced-string way every other
 /// stage's telemetry ids are — a readout, never added to `namir_params::REGISTRY`.
 const TELEMETRY_LOADED: u32 = namir_params::ParamId::from_key("telemetry.ir.loaded").0;
+
+/// Telemetry signal id: whether a handover crossfade is currently in flight. Same purpose and
+/// readout-not-parameter convention as `nam.rs`'s identical id, so `params.lock` is unaffected.
+const TELEMETRY_HANDOVER_ACTIVE: u32 =
+    namir_params::ParamId::from_key("telemetry.ir.handover_active").0;
 
 /// Reads a `Continuous` descriptor's default; panicking arm is defensive-only (unreachable from
 /// any input `prepare` is passed) — matches `eq.rs`'s/`gate.rs`'s identical helper.
@@ -200,6 +206,8 @@ impl StagePrep for IrPrep {
             dry: vec![vec![0.0; max_block]; channel_count],
             crossfade_outgoing: [vec![0.0; max_block], vec![0.0; max_block]],
             crossfade_incoming: [vec![0.0; max_block], vec![0.0; max_block]],
+            prepared_for: *ctx,
+            retired: None,
             level_db: level_db_default,
             low_cut_enabled: low_cut_enabled_default,
             low_cut_freq_hz: low_cut_freq_hz_default,
@@ -231,7 +239,7 @@ impl StagePrep for IrPrep {
 /// same file, FR-CLAP-090) and this instance's own mutable convolution state. Unlike `nam.rs`'s
 /// `NamSlot`, there is no resampler here: `PreparedIr::from_wav_bytes` already resampled to the
 /// engine rate once, at load time (see this module's doc comment).
-struct IrSlot {
+pub(crate) struct IrSlot {
     /// Immutable per-partition FFT machinery (D-9.1); cheap to clone (`Arc`) into a future cache
     /// or a crossfaded-out slot's replacement.
     ir: Arc<PreparedIr>,
@@ -241,10 +249,11 @@ struct IrSlot {
 }
 
 impl IrSlot {
-    /// **Not RT-safe** — `PreparedIr::new_state` allocates every per-channel ring buffer/
-    /// accumulator the convolution needs. Called only from [`IrStage::load_ir`], itself
-    /// explicitly non-RT, mirroring `NamSlot::new`'s identical contract.
-    fn new(ir: Arc<PreparedIr>) -> Self {
+    /// **Not RT-safe. This is D-8.1 step 1, and from M4 on it runs on a worker thread** —
+    /// `PreparedIr::new_state` allocates every per-channel ring buffer/accumulator the convolution
+    /// needs. `pub(crate)` so [`crate::Command::load_ir`] can do this work off the audio thread,
+    /// mirroring `NamSlot::new`'s identical contract and rationale.
+    pub(crate) fn new(ir: Arc<PreparedIr>) -> Self {
         let state = ir.new_state();
         Self { ir, state }
     }
@@ -311,8 +320,12 @@ pub struct IrStage {
     /// used as a safe upper bound — same reasoning as `eq.rs`'s identical field.
     max_block_size: usize,
     /// The two live resource slots D-8.1's handover shape asks for. At most one is fading out and
-    /// at most one is fading in at any time (`load_ir` always installs into `1 - active`).
-    slots: [Option<IrSlot>; 2],
+    /// at most one is fading in at any time (an install always goes into `1 - active`).
+    ///
+    /// Boxed since M4, for the reason `nam.rs`'s identical field documents: the slot travels to
+    /// and from a worker through a preallocated ring, and boxing keeps that ring's element a
+    /// pointer rather than the whole slot.
+    slots: [Option<Box<IrSlot>>; 2],
     /// Index into `slots` of the slot that is live outside of an in-flight handover — and, during
     /// one, the slot that is fading *out* (see `nam.rs`'s doc comment for why `active` itself only
     /// updates once the handover completes, never mid-fade).
@@ -348,6 +361,15 @@ pub struct IrStage {
     /// Handover-fade scratch: `slots[1 - active]`'s (fading-in) wet output for the current block,
     /// symmetric to `crossfade_outgoing`.
     crossfade_incoming: [Vec<f32>; 2],
+    /// The whole `PrepareContext` this stage was built against, so an incoming offer's own context
+    /// can be checked rather than trusted. This matters more here than in `nam.rs`:
+    /// `PreparedIr::process_block` **asserts** the block it is given is no longer than the one its
+    /// partition schedule was built for, so installing an IR prepared at a different block size
+    /// would panic on the audio thread rather than merely sound wrong.
+    prepared_for: PrepareContext,
+    /// D-8.1 step 4's holding pen — capacity one, for the reasons `nam.rs`'s identical field
+    /// documents in full.
+    retired: Option<Resource>,
     /// FR-IR-070 level, dB. Tracked alongside each channel's `GainRamp` target so `apply` doesn't
     /// need to re-derive it.
     level_db: f32,
@@ -386,13 +408,34 @@ impl IrStage {
     /// (`slots[1 - active]`) is replaced outright and the fade restarts at full duration —
     /// `active` is unaffected, matching `nam.rs`'s `load_model`'s identical rule.
     pub fn load_ir(&mut self, ir: Arc<PreparedIr>) {
+        let ctx = self.prepared_for;
+        self.install(Box::new(IrSlot::new(ir)), ctx);
+    }
+
+    /// **RT-safe.** Installs an already-built slot and starts the handover fade — D-8.1 step 3's
+    /// entry point, mirroring `nam.rs`'s `install` exactly, including the rule that a displaced
+    /// slot is **parked, never dropped**. See that method's doc comment for the full rationale.
+    pub(crate) fn install(&mut self, slot: Box<IrSlot>, ctx: PrepareContext) -> Option<Resource> {
+        if self.retired.is_some() {
+            debug_assert!(
+                false,
+                "install with a retirement still parked: the engine's drain gate should \
+                 have held this offer back"
+            );
+            return Some(Resource::ir(slot, ctx));
+        }
         let inactive = 1 - self.active;
-        self.slots[inactive] = Some(IrSlot::new(ir));
+        if let Some(displaced) = self.slots[inactive].take() {
+            // A move, not a drop.
+            self.retired = Some(Resource::ir(displaced, self.prepared_for));
+        }
+        self.slots[inactive] = Some(slot);
         self.crossfade = Some(Crossfade {
             remaining: self.crossfade_total_samples,
             total: self.crossfade_total_samples,
         });
         self.recompute_mix_target();
+        None
     }
 
     /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
@@ -486,6 +529,24 @@ impl IrStage {
         let outgoing_idx = self.active;
         let incoming_idx = 1 - self.active;
 
+        if crossfade.remaining == 0 {
+            // Deferred-finalization state -- see the finalization block below and `nam.rs`'s
+            // identical fast path. The fade is mathematically complete but the retire pen is
+            // still occupied, so run only the incoming slot rather than blending in an outgoing
+            // one scaled by `cos(FRAC_PI_2)` (-4.4e-8 in f32, not exactly zero) and paying its
+            // convolution cost for as long as the deferral lasts.
+            if let Some(slot) = &mut self.slots[incoming_idx] {
+                let produced = slot.channel_count();
+                slot.process_wet(&self.dry[0][..n], &mut self.crossfade_incoming, n);
+                for ch in 0..physical_channels {
+                    let idx = wet_channel_index(ch, produced);
+                    io.channel(ch)
+                        .copy_from_slice(&self.crossfade_incoming[idx][..n]);
+                }
+            }
+            return;
+        }
+
         let outgoing_channels = match &mut self.slots[outgoing_idx] {
             Some(slot) => {
                 let produced = slot.channel_count();
@@ -539,14 +600,25 @@ impl IrStage {
         }
 
         if crossfade.remaining == 0 {
-            // Known M2 gap (`nam.rs`'s doc comment, identical here): with no D-8.1 return ring yet
-            // (M4), this drop runs right here, on the audio thread, at the exact instant a
-            // handover completes -- not RT-pure. Every other line `process` executes is proven
-            // RT-safe by this module's own tests; this one statement is the documented exception.
-            self.slots[outgoing_idx] = None;
-            self.active = incoming_idx;
-            self.crossfade = None;
-            self.recompute_mix_target();
+            if self.retired.is_none() {
+                // **The M2 P1 violation, closed** -- identical change and identical reasoning to
+                // `nam.rs`'s finalization block; read that one for the full note. This used to be
+                // `self.slots[outgoing_idx] = None`, a drop of the outgoing `IrState`'s
+                // convolution ring buffers (and possibly the last `Arc<PreparedIr>`) on the audio
+                // thread. `take()` moves instead. Do not "simplify" this back to an assignment.
+                self.retired = self.slots[outgoing_idx]
+                    .take()
+                    .map(|slot| Resource::ir(slot, self.prepared_for));
+                self.active = incoming_idx;
+                self.crossfade = None;
+                self.recompute_mix_target();
+            } else {
+                // Return ring full, worker not draining: defer the bookkeeping only. The audio is
+                // already correct (the fast path above runs the incoming slot alone). D-8.1's
+                // "degradation, not failure (P8)". Dropping the outgoing slot here to make
+                // progress is the exact bug this milestone removes.
+                self.crossfade = Some(crossfade);
+            }
         } else {
             self.crossfade = Some(crossfade);
         }
@@ -628,7 +700,7 @@ impl Stage for IrStage {
         // "post-handover, not mid-fade" reasoning `nam.rs`'s `latency_samples` documents.
         self.slots[self.active]
             .as_ref()
-            .map_or(0, IrSlot::tail_samples)
+            .map_or(0, |slot| slot.tail_samples())
     }
 
     fn apply(&mut self, change: ParamChange) {
@@ -668,6 +740,41 @@ impl Stage for IrStage {
                 0.0
             },
         });
+        out.push(TelemetryEntry {
+            id: TELEMETRY_HANDOVER_ACTIVE,
+            value: if self.crossfade.is_some() { 1.0 } else { 0.0 },
+        });
+    }
+
+    /// D-8.1 step 2, mirroring `nam.rs`'s `accept_resource` exactly (including the
+    /// context-mismatch-is-retired-not-installed rule -- which matters more here, since
+    /// `PreparedIr::process_block` asserts on an over-long block).
+    fn accept_resource(&mut self, offer: &mut Option<Resource>) {
+        let Some((slot, ctx)) = Resource::take_ir(offer) else {
+            return;
+        };
+        if ctx != self.prepared_for {
+            debug_assert!(
+                self.retired.is_none(),
+                "the engine's drain gate should have held this offer back"
+            );
+            self.retired = Some(Resource::ir(slot, ctx));
+            return;
+        }
+        let ctx = self.prepared_for;
+        if let Some(refused) = self.install(slot, ctx) {
+            *offer = Some(refused);
+        }
+    }
+
+    /// D-8.1 step 4. Moves a parked slot into the return ring, or keeps holding it if the ring is
+    /// full -- never drops it.
+    fn collect_retired(&mut self, out: &mut RetireSink<'_>) {
+        if let Some(resource) = self.retired.take()
+            && let Err(back) = out.push(resource)
+        {
+            self.retired = Some(back);
+        }
     }
 }
 

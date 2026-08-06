@@ -3,28 +3,27 @@
 //! shared per-stage bypass crossfade (FR-CHAIN-020), and FR-CHAIN-050's mono-core-then-duplicate
 //! channel handling.
 //!
-//! # Why this holds two resource slots already, in M2
+//! # The four-step handover, and where each step now lives
 //!
-//! FR-NAM-070 (glitch-free model swap) is D-8.1's four-step handover: *prepare* (worker, off this
-//! stage entirely), *offer* (a command ring, M4), *crossfade* (here), *retire* (a return ring,
-//! M4). Nothing in M2 drives steps 1/2/4 across a real thread yet — [`NamStage::load_model`] is
-//! called directly by whoever holds a `&mut NamStage` (in M2, only this module's own tests; from
-//! M4 on, a worker thread's handover). What M2 *does* build for real is step 3's mechanism: two
-//! live [`NamSlot`]s and the equal-power blend between them, proven here so M4 only has to wire a
-//! thread onto an already-working crossfade rather than invent one under real-time pressure.
+//! FR-NAM-070 (glitch-free model swap) is D-8.1's four-step protocol: *prepare* (a worker builds
+//! the whole [`NamSlot`] — see `crate::resource`'s module doc for why the slot, not just the
+//! `Arc`), *offer* (through the command ring, arriving here as [`Stage::accept_resource`]),
+//! *crossfade* (this file's [`Crossfade`] and the equal-power blend in `process_channel0`), and
+//! *retire* (parked in `self.retired`, moved to the return ring by [`Stage::collect_retired`]).
 //!
-//! **Known M2 gap, not swept under the rug:** step 4 ("retire") is D-8.1's return ring, which
-//! does not exist until M4 — "the audio thread pushes the old `Arc` into a return ring, and never
-//! drops it [itself]" (`02-architecture.md` §8). Without that ring, *something* still has to drop
-//! the outgoing slot once a handover completes, and in this M2 implementation that something is
-//! `process` itself, on the audio thread, the instant `remaining` reaches zero (see
-//! `NamStage::process_channel0`). Dropping a `NamSlot` frees its `NamState` scratch and may drop
-//! the last `Arc<PreparedNam>` reference — a real P1 violation at that exact moment, acknowledged
-//! here rather than hidden: this module's own RT-allocation tests deliberately stop short of
-//! driving a handover to completion inside `rt_harness::audio_section` (they cover "crossfade in
-//! progress", not "crossfade's final sample"), and its smoothness test drives a full handover
-//! *without* that harness for the same reason. Closing this gap for real is M4's return ring, not
-//! a fix available to this file.
+//! M2 built step 3 alone and proved it before a thread had to drive it; M4 wired the other three
+//! around it, which is why the crossfade itself needed no rework.
+//!
+//! **The M2 gap this module used to document is closed.** Between M2 and M4 a completing handover
+//! dropped the outgoing slot right here, on the audio thread — freeing its `NamState` scratch and
+//! possibly the last `Arc<PreparedNam>` reference — and this comment recorded that as a real P1
+//! violation rather than hiding it. It is gone: the finalization in `process_channel0` now `take()`s
+//! the slot (a move) into `self.retired`, and the return ring carries it to a worker that can
+//! afford to free it. The evidence is that this module's RT-allocation tests no longer stop short
+//! of completion, and `handover_crossfade_has_no_large_single_sample_jump` now drives a full
+//! real-to-real handover *inside* `rt_harness::audio_section` — which it could not do before.
+//! There is a second, subtler drop site closed at the same time: an install that displaces a slot
+//! still fading in used to drop the displaced slot. See [`NamStage::install`].
 //!
 //! # Resampling (D-9.2/9.3)
 //!
@@ -77,8 +76,10 @@ use namir_params::ParamKind;
 use namir_params::stages::nam::ENABLED;
 use rubato::{FftFixedInOut, Resampler};
 
+use crate::command::RetireSink;
 use crate::param::{ParamChange, ParamId};
 use crate::prepare::{PrepareContext, PrepareError};
+use crate::resource::Resource;
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
 use crate::telemetry::{TelemetryEntry, TelemetrySink};
@@ -112,6 +113,15 @@ const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
 /// parameter ids are (this crate's shared telemetry-id convention) — a readout, not an
 /// automatable parameter, so it is never added to `namir_params::REGISTRY`.
 const TELEMETRY_LOADED: u32 = namir_params::ParamId::from_key("telemetry.nam.loaded").0;
+
+/// Telemetry signal id: whether a handover crossfade is currently in flight. Two independent
+/// readers need this — the UI (to show that an audition is still settling) and M4's own
+/// `handover_crossfade` benchmark (to assert the fraction of blocks it actually measured with a
+/// fade in flight, rather than trusting its own parameterisation). Same readout-not-parameter
+/// convention as `TELEMETRY_LOADED`, so it is never added to `namir_params::REGISTRY` and
+/// `params.lock` is unaffected.
+const TELEMETRY_HANDOVER_ACTIVE: u32 =
+    namir_params::ParamId::from_key("telemetry.nam.handover_active").0;
 
 /// Builds [`NamStage`]. Holds no configuration of its own — this stage's one parameter
 /// (`nam.enabled`) seeds its initial value straight from its `namir-params` descriptor (see
@@ -148,6 +158,7 @@ impl StagePrep for NamPrep {
         Ok(NamStage {
             sample_rate,
             max_block_size: max_block,
+            prepared_for: *ctx,
             slots: [None, None],
             active: 0,
             crossfade: None,
@@ -163,6 +174,7 @@ impl StagePrep for NamPrep {
             scratch: vec![0.0; max_block],
             crossfade_outgoing: vec![0.0; max_block],
             crossfade_incoming: vec![0.0; max_block],
+            retired: None,
         })
     }
 }
@@ -171,7 +183,7 @@ impl StagePrep for NamPrep {
 /// M4 process-global cache can hand the same `Arc` to every plugin instance using this model),
 /// this instance's own mutable inference state, and — only when the model's declared sample rate
 /// differs from the engine's — the D-9.2 resampler pair around it.
-struct NamSlot {
+pub(crate) struct NamSlot {
     /// Immutable weights/config (D-9.1); cheap to clone (`Arc`) into a future cache or a
     /// crossfaded-out slot's replacement.
     model: Arc<PreparedNam>,
@@ -185,12 +197,20 @@ struct NamSlot {
 }
 
 impl NamSlot {
-    /// **Not RT-safe.** Builds a fresh [`NamState`] (`PreparedNam::new_state` allocates every
-    /// scratch buffer the model's inference needs) and, only when `model.sample_rate()` differs
-    /// from `engine_sample_rate`, a [`SlotResampler`] (which itself allocates two `rubato`
-    /// resamplers and their FIFOs). See [`NamStage::load_model`]'s doc comment for the full
-    /// non-RT contract this mirrors.
-    fn new(model: Arc<PreparedNam>, engine_sample_rate: SampleRate, max_block_size: usize) -> Self {
+    /// **Not RT-safe. This is D-8.1 step 1, and from M4 on it runs on a worker thread.** Builds a
+    /// fresh [`NamState`] (`PreparedNam::new_state` allocates every scratch buffer the model's
+    /// inference needs) and, only when `model.sample_rate()` differs from `engine_sample_rate`, a
+    /// [`SlotResampler`] (which itself allocates two `rubato` resamplers and their FIFOs).
+    ///
+    /// `pub(crate)` so [`crate::Command::load_nam`] can do this work off the audio thread. That is
+    /// the whole reason a command carries a built slot rather than a bare `Arc<PreparedNam>`: an
+    /// `Arc` alone would leave exactly these allocations to be made at install time, on the audio
+    /// thread, which is a P1 violation — see `crate::resource`'s module doc comment.
+    pub(crate) fn new(
+        model: Arc<PreparedNam>,
+        engine_sample_rate: SampleRate,
+        max_block_size: usize,
+    ) -> Self {
         let model_rate = model.sample_rate();
         if model_rate.hz() == engine_sample_rate.hz() {
             let state = model.new_state(max_block_size);
@@ -426,9 +446,20 @@ pub struct NamStage {
     /// (`ctx.max_block_size()`, recorded here so `load_model` — which runs long after `prepare`
     /// returns — doesn't need it passed in separately each time).
     max_block_size: usize,
+    /// The whole `PrepareContext` this stage was built against, kept so an incoming offer's own
+    /// context can be checked against it rather than trusted. A resource prepared for a different
+    /// sample rate or block size would otherwise install silently-wrong-sized buffers — and in the
+    /// Ir stage's case, `PreparedIr::process_block` asserts on an over-long block, so a mismatch
+    /// there is a panic on the audio thread rather than merely a wrong sound.
+    prepared_for: PrepareContext,
     /// The two live resource slots D-8.1's handover shape asks for. At most one is fading out and
-    /// at most one is fading in at any time (`load_model` always installs into `1 - active`).
-    slots: [Option<NamSlot>; 2],
+    /// at most one is fading in at any time (an install always goes into `1 - active`).
+    ///
+    /// Boxed since M4: the slot travels to and from a worker through a preallocated ring, and
+    /// boxing is what makes that ring's element a pointer rather than the whole slot — see
+    /// `crate::resource`'s module doc comment. Deref coercion means every use site below is
+    /// unaffected.
+    slots: [Option<Box<NamSlot>>; 2],
     /// Index into `slots` of the slot that is live outside of an in-flight handover — and, during
     /// one, the slot that is fading *out* (see this module's doc comment for why `active` itself
     /// only updates once the handover completes, never mid-fade).
@@ -467,6 +498,16 @@ pub struct NamStage {
     /// Handover-fade scratch: `slots[1 - active]`'s (fading-in) wet output for the current block,
     /// or a dry passthrough copy, symmetric to `crossfade_outgoing`.
     crossfade_incoming: Vec<f32>,
+    /// D-8.1 step 4's holding pen: a slot this stage has finished with, waiting to be moved into
+    /// the return ring by [`Stage::collect_retired`].
+    ///
+    /// **Capacity one, deliberately.** Two things can retire a slot — a completing crossfade, and
+    /// an install that displaces a slot still fading in — and the engine's drain gate guarantees
+    /// an offer is only delivered when this is empty, while a completing crossfade *defers its own
+    /// finalization* rather than overwrite an occupied pen. "At most one thing is parked here at
+    /// any instant" is a far easier invariant to state and test than any capacity above one, and
+    /// the engine collects twice per block so the pen is empty again almost immediately.
+    retired: Option<Resource>,
 }
 
 impl NamStage {
@@ -487,13 +528,48 @@ impl NamStage {
     /// `active` (and therefore which slot is fading *out*) is unaffected, since `active` only
     /// ever changes when a handover completes.
     pub fn load_model(&mut self, model: Arc<PreparedNam>) {
+        let slot = NamSlot::new(model, self.sample_rate, self.max_block_size);
+        let ctx = self.prepared_for;
+        self.install(Box::new(slot), ctx);
+    }
+
+    /// **RT-safe.** Installs an already-built slot into the inactive position and starts the
+    /// handover fade. This is D-8.1 step 3's entry point, and everything it does is a move or a
+    /// scalar assignment — the allocations were all made by whoever built `slot` (from M4 on, a
+    /// worker thread, via [`crate::Command::load_nam`]).
+    ///
+    /// **The displaced slot is parked, never dropped.** An install that lands while a handover is
+    /// already in flight replaces the slot currently fading *in*. Before M4 that replacement was
+    /// `self.slots[inactive] = Some(..)`, which *drops* the displaced slot; that was tolerable
+    /// only because `load_model` was documented non-RT and never ran on the audio thread. Once
+    /// offers arrive through the command ring, installs happen on the audio thread, and the drop
+    /// would be a second P1 violation alongside the one at completion. Both are closed the same
+    /// way: move the slot into `retired` and let the return ring carry it away.
+    ///
+    /// The pen being occupied here would mean the engine's drain gate let an offer through with a
+    /// retirement still outstanding, which it does not — hence the `debug_assert`. Even if it
+    /// somehow did, the fallback still never drops: the incoming slot is refused and handed back.
+    pub(crate) fn install(&mut self, slot: Box<NamSlot>, ctx: PrepareContext) -> Option<Resource> {
+        if self.retired.is_some() {
+            debug_assert!(
+                false,
+                "install with a retirement still parked: the engine's drain gate should \
+                 have held this offer back"
+            );
+            return Some(Resource::nam(slot, ctx));
+        }
         let inactive = 1 - self.active;
-        self.slots[inactive] = Some(NamSlot::new(model, self.sample_rate, self.max_block_size));
+        if let Some(displaced) = self.slots[inactive].take() {
+            // A move, not a drop. See this method's doc comment.
+            self.retired = Some(Resource::nam(displaced, self.prepared_for));
+        }
+        self.slots[inactive] = Some(slot);
         self.crossfade = Some(Crossfade {
             remaining: self.crossfade_total_samples,
             total: self.crossfade_total_samples,
         });
         self.recompute_mix_target();
+        None
     }
 
     /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
@@ -528,6 +604,21 @@ impl NamStage {
 
         let outgoing_idx = self.active;
         let incoming_idx = 1 - self.active;
+
+        if crossfade.remaining == 0 {
+            // Deferred-finalization state (see this method's finalization block below): the fade
+            // is mathematically complete but the retire pen is still occupied, so `active` has
+            // not flipped yet. Run only the incoming slot rather than blending in an outgoing one
+            // scaled by `cos(FRAC_PI_2)` — which is -4.4e-8 in f32, not exactly zero, and would
+            // otherwise leave a faint copy of the old model in the output for as long as the
+            // deferral lasts. Skipping it also avoids paying the 2x inference cost in a state
+            // that can persist across many blocks.
+            if let Some(slot) = &mut self.slots[incoming_idx] {
+                slot.process_wet(&self.dry[0][..n], io.channel(0));
+            }
+            return;
+        }
+
         match &mut self.slots[outgoing_idx] {
             Some(slot) => slot.process_wet(&self.dry[0][..n], &mut self.crossfade_outgoing[..n]),
             None => self.crossfade_outgoing[..n].copy_from_slice(&self.dry[0][..n]),
@@ -553,14 +644,36 @@ impl NamStage {
         }
 
         if crossfade.remaining == 0 {
-            // Known M2 gap (this module's doc comment): with no D-8.1 return ring yet (M4), this
-            // drop runs right here, on the audio thread, at the exact instant a handover
-            // completes -- not RT-pure. Every other line `process` executes is proven RT-safe by
-            // this module's own tests; this one statement is the documented exception.
-            self.slots[outgoing_idx] = None;
-            self.active = incoming_idx;
-            self.crossfade = None;
-            self.recompute_mix_target();
+            if self.retired.is_none() {
+                // **The M2 P1 violation, closed.** This used to be `self.slots[outgoing_idx] =
+                // None`, i.e. a *drop* — freeing the outgoing `NamState`'s scratch and possibly
+                // the last `Arc<PreparedNam>` reference, on the audio thread, at the exact
+                // instant a handover completed. `take()` *moves*: nothing is dropped here, and
+                // the return ring carries the slot to a worker that can afford to free it
+                // (D-8.1 step 4). Do not "simplify" this back to an assignment.
+                self.retired = self.slots[outgoing_idx]
+                    .take()
+                    .map(|slot| Resource::nam(slot, self.prepared_for));
+                self.active = incoming_idx;
+                self.crossfade = None;
+                self.recompute_mix_target();
+            } else {
+                // The pen is still occupied because the return ring was full when
+                // `collect_retired` last ran — i.e. the worker is not draining (D-8.1: "If the
+                // worker dies, the ring fills and memory is retained but audio continues.
+                // Degradation, not failure (P8)").
+                //
+                // Only the *bookkeeping* is deferred; the audio is already correct. `theta` has
+                // saturated at FRAC_PI_2, so the outgoing slot is multiplied by cos(pi/2) and
+                // contributes nothing audible, and `process_channel0`'s own fast path above skips
+                // running it at all. The stage simply stays in this state until a later block's
+                // `collect_retired` empties the pen, then finalizes.
+                //
+                // The wrong "fix" here is to drop the outgoing slot to make progress. That is
+                // exactly the bug this milestone removes; deferring costs bounded memory, and
+                // dropping costs a dropout.
+                self.crossfade = Some(crossfade);
+            }
         } else {
             self.crossfade = Some(crossfade);
         }
@@ -660,6 +773,48 @@ impl Stage for NamStage {
                 0.0
             },
         });
+        out.push(TelemetryEntry {
+            id: TELEMETRY_HANDOVER_ACTIVE,
+            value: if self.crossfade.is_some() { 1.0 } else { 0.0 },
+        });
+    }
+
+    /// D-8.1 step 2. Takes the offer only if it is a Nam resource prepared for this stage's own
+    /// context; anything else is left untouched for another stage (or for the engine to return).
+    ///
+    /// A context mismatch is *retired rather than installed*: the resource's buffers were sized
+    /// for a different sample rate or block size, so installing it would be silently wrong. It
+    /// is taken (so the engine's "nobody wanted it" path doesn't fire) and parked for the return
+    /// ring, which is P8 degradation — no panic, no wrong-sized buffer, and the resource still
+    /// reaches a thread that can free it.
+    fn accept_resource(&mut self, offer: &mut Option<Resource>) {
+        let Some((slot, ctx)) = Resource::take_nam(offer) else {
+            return;
+        };
+        if ctx != self.prepared_for {
+            debug_assert!(
+                self.retired.is_none(),
+                "the engine's drain gate should have held this offer back"
+            );
+            self.retired = Some(Resource::nam(slot, ctx));
+            return;
+        }
+        let ctx = self.prepared_for;
+        if let Some(refused) = self.install(slot, ctx) {
+            // `install` only refuses when the pen is already occupied, which the drain gate
+            // prevents. Hand it back rather than drop it if that invariant ever breaks.
+            *offer = Some(refused);
+        }
+    }
+
+    /// D-8.1 step 4. Moves a parked slot into the return ring, or keeps holding it if the ring is
+    /// full — never drops it. See [`RetireSink::push`].
+    fn collect_retired(&mut self, out: &mut RetireSink<'_>) {
+        if let Some(resource) = self.retired.take()
+            && let Err(back) = out.push(resource)
+        {
+            self.retired = Some(back);
+        }
     }
 }
 

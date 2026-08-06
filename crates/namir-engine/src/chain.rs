@@ -1,8 +1,16 @@
 use std::collections::VecDeque;
 
+use crate::command::RetireSink;
 use crate::param::ParamChange;
+use crate::resource::Resource;
 use crate::stage::Stage;
 use crate::stage_io::StageIo;
+use crate::telemetry::{TelemetryEntry, TelemetrySink};
+
+/// Telemetry signal id for FR-CHAIN-080's fault counter — the chain's own reading, alongside the
+/// per-stage ones. Same readout-not-parameter convention every stage's telemetry id uses, so it is
+/// never added to `namir_params::REGISTRY` and `params.lock` is unaffected.
+const TELEMETRY_FAULT_COUNT: u32 = namir_params::ParamId::from_key("telemetry.chain.fault_count").0;
 
 /// D-6.1: "the chain is `Vec<Box<dyn Stage>>` built once during preparation." Building that
 /// vector — running each configured stage's `StagePrep::prepare` and boxing the result — is the
@@ -275,6 +283,50 @@ impl Chain {
         for stage in &mut self.stages {
             stage.apply(change);
         }
+    }
+
+    /// D-8.1 step 2: broadcasts one prepared resource, exactly as [`Chain::apply`] broadcasts a
+    /// parameter, stopping as soon as a stage takes it.
+    ///
+    /// **`offer` is still `Some` on return if no stage wanted it**, and the caller then owns
+    /// D-8.1's never-drop obligation for it — the chain does not discard a resource it could not
+    /// place. For 1.0's fixed six-stage chain that cannot happen (there is exactly one Nam stage
+    /// and one Ir stage), but RD-2's dynamic chain could omit either, so the contract is stated
+    /// and handled rather than assumed away.
+    pub fn offer(&mut self, offer: &mut Option<Resource>) {
+        for stage in &mut self.stages {
+            stage.accept_resource(offer);
+            if offer.is_none() {
+                return;
+            }
+        }
+    }
+
+    /// D-8.1 step 4: gives every stage the chance to move a finished resource into the return
+    /// ring. Cheap when there is nothing to retire — one `Option::is_none()` check per stage.
+    pub fn collect_retired(&mut self, out: &mut RetireSink<'_>) {
+        for stage in &mut self.stages {
+            stage.collect_retired(out);
+        }
+    }
+
+    /// D-7.3: drains every stage's current readings into `out`, then adds the chain's own.
+    ///
+    /// FR-CHAIN-080's fault counter is one of the four signals D-7.3 names explicitly ("meters,
+    /// gate reduction, fault flags, xrun counts") and had no route off the audio thread until M4.
+    ///
+    /// Note the ordering this implies, deliberately: `process` increments `fault_count` *after*
+    /// the stage loop, so telemetry published later in the same block reports a count that already
+    /// includes this block's fault. That is the useful answer — a fault should surface on the
+    /// block it happened, not one block late — so do not "fix" the ordering.
+    pub fn telemetry(&self, out: &mut TelemetrySink<'_>) {
+        for stage in &self.stages {
+            stage.telemetry(out);
+        }
+        out.push(TelemetryEntry {
+            id: TELEMETRY_FAULT_COUNT,
+            value: self.fault_count as f32,
+        });
     }
 }
 
