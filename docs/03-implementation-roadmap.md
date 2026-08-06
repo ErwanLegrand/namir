@@ -295,8 +295,68 @@ sizes. The two together, before gate or EQ, already exceed the entire budget.
   the roadmap where that benchmark can be run against something real instead of a spike's
   isolated loop.
 
-**Acceptance:** FR-NAM-020 (LSTM) closes. NFR-PERF-010 closes for real, retiring R-4/R-8 as risks
-rather than downgrading them again.
+**Status as of this session (2026-08-06) — honest accounting, not the original "Acceptance" text
+below, which this milestone has not yet earned in full:**
+
+- **LSTM: done.** `namir-nam/src/lstm.rs` ports `NeuralAmpModelerCore`'s `LSTMCell`/`LSTM` from
+  its C++ source directly (module doc comment cites the exact fields/order read), unified behind
+  the same `PreparedNam`/`NamState` surface WaveNet already used (`model.rs`'s enum wrapper) —
+  `namir-engine`'s `Nam` stage needed **zero** changes to support it, confirming that surface was
+  genuinely architecture-agnostic. `namir-fixtures` gained a matching generated LSTM corpus
+  (three shapes) and `namir-nam/tests/lstm_fixtures.rs` parity-tests it against an independent
+  from-scratch reference (`namir-fixtures`' own `lstm_infer`), the same cross-implementation-
+  agreement approach S-1 used for WaveNet. FR-NAM-020 (both Must architectures) closes.
+- **R-4: real, measured, but not sufficient alone — and the exact magnitude is genuinely
+  uncertain on this sandbox.** `wavenet.rs`'s `axpy` now vectorizes every AXPY-shaped inner loop
+  with `wide::f32x8` (see that file's own Decision/Rationale note). Its own
+  `benches/wavenet_inner_loops.rs` has now been measured three times across this milestone's
+  review passes, with growing rigor: an initial best-of-several read of ~42–53% p99.9; an
+  intermediate re-measurement that reported an unreproduced 330–345% p99.9 spike on every run;
+  and this close-out pass's own interleaved scalar-vs-vector A/B, run under a load average
+  explicitly confirmed quiet throughout (9-11 runs), landing back near the first estimate: no
+  reproducible p50 win (scalar mean 26.58%, vector mean 26.80%), p99.9 44.3–54.8% scalar vs.
+  43.7–48.6% vector — overlapping ranges that don't cleanly separate from run-to-run noise. See
+  `wavenet.rs`'s own Decision-note for the full numbers and the most likely explanation for the
+  intermediate reading's outlier (probably uncontrolled sandbox contention, per the same
+  phenomenon R-8's own re-verification documented — not confirmed, flagged as the best available
+  account). **Even at the more favourable ~45% p99.9 reading, this alone, in isolation, already
+  exceeds the 25% budget on this sandbox** — whichever exact number is closest to true,
+  vectorization has not been shown to close the gap S-1 found by itself. Downgraded further
+  evidence, not retired.
+- **R-8: real, measured, largely closed at the stage level.** `convolver.rs`'s stagger fix
+  (per-*size*, block-aligned, replacing M2's per-*group* scheme) is described and measured in that
+  file's own module doc comment: at NFR-PERF-010's own literal condition (48 kHz, 64-sample block,
+  2 s IR), IR-stage-alone p99.9/max fell from 337.7%/602.5% to **16.8%/41.3%** on this sandbox — a
+  15–20x improvement, taking that condition from several multiples of a full core's budget to
+  comfortably under half of one core. Two gaps remain, recorded rather than glossed over in that
+  same doc comment: 2048-sample blocks at 192 kHz/10 s IRs stay just over budget (117.8% p99.9),
+  and 32-sample blocks at 192 kHz show an elevated but likely-noise `max`. The scheduling *defect*
+  R-8 names is closed; the milestone-risk closure below is a separate question.
+- **Exit-criterion benchmark: built and run; result is FAIL on this sandbox.**
+  `namir-engine/benches/six_stage_chain.rs` assembles the real six stages (gate → trim → nam → ir
+  → eq → out) via the same `StagePrep::prepare` calls `build_default_chain` makes, loads a real
+  generated standard WaveNet model through `namir_nam::load` and a real generated 2 s stereo IR
+  through `PreparedIr::from_wav_bytes`, and engages gate (non-default threshold) and EQ (non-default
+  low-shelf gain) — then measures `Chain::process` end to end, single-core-pinned, 5,000 warmup +
+  100,000 measured 64-sample blocks. **On this sandbox: p50 21–24%, p99.9 61–76% across four runs
+  (noisy tail, same jitter signature R-4's own bench notes), max spiking as high as 500%+ on the
+  noisiest run.** p99.9 is 2.5–3x the 25% budget even accounting for this sandbox's weaker
+  single-core performance than the reference machine. R-4 alone (~44–55% in isolation, see the R-4
+  bullet above) already explains most of this; R-8's stage-level fix does not fully offset it once
+  gate/trim/eq/out's own
+  (unmeasured-in-isolation, but nonzero) per-block cost is added on top. **Not verified:** what this
+  figure is on the actual §2 reference machine — that run has not happened, and per D-2.1 nothing
+  short of it can be the certified figure.
+
+**Acceptance — not met this session.** FR-NAM-020 (LSTM) closes. NFR-PERF-010 does **not** close:
+the real assembled chain measured FAIL against its own literal condition, on this sandbox, at the
+99.9th percentile. R-4 and R-8 both stay **downgraded, not retired** — R-8's own scheduling defect
+is closed and R-4 measured a real if partial improvement, but neither the isolated NAM figure nor
+the assembled-chain figure is under budget yet, and the certified reference-machine run that could
+retire either risk has not been performed. Closing NFR-PERF-010 for real needs further engine-level
+cost reduction (candidates: `namir-nam`'s own remaining scalar-loop cost outside `axpy`, per-stage
+overhead in gate/trim/eq/out, or the R-8 doc comment's still-open 2048-block/192 kHz gap) plus a
+confirmatory run on the pinned reference machine — both left open, not silently deferred.
 
 ---
 
@@ -469,7 +529,7 @@ stage/product) / **Not started**.
 | 5.1 CHAIN | 7 | 0 | 2 | 5 |
 | 5.2 IN | 3 | 0 | 3 | 0 |
 | 5.3 GATE | 3 | 0 | 3 | 0 |
-| 5.4 NAM | 11 | 1 | 6 | 4 |
+| 5.4 NAM | 11 | 2 | 5 | 4 |
 | 5.5 IR | 7 | 0 | 0 | 7 |
 | 5.6 EQ | 3 | 0 | 3 | 0 |
 | 5.7 OUT | 2 | 0 | 1 | 1 |
@@ -492,6 +552,14 @@ stage/product) / **Not started**.
 M2 alone converts most of 5.1/5.2/5.3/5.6/5.7's Partial rows to Done. M3 converts most of 5.4.
 M5 converts 5.9/5.10 wholesale from Not-started. M6 converts 5.11/5.12/5.13 wholesale. M1+M7
 between them convert nearly all of 5.8 and every 6.x row.
+
+**One live update to this otherwise-frozen M0 snapshot, made in this session:** 5.4 NAM's Done
+count moved 1 → 2. FR-NAM-020 ("Namir shall support, at minimum, the `WaveNet` and `LSTM`
+architectures") was Partial at M0 (WaveNet-only); §7's LSTM deliverable closes it — both Must
+architectures now load, run, and parity-test against an independent reference behind the same
+`PreparedNam`/`NamState` surface, with zero `namir-engine` changes required. The rest of 5.4
+(resampling quality, crossfade, loudness calibration, cost reporting) is unaffected and stays as
+audited; this is the one cell §7's evidence directly justifies moving, not a re-audit of the row.
 
 ---
 

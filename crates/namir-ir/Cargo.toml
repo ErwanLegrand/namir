@@ -17,4 +17,11 @@ rustfft = "6.4"
 
 [dev-dependencies]
 namir-fixtures = { path = "../namir-fixtures" }
-assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
+# `warn_release` alongside `warn_debug`: pre-existing gap found during M3's verification pass --
+# with `warn_debug` alone, `rt_harness` fails to *compile* under `cargo test --release` (see the
+# identical fix and rationale in `namir-nam`'s Cargo.toml). Dev-dependency only, so enabling both
+# features costs nothing in a release build of this crate.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
+# R-8 (docs/03-implementation-roadmap.md §7): pins the sweep/bench examples to one core, matching
+# D-2.1/D-2.2's single-core-pinned methodology and the S-2 spike's own use of this crate.
+core_affinity = "0.8"

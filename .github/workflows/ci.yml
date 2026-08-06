@@ -287,3 +287,39 @@ jobs:
         with:
           name: lcov.info
           path: lcov.info
+
+  # Covers docs/03-implementation-roadmap.md §7 (M3)'s exit-criterion benchmark
+  # (`namir-engine/benches/six_stage_chain.rs`): the real assembled six-stage chain, gate + EQ
+  # active, at NFR-PERF-010's exact literal condition (48 kHz, 64-sample block, standard WaveNet,
+  # 2 s stereo IR). Deliberately just that one condition, not D-2.1/D-2.2's full block-size/rate
+  # grid (that grid is R-8's `namir-ir` sweep's job, already covered by that crate's own
+  # `examples/perf_sweep.rs`, not this job) -- keeps this job's runtime bounded (~100,000 measured
+  # blocks) rather than a multi-point grid on every push.
+  #
+  # Informational only, same reasoning as the `coverage` job above: this workflow runs on
+  # GitHub-hosted shared runners, not `docs/02-architecture.md` §2's pinned reference machine
+  # (AMD Ryzen 9 5950X, Windows 11) -- exactly the reasoning D-2.1 itself gives for pinning a
+  # single reference machine in the first place ("using CI runner hardware as the baseline [is]
+  # too variable to regress against"). A shared, variable-hardware CI runner can never certify
+  # NFR-PERF-010's percentage; it can only build the benchmark, run it, and preserve the numbers
+  # for a human to look at. Final NFR-PERF-010 sign-off against the literal pinned reference
+  # machine remains a manual pre-1.0 step -- do not "fix" this job by adding a threshold; that
+  # would fail the build on noise from runner hardware this project has explicitly decided not to
+  # regress against.
+  nfr-perf-010-chain-bench:
+    name: NFR-PERF-010 chain benchmark (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo bench -p namir-engine --bench six_stage_chain
+        run: cargo bench -p namir-engine --bench six_stage_chain | tee six-stage-chain-bench.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: six-stage-chain-bench.txt
+          path: six-stage-chain-bench.txt
