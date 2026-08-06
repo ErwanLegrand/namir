@@ -6,3 +6,30 @@
 # Columns: key id kind live|tombstoned. One line per parameter, sorted by key. Tombstoned lines
 # are retained forever -- a parameter is retired here, never deleted (FR-PARAM-020).
 format_version 1
+eq.enabled 3800874476 stepped live
+eq.high_pass_enabled 26969931 stepped live
+eq.high_pass_freq_hz 4269819439 continuous live
+eq.high_shelf_freq_hz 940854822 continuous live
+eq.high_shelf_gain_db 2509494269 continuous live
+eq.low_pass_enabled 1607157495 stepped live
+eq.low_pass_freq_hz 2846104715 continuous live
+eq.low_shelf_freq_hz 2273380658 continuous live
+eq.low_shelf_gain_db 801997857 continuous live
+eq.mid_freq_hz 1012857793 continuous live
+eq.mid_gain_db 3175486258 continuous live
+eq.mid_q 2519697679 continuous live
+gate.attack_ms 1904263145 continuous live
+gate.enabled 834452757 stepped live
+gate.hold_ms 3834628618 continuous live
+gate.release_ms 4133041258 continuous live
+gate.threshold_db 746066514 continuous live
+ir.enabled 4045421189 stepped live
+ir.high_cut_enabled 1597249221 stepped live
+ir.high_cut_freq_hz 3178613153 continuous live
+ir.level_db 3704864057 continuous live
+ir.low_cut_enabled 1089690959 stepped live
+ir.low_cut_freq_hz 1056762835 continuous live
+nam.enabled 1703077744 stepped live
+out.gain_db 3486062367 continuous live
+trim.dc_blocker_enabled 1770498595 stepped live
+trim.gain_db 1371108501 continuous live

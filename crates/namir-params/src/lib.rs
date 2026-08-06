@@ -29,30 +29,57 @@
 //!   whichever milestone first needs to distinguish per-sample-automatable parameters from
 //!   configuration-like ones.
 //!
-//! # [`REGISTRY`] is empty by design, today
+//! # [`REGISTRY`], M2 onward
 //!
-//! None of the six 1.0 stages (Trim/Gate/Nam/Ir/Eq/Out) exist yet — that is M2's work per the
-//! roadmap's own M0 audit (`03-implementation-roadmap.md` §2). So [`REGISTRY`] is `&[]`: this
-//! crate delivers the descriptor type, the id derivation, and the manifest mechanism; M2 is what
-//! populates it with real entries as each stage lands. Every piece of that system is still
-//! exercised thoroughly by this crate's own tests, using local example descriptors defined in
-//! each test module — not part of [`REGISTRY`], which stays honestly empty until real parameters
-//! exist to put in it.
+//! M2 (`03-implementation-roadmap.md` §6) lands the six 1.0 product stages (Trim/Gate/Nam/Ir/Eq/
+//! Out) in `namir-engine`, and [`REGISTRY`] is populated here with each stage's descriptor set —
+//! see the [`stages`] module, one submodule per stage per D-10.1's "declared in one place per
+//! stage". `namir-engine`'s stage implementations reference these same `const`s (by id) rather
+//! than re-declaring ranges/defaults, so there is exactly one source of truth per parameter.
 
 mod descriptor;
 mod error_codes;
 mod id;
 mod manifest;
+pub mod stages;
 
 pub use descriptor::{ParamDescriptor, ParamKind, SmoothingCategory, StepIndex, Unit, ValueFormat};
 pub use error_codes::ManifestViolation;
 pub use id::ParamId;
 pub use manifest::{FORMAT_VERSION, check_manifest, render_manifest};
 
-/// The full set of parameters this build knows about (D-10.1). Empty at M1 — see the crate doc
-/// comment's "`REGISTRY` is empty by design" section. `params.lock` at the repository root is
-/// exactly [`render_manifest`]`(REGISTRY)`'s current output.
-pub const REGISTRY: &[ParamDescriptor] = &[];
+/// The full set of parameters this build knows about (D-10.1). `params.lock` at the repository
+/// root is exactly [`render_manifest`]`(REGISTRY)`'s current output; regenerate it with
+/// `cargo test -p namir-params --lib -- --ignored generate_params_lock` after changing this list.
+pub const REGISTRY: &[ParamDescriptor] = &[
+    stages::trim::GAIN_DB,
+    stages::trim::DC_BLOCKER_ENABLED,
+    stages::gate::ENABLED,
+    stages::gate::THRESHOLD_DB,
+    stages::gate::ATTACK_MS,
+    stages::gate::HOLD_MS,
+    stages::gate::RELEASE_MS,
+    stages::nam::ENABLED,
+    stages::ir::ENABLED,
+    stages::ir::LEVEL_DB,
+    stages::ir::LOW_CUT_ENABLED,
+    stages::ir::LOW_CUT_FREQ_HZ,
+    stages::ir::HIGH_CUT_ENABLED,
+    stages::ir::HIGH_CUT_FREQ_HZ,
+    stages::eq::ENABLED,
+    stages::eq::LOW_SHELF_FREQ_HZ,
+    stages::eq::LOW_SHELF_GAIN_DB,
+    stages::eq::MID_FREQ_HZ,
+    stages::eq::MID_GAIN_DB,
+    stages::eq::MID_Q,
+    stages::eq::HIGH_SHELF_FREQ_HZ,
+    stages::eq::HIGH_SHELF_GAIN_DB,
+    stages::eq::HIGH_PASS_ENABLED,
+    stages::eq::HIGH_PASS_FREQ_HZ,
+    stages::eq::LOW_PASS_ENABLED,
+    stages::eq::LOW_PASS_FREQ_HZ,
+    stages::out::GAIN_DB,
+];
 
 #[cfg(test)]
 mod tests {
@@ -66,8 +93,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_is_empty_at_m1() {
-        assert!(REGISTRY.is_empty());
+    fn registry_has_no_duplicate_keys_or_ids() {
+        use std::collections::HashSet;
+        let mut keys = HashSet::new();
+        let mut ids = HashSet::new();
+        for d in REGISTRY {
+            assert!(keys.insert(d.key), "duplicate key: {}", d.key);
+            assert!(ids.insert(d.id), "duplicate id for key: {}", d.key);
+        }
     }
 
     #[test]
