@@ -128,14 +128,27 @@ impl Document {
         self.root.get(key)?.as_object()
     }
 
-    /// Replaces (or creates) a named top-level section wholesale. `state.rs`'s save path uses
-    /// this once per section it owns (`parameters`, `global`, `references`, `meta`) — everything
-    /// else in `root` is left exactly as parsed, which is D-11.2's write-back promise applied at
-    /// the section level; unknown keys *inside* a section this build does own (e.g. an unrecognised
-    /// parameter key inside `parameters`) are the responsibility of the section's own read/write
-    /// pair (`params.rs`), not this method.
+    /// Replaces (or creates) a named top-level section wholesale, discarding whatever was there
+    /// before. Correct only when there is nothing worth keeping — building a section from a
+    /// document that started empty ([`Self::empty`], [`State::into_document`](crate::State)) is
+    /// the one legitimate use; anywhere a section might already carry keys this build doesn't
+    /// recognise (the load-modify-save path), [`Self::merge_section`] is the one that actually
+    /// keeps D-11.2's promise, not this one.
     pub(crate) fn set_section(&mut self, key: &str, value: Map<String, Value>) {
         self.root.insert(key.to_string(), Value::Object(value));
+    }
+
+    /// Inserts every key of `additions` into the named section, **preserving any key already
+    /// there that `additions` doesn't mention** — creating the section if it didn't exist. This
+    /// is D-11.2's write-back promise applied one level deeper than [`Self::set_section`]: a
+    /// section this build owns (`parameters`, and later `global`/`references`/`meta`) can still
+    /// carry keys it doesn't recognise (an unrecognised parameter, a field a newer Namir added),
+    /// and those must survive a save that only touches a *different*, recognised key in the same
+    /// section — which `set_section`, replacing the section wholesale, cannot do.
+    pub(crate) fn merge_section(&mut self, key: &str, additions: Map<String, Value>) {
+        let mut merged = self.section(key).cloned().unwrap_or_default();
+        merged.extend(additions);
+        self.set_section(key, merged);
     }
 }
 
