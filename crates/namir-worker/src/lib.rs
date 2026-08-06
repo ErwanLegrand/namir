@@ -45,7 +45,11 @@ pub use submit::{CommandSubmitter, SubmitError};
 
 /// NFR-SEC-020's byte-count ceiling for a single file — see [`error_codes::FILE_TOO_LARGE`] for
 /// why this is separate from NFR-PERF-050's 50 MB performance target.
-pub const MAX_FILE_BYTES: usize = 256 * 1024 * 1024;
+///
+/// Re-exported from `namir_core` (moved there in M5) rather than defined here, so
+/// `namir-library` — which reads files off disk directly and may not depend on `namir-worker`
+/// (D-5.1) — can share the same bound instead of risking a second, silently drifting copy.
+pub use namir_core::MAX_FILE_BYTES;
 
 /// Which stage a load request targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
