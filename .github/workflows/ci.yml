@@ -140,9 +140,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Remove g++/clang++ (leave gcc/cc in place)
-        run: |
-          sudo apt-get remove -y g++ 'g++-*' clang++ 'clang++-*' || true
-          sudo apt-get autoremove -y || true
+        # `apt-get remove` pulls in a full system dependency resolution, which on the current
+        # ubuntu-latest image trips over an unrelated apt bug: several `libopencl-clang-<N>-dev` /
+        # `python3-clang-<N>` packages preinstalled on the runner conflict with the virtual
+        # `libopencl-clang-x.y-dev` / `python-clang-x.y` packages, so apt refuses the whole
+        # transaction ("you have held broken packages") -- nothing to do with g++/clang++
+        # specifically, or with this repo. Since this job only needs the compilers off PATH, not
+        # actually uninstalled, deleting the binaries directly sidesteps apt's resolver.
+        run: sudo rm -f /usr/bin/g++ /usr/bin/g++-* /usr/bin/clang++ /usr/bin/clang++-* /usr/local/bin/g++ /usr/local/bin/g++-* /usr/local/bin/clang++ /usr/local/bin/clang++-*
 
       - name: Assert no C++ compiler remains
         run: |
