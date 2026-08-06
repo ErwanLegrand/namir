@@ -66,6 +66,40 @@ mean-based benchmarks hide.
 statistics, and must run long enough for the 99.9th percentile to be meaningful (≥ 100 000
 blocks).
 
+**Decision D-2.3** — The **x86-64 baseline instruction set is `x86-64-v3`** (AVX2 + FMA + BMI),
+set in the checked-in `.cargo/config.toml` and scoped to `cfg(target_arch = "x86_64")` so
+aarch64 targets keep their own default. Added during M3.
+
+*Rationale:* Discovered during M3's performance work that no `target-cpu` was set anywhere in the
+repository, so the whole workspace was compiling to the bare x86-64 baseline — SSE2, no AVX, no
+FMA. The vectorized kernels this project relies on (`wide::f32x8` in `namir-nam`'s WaveNet inner
+loops and `namir-ir`'s head convolution) were therefore emitting *two* 4-lane SSE operations per
+8-lane vector operation. `namir-nam/src/wavenet.rs`'s own R-4 note had assumed the reference
+machine's AVX2 support was being used; it was not, and nothing had ever checked. Measured on the
+§2 reference machine, setting this baseline cut the NAM stage's p99.9 from 30.3% to ~10.5% of the
+block period and the assembled six-stage chain's p50 from 10.34% to ~7.9% — the single largest
+performance change found in that milestone, for no source change at all.
+
+*Consequence:* Namir's x86-64 builds require a CPU supporting AVX2/FMA — Intel Haswell (2013) or
+later, AMD Excavator (2015) or later, so every Zen part. Older x86-64 hardware is **not
+supported**, and a binary built this way will fault with an illegal instruction there rather than
+degrade. Accepted deliberately: the hardware floor is over a decade old, real-time neural amp
+modelling is not a workload those parts can carry regardless, and the alternative (below) costs
+more than it returns. CI runners must also meet this floor — a runner that does not will fail
+loudly at test time, not silently produce wrong numbers. The `-100 dB` cross-implementation
+numeric-parity tests were re-run under FMA and read `-130.8 dB`, unchanged: contracting a
+multiply-add into a single rounding step is a smaller error than two separate roundings, not a
+larger one.
+
+*Rejected:* leaving the SSE2 baseline (measured to cost roughly 3x on the NAM stage's p99.9 —
+this is not a marginal tuning knob); `target-cpu=native` (unshippable, produces binaries tied to
+the build machine, and would silently make every developer's and CI runner's measurements
+incomparable, defeating D-2.1's whole purpose); runtime CPU-feature dispatch with a scalar
+fallback (the standard way to keep old-hardware support, but it needs either `unsafe`
+`target_feature` functions — which D-5.3 forbids outside `namir-platform`/`namir-clap` — or a
+duplicated, separately-parity-tested kernel per feature level, for hardware nobody is going to run
+this on).
+
 ---
 
 ## 3. Architectural principles
@@ -258,6 +292,29 @@ prior mode, and silently changing a host's FPU state is a defect users cannot di
 
 *Consequence:* This is `unsafe` and platform-specific — it lives in `namir-platform` behind a
 guard type whose `Drop` restores the mode, so it cannot leak even on an early return.
+
+*Consequence (added M3, from an audit finding — the guard type is built but **not yet wired in**):*
+`namir-platform`'s `DenormalGuard` exists and is unit-tested, but as of M3 it is referenced
+**nowhere outside `namir-platform` itself** — not by `namir-engine`, not by any benchmark, not by
+anything. M1 built the type and no milestone has yet engaged it, so **NFR-RT-030 currently holds
+only by accident** (no measured stage happens to drive values subnormal today), not by
+construction. This is tracked as a required M6 deliverable in
+`03-implementation-roadmap.md` §10.
+
+Where it must be engaged is constrained, and the constraint is worth stating so nobody wires it
+into the wrong layer: **`namir-engine` cannot do it.** D-5.1's layering table (enforced by
+`xtask layering`) permits `namir-engine` to depend only on `namir-core`, `namir-params`,
+`namir-dsp`, `namir-nam` and `namir-ir` — not on `namir-platform`. So `Chain::process` must not
+acquire the guard itself; it must be acquired once per callback by whoever owns the callback,
+which is `namir-app` (its `cpal` stream callback) and `namir-clap` (its `process()` entry point),
+both of which D-5.1 does permit to depend on `namir-platform`. That placement also matches this
+decision's own "once per audio callback" wording, rather than once per stage or once per block.
+
+A consequence for measurement, recorded because it affects how existing numbers should be read:
+the M3 benchmarks call `Chain::process` directly and therefore run *without* FTZ/DAZ engaged. Their
+figures are valid for what they measure, but they are not evidence about NFR-RT-030 either way, and
+the benchmark that verifies NFR-RT-030 (method **B**: drive each stage with a signal decaying into
+the denormal range, assert processing time stays within 10% of nominal) still has to be written.
 
 *Rejected:* Adding tiny DC offsets to filter states — it works, but it pollutes every DSP module
 with a workaround for a problem the CPU has a flag for.

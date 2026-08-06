@@ -502,6 +502,68 @@ thread-priority elevation is no longer the leading candidate for closing this ga
 experiment has shown the tail survives a quiet, performance-mode machine — still worth building for
 other reasons, but not expected to be what retires NFR-PERF-010.
 
+### M3 continuation: the AVX2 finding, and a hypothesis this milestone got wrong
+
+Three further results, recorded in the order they were established because the third corrects the
+first two.
+
+**1. The x86-64 baseline was never set, and that was the single largest cost in the milestone.**
+No `target-cpu` existed anywhere in the repository, so the workspace compiled to bare x86-64 —
+SSE2, no AVX, no FMA — and every `wide::f32x8` operation became two 4-lane SSE ops rather than one
+8-wide AVX one. `wavenet.rs`'s own R-4 note had assumed otherwise and nothing had checked. Setting
+`x86-64-v3` (now **D-2.3**, `.cargo/config.toml`, scoped to `cfg(target_arch = "x86_64")` so
+aarch64 is unaffected) measured, on the §2 reference machine:
+
+| | p50 | p99.9 |
+|---|---|---|
+| NAM alone, SSE2 | 8.77% | 30.3% |
+| NAM alone, AVX2+FMA | ~6.5% | **~10.5%** |
+| Assembled chain, SSE2 | 10.34% | 43–49% |
+| Assembled chain, AVX2+FMA | **~7.9%** | ~38.9% |
+
+Numeric parity re-verified under FMA at **-130.8 dB**, unchanged. Note the asymmetry: NAM's own
+p99.9 fell 3x, but the chain's fell far less — because the chain's tail is now **IR-dominated**,
+which reorders the remaining work.
+
+**2. Per-stage attribution closed the "unmeasured-in-isolation" gap.** `per_stage_cost.rs` measures
+each stage's own `process` cost. gate/trim/eq/out together are **~0.2% p50 / ~0.5% p99.9** of the
+block period — there is no recoverable budget there, and that candidate from the paragraph above is
+now closed rather than speculative. NAM is 89% of a typical block. The six isolated p50 figures sum
+to 9.80% against the chain's own ~9.9% p50, which validates the attribution method.
+
+**3. The tail is *not* environmental — this milestone's own earlier hypothesis, refuted by
+experiment.** The paragraphs above lean toward "cache effects, branch prediction, or genuine
+compute variance… still unconfirmed", after a quiet-machine test had already ruled out background
+load. A sharper experiment (`tail_structure.rs`, which retains per-block durations in *acquisition
+order* rather than sorting them immediately as every other benchmark here does) settles it against
+the environmental reading on three independent discriminators at once:
+
+- **Contiguous runs: 1005 slow blocks, mean run length 1.00, longest 1.** Not one pair of adjacent
+  slow blocks in 100,000. Contention episodes last milliseconds — tens to thousands of consecutive
+  64-sample blocks — so this alone essentially excludes them.
+- **Lag-1 autocorrelation: 0.0945.** Blocks are independent.
+- **Residues mod the IR schedule period (128 blocks): chi2 = 1950** against ~128 for uniform.
+  Strongly periodic, locked to the convolution schedule — which nothing in the OS knows about.
+
+The duration histogram confirms it by shape: discrete modes (63,932 blocks at 120–140 µs; 6,288 at
+260–280 µs; 1,642 at 400–420 µs), which is what a fixed partition schedule produces and not what
+scheduler noise imitates. **So the tail is code-driven, periodic, and therefore genuinely
+optimisable** — a better outcome than the environmental reading, which would have meant the metric
+was partly unfixable.
+
+**The contradiction this leaves open, recorded rather than resolved.** A schedule-periodic tail
+ought to respond to the schedule's own parameters, and it does not: sweeping `max_partition` from
+8192 through 4096 to 2048 left the IR stage's p99.9 flat (23.42 / 23.47 / 23.43%), and
+`build_schedule`'s cross-size decorrelation fix — which provably cut the worst block's *modelled*
+FFT load from 11.893x the mean to 6.793x, verified by its own permanent regression test — moved it
+only ~24.8% → ~23.4%. Two interventions the model says should have worked, didn't. The
+`2P·log2(2P)` cost model behind both predictions is therefore incomplete; the likeliest omissions
+are real FFT constant factors at small sizes and the per-sample, per-partition bookkeeping in
+`PreparedChannel::process_block`, which scales with partition *count* (and so grows as
+`max_partition` falls, potentially cancelling the smaller spike). **Resolving that model is
+prerequisite to further IR tail work** — the next optimisation must not be designed against a model
+already known to mispredict.
+
 ---
 
 ## 8. M4 — Resource handover, worker, and cross-instance sharing
@@ -564,6 +626,25 @@ themselves.
 - **`namir-platform`, full scope** — D-13.2's filesystem/config-dir/log-sink paths, D-13.3's
   CLAP-specific install paths (per-user default, confirmed empirically in S-4 that Reaper
   silently ignores the naive `%APPDATA%` location), thread-priority elevation.
+- **Wire in `DenormalGuard` (NFR-RT-030, D-7.4) — carried over from M1, which built the type but
+  never engaged it.** An M3 audit found `namir-platform`'s `DenormalGuard` is referenced nowhere
+  outside `namir-platform` itself: the guard is real and unit-tested, but no audio path has ever
+  acquired it, so NFR-RT-030 ("denormals shall not cause a measurable CPU spike in any stage")
+  currently holds only because nothing measured happens to drive values subnormal — not by
+  construction. This is the milestone that closes it, because this is the first milestone in which
+  a real audio callback exists to acquire it in.
+
+  **Where:** once per callback, in `namir-app`'s `cpal` stream callback and in `namir-clap`'s
+  `process()` — matching D-7.4's own "once per audio callback" wording. **Not** in
+  `namir-engine::Chain::process`: D-5.1's layering table (enforced by `xtask layering`) does not
+  permit `namir-engine` to depend on `namir-platform` at all, so the engine cannot acquire it even
+  if that seemed tidier. Both product shells may, and do, depend on `namir-platform`.
+
+  **Plus the verification that has never existed:** NFR-RT-030's *Verify* method is **B** — drive
+  each stage with a signal decaying into the denormal range and assert per-block processing time
+  stays within 10% of nominal. No such benchmark exists yet. Note that M3's existing benchmarks
+  call `Chain::process` directly and so run with FTZ/DAZ *off*; their numbers are valid for what
+  they measure but are not evidence about NFR-RT-030 in either direction.
 - **`namir-ui`** — egui, porting `spikes/s3-egui-baseview`'s validated wiring, implementing
   FR-UI-010 through 070 (the single-screen layout, keyboard/mouse operability, accessible names,
   numeric value entry, reset/fine-adjust gestures, responsiveness during a 10k-file library scan,

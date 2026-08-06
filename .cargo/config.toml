@@ -1,0 +1,25 @@
+# Namir build configuration.
+#
+# ---------------------------------------------------------------------------------------------
+# Baseline x86-64 instruction set: x86-64-v3 (AVX2 + FMA), see docs/02-architecture.md D-2.3.
+# ---------------------------------------------------------------------------------------------
+#
+# Without this, rustc targets the bare x86-64 baseline -- SSE2 only, no AVX, no FMA -- so
+# `wide::f32x8` (namir-nam's WaveNet kernels, namir-ir's head convolution) compiles to *two*
+# 4-lane SSE operations per 8-lane vector op instead of one genuinely 8-wide AVX one. Measured on
+# the docs/02-architecture.md §2 reference machine, enabling this cut the NAM stage's p99.9 from
+# 30.3% to ~10.5% of the block period and the assembled six-stage chain's p50 from 10.34% to
+# ~7.9%, with the -100 dB cross-implementation numeric-parity tests still reading -130.8 dB (FMA
+# contracts a multiply-add into one rounding step rather than two, which is a *smaller* error, and
+# is well inside the parity budget either way).
+#
+# Scoped to x86_64 via a cfg spec rather than set globally: NFR-PORT-030's aarch64 mobile targets
+# must keep their own default baseline, where `wide` already selects NEON, and passing an x86 CPU
+# name to an aarch64 compilation would simply fail.
+#
+# Note for anyone debugging a build: the `RUSTFLAGS` environment variable *replaces* these flags
+# rather than appending to them (cargo reads only one source of rustflags, in precedence order).
+# A shell with RUSTFLAGS set will therefore silently build without AVX2 and measure ~30% slower
+# NAM p99.9. Prefer `--config` or editing this file over exporting RUSTFLAGS.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
