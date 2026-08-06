@@ -107,7 +107,9 @@ pub struct LayerArrayConfig {
 /// FR-NAM-080: "Namir shall read and display the model's metadata where present: name, author
 /// (`modeled_by`), gear make/model/type, tone type, and any free-text description." All fields
 /// default to empty since real files may omit any of them.
-#[derive(Debug, Clone, Default, Deserialize)]
+///
+/// `PartialEq` added M5: `probe.rs`'s tests compare a probe's metadata against a full parse's.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct NamMetadata {
     /// The model's display name.
     #[serde(default)]
