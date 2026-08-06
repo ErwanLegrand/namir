@@ -70,17 +70,12 @@ use crate::prepare::{PrepareContext, PrepareError};
 use crate::resource::Resource;
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
+use crate::stages::HANDOVER_CROSSFADE_MS;
 use crate::telemetry::{TelemetryEntry, TelemetrySink};
 
 /// The shared per-stage bypass crossfade's one-pole time constant (FR-CHAIN-020) — same figure
 /// and rationale as `nam.rs`'s/`gate.rs`'s identical constant.
 const BYPASS_CROSSFADE_TIME_CONSTANT_MS: f64 = 15.0;
-
-/// FR-IR-060: "the same no-glitch, crossfaded changeover requirement as FR-NAM-070" — i.e. the
-/// same 5-50 ms equal-power window. 20 ms is this stage's own chosen point within that window,
-/// reusing `nam.rs`'s identical figure for the identical reason (this is a duration in samples
-/// for a fixed-length linear-in-`theta` fade, not a one-pole time constant).
-const HANDOVER_CROSSFADE_MS: f64 = 20.0;
 
 /// `namir_dsp::GainRamp`'s one-pole time constant for FR-IR-070's level control. Same figure as
 /// `out.rs`'s identical constant, reproduced here since `GainRamp`'s public API imposes no

@@ -5,7 +5,7 @@
 //! the benchmark. **The benchmark measures it.**" This is that benchmark; until M4 there was
 //! nothing to measure it with, because no handover could be driven across a real ring.
 //!
-//! # What it measures, and why four arms
+//! # What it measures, and why five arms
 //!
 //! Every arm runs NFR-PERF-010's literal condition — 48 kHz, 64-sample blocks, a standard WaveNet,
 //! a 2 s stereo IR, gate and EQ engaged — identically to `six_stage_chain.rs`, with the same seeds
@@ -17,10 +17,14 @@
 //! | **B** | A NAM handover every `period` blocks. |
 //! | **C** | An IR handover every `period` blocks. |
 //! | **D** | Both at once — four live resources. |
+//! | **E** | Both, but **serialised**: `namir-worker`'s R-7 rule applied, so the two stages' fades never coincide. |
 //!
 //! Arm D exists because R-7's row names only NAM, but FR-IR-060 permits an IR swap concurrently and
 //! M3's close-out established the IR stage as the chain's dominant tail contributor. Measuring only
-//! B would understate the worst case the risk is actually about.
+//! B would understate the worst case the risk is actually about. Arm E was added after arms A-D
+//! measured D as the only over-budget condition: it is the measurement of what
+//! `namir-worker`'s serialisation rule buys, and the `overlap` column is how you check the rule is
+//! actually in force rather than assumed.
 //!
 //! # Why the handover period must divide 128
 //!
@@ -68,7 +72,7 @@
 //! - **Arms A and B**: the estimator is meaningful and D-2.4's contamination check applies as
 //!   written (arm B swaps only NAM slots; the IR runs continuously, so the schedule keeps its
 //!   phase).
-//! - **Arms C and D**: the estimator is **not** a valid validity check. Use arm A's, measured in the
+//! - **Arms C, D and E**: the estimator is **not** a valid validity check. Use arm A's, measured in the
 //!   same run, to decide whether the run as a whole was contaminated, and read arms C and D's raw
 //!   percentiles on that basis. Do not quote their `est` column as if it bounded anything.
 //!
@@ -188,6 +192,16 @@ enum Arm {
     Nam,
     Ir,
     Both,
+    /// Arm D with `namir-worker`'s R-7 serialisation rule applied: the same two handover streams at
+    /// the same rates, but offset by half a period so the two stages' fades never coincide.
+    ///
+    /// The rule itself lives in `namir-worker`, which `namir-engine` may not depend on (D-5.1), so
+    /// this arm reproduces its *effect* rather than calling it: "a NAM and an IR handover are never
+    /// in flight simultaneously" is exactly what a half-period offset produces, provided half a
+    /// period exceeds the fade. The `overlap` column reports the measured overlap, so the claim is
+    /// checked rather than assumed -- and at `period 16` it is *not* achievable (half of 16 is 8
+    /// blocks against a 15-block fade), which the measurement shows rather than hides.
+    BothSerialised,
 }
 
 impl Arm {
@@ -197,15 +211,19 @@ impl Arm {
             Arm::Nam => "B NAM handover",
             Arm::Ir => "C IR handover",
             Arm::Both => "D NAM + IR handover",
+            Arm::BothSerialised => "E NAM + IR serialised",
         }
     }
 }
 
 struct ArmResult {
     durations: Vec<u64>,
-    /// Blocks in which a crossfade was actually in flight, as a fraction. Asserted against the
-    /// intended duty so a mis-parameterised run is caught rather than quoted.
+    /// Blocks in which a crossfade was actually in flight, as a fraction. Reported so a
+    /// mis-parameterised run is caught rather than quoted.
     fade_fraction: f64,
+    /// Blocks in which **both** stages were crossfading at once -- the condition M4 measured as the
+    /// only one that exceeds NFR-PERF-010's budget, and the thing arm E exists to drive to zero.
+    overlap_fraction: f64,
 }
 
 fn run_arm(arm: Arm, period: usize, model_bytes: &[u8], ir_bytes: &[u8]) -> ArmResult {
@@ -260,18 +278,19 @@ fn run_arm(arm: Arm, period: usize, model_bytes: &[u8], ir_bytes: &[u8]) -> ArmR
     // A small pool of spare resources to rotate through, prepared here, outside every timed
     // region. Two of each is enough: at any instant one is installed, one is in flight or parked,
     // and the rest cycle through the return ring.
-    let mut spare: Vec<namir_engine::Resource> = Vec::new();
-    if matches!(arm, Arm::Nam | Arm::Both) {
+    let mut spare_nam: Vec<namir_engine::Resource> = Vec::new();
+    let mut spare_ir: Vec<namir_engine::Resource> = Vec::new();
+    if matches!(arm, Arm::Nam | Arm::Both | Arm::BothSerialised) {
         for _ in 0..2 {
             if let Command::Load(r) = Command::load_nam(Arc::clone(&model), &ctx) {
-                spare.push(r);
+                spare_nam.push(r);
             }
         }
     }
-    if matches!(arm, Arm::Ir | Arm::Both) {
+    if matches!(arm, Arm::Ir | Arm::Both | Arm::BothSerialised) {
         for _ in 0..2 {
             if let Command::Load(r) = Command::load_ir(Arc::clone(&ir), &ctx) {
-                spare.push(r);
+                spare_ir.push(r);
             }
         }
     }
@@ -285,18 +304,28 @@ fn run_arm(arm: Arm, period: usize, model_bytes: &[u8], ir_bytes: &[u8]) -> ArmR
     let mut telemetry_out = [namir_engine::TelemetryEntry { id: 0, value: 0.0 }; 256];
     let nam_fade_id = namir_params::ParamId::from_key("telemetry.nam.handover_active").0;
     let ir_fade_id = namir_params::ParamId::from_key("telemetry.ir.handover_active").0;
+    let mut overlap_blocks = 0usize;
 
     for b in 0..(WARMUP_BLOCKS + MEASURED_BLOCKS) {
         // --- outside the timed window: recycle retirements and queue the next handover.
         while let Some(resource) = worker.retire.try_pop() {
-            spare.push(resource);
-        }
-        if arm != Arm::Steady && b % period == 0 {
-            while let Some(resource) = spare.pop() {
-                if worker.commands.try_push(Command::Load(resource)).is_err() {
-                    break;
-                }
+            match resource.kind() {
+                namir_engine::ResourceKind::Nam => spare_nam.push(resource),
+                namir_engine::ResourceKind::Ir => spare_ir.push(resource),
             }
+        }
+        let nam_due = matches!(arm, Arm::Nam | Arm::Both | Arm::BothSerialised) && b % period == 0;
+        let ir_due = match arm {
+            Arm::Ir | Arm::Both => b % period == 0,
+            // Half a period out of phase with the NAM stream -- the serialisation rule's effect.
+            Arm::BothSerialised => b % period == period / 2,
+            _ => false,
+        };
+        if nam_due && let Some(resource) = spare_nam.pop() {
+            let _ = worker.commands.try_push(Command::Load(resource));
+        }
+        if ir_due && let Some(resource) = spare_ir.pop() {
+            let _ = worker.commands.try_push(Command::Load(resource));
         }
 
         gen_block(&mut rng, &mut left);
@@ -315,11 +344,14 @@ fn run_arm(arm: Arm, period: usize, model_bytes: &[u8], ir_bytes: &[u8]) -> ArmR
         if b >= WARMUP_BLOCKS {
             durations.push(elapsed);
             let drain = worker.telemetry.drain(&mut telemetry_out);
-            if telemetry_out[..drain.read]
-                .iter()
-                .any(|e| (e.id == nam_fade_id || e.id == ir_fade_id) && e.value > 0.5)
-            {
+            let seen = &telemetry_out[..drain.read];
+            let nam_fading = seen.iter().any(|e| e.id == nam_fade_id && e.value > 0.5);
+            let ir_fading = seen.iter().any(|e| e.id == ir_fade_id && e.value > 0.5);
+            if nam_fading || ir_fading {
                 fade_blocks += 1;
+            }
+            if nam_fading && ir_fading {
+                overlap_blocks += 1;
             }
         } else {
             let _ = worker.telemetry.drain(&mut telemetry_out);
@@ -327,9 +359,11 @@ fn run_arm(arm: Arm, period: usize, model_bytes: &[u8], ir_bytes: &[u8]) -> ArmR
     }
 
     let fade_fraction = fade_blocks as f64 / MEASURED_BLOCKS as f64;
+    let overlap_fraction = overlap_blocks as f64 / MEASURED_BLOCKS as f64;
     ArmResult {
         durations,
         fade_fraction,
+        overlap_fraction,
     }
 }
 
@@ -396,14 +430,14 @@ fn main() {
         steady.fade_fraction * 100.0,
     );
 
-    for arm in [Arm::Nam, Arm::Ir, Arm::Both] {
+    for arm in [Arm::Nam, Arm::Ir, Arm::Both, Arm::BothSerialised] {
         for period in PERIODS {
             let result = run_arm(arm, period, &model_bytes, &ir_bytes);
             let mut sorted = result.durations.clone();
             sorted.sort_unstable();
             let p999 = percentile(&sorted, 0.999);
             println!(
-                "{:<24} period {:>4} | p50 {:>6.2}% | p99 {:>6.2}% | p99.9 {:>6.2}% | max {:>7.2}% | est {:>6.2}% | fade {:>5.1}% | dp99.9 {:+6.2} pp",
+                "{:<24} period {:>4} | p50 {:>6.2}% | p99 {:>6.2}% | p99.9 {:>6.2}% | max {:>7.2}% | est {:>6.2}% | fade {:>5.1}% | overlap {:>5.1}% | dp99.9 {:+6.2} pp",
                 arm.label(),
                 period,
                 pct(percentile(&sorted, 0.5)),
@@ -412,6 +446,7 @@ fn main() {
                 pct(*sorted.last().unwrap()),
                 pct(per_residue_minimum_worst(&result.durations)),
                 result.fade_fraction * 100.0,
+                result.overlap_fraction * 100.0,
                 pct(p999) - pct(steady_p999),
             );
         }

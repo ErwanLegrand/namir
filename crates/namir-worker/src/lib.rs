@@ -56,6 +56,29 @@ pub enum Target {
     Ir,
 }
 
+impl Target {
+    /// Index into [`Instance`]'s per-target arrays.
+    fn index(self) -> usize {
+        match self {
+            Self::Nam => 0,
+            Self::Ir => 1,
+        }
+    }
+
+    /// The other stage — the one R-7's serialisation rule has to wait for.
+    fn other(self) -> Self {
+        match self {
+            Self::Nam => Self::Ir,
+            Self::Ir => Self::Nam,
+        }
+    }
+}
+
+/// Multiplier on the crossfade duration for the serialisation wait. Slightly over 1 so the wait
+/// covers the fade's own last block plus the block-quantisation slack between the worker's clock
+/// and the audio thread's, without materially delaying the second changeover.
+const HANDOVER_WINDOW_MARGIN: f64 = 1.25;
+
 /// Where a load's bytes come from.
 #[derive(Debug, Clone)]
 pub enum LoadSource {
@@ -160,6 +183,13 @@ pub struct Instance {
     config: EngineConfig,
     submitter: CommandSubmitter,
     retire: RingConsumer<Resource>,
+    /// When this instance last handed a handover to the audio thread, per target — the state
+    /// [`Instance::serialise_against_other_target`] needs. Indexed by [`Target`] via
+    /// [`Target::index`].
+    last_handover: [Option<Instant>; 2],
+    /// How long a stage stays occupied by one handover, plus margin. See
+    /// [`Instance::serialise_against_other_target`].
+    handover_window: Duration,
 }
 
 impl Instance {
@@ -169,6 +199,63 @@ impl Instance {
             config,
             submitter: CommandSubmitter::new(endpoint.commands),
             retire: endpoint.retire,
+            last_handover: [None, None],
+            handover_window: Duration::from_micros(
+                (namir_engine::HANDOVER_CROSSFADE_MS * 1000.0 * HANDOVER_WINDOW_MARGIN) as u64,
+            ),
+        }
+    }
+
+    /// **R-7's mitigation: never let a NAM and an IR handover be in flight at the same time.**
+    ///
+    /// **Decision:** before offering a handover for one target, wait out any handover this instance
+    /// recently offered for the *other* target.
+    ///
+    /// **Rationale:** M4 measured the crossfade for the first time
+    /// (`namir-engine/benches/handover_crossfade.rs`, six retained repetitions on the §2 reference
+    /// machine under D-2.4's conditions) and found R-7's own wording to be half right with the
+    /// wrong half named. A NAM handover alone stays inside NFR-PERF-010's 25% budget at every swap
+    /// rate measured — worst 24.31%, at a duty faster than any human audition — and an IR handover
+    /// alone likewise (worst 24.63%). What exceeds the budget is **both at once**: 25.06-31.49%,
+    /// reproducible to under 0.6 points across six runs. Two stages each running two resources is
+    /// the condition that does not fit, and it is the only one.
+    ///
+    /// Serialising them costs a bounded wait on a worker thread — which D-7.1 explicitly permits
+    /// workers to do — and removes the over-budget condition by construction rather than by hoping
+    /// users do not do it.
+    ///
+    /// **Consequence:** a user who changes model *and* IR in one action (loading a preset, once M5
+    /// exists) hears the second changeover start after the first finishes, roughly 20 ms later
+    /// rather than simultaneously. That is a real behavioural change and it is the intended one:
+    /// FR-NAM-070 and FR-IR-060 each require *their own* changeover to be glitch-free, and neither
+    /// requires the two to coincide. 20 ms is below the threshold at which a listener hears two
+    /// changes as separate events rather than one.
+    ///
+    /// **Consequence:** this is per-instance state, so two plugin instances can still crossfade
+    /// simultaneously. That is correct and deliberately not addressed — NFR-PERF-010's budget is
+    /// per-instance ("one instance shall consume no more than 25% of one core"), so two instances
+    /// each within budget is two instances within budget.
+    ///
+    /// **Rejected:** shortening the crossfade toward FR-NAM-070's 5 ms floor. That reduces the
+    /// transient's *duty cycle*, not its peak, which is 2x regardless of duration — so it would
+    /// make the over-budget blocks rarer without making any of them fit. **Rejected:** having the
+    /// audio thread refuse a second offer while one fade is in flight. The audio thread cannot hold
+    /// the refused resource without unbounded parking state, and D-7.2 forbids dropping a command,
+    /// so the refusal would have to become back-pressure on the command ring — head-of-line
+    /// blocking every parameter change behind a 20 ms wait. Better to wait on the worker, which is
+    /// allowed to.
+    ///
+    /// **Rejected:** closing the loop on `telemetry.*.handover_active` instead of a timer. It is
+    /// the more precise signal, but it cannot stand alone: the *first* load into an empty stage
+    /// retires nothing and, between submission and the audio thread's next block, reports no fade
+    /// in flight — so a purely feedback-driven rule races. A timer needs no feedback and cannot
+    /// deadlock; if the audio thread stalls, it expires anyway, which is the right failure mode.
+    fn serialise_against_other_target(&self, target: Target) {
+        let other = self.last_handover[target.other().index()];
+        let Some(at) = other else { return };
+        let elapsed = at.elapsed();
+        if elapsed < self.handover_window {
+            std::thread::sleep(self.handover_window - elapsed);
         }
     }
 
@@ -209,7 +296,14 @@ impl Instance {
         // thing that blocks a handover this worker could have unblocked itself.
         self.drain_retired();
 
+        // R-7's mitigation. Deliberately *before* preparation rather than after: preparing takes
+        // time that counts toward the other stage's fade anyway, so waiting first would double the
+        // delay for no benefit. This runs immediately before the offer instead -- see
+        // `prepare_and_offer`.
         let outcome = self.prepare_and_offer(cache, target, &source, &described, started);
+        if matches!(outcome, JobResult::Loaded { .. }) {
+            self.last_handover[target.index()] = Some(Instant::now());
+        }
         JobOutcome {
             target,
             source: described,
@@ -254,6 +348,11 @@ impl Instance {
             },
         };
 
+        // R-7's serialisation, applied here rather than at the top of `load`: preparation has
+        // already consumed real time, and whatever it consumed counts toward the other stage's
+        // fade. Waiting here charges only the remainder.
+        self.serialise_against_other_target(target);
+
         match self.submitter.submit(command) {
             Ok(()) => JobResult::Loaded {
                 cache_hit,
@@ -284,6 +383,25 @@ mod tests {
 
     fn ctx() -> PrepareContext {
         PrepareContext::new(SampleRate::new(SR).unwrap(), BLOCK, ChannelConfig::Mono).unwrap()
+    }
+
+    fn ir_bytes(seed: u64) -> Arc<[u8]> {
+        let taps = namir_fixtures::ir::decaying_noise(256, seed, 64.0);
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: SR,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut buf = Vec::new();
+        {
+            let mut w = hound::WavWriter::new(std::io::Cursor::new(&mut buf), spec).unwrap();
+            for &t in &taps {
+                w.write_sample(t).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        Arc::from(buf.into_boxed_slice())
     }
 
     fn model_bytes(seed: u64) -> Arc<[u8]> {
@@ -422,6 +540,93 @@ mod tests {
             cache.nam_entries(),
             1,
             "both instances should have resolved to one cache entry"
+        );
+    }
+
+    /// **R-7's mitigation: a NAM and an IR handover are never offered simultaneously.**
+    ///
+    /// Measures the wall-clock gap between the two offers landing in the command ring. It must be
+    /// at least the crossfade duration, because that is the whole point: M4 measured
+    /// 25.06-31.49% of the block period when the two overlap, against a 25% budget, versus at
+    /// worst 24.63% for either alone.
+    #[test]
+    fn a_nam_and_an_ir_handover_are_never_offered_simultaneously() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+        // Warm the cache so neither load is dominated by parse time, which would mask the wait.
+        let model = model_bytes(41);
+        let ir = ir_bytes(42);
+        let _ = cache.get_or_load_nam(&model).unwrap();
+        let _ = cache
+            .get_or_load_ir(&ir, c.sample_rate(), c.max_block_size())
+            .unwrap();
+
+        instance.load(&cache, Target::Nam, LoadSource::Bytes(Arc::clone(&model)));
+        let after_nam = Instant::now();
+        instance.load(&cache, Target::Ir, LoadSource::Bytes(Arc::clone(&ir)));
+        let gap = after_nam.elapsed();
+
+        let fade = Duration::from_micros((namir_engine::HANDOVER_CROSSFADE_MS * 1000.0) as u64);
+        assert!(
+            gap >= fade,
+            "the IR offer landed {gap:?} after the NAM offer, inside the {fade:?} crossfade --              R-7's over-budget condition is not being prevented"
+        );
+    }
+
+    /// The rule must not slow down the common case. Two successive loads of the *same* target are
+    /// one stage crossfading twice, which stays inside budget, so nothing should wait.
+    #[test]
+    fn two_handovers_for_the_same_target_are_not_serialised() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+        let a = model_bytes(43);
+        let b = model_bytes(44);
+        let _ = cache.get_or_load_nam(&a).unwrap();
+        let _ = cache.get_or_load_nam(&b).unwrap();
+
+        instance.load(&cache, Target::Nam, LoadSource::Bytes(Arc::clone(&a)));
+        let started = Instant::now();
+        instance.load(&cache, Target::Nam, LoadSource::Bytes(Arc::clone(&b)));
+        let fade = Duration::from_micros((namir_engine::HANDOVER_CROSSFADE_MS * 1000.0) as u64);
+        assert!(
+            started.elapsed() < fade,
+            "a same-target reload waited {:?}; only cross-target handovers need serialising",
+            started.elapsed()
+        );
+    }
+
+    /// A *failed* load must not arm the serialisation timer -- nothing was offered, so there is no
+    /// fade for the next handover to wait out.
+    #[test]
+    fn a_failed_load_does_not_delay_the_other_target() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+        let ir = ir_bytes(45);
+        let _ = cache
+            .get_or_load_ir(&ir, c.sample_rate(), c.max_block_size())
+            .unwrap();
+
+        instance.load(
+            &cache,
+            Target::Nam,
+            LoadSource::Bytes(Arc::from(b"not a nam file".to_vec().into_boxed_slice())),
+        );
+        let started = Instant::now();
+        instance.load(&cache, Target::Ir, LoadSource::Bytes(Arc::clone(&ir)));
+        let fade = Duration::from_micros((namir_engine::HANDOVER_CROSSFADE_MS * 1000.0) as u64);
+        assert!(
+            started.elapsed() < fade,
+            "a failed NAM load delayed the IR handover by {:?}",
+            started.elapsed()
         );
     }
 

@@ -82,17 +82,13 @@ use crate::prepare::{PrepareContext, PrepareError};
 use crate::resource::Resource;
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
+use crate::stages::HANDOVER_CROSSFADE_MS;
 use crate::telemetry::{TelemetryEntry, TelemetrySink};
 
 /// The shared per-stage bypass crossfade's one-pole time constant (FR-CHAIN-020) — same figure
 /// and same rationale as `gate.rs`'s identical constant: not derived from an FRS requirement,
 /// this stage's own documented choice for the shared pattern.
 const BYPASS_CROSSFADE_TIME_CONSTANT_MS: f64 = 15.0;
-
-/// FR-NAM-070: "the crossfade shall be equal-power and 5-50 ms." 20 ms is this stage's own chosen
-/// point within that window, for the *handover* crossfade between `NamSlot`s — a fixed-duration
-/// linear-in-`theta` fade, not a one-pole, so this is a duration in samples, not a time constant.
-const HANDOVER_CROSSFADE_MS: f64 = 20.0;
 
 /// D-9.2's "fixed internal block" for a resampled slot, as a desired *input* (engine-rate) chunk
 /// length handed to `rubato::FftFixedInOut::new` — the constructor may round this to a different

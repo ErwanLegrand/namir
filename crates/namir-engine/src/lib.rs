@@ -48,6 +48,6 @@ pub use resource::{Resource, ResourceKind};
 pub use ring::{RingConsumer, RingProducer, ring};
 pub use stage::{Stage, StagePrep};
 pub use stage_io::StageIo;
-pub use stages::build_default_chain;
+pub use stages::{HANDOVER_CROSSFADE_MS, build_default_chain};
 pub use telemetry::{TelemetryEntry, TelemetrySink};
 pub use telemetry_ring::{TelemetryDrain, TelemetryProducer, TelemetryReader, telemetry_ring};
