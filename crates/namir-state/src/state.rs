@@ -77,10 +77,13 @@ impl State {
     /// Merges this state's known sections onto a clone of `onto`, leaving every other key in
     /// `onto` — at any nesting depth — untouched. This is D-11.2's actual write-back mechanism:
     /// [`Self::into_document`] alone would build a document from scratch and lose whatever
-    /// `onto` carried that this build doesn't understand.
+    /// `onto` carried that this build doesn't understand, and even `set_section` alone would lose
+    /// an unrecognised key *inside* a section this build does own (see
+    /// [`Document::merge_section`]'s doc comment) — this is the method that actually keeps both
+    /// promises at once.
     pub fn write_onto(&self, onto: &Document) -> Document {
         let mut document = onto.clone();
-        document.set_section("parameters", self.params.to_document_section());
+        document.merge_section("parameters", self.params.to_document_section());
         document
     }
 }
@@ -135,5 +138,38 @@ mod tests {
         assert_eq!(saved.section("host"), Some(&host_section));
         let (restored, _) = State::from_document(saved);
         assert_eq!(restored.params.get("out.gain_db"), Some(-6.0));
+    }
+
+    /// D-11.2's write-back promise at the depth that actually matters: an unknown key **inside**
+    /// a section this build *does* own must still survive a load-modify-save round trip. This is
+    /// the case a `#[serde(flatten)]`-based design cannot satisfy at all (see `document.rs`'s
+    /// module doc comment) and the previous test doesn't reach, since "host" is a section this
+    /// build never touches — "parameters" is a section it actively rewrites, which is exactly
+    /// where a naive rewrite-from-scratch would drop anything it doesn't recognise.
+    #[test]
+    fn write_onto_preserves_an_unknown_key_inside_the_parameters_section_it_owns() {
+        let mut original = Document::empty();
+        let mut params_section = serde_json::Map::new();
+        params_section.insert("comp.ratio".to_string(), serde_json::Value::from(4.0));
+        params_section.insert("trim.gain_db".to_string(), serde_json::Value::from(1.0));
+        original.set_section("parameters", params_section);
+
+        let (mut state, warnings) = State::from_document(original.clone());
+        assert_eq!(warnings.len(), 1, "comp.ratio is not a REGISTRY key");
+        state.params.set("trim.gain_db", 2.0).unwrap(); // modify a *known* field
+        let saved = state.write_onto(&original);
+
+        let saved_params = saved.section("parameters").unwrap();
+        assert_eq!(
+            saved_params.get("comp.ratio"),
+            Some(&serde_json::Value::from(4.0)),
+            "an unrecognised parameter key must survive a save that touches a *different*, \
+             recognised key in the same section"
+        );
+        assert_eq!(
+            saved_params.get("trim.gain_db"),
+            Some(&serde_json::Value::from(2.0)),
+            "the field actually modified must reflect the new value"
+        );
     }
 }
