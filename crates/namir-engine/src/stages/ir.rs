@@ -972,23 +972,29 @@ mod tests {
         stage.load_ir(ir_b);
 
         // A steady input through the second handover: track the largest single-sample jump.
-        // Deliberately *not* run inside `rt_harness::audio_section` here: this loop is long
-        // enough (100 ms) to drive the handover to completion, and completion drops
-        // `slots[outgoing_idx]` -- a *real* `IrSlot` this time, which deallocates on this very
-        // call per this module's own documented M2 gap. This test is about smoothness, not
-        // RT-safety; `crossfade_in_progress_does_not_allocate` below covers the RT-safety
-        // property for the part of a handover this module's design actually guarantees it for.
+        //
+        // This runs **inside** `rt_harness::audio_section`, and that is as much the point of the
+        // test as the smoothness assertion. Before M4 it could not: the loop is long enough
+        // (100 ms) to drive the handover to completion, and completion used to *drop*
+        // `slots[outgoing_idx]` -- a real `IrSlot` this time, with its own convolution ring
+        // buffers -- on the audio thread. D-8.1 step 4's return ring closes that, so this test now
+        // covers smoothness and RT-safety across a *complete* real-to-real handover at once
+        // (`nam.rs`'s identical test carries the same note). Do not relax it back out of the
+        // harness.
         let total = 4_800usize; // 100 ms, comfortably longer than the 20 ms handover.
         let value = 0.1f32;
         let mut prev: Option<f32> = None;
         let mut max_delta = 0.0f32;
         let mut offset = 0usize;
+        // Allocated up front, outside the harness, and reused -- test scaffolding, not part of
+        // what `process` is allowed to do.
+        let mut buf = vec![value; 64];
         while offset < total {
             let n = 64usize.min(total - offset);
-            let mut buf = vec![value; n];
-            let mut channels: [&mut [f32]; 1] = [&mut buf];
+            buf[..n].fill(value);
+            let mut channels: [&mut [f32]; 1] = [&mut buf[..n]];
             let mut io = StageIo::new(&mut channels, n);
-            stage.process(&mut io);
+            audio_section(|| stage.process(&mut io));
             for &s in io.channel(0).iter() {
                 if let Some(p) = prev {
                     max_delta = max_delta.max((s - p).abs());
