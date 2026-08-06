@@ -31,21 +31,27 @@
 mod entry;
 mod error;
 mod error_codes;
+mod favourites;
 mod fs;
 mod hash_hex;
 mod index;
 mod probe;
+mod resolver;
 mod scan;
+mod search;
 mod store;
 
 pub use entry::{
     FileTime, IrItemMetadata, ItemKind, ItemMetadata, LibraryEntry, NamItemMetadata, Origin,
 };
 pub use error::{LibraryError, LibraryWarning};
+pub use favourites::Favourites;
 pub use fs::{DirEntryInfo, ScanFs, StdFs};
 pub use index::Index;
 pub use probe::{kind_from_extension, probe};
+pub use resolver::{LibraryResolver, RootsOnlyResolver};
 pub use scan::{ScanDelta, ScanProgress, Scanner, Step};
+pub use search::{Query, filter, next_after, previous_before};
 pub use store::IndexStore;
 
 /// NFR-SEC-020's documented upper bound on a single file this crate will read into memory while
