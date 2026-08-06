@@ -246,36 +246,86 @@ pub fn build_schedule(
 ) -> Vec<StageSpec> {
     assert!(block_size > 0 && growth_factor >= 1 && max_partition >= block_size);
     let head = block_size.min(ir_len);
+    let per_level = growth_factor.max(1);
+
+    // --- Pass 1: enumerate the partitions themselves. Stagger is deliberately left 0 here and
+    // assigned in pass 2, which needs each size's *finished* population count -- see that pass
+    // for why a single streaming pass cannot compute the same assignment.
     let mut stages = Vec::new();
     let mut offset = head;
     let mut size = block_size;
-    let per_level = growth_factor.max(1);
-    // One running counter per nominal size, shared across every group at that size (not reset
-    // per group -- see the doc comment above for why that's the point).
-    let mut phase_counters: HashMap<usize, usize> = HashMap::new();
+    // The distinct nominal sizes, in the order they first appear (ascending, and contiguous once
+    // `size` saturates at `max_partition`). A size's index here is its "level", used below.
+    let mut size_order: Vec<usize> = Vec::new();
     while offset < ir_len {
         for _ in 0..per_level {
             if offset >= ir_len {
                 break;
             }
-            let actual_len = (ir_len - offset).min(size);
-            // >= 1: size >= block_size always (size starts at block_size and only grows), so
-            // this is never a divide-by-zero.
-            let num_phases = (size / block_size).max(1);
-            let counter = phase_counters.entry(size).or_insert(0);
-            let stagger = (*counter % num_phases) * block_size;
-            *counter += 1;
+            if size_order.last() != Some(&size) {
+                size_order.push(size);
+            }
             stages.push(StageSpec {
                 offset,
                 size,
-                actual_len,
-                stagger,
+                actual_len: (ir_len - offset).min(size),
+                stagger: 0,
             });
             offset += size;
         }
         if size < max_partition && growth_factor > 1 {
             size = (size * growth_factor).min(max_partition);
         }
+    }
+
+    // --- Pass 2: assign staggers, decorrelating in two independent dimensions.
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for s in &stages {
+        *counts.entry(s.size).or_insert(0) += 1;
+    }
+    let mut assigned: HashMap<usize, usize> = HashMap::new();
+    for spec in stages.iter_mut() {
+        // >= 1: size >= block_size always (size starts at block_size and only grows), so this is
+        // never a divide-by-zero.
+        let num_phases = (spec.size / block_size).max(1);
+        let count = counts[&spec.size];
+        let i = assigned.entry(spec.size).or_insert(0);
+
+        // (a) WITHIN a size: spread this size's members across its available phases. When the
+        // size has no more members than phases, spread them *evenly* across the whole period
+        // (`i * num_phases / count`) rather than packing them onto consecutive phases as the
+        // previous `i % num_phases` did -- consecutive packing left the ten max_partition-sized
+        // partitions of a 2 s IR firing on ten adjacent host blocks, a long contiguous burst
+        // rather than a spread. When members outnumber phases, fall back to round-robin, which
+        // is exactly balanced (at most `ceil(count / num_phases)` on any phase) and is what the
+        // wraparound case actually wants.
+        let within = if count <= num_phases {
+            (*i * num_phases) / count
+        } else {
+            *i % num_phases
+        };
+        *i += 1;
+
+        // (b) ACROSS sizes: shift every size's phase assignment by its own level index.
+        //
+        // Without this shift, each size's phase-0 member lands on the *last* host block of its
+        // own period: a size-`P` partition with `stagger == 0` first fires at absolute sample
+        // `P - 1`, i.e. host block `P / block_size - 1`. Since every size's period (in blocks)
+        // divides the largest size's period, all of those "last block of my period" positions
+        // coincide on one single host block, which therefore collected one partition of *every*
+        // size simultaneously -- measured at the NFR-PERF-010 condition (2 s IR, 64-sample
+        // block, growth_factor 2, max_partition 8192) as a worst block carrying ~11.9x the mean
+        // block's FFT work, with the largest partition contributing about half of it.
+        //
+        // This is not phase exhaustion: within each size the assignment above already uses
+        // distinct, well-spread phases, and every size here has at least as many phases as
+        // members. The defect was purely that all sizes' phase counters started at 0 and phase 0
+        // maps to the same residue for every size. A per-level shift breaks that alignment with
+        // no other effect -- it is a rotation of an already-valid assignment, so it preserves
+        // both `stagger < size` and the round-robin balance property above.
+        let level = size_order.iter().position(|&s| s == spec.size).unwrap_or(0);
+
+        spec.stagger = ((within + level) % num_phases) * block_size;
     }
     stages
 }
@@ -928,12 +978,29 @@ mod tests {
         // growth_factor = 2, IR long enough that the size-128 level (one level past block_size,
         // so period_blocks = 128/64 = 2 -- two host blocks actually exist to spread across) has
         // 2 full members.
+        //
+        // Asserted as a *property* (the two members occupy the two distinct block-aligned phases)
+        // rather than as literal values. An earlier revision pinned `level[0].stagger == 0` and
+        // `level[1].stagger == 64` exactly; the cross-size decorrelation shift added to
+        // `build_schedule` (see its pass-2 comment (b)) rotates each size's assignment by its own
+        // level index, which for this 2-phase level swaps which member gets which phase. That
+        // rotation is the entire point of the fix and changes nothing this test actually cares
+        // about -- both phases are still used, exactly once each -- so the assertion is written
+        // against the invariant instead of against one particular rotation of it.
         let stages = build_schedule(1_000, 64, 2, 8192);
         let level: Vec<&StageSpec> = stages.iter().filter(|s| s.size == 128).collect();
         assert_eq!(level.len(), 2, "expected a full 2-member group at size 128");
-        assert_eq!(level[0].stagger, 0);
-        assert_eq!(level[1].stagger, 64); // block-aligned: 1 * block_size, the other phase.
-        assert_ne!(level[0].stagger, level[1].stagger);
+        assert_ne!(
+            level[0].stagger, level[1].stagger,
+            "the two members must not share a phase"
+        );
+        let mut phases: Vec<usize> = level.iter().map(|s| s.stagger).collect();
+        phases.sort_unstable();
+        assert_eq!(
+            phases,
+            vec![0, 64],
+            "both block-aligned phases of a 2-phase level should be used exactly once"
+        );
     }
 
     #[test]
@@ -987,6 +1054,67 @@ mod tests {
         assert_eq!(
             max_per_phase, expected_max_per_phase,
             "round-robin should load at most ceil(n/period_blocks) partitions onto any one phase"
+        );
+    }
+
+    /// R-8 regression guard, quantitative rather than structural: no single host block may carry
+    /// a wildly disproportionate share of the schedule's total FFT work.
+    ///
+    /// Every other stagger test above checks a *structural* property (phases are distinct, are
+    /// block-aligned, are balanced round-robin). None of them would have caught the cross-size
+    /// alignment defect `build_schedule`'s pass-2 comment (b) describes, because that defect
+    /// violated no structural property: within every size the phases were distinct, spread and
+    /// balanced. It only showed up once the sizes were considered *together*, as a pileup on one
+    /// host block. This test is the one that would have caught it, so it exists permanently.
+    ///
+    /// The model here is deliberately simple and self-contained (no measurement, no dependency on
+    /// this machine): a size-`P` partition triggers its FFT every `P` samples, first at absolute
+    /// sample `P - stagger - 1`, and costs `2P * log2(2P)` -- the standard real-FFT operation
+    /// count, used only to weight partitions against each other, so its absolute scale is
+    /// irrelevant. What is asserted is the *ratio* of the worst host block's weighted load to the
+    /// mean, over one full schedule period.
+    #[test]
+    fn no_single_host_block_carries_a_disproportionate_share_of_fft_work() {
+        // NFR-PERF-010's own literal condition: 2 s IR at 48 kHz, 64-sample host block, this
+        // crate's shipped schedule defaults.
+        let block_size = 64;
+        let stages = build_schedule(
+            96_000,
+            block_size,
+            DEFAULT_GROWTH_FACTOR,
+            DEFAULT_MAX_PARTITION,
+        );
+        let largest = stages.iter().map(|s| s.size).max().expect("non-empty");
+        let period_blocks = largest / block_size;
+
+        let mut load = vec![0f64; period_blocks];
+        for s in &stages {
+            let weight = 2.0 * s.size as f64 * ((2 * s.size) as f64).log2();
+            let first_block = (s.size - s.stagger - 1) / block_size;
+            let stride = (s.size / block_size).max(1);
+            let mut b = first_block % period_blocks;
+            // Walk this partition's whole orbit within one period.
+            for _ in 0..(period_blocks / stride).max(1) {
+                load[b] += weight;
+                b = (b + stride) % period_blocks;
+            }
+        }
+
+        let total: f64 = load.iter().sum();
+        let mean = total / period_blocks as f64;
+        let worst = load.iter().copied().fold(f64::MIN, f64::max);
+        let ratio = worst / mean;
+        println!("worst-host-block / mean FFT load: {ratio:.3}x (period {period_blocks} blocks)");
+
+        // The floor is set by physics, not by scheduling: the single largest partition's FFT is
+        // atomic -- it cannot be split across host blocks by any stagger -- so some block must
+        // carry it, and at this condition that alone is ~6.5x the mean. The bound below leaves
+        // headroom above that floor while still failing loudly if the cross-size alignment
+        // defect (measured at ~11.9x) is ever reintroduced.
+        assert!(
+            ratio < 8.0,
+            "worst host block carries {ratio:.2}x the mean block's FFT work (bound: 8.0). \
+             Load profile: {load:?}"
         );
     }
 
