@@ -678,11 +678,11 @@ cannot be guaranteed.**
 **Size: L.** **Depends on:** M2 (needs real stages with the dual-resource shape already built in).
 **Blocks:** M5.
 
-> ⚠️ **This section's "Acceptance" paragraph below predicts that R-7 retires. It does not.** Read
-> "M4 status — this session" at the end of this section: the crossfade was measured for the first
-> time, and a NAM handover alone stays within NFR-PERF-010's budget while a *simultaneous* NAM and
-> IR handover does not. The original text is left unedited as the record of what the milestone
-> expected.
+> ⚠️ **Read both status sections at the end of this section before trusting anything here about
+> R-7.** The "Acceptance" paragraph below predicts R-7 retires; the first status section records
+> that the measurement did *not* support that; the close-out records that it does, once the
+> mitigation the measurement pointed at was built. The original text is left unedited as the record
+> of what the milestone expected before it measured anything.
 
 **Deliverables:**
 
@@ -802,6 +802,68 @@ That is exactly the phenomenon M3's close-out recorded ("the later measurement s
 concurrently with background analysis agents and repeated `cargo` builds"), reproduced by someone
 who had just finished reading the warning about it. D-2.4's "no unrelated load on the machine,
 verified rather than assumed" includes the tooling watching the benchmark.
+
+---
+
+### M4 close-out: R-7 mitigated, measured again, and retired
+
+The status section above records R-7 as open with a quantified cause. That cause has since been
+removed, and this section supersedes that verdict — but not the measurement it rests on, which
+stands and is what identified the fix.
+
+**What was built.** `namir-worker`'s `Instance` now serialises cross-target handovers: before
+offering one for a target, it waits out any handover it recently offered for the *other*. The wait
+happens on a worker thread, which D-7.1 explicitly permits workers to do, and sits immediately
+before the offer rather than at the top of `load()` — preparation has already consumed real time and
+that time counts toward the other stage's fade, so waiting first would charge the delay twice.
+
+It is a **timer**, not telemetry feedback, and that is a real constraint rather than a preference.
+The closed-loop signal exists (`telemetry.*.handover_active`), but it cannot stand alone: the *first*
+load into an empty stage retires nothing, and between submission and the audio thread's next block
+it reports no fade in flight — so a purely feedback-driven rule races and lets both through anyway.
+A timer needs no feedback, cannot deadlock, and if the audio thread stalls it expires regardless,
+which is the right failure mode.
+
+`HANDOVER_CROSSFADE_MS` was promoted to a single public constant in `namir-engine` in the same pass.
+It had been privately duplicated in `nam.rs` and `ir.rs` — two copies of a figure the two stages must
+agree on — and the worker needed a third, which would have compounded the problem rather than
+inherited it.
+
+**What it measures.** Arms D (unserialised) and E (serialised) run **interleaved in the same
+process**, which is the only comparison form this machine supports reliably. Six retained
+repetitions of nine, D-2.4 conditions, arm A reading 16.04–16.84% throughout:
+
+| Handover rate | D — both at once | E — serialised | measured overlap, D → E |
+|---|---|---|---|
+| every 32 blocks | 30.08–31.26% | **23.20–24.63%** | 43.8% → **0%** |
+| every 64 blocks | 29.66–30.25% | **22.20–23.31%** | 21.9% → **0%** |
+| every 128 blocks | 28.77–29.47% | **22.44–23.49%** | 10.9% → **0%** |
+
+A 6–7 point reduction, and every rate lands inside NFR-PERF-010's 25% budget. The `overlap` column
+is the check that the rule is actually in force rather than assumed — it is measured from the
+stages' own telemetry, not from the bench's intent.
+
+**Acceptance — R-7 retires.** Every condition the system can actually produce is within budget, and
+`02-architecture.md` §22's row is updated accordingly.
+
+**Two residuals recorded rather than glossed over.**
+
+1. **The margin is thin: about 0.4 points** at the worst achievable condition (24.63% against 25%).
+   This is now the path any future increase in NAM or IR per-block cost will breach first, which is
+   the reason `handover_crossfade.rs` is a permanent target rather than a one-off measurement.
+2. **Arm E at `period 16` still reads 26.99–31.89% with 75% overlap, and that is not a failure of
+   the mitigation.** `namir-engine` may not depend on `namir-worker` (D-5.1), so arm E reproduces
+   the rule's *effect* with a fixed half-period offset rather than calling the rule. At period 16
+   half a period is 8 blocks against a 15-block fade, so the simulation cannot serialise there. The
+   real rule does not offset, it **waits** — at least 25 ms, about 19 blocks, which exceeds the fade
+   — so the overlapping condition that row depicts is one the worker cannot produce. The row is kept
+   in the output rather than suppressed, because a benchmark that quietly hid the case where its own
+   approximation breaks down would be worse than one that shows it.
+
+**A distinction worth keeping straight, since one run does not establish both:** arm E measures what
+serialising costs the *audio thread*; `namir-worker`'s three unit tests measure that the rule
+*holds* (cross-target handovers separated by at least the crossfade, same-target reloads not delayed,
+a failed load not arming the timer). Neither piece of evidence substitutes for the other.
 
 
 ---
