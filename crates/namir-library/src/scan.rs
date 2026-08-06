@@ -91,9 +91,23 @@ impl Index {
             for path in delta.removals {
                 self.remove(&path);
             }
+            // D-12.1's mtime-settling protection: this scan's completion time becomes the
+            // baseline the *next* scan's Scanner::new reads back, via last_scan_completed_at().
+            self.set_last_scan_completed_at(FileTime::now());
         }
     }
 }
+
+/// D-12.1's mtime-settling window (`docs/02-architecture.md` §12's M5 consequence note): a file
+/// whose mtime lands within this much of the *previous* scan's completion time is rehashed
+/// unconditionally, even if its `(size, mtime)` otherwise matches what's on record. NTFS's
+/// documented resolution is 100 ns, but observed real-world granularity (buffered writes,
+/// FAT-formatted removable volumes, network shares) runs from roughly one to two seconds — this
+/// is set to the conservative end of that range rather than the optimistic one, since the cost of
+/// a false positive (one unnecessary rehash) is far smaller than the cost of a false negative (a
+/// genuine edit silently invisible to every future scan, not just the next one, since the stored
+/// `(size, mtime)` would then match the *new* content and the file would look unchanged forever).
+const MTIME_SETTLING_WINDOW_NANOS: i128 = 2_000_000_000;
 
 /// The caller-pumped scan step machine. See this module's doc comment.
 pub struct Scanner {
@@ -103,6 +117,11 @@ pub struct Scanner {
     /// once from the `prior` snapshot passed to [`Self::new`] — this scanner never mutates the
     /// caller's index directly, it only reads from this copy.
     prior: std::collections::HashMap<PathBuf, (u64, FileTime)>,
+    /// When the scan that produced `prior` finished, if known — the baseline
+    /// [`MTIME_SETTLING_WINDOW_NANOS`] is measured against. `None` for the very first scan of a
+    /// fresh index, in which case every file is genuinely new and the settling window has nothing
+    /// to protect against.
+    prior_scan_completed_at: Option<FileTime>,
     seen: HashSet<PathBuf>,
     delta: ScanDelta,
     files_examined: usize,
@@ -111,7 +130,8 @@ pub struct Scanner {
 
 impl Scanner {
     /// Seeds a scan over `roots` (typically several configured library directories), comparing
-    /// against `prior`'s already-known `(size, mtime)` per path.
+    /// against `prior`'s already-known `(size, mtime)` per path and its recorded
+    /// [`Index::last_scan_completed_at`] (D-12.1's settling-window baseline).
     pub fn new(roots: Vec<PathBuf>, prior: &Index) -> Scanner {
         let prior_map = prior
             .iter()
@@ -121,11 +141,23 @@ impl Scanner {
             pending_dirs: roots.into_iter().collect(),
             pending_files: VecDeque::new(),
             prior: prior_map,
+            prior_scan_completed_at: prior.last_scan_completed_at(),
             seen: HashSet::new(),
             delta: ScanDelta::default(),
             files_examined: 0,
             files_hashed: 0,
         }
+    }
+
+    /// Whether `mtime` falls close enough to the previous scan's completion time that it might
+    /// belong to an edit this scan's `(size, mtime)` comparison alone cannot distinguish from "no
+    /// change" — see [`MTIME_SETTLING_WINDOW_NANOS`].
+    fn within_settling_window(&self, mtime: FileTime) -> bool {
+        let Some(completed_at) = self.prior_scan_completed_at else {
+            return false;
+        };
+        let delta = mtime.as_nanos_since_epoch() - completed_at.as_nanos_since_epoch();
+        delta.abs() <= MTIME_SETTLING_WINDOW_NANOS
     }
 
     fn progress(&self) -> ScanProgress {
@@ -196,6 +228,7 @@ impl Scanner {
         if let Some(&(prior_size, prior_mtime)) = self.prior.get(&info.path)
             && prior_size == info.size
             && prior_mtime == info.mtime
+            && !self.within_settling_window(info.mtime)
         {
             // D-12.1's incremental rule: unchanged, so not reopened, not rehashed, not upserted.
             return;
@@ -300,6 +333,19 @@ mod tests {
         std::fs::write(dir.join(name), bytes).unwrap();
     }
 
+    /// Backdates `path`'s mtime, via `std::fs::File::set_modified` (stable, no extra dependency)
+    /// — used to get a test's fixture files outside D-12.1's settling window without waiting for
+    /// real wall-clock time to pass.
+    fn age_mtime(path: &std::path::Path, seconds_ago: u64) {
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds_ago);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+    }
+
     /// FR-LIB-010: a recursive scan finds `.nam` and IR files under nested directories.
     #[test]
     fn a_full_scan_finds_every_file_under_nested_directories() {
@@ -339,11 +385,18 @@ mod tests {
     }
 
     /// D-12.1's incremental rule, demonstrated directly: a second scan of an unchanged tree
-    /// upserts nothing.
+    /// upserts nothing. Ages the fixture file's mtime well outside D-12.1's settling window
+    /// (`MTIME_SETTLING_WINDOW_NANOS`) first — realistic (a real library's files almost never
+    /// have an mtime coincidentally close to "whenever the last scan happened to finish"), and
+    /// necessary: without ageing, `write_nam`'s freshly-written mtime and this test's own
+    /// back-to-back scans would both land inside the settling window by construction, which is
+    /// exactly the ambiguous case the window is *supposed* to treat as suspect (see the test
+    /// below this one) — this test is about the *un*ambiguous case.
     #[test]
     fn an_unchanged_second_scan_upserts_nothing() {
         let root = temp_dir("unchanged");
         write_nam(&root, "a.nam");
+        age_mtime(&root.join("a.nam"), 3600);
 
         let mut index = Index::empty();
         index.apply(Scanner::new(vec![root.clone()], &index.clone()).run_to_completion(&StdFs));
@@ -469,5 +522,46 @@ mod tests {
         assert_eq!(delta.warnings[0].code.id, error_codes::FILE_UNREADABLE.id);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-12.1's corrected change-detection rule (`docs/02-architecture.md` §12's M5 consequence
+    /// note on D-12.1): a file edited in place to the *same length*, whose new mtime happens to
+    /// coincide with the mtime already on record (a real risk on a filesystem with coarser mtime
+    /// granularity than "however fast an editor can save after a scan finishes"), must still be
+    /// reflected within one rescan (FR-LIB-070). The literal `size == prior_size && mtime ==
+    /// prior_mtime` comparison cannot see this edit at all -- both fields agree with what was
+    /// recorded before. Using `FakeFs` to construct the coincidence directly and deterministically,
+    /// rather than trying to race real OS mtime granularity.
+    #[test]
+    fn a_same_length_edit_whose_mtime_collides_with_the_prior_scan_is_still_detected() {
+        use crate::fs::FakeFs;
+
+        let root = PathBuf::from("/fake/root");
+        let path = root.join("a.nam");
+        let shared_mtime = FileTime::now();
+
+        // First scan: content C1, at shared_mtime.
+        let mut fake = FakeFs::new();
+        fake.add_file(&root, "a.nam", 100, shared_mtime, vec![1u8; 100]);
+        let mut index = Index::empty();
+        index.apply(Scanner::new(vec![root.clone()], &index.clone()).run_to_completion(&fake));
+        let first_hash = index.get(&path).unwrap().hash;
+
+        // Second scan: content C2 (same length, different bytes), but the filesystem reports the
+        // *identical* mtime -- the coincidence D-12.1's literal rule cannot see through. Without
+        // this test's fix, this file would be skipped entirely: size and mtime both "match".
+        let mut fake2 = FakeFs::new();
+        fake2.add_file(&root, "a.nam", 100, shared_mtime, vec![2u8; 100]);
+        let delta = Scanner::new(vec![root.clone()], &index).run_to_completion(&fake2);
+
+        assert_eq!(
+            delta.upserts.len(),
+            1,
+            "a same-length edit whose mtime collides with the prior scan must still be rehashed"
+        );
+        assert_ne!(
+            delta.upserts[0].hash, first_hash,
+            "the new content's hash must be recorded"
+        );
     }
 }
