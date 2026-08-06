@@ -530,6 +530,20 @@ nor FR-IR-060 forbids this: each requires *its own* changeover to be crossfaded 
 neither requires the two to coincide. The rule is per-instance, so two plugin instances may still
 crossfade at the same time — correct, because NFR-PERF-010's budget is itself per-instance.
 
+*Consequence (added M5):* **an unload is a handover to nothing, and is therefore also subject to
+the rule above.** FR-STATE-070 says "the state shall load with that stage empty" when a preset's
+model or IR reference cannot be resolved — closing that gap needed a way to *remove* an installed
+resource, which this decision's four steps never anticipated (they only ever add one). M5 adds
+`Command::Unload`/`Chain::unload` and a `NamStage`/`IrStage::unload` method apiece: step 3's
+crossfade already treats a `None` slot as a dry passthrough on either side of the fade (needed
+already for the very first load into an empty stage), so fading *into* `None` reuses that same
+state machine rather than adding a second one, and the outgoing slot still leaves through step 4's
+return ring, never dropped. Because it is a handover like any other, it is exactly as capable of
+overlapping the *other* target's handover and reproducing R-7's over-budget condition — a preset
+recall that unloads one stage while loading the other is not a hypothetical, it is what a preset
+with only one of the two references set does. `namir-worker`'s serialisation rule (the consequence
+above) therefore treats `Unload` the same as `Load` when M5's `recall.rs` submits it.
+
 *Rejected:* Muting during the swap (fails FR-NAM-070's no-dropout intent). Rejected: a mutex
 around the resource slot with `try_lock` on the audio thread — `try_lock` is wait-free but a
 failed acquisition means the swap silently doesn't happen, which is a worse failure than the
