@@ -69,12 +69,15 @@
 //!
 //! **Measured impact of the fix, single-core-pinned, `growth_factor = 2` / `max_partition = 8192`
 //! (this crate's shipped defaults), `decaying_noise` fixture (S-2's own choice: convolution cost
-//! is a function of IR length, not tap values). *Hardware caveat, stated because it must be:*
-//! measured on this task's sandbox (a 4-core Intel Xeon @ 2.10 GHz), **not**
-//! `docs/02-architecture.md` §2's pinned reference machine (AMD Ryzen 9 5950X, 3.4 GHz base,
-//! Windows 11) — these are directionally useful, and the *relative* before/after comparison below
-//! (same machine, same code otherwise, only `build_schedule`'s stagger formula changed) is valid,
-//! but neither figure is the certified NFR-PERF-010 number that requires the reference machine.*
+//! is a function of IR length, not tap values). *Measurement caveat, stated because it must be:*
+//! these figures predate M3's close-out and were taken on a 4-core Intel Xeon sandbox, not
+//! `docs/02-architecture.md` §2's pinned reference machine. The *relative* before/after comparison
+//! below (same machine, same code otherwise, only `build_schedule`'s stagger formula changed)
+//! remains valid, which is what this table is for. The absolute values do **not** carry over: the
+//! close-out later established, on the §2 machine, that `p99.9` measured this way is dominated by
+//! interference outside this crate (GPU-driver ISRs on CPU 0 at 128-512 µs, ~165/second) rather
+//! than by convolution cost — see `namir-engine/benches/tail_structure.rs` for the
+//! contamination-immune estimator that replaced it.*
 //!
 //! | Condition | Before (M2 stagger), p99.9 / max | After (this fix), p99.9 / max |
 //! |---|---|---|
@@ -113,10 +116,11 @@
 //!   (as high as several hundred percent of that combination's own ~166 ns block period across
 //!   repeated runs) even though `p99.9` — the actual D-2.2 gate — stays near 120%. Two repeated
 //!   measurements of the same combination gave `max` values of 335% and 510% while `p99.9` held
-//!   at 118-123%, i.e. this is a single-sample noise/jitter signature (plausibly this sandbox's
-//!   shared-CPU scheduling, not a reproducible periodic pileup), not evidence of a residual
-//!   scheduling defect — but it is *not verified* to be pure measurement noise rather than a real
-//!   tail effect, since a dedicated single-tenant reference machine wasn't available to confirm.
+//!   at 118-123%, i.e. this is a single-sample noise/jitter signature rather than a reproducible
+//!   periodic pileup. M3's close-out subsequently confirmed that reading on the §2 reference
+//!   machine and identified the mechanism: benchmarks pinned to CPU 0, which absorbs the GPU
+//!   driver's 128-512 µs interrupts, so isolated `max` excursions of exactly this shape were
+//!   expected and are not a scheduling defect in this crate.
 //!   A 32-sample block at 192 kHz is also, independent of this crate, an inherently tight budget
 //!   (a 166 ns block period) that FR-IR-050 does not actually require (its Must floor is stated at
 //!   48 kHz).

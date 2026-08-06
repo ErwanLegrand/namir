@@ -295,11 +295,18 @@ sizes. The two together, before gate or EQ, already exceed the entire budget.
   the roadmap where that benchmark can be run against something real instead of a spike's
   isolated loop.
 
+> ⚠️ **Read "M3 close-out: the tail was never Namir's" at the end of this section before trusting
+> any performance figure in the three subsections that follow.** Every `p99.9` number below was
+> measured with the benchmark pinned to logical CPU 0, which on the reference machine absorbs the
+> GPU driver's 128–512 µs interrupts (~165/second, zero on all other cores). Those figures are
+> therefore substantially measuring `dxgkrnl.sys`, not Namir, and the conclusions drawn from them —
+> including two separate "NFR-PERF-010 does not close" verdicts — do not survive. They are retained
+> unedited as an honest record of the investigation, not as current findings.
+
 **Status as of the prior session (2026-08-06) — honest accounting, not the original "Acceptance"
-text below, which this milestone had not yet earned in full. Superseded by the certified
-reference-machine pass recorded immediately below**, which is the first time any of this
-milestone's numbers come from `docs/02-architecture.md` §2's actual pinned machine rather than a
-CI sandbox proxy:
+text below, which this milestone had not yet earned in full. Superseded twice over: first by the
+reference-machine pass recorded immediately below, then wholesale by the close-out at the end of
+this section:**
 
 - **LSTM: done.** `namir-nam/src/lstm.rs` ports `NeuralAmpModelerCore`'s `LSTMCell`/`LSTM` from
   its C++ source directly (module doc comment cites the exact fields/order read), unified behind
@@ -564,6 +571,81 @@ are real FFT constant factors at small sizes and the per-sample, per-partition b
 prerequisite to further IR tail work** — the next optimisation must not be designed against a model
 already known to mispredict.
 
+### M3 close-out: the tail was never Namir's
+
+The contradiction recorded immediately above is resolved, and the resolution invalidates most of
+the performance numbers in the three sections preceding this one. They are left in place as an
+honest record of how the milestone actually proceeded; **this section supersedes them.**
+
+**What the tail actually was.** An elevated `xperf -on Latency` trace on the §2 reference machine
+found `dxgkrnl.sys` — the DirectX/GPU kernel driver — issuing **6,494 interrupts of 128–512 µs over
+39.4 seconds (~165/second)**, with its ISR time landing on **CPU 0 exclusively**: 1,670,068 µs on
+CPU 0 and exactly 0 µs on all 31 other logical CPUs, a steady ~4.2% of that core's wall clock.
+Every benchmark in this workspace pinned to `get_core_ids().next()` — CPU 0. ISRs execute at DIRQL,
+above every thread priority, which is why raising the process to Windows `High` priority had
+changed nothing when that was tried. The same trace showed CPU 2 carries the heaviest kernel DPC
+load (50,151 µs of `ntoskrnl.exe`), so it is a poor second choice; benchmarks now default to core 4
+and expose `NAMIR_PIN_CORE`.
+
+Interleaved, same session, same binary:
+
+| | core 0 | core 4 | core 8 |
+|---|---|---|---|
+| IR stage alone, p99.9 | 258 µs | **55 µs** | **56 µs** |
+| assembled chain, p99.9 | 34.8% | **19.4%** | 24.5% |
+
+On a clean core the IR stage's p99 (51.6 µs) and p99.9 (55.0 µs) converge — the tight
+schedule-bounded distribution the cost model predicted throughout. **The model was right; the
+measurement was contaminated.** Two corroborating results from the same close-out: a complete
+8192-point FFT trigger costs only ~31 µs (so the FFT was never ~265 µs of anything), and its
+cold/warm cache ratio is 1.00–1.06x at every partition size, which independently killed a
+memory-bound account that had looked quantitatively convincing to within 10%.
+
+**Why raw p99.9 cannot certify this requirement on this machine.** Even after moving off CPU 0,
+ten consecutive runs of the chain benchmark with nothing changed between them measured p99.9
+anywhere from **17% to 52%** of the block period while p50 stayed pinned near 7.8%. A statistic
+that moves 3x with ambient machine state cannot gate a requirement.
+
+**The figure that does hold.** `namir-engine/benches/tail_structure.rs` now reports a
+contamination-immune estimator: interference is additive and aperiodic, while the IR partition
+schedule is periodic with period `largest_partition / block_size` (128 blocks at this condition),
+so each residue recurs ~781 times per run and its *cheapest* occurrence is the one no interrupt,
+preemption or frequency excursion landed on. Nothing can make a block finish faster than its own
+arithmetic allows, so the per-residue minimum is a tight lower bound, and the maximum over residues
+is the schedule's true worst-case block. Measured four times while the machine was visibly busy
+(p50 14–19%, raw p99.9 47–49%): **15.33 / 15.38 / 15.23 / 15.11%** of the block period — stable to
+±0.14 points across runs whose raw figures spanned several points, and reproducing at 15.2–15.5%
+across six different cores, odd and even alike.
+
+**So the assembled six-stage chain's own worst-case block costs ~15.2% of the block period against
+NFR-PERF-010's 25% budget.**
+
+**Acceptance — FR-NAM-020 closed; NFR-PERF-010 deliberately left open pending one decision, not
+pending more work.** Namir's own cost is comfortably inside budget and is now measured by a
+statistic that survives a noisy machine. What is *not* settled, and is not this document's to
+settle, is **which quantity NFR-PERF-010 should gate on**: Namir's own worst-case block (~15.2%,
+passing) or end-to-end observed latency including OS interference (17–52%, unstable, and on this
+machine dominated by a GPU driver). A real dropout does not care which process caused the stall, so
+choosing the flattering statistic would be exactly the kind of placeholder-dressed-as-a-decision
+this project's methodology refuses elsewhere. **This is a D-2.2 question and needs an architecture
+decision before the requirement can be marked closed either way.**
+
+R-4 **retires**: vectorization's benefit is now directly measured rather than inferred — D-2.3's
+AVX2/FMA baseline took the NAM stage from p99.9 30.3% to ~10.5%, with numeric parity re-verified at
+−130.8 dB. R-8 **retires as a scheduling defect**: `build_schedule`'s cross-size phase alignment is
+fixed with a permanent quantitative regression test (worst-block modelled FFT load 11.893x → 6.793x
+the mean, against a 6.507x floor), and the residual tail it was suspected of causing is now
+attributed to the GPU driver instead.
+
+**A methodological note this milestone earned the hard way.** Across this close-out, four separate
+conclusions were announced from single unreplicated measurements and each had to be retracted: an
+IR figure that did not reproduce, an "environmental hypothesis refuted" verdict that was an
+over-reading of a periodicity test, a cache-locality account whose arithmetic matched the observed
+figure to within 10% and was still wrong, and a chain PASS at ~17% that failed to reproduce at ~24%
+an hour later. The standing rule that follows: **on this machine, no performance claim from a
+single run, and prefer a statistic that is immune to contamination over a quiet-machine ritual that
+cannot be guaranteed.**
+
 ---
 
 ## 8. M4 — Resource handover, worker, and cross-instance sharing
@@ -786,6 +868,13 @@ architectures now load, run, and parity-test against an independent reference be
 (resampling quality, crossfade, loudness calibration, cost reporting) is unaffected and stays as
 audited; this is the one cell §7's evidence directly justifies moving, not a re-audit of the row.
 
+**6.2 PERF is deliberately *not* moved off 0/0/6 by M3's close-out, despite the chain measuring
+~15.2% against a 25% budget.** The measurement exists and is reproducible, but NFR-PERF-010 cannot
+be marked Done until §7's open D-2.2 question is decided: whether the requirement gates on Namir's
+own worst-case block or on end-to-end observed latency including OS interference. Recording it as
+Done on the strength of the more flattering of two defensible statistics is precisely what this
+project's methodology refuses. The row moves when that decision is made, not before.
+
 ---
 
 ## 15. Appendix: open decisions to make, not build
@@ -811,3 +900,23 @@ that happens to depend on them first.
    reference implementation FR-NAM-030 actually names. Worth a decision at M3 (when LSTM parity
    needs the same treatment anyway): commit a small, licence-clean reference-output fixture into
    the repo, or accept the spike's result as sufficient historical evidence and say so explicitly.
+5. **What NFR-PERF-010 actually gates on (D-2.2).** Raised by M3's close-out, which measured both
+   candidate quantities on the §2 reference machine and found they disagree about whether the
+   requirement passes:
+   - *Namir's own worst-case block* — the per-residue-minimum estimator in
+     `namir-engine/benches/tail_structure.rs`: **~15.2%** of the block period, reproducible to
+     ±0.15 points across cores and across machine loads. **Passes** the 25% budget.
+   - *End-to-end observed per-block latency* — raw p99.9 as D-2.2 literally specifies: **17–52%**
+     across ten identical runs, dominated on this machine by GPU-driver ISRs and background load
+     rather than by Namir. Neither passes nor fails stably; it is not a reproducible statistic on
+     a general-purpose desktop.
+
+   The case for the first is that it measures the thing the project can actually engineer, and it
+   is reproducible. The case for the second is that a dropout is a dropout — a user whose audio
+   glitches does not care that a GPU driver caused it, and NFR-RT-040 is a statement about worst
+   case. A defensible resolution may be to keep p99.9 as the gate but specify the measurement
+   conditions properly (core selection away from device ISRs, minimum repetitions, and a
+   reproducibility criterion the figure must meet before it counts), which would make the gate both
+   literal and achievable. **Due before M8**, since 6.2 PERF cannot be marked Done without it, and
+   worth deciding early because M6's `namir-platform` thread-affinity work is the product-side
+   half of the same problem.

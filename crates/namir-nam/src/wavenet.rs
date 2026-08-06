@@ -185,55 +185,41 @@ impl TryFrom<&str> for Activation {
 // this workspace's stable `rust-version`, see the root `Cargo.toml`).
 //
 // **Measured** via `benches/wavenet_inner_loops.rs` (standard WaveNet shape, 64-sample blocks,
-// 100,000 measured blocks after a 5,000-block warmup, `cargo bench -p namir-nam`), on **this
-// sandbox's CPU — a 4-core Intel Xeon @ 2.10 GHz — which is NOT the pinned reference machine**
-// in docs/02-architecture.md §2 (AMD Ryzen 9 5950X, 16c/32t, 3.4 GHz base, Windows 11). A plain
-// `cargo build`/`cargo bench` on this sandbox (no `target-cpu`/`target-feature` override, no
-// `.cargo/config.toml` in this repo) only has the x86-64 baseline feature set active
-// (`rustc --print cfg` shows `sse`/`sse2` only, no `avx`), so `wide`'s `pick!` macro selects its
-// non-AVX path here: two 4-lane SSE2 ops per `f32x8` operation, not one genuinely 8-wide AVX op.
-// These numbers are therefore directionally useful for a same-machine, same-build before/after
-// comparison only, **not** the certified NFR-PERF-010 figure (that requires re-running this same
-// benchmark on the actual reference machine, which does support AVX2 per its CPU generation):
+// 100,000 measured blocks after a 5,000-block warmup, `cargo bench -p namir-nam`).
 //
-//   Re-measured a second time by this M3 close-out pass (2026-08-06), alternating scalar
-//   (`axpy` temporarily reverted to a plain `for` loop) and this file's vectorized `axpy`,
-//   interleaved, `cargo bench -p namir-nam --bench wavenet_inner_loops`, `uptime` load average
-//   checked before and after every run to confirm the sandbox was otherwise quiet (0.5-1.0 on
-//   this 4-core box, never above 1.1):
-//     scalar p50:   25.92, 24.86, 25.33, 28.41, 28.40 % of block period (mean 26.58%)
-//     vector p50:   25.90, 28.08, 26.98, 26.22        % of block period (mean 26.80%)
-//     scalar p99.9: 44.34, 46.38, 50.35, 54.83, 51.75 % of block period (mean 49.53%)
-//     vector p99.9: 43.74, 48.55, 44.28, 44.01        % of block period (mean 45.15%)
-//   p50 fully overlaps between configurations (means within 0.3 pp of each other, well inside a
-//   single run's own ~3 pp spread) — same "no reproducible p50 win" conclusion the prior revision
-//   of this note reached. p99.9 also overlaps heavily (43.7-54.8% scalar, 43.7-48.6% vector) —
-//   vectorized runs never scored worse than scalar and averaged ~4 pp lower, but the two ranges
-//   overlap too much across only 9 runs to call it a confident win either.
+// Earlier revisions of this note recorded a long, inconclusive scalar-vs-vector comparison run on
+// a 4-core Intel Xeon sandbox, and concluded that whether `axpy`'s vectorization helped at all was
+// **not verified** — the measured gap sat inside the run-to-run spread. That whole analysis has
+// been superseded, and the reason it was inconclusive is now known: it was measuring two
+// confounds rather than the code.
 //
-//   This reproduction could **not** reproduce the prior revision's specific claim that "all 8 ...
-//   runs (both scalar and vectorized) spiked to 330-345% of the block period" — the highest p99.9
-//   seen across these 11 runs was 54.83%, nowhere near that range, and every run (both
-//   configurations) landed inside the original, since-retracted "42-53%" estimate that claim
-//   itself was written to contradict. The most consistent explanation available, not asserted as
-//   certain: this same session's R-8 verification pass documented that this shared sandbox's
-//   single-sample benchmark runs can read 10-20x high under concurrent CPU contention (see
-//   `convolver.rs`'s own stagger note / that pass's report), and the prior revision's own
-//   interleaved revert-rebuild-rerun sequence did not record checking `uptime` before trusting its
-//   numbers — a plausible, unverified account for why it saw a magnitude this reproduction, run
-//   under a load average explicitly confirmed quiet throughout, does not.
+// 1. **No AVX was enabled.** The workspace had no `target-cpu` set anywhere, so `wide`'s `pick!`
+//    macro selected its non-AVX path — two 4-lane SSE2 ops per `f32x8` operation rather than one
+//    genuinely 8-wide AVX op — even on hardware that supports AVX2. That is now fixed workspace-
+//    wide by **D-2.3** (`.cargo/config.toml`, `target-cpu=x86-64-v3`), and the effect is large and
+//    unambiguous. Measured on `docs/02-architecture.md` §2's actual reference machine:
 //
-// **Not verified:** whether `axpy`'s vectorization measurably helps at all — on *this* baseline
-// SSE2, non-AVX sandbox build the p99.9 gap between configurations (~4 pp) is small enough
-// relative to run-to-run spread (~10 pp) that more than 9 runs would be needed to call it
-// confidently real rather than favourable noise; a genuinely AVX2-enabled build (as the pinned
-// reference machine would produce) is untested here and may behave differently, since it would
-// use one 8-wide op instead of two paired 4-wide ones. Whether either build brings NFR-PERF-010's
-// real p99.9 figure under the 25% budget is unverified either way — S-1's spike measured 41%
-// p99.9 scalar on the reference machine; re-running this benchmark on that machine, for both the
-// scalar and vectorized code, under a confirmed-quiet load, is the only way to get a real answer.
-// The rationale for vectorizing at all (closing "an absence of vectorization" the spike
-// identified) stands independently of what this specific sandbox's noisy numbers show.
+//      SSE2 baseline:  p50 8.77%   p99.9 30.3%  of the block period
+//      AVX2 + FMA:     p50 ~6.5%   p99.9 ~10.5%
+//
+//    Numeric parity under FMA re-verified at -130.8 dB against the -100 dB bar (contracting a
+//    multiply-add into one rounding step is a *smaller* error than two, not a larger one).
+//
+// 2. **The benchmark was pinned to the wrong core.** Every benchmark in this workspace pinned to
+//    logical CPU 0, which on this machine absorbs `dxgkrnl.sys`'s GPU interrupts — 128-512 µs
+//    each, ~165 per second, and zero on all 31 other cores (established by an elevated
+//    `xperf -on Latency` trace). ISRs run at DIRQL, above every thread priority, so a large part
+//    of every `p99.9` figure in the superseded analysis above was the GPU driver rather than this
+//    file. See `pin_to_measurement_core` in any of this workspace's benchmarks.
+//
+// **Still true, and worth keeping:** this benchmark's `p50` is stable and trustworthy; its raw
+// `p99.9` is not reproducible run-to-run on a general-purpose desktop even after both fixes
+// (measured varying 17%-52% across ten identical runs of the chain benchmark, with `p50` pinned).
+// For a figure immune to that, `namir-engine/benches/tail_structure.rs` reports a per-residue
+// minimum estimate of the schedule's own worst-case block, which returns the same value on a busy
+// machine as on a quiet one. The rationale for vectorizing at all (closing "an absence of
+// vectorization" S-1 identified) never depended on these numbers, and is now also directly
+// supported by the AVX2 measurement above.
 // ---------------------------------------------------------------------------------------------
 
 /// `out[t] += w * in_[t]` for every `t`, the one AXPY shape `Conv1x1::apply_into`,
