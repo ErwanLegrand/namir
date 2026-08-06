@@ -14,6 +14,10 @@ hound = "3.5"
 rubato = "0.16"
 realfft = "3.5"
 rustfft = "6.4"
+# M3 (docs/03-implementation-roadmap.md §7): vectorizes the direct-convolution head partition's
+# tap loop, same crate/version/rationale as `namir-nam`'s use of it (D-5.3: this crate forbids
+# unsafe code and `wide` never requires one; see that crate's Cargo.toml for the fuller note).
+wide = "1.6"
 
 [dev-dependencies]
 namir-fixtures = { path = "../namir-fixtures" }

@@ -134,11 +134,41 @@ use std::sync::Arc;
 
 use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use wide::f32x8;
 
 use namir_core::SampleRate;
 
 use crate::error_codes::IrLoadError;
 use crate::wav;
+
+/// `out[t] += w * in_[t]` for every `t`, vectorized 8 lanes at a time with a scalar remainder —
+/// identical shape and rationale to `namir-nam/src/wavenet.rs`'s own `axpy` (this M3 close-out
+/// pass's reference-machine benchmarking found the head partition's direct-convolution tap loop,
+/// below, was the other hot unvectorized loop in the assembled six-stage chain once WaveNet's
+/// own activations were fixed). Not shared as a `pub` item between the two crates for the same
+/// reason this codebase's other small per-crate duplicates give (see e.g. `rt_harness`'s doc
+/// comment in this crate/`namir-nam`): a five-line function isn't worth a shared crate or a
+/// public API surface neither crate otherwise needs.
+#[inline]
+fn axpy(out: &mut [f32], in_: &[f32], w: f32) {
+    debug_assert_eq!(out.len(), in_.len());
+    let n = out.len();
+    let lanes = n - n % 8;
+    let (out_vec_part, out_rem) = out.split_at_mut(lanes);
+    let (in_vec_part, in_rem) = in_.split_at(lanes);
+
+    let w_vec = f32x8::splat(w);
+    for (o, i) in out_vec_part
+        .chunks_exact_mut(8)
+        .zip(in_vec_part.chunks_exact(8))
+    {
+        let sum = f32x8::from(&*o) + w_vec * f32x8::from(i);
+        o.copy_from_slice(&sum.to_array());
+    }
+    for (o, &i) in out_rem.iter_mut().zip(in_rem.iter()) {
+        *o += w * i;
+    }
+}
 
 /// D-9.6's S-2-measured default growth factor.
 pub const DEFAULT_GROWTH_FACTOR: usize = 2;
@@ -394,11 +424,23 @@ struct PreparedChannel {
     head: Vec<f32>,
     stages: Vec<FftStageImmutable>,
     ring_len: usize,
+    /// The host block size this channel was prepared for (D-9.4: equals the head partition's own
+    /// intended size, though `head.len()` itself can be shorter when `ir_len < block_size`). The
+    /// only bound `process_block` relies on: every call's `input.len()` must be `<= block_size`,
+    /// exactly as `head_scratch`'s fixed size below assumes.
+    block_size: usize,
 }
 
 /// One channel's mutable runtime state.
 struct ChannelState {
-    head_history: Vec<f32>, // ring buffer, length == head.len().max(1)
+    /// The last `head.len().saturating_sub(1)` samples before the current block, oldest first —
+    /// `namir-nam/src/wavenet.rs`'s `Conv1D` history convention, not a modulo-indexed ring buffer
+    /// (see `process_block`'s doc comment for why this changed from the original ring-buffer
+    /// scheme).
+    head_history: Vec<f32>,
+    /// Scratch: `head_history ++ this block's input`, length `head_history.len() + block_size`,
+    /// sized once and reused every call (no per-call allocation).
+    head_scratch: Vec<f32>,
     stage_states: Vec<FftStageState>,
     ring: Vec<f32>,
     t: u64,
@@ -437,43 +479,83 @@ impl PreparedChannel {
             head: h[..head_len].to_vec(),
             stages,
             ring_len,
+            block_size,
         }
     }
 
     fn new_state(&self) -> ChannelState {
+        let history_len = self.head.len().saturating_sub(1);
         ChannelState {
-            head_history: vec![0f32; self.head.len().max(1)],
+            head_history: vec![0f32; history_len],
+            head_scratch: vec![0f32; history_len + self.block_size],
             stage_states: self.stages.iter().map(FftStageState::new).collect(),
             ring: vec![0f32; self.ring_len],
             t: 0,
         }
     }
 
-    /// Ported near-verbatim from the spike's `PartitionedConvolver::process_block`. Allocates
-    /// nothing.
+    /// Ported near-verbatim from the spike's `PartitionedConvolver::process_block`, except for
+    /// the head partition's own tap loop (see below). Allocates nothing.
+    ///
+    /// Panics if `input.len()` exceeds this channel's prepared `block_size` — a call-site
+    /// programming error (the caller must size blocks to at most the value it originally passed
+    /// to `PreparedChannel::new`/`PreparedIr::from_wav_bytes`), same contract and rationale as
+    /// `namir-nam`'s `PreparedWaveNet::process_block`.
+    ///
+    /// **Head partition: vectorized block-at-a-time, not per-sample-with-modulo.** This M3
+    /// close-out pass's reference-machine benchmarking found the original per-sample loop —
+    /// `y += head[k] * head_history[(t - k) % head_len]`, a `head_len`-deep scalar loop *with a
+    /// modulo per tap* run once per sample — was a second major unvectorized cost alongside
+    /// `namir-nam`'s WaveNet activations (see that crate's `wavenet.rs` for the matching fix).
+    /// The replacement builds `padded = head_history ++ input` once per block (the same
+    /// history-plus-input-window technique `namir-nam/src/wavenet.rs`'s `Conv1D::apply_into`
+    /// already uses) and, for each tap `k`, accumulates `output[i] += head[k] *
+    /// padded[history_len - k + i]` for the whole block via [`axpy`] — `head_len` vectorized
+    /// passes over the block instead of `head_len * block_size` scalar multiply-and-modulo steps.
+    /// `padded[history_len - k + i] == x` at block-local time `i - k`, matching the original
+    /// tap's `x[t - k]` exactly (`history_len - k >= 0` always, since `k < head_len =
+    /// history_len + 1`); a zero-initialized `head_history` at stream start reproduces the
+    /// original loop's explicit `dt > t` early-break for "no signal before t=0" without needing
+    /// the special case, since multiplying a still-zero history sample by `head[k]` is a no-op
+    /// either way.
     fn process_block(&self, state: &mut ChannelState, input: &[f32], output: &mut [f32]) {
+        let n = input.len();
+        assert!(
+            n <= self.block_size,
+            "block size {n} exceeds this channel's prepared block_size {}",
+            self.block_size
+        );
         let head_len = self.head.len();
+        let history_len = state.head_history.len();
+
+        if head_len > 0 {
+            let padded = &mut state.head_scratch[..history_len + n];
+            padded[..history_len].copy_from_slice(&state.head_history);
+            padded[history_len..].copy_from_slice(input);
+
+            output[..n].fill(0.0);
+            for k in 0..head_len {
+                let w = self.head[k];
+                if w == 0.0 {
+                    continue;
+                }
+                let offset = history_len - k;
+                axpy(&mut output[..n], &padded[offset..offset + n], w);
+            }
+
+            state.head_history.copy_from_slice(&padded[n..]);
+        } else {
+            output[..n].fill(0.0);
+        }
+
         let ring_len = state.ring.len() as u64;
-        for i in 0..input.len() {
+        for i in 0..n {
             let x = input[i];
             let t = state.t;
 
-            if head_len > 0 {
-                state.head_history[(t as usize) % head_len] = x;
-            }
-            let mut y = 0f32;
-            for k in 0..head_len {
-                let dt = t.wrapping_sub(k as u64);
-                if dt > t {
-                    break; // k > t: no history yet this far back
-                }
-                y += self.head[k] * state.head_history[(dt as usize) % head_len];
-            }
-
             let pos = (t % ring_len) as usize;
-            y += state.ring[pos];
+            output[i] += state.ring[pos];
             state.ring[pos] = 0.0;
-            output[i] = y;
 
             for (stage, st) in self.stages.iter().zip(state.stage_states.iter_mut()) {
                 fft_stage_process_sample(stage, st, x, t, &mut state.ring);
