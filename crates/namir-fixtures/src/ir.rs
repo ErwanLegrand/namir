@@ -22,6 +22,46 @@ pub fn delayed_delta(len: usize, delay: usize) -> Vec<f32> {
     h
 }
 
+/// Encodes `samples` (expected in roughly `[-1.0, 1.0]`, the same range every fixture in this
+/// module already produces) as mono 16-bit PCM `.wav` bytes via `hound::WavWriter`, in memory.
+///
+/// 16-bit int, not 32-bit float: it is the smaller of the two encodings `namir_ir::probe_wav`
+/// accepts, and this module's fixtures never need float's extra dynamic range (they are
+/// synthetic taps generated to already sit inside `[-1.0, 1.0]`, never captured or gain-staged
+/// audio that might clip). Halving the on-disk size matters once a caller is writing thousands of
+/// these (M5's `library` module's 10,000-file corpus, see that module's doc comment) — see
+/// `namir-fixtures/Cargo.toml`'s `hound` entry for why this crate takes the dependency directly
+/// rather than reusing `namir-ir`'s own ad hoc per-test `hound::WavWriter` use (that helper is
+/// private to `namir-ir`'s `#[cfg(test)]` module and layering forbids namir-fixtures depending on
+/// namir-ir just to reach it).
+///
+/// Samples outside `[-1.0, 1.0]` are clamped rather than panicking — this is a fixture-writing
+/// convenience, not a validated codec, and a caller that feeds out-of-range floats gets a clipped
+/// but still well-formed WAV rather than a crash.
+pub fn to_mono_wav_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut writer =
+            hound::WavWriter::new(cursor, spec).expect("in-memory WAV writer construction");
+        for &s in samples {
+            let clamped = s.clamp(-1.0, 1.0);
+            let i16_sample = (clamped * i16::MAX as f32).round() as i16;
+            writer
+                .write_sample(i16_sample)
+                .expect("in-memory WAV write");
+        }
+        writer.finalize().expect("in-memory WAV finalize");
+    }
+    buf
+}
+
 /// Exponentially decaying white noise: the standard stand-in for a "realistic-shaped" IR. A
 /// real cabinet/room IR's cost depends only on its length, not its exact taps, so this is
 /// exercised for cost/coverage rather than tonal fidelity.
@@ -154,6 +194,35 @@ mod tests {
     fn delayed_delta_with_out_of_range_delay_is_all_zero() {
         let h = delayed_delta(10, 20);
         assert!(h.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn mono_wav_bytes_round_trip_through_hound() {
+        let samples = decaying_noise(512, 1, 100.0);
+        let bytes = to_mono_wav_bytes(&samples, 48_000);
+        let reader = hound::WavReader::new(std::io::Cursor::new(&bytes)).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 48_000);
+        assert_eq!(spec.bits_per_sample, 16);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+        assert_eq!(reader.duration(), samples.len() as u32);
+    }
+
+    #[test]
+    fn mono_wav_bytes_clamp_out_of_range_samples_instead_of_panicking() {
+        let bytes = to_mono_wav_bytes(&[2.0, -2.0, 0.0], 48_000);
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(&bytes)).unwrap();
+        let samples: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples, vec![i16::MAX, -i16::MAX, 0]);
+    }
+
+    #[test]
+    fn mono_wav_bytes_is_deterministic() {
+        let samples = decaying_noise(256, 3, 50.0);
+        let a = to_mono_wav_bytes(&samples, 48_000);
+        let b = to_mono_wav_bytes(&samples, 48_000);
+        assert_eq!(a, b);
     }
 
     #[test]
