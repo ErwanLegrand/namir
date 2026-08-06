@@ -20,6 +20,13 @@ on:
   pull_request:
     branches: [main]
 
+# Principle of least privilege for the GITHUB_TOKEN (flagged by CodeQL's "Workflow does not
+# contain permissions" check): every job here only checks out the repo, builds, and reads --
+# none needs to write to the repo, open a PR comment, or touch releases -- so a workflow-wide
+# `contents: read` covers all of them, with no per-job override needed.
+permissions:
+  contents: read
+
 jobs:
   # Covers D-18.1's "build + test on Windows/Linux/macOS" and "formatting and lints as errors"
   # (NFR-QUAL-060). Also covers D-18.1's "the RT-allocation harness": D-7.5's harness is just
