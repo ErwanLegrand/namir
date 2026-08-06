@@ -71,6 +71,11 @@ struct OnDisk {
 /// Owns the on-disk index file's path and knows how to (re)load and atomically replace it.
 /// Deliberately holds no in-memory state of its own beyond the path — the [`Index`] it
 /// loads/saves is the caller's to keep and mutate; this type is purely the persistence boundary.
+///
+/// `Clone` (a single `PathBuf`, so this is cheap): M5's `namir-worker::library::LibraryService`
+/// hands a copy into the closure a pool job runs so the job can save on completion without a
+/// second, path-only type existing solely to carry that one field across the thread boundary.
+#[derive(Clone)]
 pub struct IndexStore {
     path: PathBuf,
 }

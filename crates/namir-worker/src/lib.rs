@@ -15,20 +15,25 @@
 //!
 //! Step 3, the crossfade, belongs to `namir-engine` and this crate never sees it.
 //!
+//! M5 adds a third role, alongside handover and (soon) recall: [`library::LibraryService`] drives
+//! D-12.2's "cancellable worker job" on [`pool::ThreadPool`] — the pool this crate's doc comment
+//! always said would live here, before `namir-library` existed to need it.
+//!
 //! # Deliberately out of scope
 //!
-//! - **Library scanning** (D-12.2's cancellable scan job) — needs `namir-library`, which is M5.
-//!   D-5.1 already lists it among this crate's responsibilities; the pool it will run on is here.
-//! - **Preset recall** — needs `namir-state`, also M5.
+//! - **Preset recall** — needs `namir-state`; M5, later in the build order.
 //! - **A `LoadSource::File` path resolver** beyond `std::fs::read`. Anything that needs to *know*
 //!   where files live is `namir-platform`'s job (D-13.2), and this crate carries no platform code
-//!   at all (D-5.1's own column, enforced by `xtask layering`'s cfg scan).
+//!   at all (D-5.1's own column, enforced by `xtask layering`'s cfg scan) — [`library::LibraryService::open`]
+//!   takes the index path and every library root as caller-supplied arguments for exactly that
+//!   reason (seam 3, `namir-library`'s own crate doc comment).
 
 #![doc(test(attr(deny(warnings))))]
 
 pub mod cache;
 pub mod error;
 pub mod error_codes;
+pub mod library;
 pub mod pool;
 pub mod submit;
 
