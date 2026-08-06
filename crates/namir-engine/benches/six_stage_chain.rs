@@ -40,15 +40,34 @@
 //! `[[bench]]` binary; wrapping every timed call in it here would only add the harness's own
 //! bookkeeping overhead to every measured sample for no benefit this file needs.
 //!
-//! # Hardware caveat — read before trusting any number this binary prints
+//! # Read this before trusting the `p99.9` number this binary prints
 //!
-//! This binary, run in this task's sandbox, measures on a **4-core Intel Xeon @ 2.10 GHz**, which
-//! is **not** `docs/02-architecture.md` §2's pinned reference machine (AMD Ryzen 9 5950X,
-//! 16c/32t, 3.4 GHz base, Windows 11). Every number this binary prints in that sandbox is
-//! directional evidence only — valid for a same-machine before/after comparison, exactly like
-//! `wavenet_inner_loops.rs`'s and `convolver.rs`'s own identical caveats — and is explicitly
-//! **not** the certified NFR-PERF-010 sign-off figure, which `03-implementation-roadmap.md` §7
-//! requires re-running this same binary on the actual reference machine to produce.
+//! An earlier revision of this comment warned that the binary was running on a 4-core Intel Xeon
+//! sandbox rather than `docs/02-architecture.md` §2's pinned reference machine. That is no longer
+//! the situation — M3's close-out ran on the §2 machine itself (AMD Ryzen 9 5950X, 16c/32t,
+//! 64 GB, Windows 11 build 26200, confirmed against §2 rather than assumed). The caveat that
+//! replaces it is different, and sharper: **the raw `p99.9` this binary reports is not
+//! reproducible on a general-purpose desktop, and should not be read as an NFR-PERF-010 verdict.**
+//!
+//! Measured on the reference machine, across ten consecutive runs of this binary with nothing
+//! changed between them, `p99.9` varied from 17% to 52% of the block period while `p50` stayed
+//! pinned near 7.8%. The causes were found and are documented where they belong:
+//!
+//! - `pin_to_measurement_core` below: pinning to CPU 0 — which every benchmark here used to do —
+//!   put the measurement on the one core absorbing `dxgkrnl.sys`'s 128-512 µs GPU interrupts,
+//!   ~165 per second. That single change accounts for the largest share.
+//! - Residual run-to-run drift from ordinary background load, which on this machine at times
+//!   doubled `p50` on its own.
+//!
+//! **For a figure that survives all of that, use `benches/tail_structure.rs`**, which reports the
+//! per-residue-minimum estimate of the schedule's own worst-case block. Because interference is
+//! additive and aperiodic while the IR partition schedule is periodic, that estimator returns the
+//! same value on a busy machine as on a quiet one — measured at 15.1-15.5% of the block period
+//! across runs whose raw `p99.9` spanned 47-49% and whose `p50` spanned 14-19%.
+//!
+//! This binary is still the one that assembles the real chain, and its `p50` is stable and
+//! trustworthy. It is the raw `p99.9`, and the PASS/FAIL line printed from it, that should be
+//! treated as indicative only.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -350,10 +369,10 @@ fn main() {
     println!(
         "48 kHz, {BLOCK_SIZE}-sample blocks, standard WaveNet, 2 s stereo IR, gate + EQ active"
     );
-    println!("*** NOT the certified reference-machine figure -- see this file's doc comment ***");
     println!(
-        "*** measured on this sandbox's 4-core Intel Xeon @ 2.10 GHz, NOT the pinned AMD Ryzen 9 \
-         5950X reference machine (docs/02-architecture.md §2) -- directional evidence only ***"
+        "*** raw p99.9 below is NOT reproducible run-to-run on a general-purpose desktop \
+         (measured 17%-52% across ten identical runs with p50 stable) -- for a figure that \
+         survives background load, use benches/tail_structure.rs; see this file's doc comment ***"
     );
     println!("blocks measured: {MEASURED_BLOCKS} (warmup {WARMUP_BLOCKS} discarded)");
     println!(
@@ -376,22 +395,26 @@ fn main() {
     let p999_pct = p999 as f64 / block_period_ns as f64 * 100.0;
     println!();
     println!(
-        "NFR-PERF-010 figure (single core, 99.9th percentile, THIS SANDBOX, not the reference \
-         machine): {p999_pct:.2}% of one core (budget: {NFR_PERF_010_BUDGET_PCT:.0}%)"
+        "raw p99.9 (single core, D-2.2): {p999_pct:.2}% of one core (budget: \
+         {NFR_PERF_010_BUDGET_PCT:.0}%)"
     );
     if p999_pct <= NFR_PERF_010_BUDGET_PCT {
         println!(
-            "PASS (this sandbox only) -- {p999_pct:.2}% <= {NFR_PERF_010_BUDGET_PCT:.0}% budget. \
-             This is NOT a certified NFR-PERF-010 sign-off; §7 requires re-running this binary on \
-             the pinned reference machine before that requirement can close."
+            "  indicative only: {p999_pct:.2}% <= {NFR_PERF_010_BUDGET_PCT:.0}% on THIS run. Do \
+             not read as an NFR-PERF-010 pass -- this statistic measured 17%-52% across ten \
+             identical runs on the reference machine, so a single favourable run means little."
         );
     } else {
         println!(
-            "FAIL (this sandbox only) -- {p999_pct:.2}% > {NFR_PERF_010_BUDGET_PCT:.0}% budget. \
-             Even accounting for this sandbox's weaker single-core performance relative to the \
-             reference machine, this is evidence the real assembled chain has not yet closed \
-             NFR-PERF-010 -- see docs/03-implementation-roadmap.md §7 and docs/02-architecture.md \
-             §22's R-4/R-8 rows."
+            "  indicative only: {p999_pct:.2}% > {NFR_PERF_010_BUDGET_PCT:.0}% on THIS run. Do \
+             not read as an NFR-PERF-010 failure either -- most of the excess over p50 on this \
+             machine was traced to interference outside Namir (GPU-driver ISRs, kernel DPCs, \
+             background load), not to the chain's own cost."
         );
     }
+    println!(
+        "  For the contamination-immune figure -- the schedule's own worst-case block, which \
+         returns the same value on a busy machine as a quiet one -- run \
+         `cargo bench -p namir-engine --bench tail_structure`."
+    );
 }

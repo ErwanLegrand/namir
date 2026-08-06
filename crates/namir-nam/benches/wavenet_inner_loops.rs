@@ -6,9 +6,13 @@
 //! single-core-pinned, warmup discarded, >= 100,000 measured blocks, p50/p99/p99.9/max reported
 //! both as raw time and as a percentage of the 1.333 ms block period (48 kHz, 64-sample block).
 //!
-//! Numbers this binary prints when run in *this* sandbox are **not** the certified NFR-PERF-010
-//! figure — this sandbox's CPU is a 4-core Intel Xeon @ 2.10 GHz, not the pinned reference
-//! machine — but are valid for a relative before/after comparison on the same hardware.
+//! An earlier revision of this comment warned that the binary ran on a 4-core Intel Xeon sandbox
+//! rather than the pinned reference machine. That is no longer so: M3's close-out ran on
+//! `docs/02-architecture.md` §2's machine itself. The caveat that replaces it is that this
+//! binary's raw `p99.9` is not reproducible run-to-run on a general-purpose desktop — see
+//! `namir-engine/benches/six_stage_chain.rs`'s doc comment and the `pin_to_measurement_core`
+//! helper below, which documents the GPU-driver ISR contamination that dominated it. `p50` is
+//! stable and is the figure to use for before/after comparisons here.
 //!
 //! `[[bench]] harness = false` (this crate's `Cargo.toml`) rather than `#[bench]`/criterion: a
 //! plain `fn main` gives the same full control over pinning and percentile reporting the spike's
