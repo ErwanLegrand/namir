@@ -147,6 +147,46 @@ per-instance and single-core; it is also unbounded by anything the project can e
 home for it is M6's thread-priority/affinity work and a deployment note, not this requirement);
 loosening the 25% budget (nothing measured justifies it — the chain passes).
 
+**Decision D-2.5 (added M5)** — D-2.1's "never as wall-clock time" is **scoped to audio-thread
+per-block budgets**, not restated as a blanket rule. NFR-PERF-030/040/050/060 are stated in
+wall-clock by the FRS itself and are not per-block audio-thread figures, so D-2.1 does not — and
+was never meant to — forbid them; a milestone gating a wall-clock requirement is complying with the
+FRS, not violating D-2.1. M5 is the first milestone to measure a wall-clock NFR (NFR-PERF-060,
+FR-LIB-030's incremental library scan) and is the first to need this stated rather than assumed.
+
+*Rationale:* D-2.1's own rationale is entirely about a *per-block audio callback budget silently
+changing meaning when the block size changes* — that argument has no purchase on a one-shot,
+off-audio-thread operation like a library scan or a model load, which has no block size to change
+meaning against. Leaving D-2.1 unscoped would either force a nonsensical "fraction of one core"
+restatement of a 2-second wall-clock budget, or tempt an implementer to quietly ignore D-2.1 without
+saying so. Neither is acceptable in a project whose methodology (D-2.1 through D-2.4) already
+exists to stop exactly that kind of quiet reinterpretation.
+
+*Consequence — the additional measurement conditions a wall-clock, I/O-bound benchmark needs.*
+D-2.4's four conditions (core selection, no unrelated load, ≥ 5 repetitions, the estimator
+cross-check) are written for a CPU-bound per-block measurement; each is still necessary for an
+I/O-bound one and none is sufficient on its own. A quoted wall-clock figure must additionally state:
+
+1. **Page-cache state, per arm, never assumed.** A "second run is faster" claim conflates OS page
+   caching with any incrementality the code itself provides unless the comparison holds cache state
+   constant across the two arms being compared.
+2. **Anti-malware state.** A real-time scanner dominates the cost of a many-thousand-file traversal
+   and its overhead is non-deterministic run to run. State whether it was active.
+3. **Volume, filesystem and cluster size named** — the same figure means something different on a
+   different filesystem, and this document's own reference machine (§2) does not currently record
+   its drive's filesystem.
+4. **Corpus size, file count and tree shape printed by the benchmark itself**, not left to the
+   reader to infer from the harness source, whenever the corpus is a synthetic stand-in rather than
+   a captured real-world library (as D-19.1 requires it to be).
+5. **mtime settling** — a corpus generated immediately before the benchmark run has every file's
+   mtime reading "now", which can mask a change-detection rule's real-world granularity behaviour
+   (see D-12.1's consequence note in §12).
+
+*Rejected:* leaving D-2.1 as an unscoped blanket rule and either restating every wall-clock NFR as a
+meaningless single-core fraction, or measuring wall-clock NFRs without ever writing down that D-2.1
+does not apply to them (the FRS-vs-architecture-doc contradiction M5's own drafting hit, and the
+reason this decision exists rather than being silently worked around).
+
 ---
 
 ## 3. Architectural principles
@@ -209,7 +249,7 @@ dependency rule.
 | `namir-ir` | IR file decoding, resampling, partitioned convolution. | core, dsp | No | Yes |
 | `namir-engine` | The `Stage` trait, the chain, RT-safe scheduling, resource handover, telemetry. | core, params, dsp, nam, ir | No | Yes |
 | `namir-state` | Preset and plugin-state document, versioning, file-reference resolution. | core, params | No | Yes |
-| `namir-library` | Library index, scanning, hashing, search, persistence. | core, nam, ir, state | Path handling only, via `namir-platform` | Yes |
+| `namir-library` | Library index, scanning, hashing, search, persistence. | core, nam, ir, state | No | Yes |
 | `namir-platform` | Filesystem locations, config dirs, logging sink, thread priority. **The only crate with `#[cfg(target_os)]`.** | core | Yes | Yes |
 | `namir-worker` | Off-thread orchestration: load requests, resource cache, scan jobs. | everything above | No | Yes |
 | `namir-ui` | egui-based interface. Renderer- and window-agnostic. | core, params, library, state | No | Yes |
@@ -234,6 +274,18 @@ Unsafe is permitted only in `namir-platform`, `namir-clap`, and any SIMD kernel 
 which carries a written safety argument per unsafe block.
 
 *Traces:* NFR-QUAL-070.
+
+*Consequence (added M5)* — `namir-library`'s row above previously read "Path handling only, via
+`namir-platform`" in the *Platform code?* column while its *May depend on* column omitted
+`namir-platform` — a contradiction `xtask layering`'s mechanical edge check (D-5.2) would reject the
+moment `namir-library` tried to act on the first reading. `namir-platform` is also an M6 deliverable
+and does not exist as anything but `DenormalGuard` when `namir-library` is built at M5. Resolved by
+correcting the cell to "No": `namir-library` never learns where library roots or its index file
+live. `LibraryService::open(index_path, roots)`, in `namir-worker`, takes both as constructor
+arguments — the same discipline `namir-worker`'s pre-existing `LoadSource::File` already applies
+("the *caller* supplies the path, so this crate never assumes a filesystem layout"). M6's product
+shells obtain the real paths from `namir-platform` and pass them in; `namir-library` stays
+unaware of `namir-platform` at every point in the roadmap, not only until M6.
 
 ---
 
@@ -746,6 +798,32 @@ primitive, but using a broken hash for identity invites collisions in a shared c
 *Consequence:* The library index must maintain a hash → path map (§12), otherwise the third
 resolution step in FR-STATE-070 cannot work.
 
+*Consequence (added M5)* — D-5.1 puts the dependency edge as `namir-library → namir-state`, the
+opposite direction from what "the library index must maintain a hash → path map" above might
+suggest is needed for resolution to work. Resolved by splitting the algorithm from its data:
+`namir-state` defines the **order** (`resolve::candidates`, yielding library-relative, then
+absolute, then content-hash, always in that sequence since `hash` is non-optional) and a
+`FileResolver` port with one method per step; `namir-library` implements the port. The trait runs
+against the dependency edge, not with it, so no edge reversal is needed.
+
+*Consequence (added M5)* — Two things D-11.3 as originally written left unstated, both closed by
+FR-STATE-070's own rationale ("failing to open a project because a file moved is unacceptable;
+failing silently is worse"):
+
+1. **Which library root** a stored relative path is relative to, when FR-LIB-010 permits several.
+   Resolved: the reference stores only the relative path, with no root identity, and a resolver
+   tries every configured root in configured order. Storing a root index or name would embed
+   machine-specific data in the one field D-11.3 exists to keep portable (UC-3: sending a project to
+   someone whose roots are named differently).
+2. **What a path hit whose content does not match the recorded hash means.** P7 ("identity is the
+   content hash, paths are hints") and FR-STATE-070's own rationale together require that this is
+   **not** treated as a resolution: silently loading a different amp under an old path is exactly
+   the "failing silently" the rationale calls worse than failing outright. A library-relative or
+   absolute path hit is verified against the recorded hash before being accepted; a mismatch falls
+   through to the next candidate exactly as a missing file would, and the near-miss (the path that
+   was tried, and what it actually hashed to) is carried into the failure report so a future UI can
+   offer "use it anyway" as an explicit choice rather than a silent default.
+
 ---
 
 ## 12. Library subsystem
@@ -757,17 +835,80 @@ mtime before rehashing.
 *Traces:* FR-LIB-030, NFR-PERF-060 (10 000 files rescanned in ≤ 2 s — achievable only because
 unchanged files are not rehashed).
 
+*Consequence (added M5) — the rule as originally written contradicts FR-LIB-070.* FR-LIB-070
+requires that files which "change … shall be reflected in the library within one rescan". A file
+edited in place to the same length, within the same filesystem's mtime granularity as the previous
+scan, is invisible to "comparing size and mtime" taken literally — and a hand-edited `.nam`
+metadata field is exactly this same-length case, not an edge case. FR-LIB-070 cannot honestly close
+against D-12.1 as originally stated. **Corrected rule:** a file is rehashed if its size differs,
+**or** if its mtime differs, **or** if its mtime falls within the previous scan's own completion
+timestamp plus the filesystem's mtime granularity (NTFS: 100 ns claimed, ~1 s to ~2 s observed
+depending on volume; treated conservatively as 2 s) — i.e. a file that could plausibly have changed
+*during or immediately after* the scan that indexed it is rehashed the next time regardless of what
+its mtime reads. This costs nothing in the common case (an unchanged library's files have mtimes far
+older than any recent scan) and closes the window D-12.1's literal wording left open.
+
 **Decision D-12.2** — Scanning is a cancellable worker job reporting progress; the UI never waits
 on it (FR-LIB-020, FR-UI-060).
 
-**Decision D-12.3** — The index is stored as a single-file embedded key-value store or a simple
-append-only log with compaction — **decided in implementation, constrained here**: no dependency
-carrying a copyleft licence, no C or C++ dependency (NFR-PORT-040), and corruption must degrade to
-a full rescan rather than to a crash or to wrong results (P8).
+*Consequence (added M5)* — D-5.1 forbids `namir-library` from depending on `namir-worker`, so
+"cancellable worker job" is necessarily split: `namir-library`'s scanner is a caller-pumped step
+machine (`Scanner::step`, doing at most one directory expansion or one file examination per call
+and returning progress), with cancellation expressed as the caller simply not calling it again.
+`namir-worker` owns the thread, the cancellation flag and the progress cadence, driving the step
+machine on its existing pool. `namir-library` needs no concurrency primitives and never learns
+threads exist. A cancelled scan commits every record it already examined — discarding correctly
+hashed work would make cancellation pure waste — but **suppresses the removal list**: a scan that
+did not see the whole tree cannot conclude a file it didn't reach is gone, and treating "not seen"
+as "deleted" would silently empty a user's library on every cancelled scan, violating both P8 and
+FR-LIB-070's "never crash Namir or the host" spirit (an emptied library is a data-loss failure mode,
+not a crash, but the requirement's intent is the same: a missing file must degrade gracefully, not
+propagate as false information).
+
+**Decision D-12.3 (AQ-3 resolved — added M5)** — The index is stored as a single pretty-printed
+JSON document, written whole and replaced atomically (temp file, `sync_all`, `std::fs::rename` over
+the destination — which replaces an existing file on both Unix and Windows, so no
+platform-conditional code is needed). This is **not** a copy of D-11.1's state-document choice made
+by default; it is AQ-3 decided against D-12.3's own constraints (no copyleft dependency, no C/C++
+dependency per NFR-PORT-040, corruption degrades to a full rescan rather than a crash or wrong
+results per P8), with reasoning recorded here rather than left to the code.
+
+*Rationale:* FR-LIB-040's free-text search has no key by which it could be an indexed lookup — it
+filters over every record's name and every metadata field — so the whole index must be resident in
+memory regardless of how it is stored on disk (at 10 000 records of a few hundred bytes each, well
+under 5 MB). An embedded key-value store's entire value proposition — random access to one record
+without its neighbours — is therefore a property this workload has no use for: the index is a
+rebuildable cache, not a database. A single JSON document reuses `serde_json`, already the one
+hardened parser D-11.1 chose specifically so there would be only one to fuzz (P6) — a second,
+third-party binary format would be a second attack surface owned by someone else. Atomic
+whole-file replacement makes a torn write **impossible by construction**: a reader sees either the
+complete old file or the complete new one, never a partial one, which satisfies D-12.3's corruption
+clause by construction rather than by recovery logic. Any other read failure (missing file, wrong
+`format_version`, malformed JSON) yields an empty index and a warning rather than an error — the
+next scan repopulates it, which is D-12.3's "degrades to a full rescan" exactly as stated.
+
+*Rejected:* an append-only log with compaction (D-12.3's other named option) — it can tear on a
+crash mid-append, which atomic whole-file replacement cannot, and it needs its own compaction
+policy, for an incremental-write saving (avoiding rewriting ~3 MB) measured at roughly 10 ms, which
+does not justify the added failure mode against a workload NFR-PERF-060 already budgets 2 seconds
+for. `redb` 4.1.0 (MIT OR Apache-2.0, verified 2026; one transitive dependency, `libc`, unix-only) —
+it clears the licence bar but carries a build script, as does `libc`, and §17's adoption bar for a
+new dependency (set by `rtrb`'s adoption: "zero transitive dependencies, no build script,
+`no_std`-capable pure Rust, MSRV far below this workspace's own") is not met on three of its four
+criteria. D-17.1 rejected `symphonia` over a licence nuance on a **Should** requirement; taking on
+an embedded B-tree store's build-script and cross-compilation risk (both new crates must build for
+`aarch64-linux-android`/`aarch64-apple-ios`, NFR-PORT-030) for a 5 MB rebuildable cache on a **Must**
+is a weaker case than that one was, and D-17.1 already set the precedent for how this project
+weighs that trade.
 
 **Decision D-12.4 (for RD-1)** — A library entry carries an `origin` field from the outset —
 `Local` in 1.0, extensible to a remote source later. Tone3000 integration then adds a variant
 rather than a schema migration across every user's index.
+
+*Consequence (added M5)* — `Origin` also carries an `Unknown(String)` catch-all in addition to
+`Local`, so a 1.0 build reading an index a later build wrote keeps the record rather than dropping
+it. This is D-12.4's own "adds a variant rather than a schema migration" applied in the direction
+D-12.4 did not originally state: forward-compatibility of the *reader*, not only of the *format*.
 
 ---
 
@@ -984,6 +1125,17 @@ hundred lines of `std::sync`; and the pool must be able to *inspect* its queue, 
 does not allow), no async runtime (D-7.1 rejects that explicitly), and no counting-allocator crate
 (which would need an `unsafe impl` D-5.3 forbids here). `namir-worker` therefore adds **no**
 third-party dependency of its own.
+
+**What M5 deliberately did not add**, following the same convention: no embedded key-value store or
+database crate for `namir-library`'s index (AQ-3/D-12.3 — a single JSON document reusing
+`serde_json`, already in the tree via `namir-nam`, serves a 10 000-record rebuildable cache better
+than a B-tree store built for random access this workload never performs); no search-index crate
+(`fst`, `tantivy`) for FR-LIB-040 — a linear scan over a precomputed lowercase blob is sub-millisecond
+at this scale and adds nothing a real search library would improve on; no directory-walking crate
+(`walkdir`) — `std::fs::read_dir` plus `DirEntry::file_type()` (which does not follow symlinks, so
+loops are impossible by construction) is sufficient and keeps the caller-pumped step machine's
+control flow local. `namir-state` and `namir-library` together therefore add **no** third-party
+dependency beyond `serde`/`serde_json`, both already present in the workspace.
 
 ---
 
@@ -1352,7 +1504,7 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 |---|---|---|
 | **AQ-1** | ~~Redistributable `.nam` and IR corpus.~~ **Resolved by D-19.1** — all automated fixtures are generated; captures are perceptual-review material only. | — |
 | **AQ-2** | ~~Confirm D-9.8 (gate detector before input trim).~~ **Confirmed by the author, 2026-08-04.** D-9.8 stands. | — |
-| **AQ-3** | Choice of embedded index store for D-12.3, within the stated constraints. | Test phase |
+| **AQ-3** | ~~Choice of embedded index store for D-12.3, within the stated constraints.~~ **Resolved at M5, 2026-08-07: a single pretty-printed JSON document, written whole and replaced atomically. No new dependency.** See D-12.3. | — |
 | **AQ-4** | Licence of NAM's standardised capture input signal, if any author capture is to be redistributed. Does not block the test phase (D-19.1), only the shipping of captures. | Before shipping factory presets |
 | **AQ-5** | ~~Bass-amp DI tap point.~~ **Resolved 2026-08-04: DI is post-EQ; the limiter is switchable.** Two consequences for the capture session, recorded so they are not rediscovered afterwards: (a) the **limiter must be switched off** — it is time-variant and violates the constraint in D-19.1; (b) because the DI is post-EQ, the amp's EQ setting is baked into the capture, so the EQ must be set flat and its position recorded in the model metadata. | — |
 
