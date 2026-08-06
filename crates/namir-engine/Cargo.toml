@@ -72,3 +72,10 @@ harness = false
 [[bench]]
 name = "tail_structure"
 harness = false
+
+# R-7 (M4): the crossfade's transient cost, which D-8.1's own consequence clause says "the
+# benchmark measures" -- and which nothing could measure until a handover could be driven across a
+# real ring. Gates nothing by itself; see the file's own doc comment for the D-2.4 run procedure.
+[[bench]]
+name = "handover_crossfade"
+harness = false
