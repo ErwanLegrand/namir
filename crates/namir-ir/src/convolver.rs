@@ -13,16 +13,18 @@
 //!    README) is that every FFT partition of the same nominal size `P` starts accumulating input
 //!    at absolute stream time `t=0`, so every partition in a same-size group triggers its FFT on
 //!    the *same* block, forever — piling that whole group's cost onto one recurring block instead
-//!    of spreading it out. The fix, implemented in [`build_schedule`]: within a group of
-//!    `group_len` partitions sharing nominal size `P`, group member `j` (0-indexed) gets
-//!    `stagger = j * P / group_len` (integer division). [`PreparedIr::from_wav_bytes_with_schedule`]
-//!    then pre-zeros that partition's input accumulation buffer and initializes its fill position
-//!    to `stagger` instead of `0`. This is causally valid: input before the stream's `t=0` is
-//!    defined as silence, and a nonzero starting fill position is equivalent to having already
-//!    "received" `stagger` samples of that pre-stream silence — see `fft_stage_process_sample`'s
-//!    doc comment for the derivation showing this changes only *when* each partition's FFT fires,
-//!    never the numerical result. D-9.5's test suite below exercises this directly (IR lengths
-//!    chosen so some size-level group has more than one member).
+//!    of spreading it out. The fix, implemented in [`build_schedule`]: each partition sharing
+//!    nominal size `P` gets a `stagger` (a multiple of the host block size, round-robin across
+//!    the size level's whole schedule — see `build_schedule`'s doc comment for exactly how, and
+//!    "R-8, verified and tuned (M3)" below for why it's shaped this way).
+//!    [`PreparedIr::from_wav_bytes_with_schedule`] then pre-zeros that partition's input
+//!    accumulation buffer and initializes its fill position to `stagger` instead of `0`. This is
+//!    causally valid: input before the stream's `t=0` is defined as silence, and a nonzero
+//!    starting fill position is equivalent to having already "received" `stagger` samples of that
+//!    pre-stream silence — see `fft_stage_process_sample`'s doc comment for the derivation showing
+//!    this changes only *when* each partition's FFT fires, never the numerical result. D-9.5's
+//!    test suite below exercises this directly (IR lengths chosen so some size-level group has
+//!    more than one member).
 //!
 //! 3. **Untrusted input hardening**, in `wav.rs` (WAV parsing) rather than here: this crate parses
 //!    real files from disk, unlike the spike's own trusted generated fixtures. See `wav.rs`'s
@@ -32,17 +34,145 @@
 //! spectral multiply against a precomputed `h` segment spectrum, C2R back and overlap-add into a
 //! ring accumulator) and the head partition's direct time-domain convolution are otherwise
 //! unchanged from the spike.
+//!
+//! # R-8, verified and tuned (M3, `docs/03-implementation-roadmap.md` §7)
+//!
+//! S-2 recorded staggering as *required follow-up*, not a proven fix — M2 built it in, but never
+//! measured whether it actually closed the gap S-2 found (90-400% of a block's own period at
+//! FR-IR-050's own minimum). R-8's M3 task was to run that measurement for real, against this
+//! crate (not the spike's copy), via `examples/perf_sweep.rs` (S-2's comparative pass, reused)
+//! and `examples/perf_bench.rs` (S-2's D-2.2-rigor confirmatory pass, reused).
+//!
+//! **Decision: M2's per-group stagger (`stagger = j * size / group_len`, `j` reset to 0 at every
+//! group boundary) is replaced by a per-*size* stagger — one running counter shared by every
+//! group at that nominal size, block-aligned (`stagger` is always a multiple of `block_size`).**
+//!
+//! **Rationale.** The measurement found M2's scheme only half-fixed the lockstep problem. Two
+//! independent gaps, both visible once actually measured:
+//! - *Not block-aligned.* A size-`P` partition's FFT triggers once every `P` samples; which
+//!   *host block* (of `block_size` samples) that lands in depends only on the trigger's phase
+//!   modulo `block_size`. `j * size / group_len` is not generally a multiple of `block_size` (it
+//!   only happens to be, for `group_len <= growth_factor` at levels past the first, when
+//!   `size / group_len` divides evenly — true for the shipped `growth_factor = 2` default at
+//!   every level except the very first, where `size == block_size` and there is only one
+//!   possible host block regardless, so staggering can't help there by construction).
+//! - *Not per-size.* This was the real gap. Once a level's `size` reaches `max_partition`, growth
+//!   stops (D-9.6) but the schedule keeps adding new groups at that same size for as long as the
+//!   IR has taps left — a multi-second IR can have dozens of such groups. M2's `j` reset to 0 at
+//!   every group boundary, so *every* group's first member got `stagger = 0` and every group's
+//!   second got `stagger = size / 2` — collapsing what could have been `size / block_size`
+//!   distinct host-block phases down to just 2, no matter how many groups piled up. Direct
+//!   inspection of `build_schedule`'s own output confirmed this: a 10 s@192 kHz IR at
+//!   `block_size = 32` produces 233 partitions at `size = max_partition = 8192` (256 possible
+//!   phases), split M2-style into exactly 2 groups of ~117 — barely better than no staggering at
+//!   all for that size level.
+//!
+//! **Measured impact of the fix, single-core-pinned, `growth_factor = 2` / `max_partition = 8192`
+//! (this crate's shipped defaults), `decaying_noise` fixture (S-2's own choice: convolution cost
+//! is a function of IR length, not tap values). *Measurement caveat, stated because it must be:*
+//! these figures predate M3's close-out and were taken on a 4-core Intel Xeon sandbox, not
+//! `docs/02-architecture.md` §2's pinned reference machine. The *relative* before/after comparison
+//! below (same machine, same code otherwise, only `build_schedule`'s stagger formula changed)
+//! remains valid, which is what this table is for. The absolute values do **not** carry over: the
+//! close-out later established, on the §2 machine, that `p99.9` measured this way is dominated by
+//! interference outside this crate (GPU-driver ISRs on CPU 0 at 128-512 µs, ~165/second) rather
+//! than by convolution cost — see `namir-engine/benches/tail_structure.rs` for the
+//! contamination-immune estimator that replaced it.*
+//!
+//! | Condition | Before (M2 stagger), p99.9 / max | After (this fix), p99.9 / max |
+//! |---|---|---|
+//! | NFR-PERF-010's own condition (48 kHz, 64-sample block, 2 s IR) | 337.7% / 602.5% | **16.8% / 41.3%** |
+//! | FR-IR-050 floor (48 kHz, 32-sample block, 2 s IR) | 616.0% / 1290.7% | **30.7% / 70.4%** |
+//! | 10 s@192 kHz IR, 1024-sample block | 111.1% / 137.3% | 67.4% / 81.8% |
+//! | 10 s@192 kHz IR, 2048-sample block | 129.7% / 131.8% | 117.8% / 131.4% |
+//!
+//! (Each row re-run from `perf_bench.rs`, >= 200 repetitions of that combination's worst-tier
+//! period per D-2.2's periodic-not-rare reasoning — see that file's module doc comment.)
+//!
+//! The fix closes the gap by roughly 15-20x at exactly the two conditions R-8 names
+//! (NFR-PERF-010's own condition and FR-IR-050's floor), taking both from several times over a
+//! full core's budget to comfortably under half of one core on this hardware. **The IR-stage
+//! *scheduling defect* R-8 describes is closed** (the remaining gaps below are pre-existing,
+//! separately-tracked cost characteristics, not this defect) — this does not by itself retire
+//! R-8 or close NFR-PERF-010 as milestone risks, which per
+//! `docs/03-implementation-roadmap.md` §7 requires the certified full-six-stage-chain benchmark
+//! on the §2 reference machine, still outstanding.
+//!
+//! **What the fix does *not* close, recorded rather than glossed over:**
+//! - **The single largest block size in the required matrix (2048) at the longest/highest-rate
+//!   IRs stays just over budget** (117.8% p99.9 / 131.4% max at 192 kHz for a 10 s IR, barely
+//!   moved by this fix — see the table). 1024-sample blocks *did* improve substantially (from
+//!   111.1%/137.3% to 67.4%/81.8%, back under budget), so this is not simply "large blocks are
+//!   untouched by staggering"; at 2048 specifically, the direct-convolution head partition's
+//!   inherent `O(block_size^2)` cost (confirmed by measurement: an all-zero `delta` fixture costs
+//!   the same as `decaying_noise` at a given block size, so tap content plays no role, only
+//!   `block_size` does) has grown large enough to dominate the total regardless of how well the
+//!   FFT partitions are staggered. This matches S-2's own framing (its README: "only at the
+//!   large-block end... does the picture become merely over budget by a factor of 2-4") — a
+//!   pre-existing, separately-tracked cost characteristic of the head partition, not something
+//!   FFT-partition staggering could ever touch. Closing it, if ever required, is a different
+//!   piece of work (vectorizing or restructuring the head partition), out of R-8's scope.
+//! - **The smallest block size (32) at the highest rate (192 kHz) still shows an elevated `max`**
+//!   (as high as several hundred percent of that combination's own ~166 ns block period across
+//!   repeated runs) even though `p99.9` — the actual D-2.2 gate — stays near 120%. Two repeated
+//!   measurements of the same combination gave `max` values of 335% and 510% while `p99.9` held
+//!   at 118-123%, i.e. this is a single-sample noise/jitter signature rather than a reproducible
+//!   periodic pileup. M3's close-out subsequently confirmed that reading on the §2 reference
+//!   machine and identified the mechanism: benchmarks pinned to CPU 0, which absorbs the GPU
+//!   driver's 128-512 µs interrupts, so isolated `max` excursions of exactly this shape were
+//!   expected and are not a scheduling defect in this crate.
+//!   A 32-sample block at 192 kHz is also, independent of this crate, an inherently tight budget
+//!   (a 166 ns block period) that FR-IR-050 does not actually require (its Must floor is stated at
+//!   48 kHz).
+//!
+//! **Alternative considered and not needed: amortizing each partition's FFT across several block
+//! calls (splitting R2C/spectral-multiply/C2R into a state machine) instead of computing it
+//! synchronously on the triggering block.** This was the task's other candidate direction, flagged
+//! as justified only if block-aligned staggering still left a large gap at the grid's worst
+//! corners. It didn't: the measured results above show the low-risk stagger-formula change alone
+//! closes both of R-8's named conditions by more than an order of magnitude, so the bigger,
+//! riskier amortization rework was not implemented.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use wide::f32x8;
 
 use namir_core::SampleRate;
 
 use crate::error_codes::IrLoadError;
 use crate::wav;
+
+/// `out[t] += w * in_[t]` for every `t`, vectorized 8 lanes at a time with a scalar remainder —
+/// identical shape and rationale to `namir-nam/src/wavenet.rs`'s own `axpy` (this M3 close-out
+/// pass's reference-machine benchmarking found the head partition's direct-convolution tap loop,
+/// below, was the other hot unvectorized loop in the assembled six-stage chain once WaveNet's
+/// own activations were fixed). Not shared as a `pub` item between the two crates for the same
+/// reason this codebase's other small per-crate duplicates give (see e.g. `rt_harness`'s doc
+/// comment in this crate/`namir-nam`): a five-line function isn't worth a shared crate or a
+/// public API surface neither crate otherwise needs.
+#[inline]
+fn axpy(out: &mut [f32], in_: &[f32], w: f32) {
+    debug_assert_eq!(out.len(), in_.len());
+    let n = out.len();
+    let lanes = n - n % 8;
+    let (out_vec_part, out_rem) = out.split_at_mut(lanes);
+    let (in_vec_part, in_rem) = in_.split_at(lanes);
+
+    let w_vec = f32x8::splat(w);
+    for (o, i) in out_vec_part
+        .chunks_exact_mut(8)
+        .zip(in_vec_part.chunks_exact(8))
+    {
+        let sum = f32x8::from(&*o) + w_vec * f32x8::from(i);
+        o.copy_from_slice(&sum.to_array());
+    }
+    for (o, &i) in out_rem.iter_mut().zip(in_rem.iter()) {
+        *o += w * i;
+    }
+}
 
 /// D-9.6's S-2-measured default growth factor.
 pub const DEFAULT_GROWTH_FACTOR: usize = 2;
@@ -75,13 +205,14 @@ pub struct StageSpec {
     /// The number of real IR taps in this partition's `h` segment (`<= size`; less only for the
     /// final partition, whose `h` segment is shorter than a full `size`-length block).
     pub actual_len: usize,
-    /// R-8's per-group stagger: this partition's input accumulator starts as if it had already
-    /// received this many samples of pre-stream silence (`< size`).
+    /// R-8's stagger: this partition's input accumulator starts as if it had already received
+    /// this many samples of pre-stream silence (`< size`).
     pub stagger: usize,
 }
 
-/// Builds the D-9.4 non-uniform schedule for an IR of `ir_len` taps, with R-8's per-group
-/// stagger assigned to every returned `StageSpec`.
+/// Builds the D-9.4 non-uniform schedule for an IR of `ir_len` taps, with R-8's stagger (tuned
+/// per the module doc comment's "R-8, verified and tuned (M3)" section) assigned to every
+/// returned `StageSpec`.
 ///
 /// The head (direct, time-domain) partition is `min(block_size, ir_len)` taps and is *not*
 /// included in the returned list — [`PreparedIr`] handles it separately. Every returned
@@ -98,12 +229,19 @@ pub struct StageSpec {
 /// `growth_factor` partitions of the current size (not a fixed count) is what keeps that
 /// invariant true at every size transition, by induction.
 ///
-/// **R-8 stagger**: within one size level, up to `growth_factor` `StageSpec`s share the same
-/// `size`. For a group of `group_len` such partitions (`group_len <= growth_factor`, less only
-/// when the IR runs out mid-group), member `j` (0-indexed in schedule order within the group)
-/// gets `stagger = j * size / group_len` (integer division) — spreading the group's FFT triggers
-/// across up to `group_len` distinct blocks within each `size`-sample period instead of all
-/// landing on one.
+/// **R-8 stagger, block-aligned and per-size rather than per-group.** A size-`P` partition's FFT
+/// triggers once every `P` samples; which *host block* (of `block_size` samples) that trigger
+/// lands in only depends on the trigger's phase modulo `block_size` — so a stagger that is
+/// itself a multiple of `block_size` deterministically controls which of the `P / block_size`
+/// possible host blocks a partition's FFT lands in, spreading its cost as widely as it can go.
+/// (A stagger that *isn't* block-aligned, M2's original scheme, only rearranges which sample
+/// *within* a host block the FFT happens to fire on — it can't change which block bears the
+/// cost, so it does nothing for the metric that matters.) The counter driving this is tracked
+/// per nominal `size` across the *whole* schedule, not reset at each group boundary: this is
+/// what spreads partitions across a size level's blocks not just within one `growth_factor`-
+/// sized group, but also across the many separate groups a multi-second IR accumulates once
+/// `size` reaches `max_partition` and stops growing — see the module doc comment's measurement
+/// for why that inter-group case, not the intra-group one, was the fix's actual target.
 pub fn build_schedule(
     ir_len: usize,
     block_size: usize,
@@ -112,32 +250,86 @@ pub fn build_schedule(
 ) -> Vec<StageSpec> {
     assert!(block_size > 0 && growth_factor >= 1 && max_partition >= block_size);
     let head = block_size.min(ir_len);
+    let per_level = growth_factor.max(1);
+
+    // --- Pass 1: enumerate the partitions themselves. Stagger is deliberately left 0 here and
+    // assigned in pass 2, which needs each size's *finished* population count -- see that pass
+    // for why a single streaming pass cannot compute the same assignment.
     let mut stages = Vec::new();
     let mut offset = head;
     let mut size = block_size;
-    let per_level = growth_factor.max(1);
+    // The distinct nominal sizes, in the order they first appear (ascending, and contiguous once
+    // `size` saturates at `max_partition`). A size's index here is its "level", used below.
+    let mut size_order: Vec<usize> = Vec::new();
     while offset < ir_len {
-        let group_start = stages.len();
         for _ in 0..per_level {
             if offset >= ir_len {
                 break;
             }
-            let actual_len = (ir_len - offset).min(size);
+            if size_order.last() != Some(&size) {
+                size_order.push(size);
+            }
             stages.push(StageSpec {
                 offset,
                 size,
-                actual_len,
-                stagger: 0, // filled in below, once the group's actual length is known
+                actual_len: (ir_len - offset).min(size),
+                stagger: 0,
             });
             offset += size;
-        }
-        let group_len = stages.len() - group_start;
-        for (j, spec) in stages[group_start..].iter_mut().enumerate() {
-            spec.stagger = j * size / group_len;
         }
         if size < max_partition && growth_factor > 1 {
             size = (size * growth_factor).min(max_partition);
         }
+    }
+
+    // --- Pass 2: assign staggers, decorrelating in two independent dimensions.
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for s in &stages {
+        *counts.entry(s.size).or_insert(0) += 1;
+    }
+    let mut assigned: HashMap<usize, usize> = HashMap::new();
+    for spec in stages.iter_mut() {
+        // >= 1: size >= block_size always (size starts at block_size and only grows), so this is
+        // never a divide-by-zero.
+        let num_phases = (spec.size / block_size).max(1);
+        let count = counts[&spec.size];
+        let i = assigned.entry(spec.size).or_insert(0);
+
+        // (a) WITHIN a size: spread this size's members across its available phases. When the
+        // size has no more members than phases, spread them *evenly* across the whole period
+        // (`i * num_phases / count`) rather than packing them onto consecutive phases as the
+        // previous `i % num_phases` did -- consecutive packing left the ten max_partition-sized
+        // partitions of a 2 s IR firing on ten adjacent host blocks, a long contiguous burst
+        // rather than a spread. When members outnumber phases, fall back to round-robin, which
+        // is exactly balanced (at most `ceil(count / num_phases)` on any phase) and is what the
+        // wraparound case actually wants.
+        let within = if count <= num_phases {
+            (*i * num_phases) / count
+        } else {
+            *i % num_phases
+        };
+        *i += 1;
+
+        // (b) ACROSS sizes: shift every size's phase assignment by its own level index.
+        //
+        // Without this shift, each size's phase-0 member lands on the *last* host block of its
+        // own period: a size-`P` partition with `stagger == 0` first fires at absolute sample
+        // `P - 1`, i.e. host block `P / block_size - 1`. Since every size's period (in blocks)
+        // divides the largest size's period, all of those "last block of my period" positions
+        // coincide on one single host block, which therefore collected one partition of *every*
+        // size simultaneously -- measured at the NFR-PERF-010 condition (2 s IR, 64-sample
+        // block, growth_factor 2, max_partition 8192) as a worst block carrying ~11.9x the mean
+        // block's FFT work, with the largest partition contributing about half of it.
+        //
+        // This is not phase exhaustion: within each size the assignment above already uses
+        // distinct, well-spread phases, and every size here has at least as many phases as
+        // members. The defect was purely that all sizes' phase counters started at 0 and phase 0
+        // maps to the same residue for every size. A per-level shift breaks that alignment with
+        // no other effect -- it is a rotation of an already-valid assignment, so it preserves
+        // both `stagger < size` and the round-robin balance property above.
+        let level = size_order.iter().position(|&s| s == spec.size).unwrap_or(0);
+
+        spec.stagger = ((within + level) % num_phases) * block_size;
     }
     stages
 }
@@ -265,13 +457,24 @@ fn fft_stage_process_sample(
     let start_abs: i64 = t_abs as i64 + 1 - stage.size as i64 + stage.offset as i64;
     let valid_len = stage.size + stage.actual_len - 1;
     let scale = 1.0 / stage.fft_len as f32; // realfft's inverse transform is unnormalized
-    let ring_len = ring.len() as i64;
+    // Bitmask, not `%`: `ring.len()` is always a power of two (`PreparedChannel::new` builds it
+    // with `.next_power_of_two()`), but it is a *runtime* value, so the compiler cannot prove that
+    // and must emit a real 64-bit integer division for `%` -- tens of cycles, executed
+    // `valid_len` times (~16k for a size-8192 partition) on every single trigger. This loop's
+    // total cost across a schedule period is proportional to the IR's whole tap count and is
+    // essentially invariant to partition size, which is why it dominates the measured tail and why
+    // sweeping `max_partition` never moved it (M3; see `namir-engine/benches/tail_structure.rs`).
+    debug_assert!(
+        ring.len().is_power_of_two(),
+        "ring length must be a power of two for the mask below to equal a modulo"
+    );
+    let ring_mask = ring.len() - 1;
     for i in 0..valid_len {
         let real_time = start_abs + i as i64;
         if real_time < 0 {
             continue; // exactly-zero contribution (see doc comment above) -- skip, don't wrap.
         }
-        let pos = (real_time % ring_len) as usize;
+        let pos = real_time as usize & ring_mask;
         ring[pos] += state.time_scratch[i] * scale;
     }
 }
@@ -286,11 +489,23 @@ struct PreparedChannel {
     head: Vec<f32>,
     stages: Vec<FftStageImmutable>,
     ring_len: usize,
+    /// The host block size this channel was prepared for (D-9.4: equals the head partition's own
+    /// intended size, though `head.len()` itself can be shorter when `ir_len < block_size`). The
+    /// only bound `process_block` relies on: every call's `input.len()` must be `<= block_size`,
+    /// exactly as `head_scratch`'s fixed size below assumes.
+    block_size: usize,
 }
 
 /// One channel's mutable runtime state.
 struct ChannelState {
-    head_history: Vec<f32>, // ring buffer, length == head.len().max(1)
+    /// The last `head.len().saturating_sub(1)` samples before the current block, oldest first —
+    /// `namir-nam/src/wavenet.rs`'s `Conv1D` history convention, not a modulo-indexed ring buffer
+    /// (see `process_block`'s doc comment for why this changed from the original ring-buffer
+    /// scheme).
+    head_history: Vec<f32>,
+    /// Scratch: `head_history ++ this block's input`, length `head_history.len() + block_size`,
+    /// sized once and reused every call (no per-call allocation).
+    head_scratch: Vec<f32>,
     stage_states: Vec<FftStageState>,
     ring: Vec<f32>,
     t: u64,
@@ -329,43 +544,86 @@ impl PreparedChannel {
             head: h[..head_len].to_vec(),
             stages,
             ring_len,
+            block_size,
         }
     }
 
     fn new_state(&self) -> ChannelState {
+        let history_len = self.head.len().saturating_sub(1);
         ChannelState {
-            head_history: vec![0f32; self.head.len().max(1)],
+            head_history: vec![0f32; history_len],
+            head_scratch: vec![0f32; history_len + self.block_size],
             stage_states: self.stages.iter().map(FftStageState::new).collect(),
             ring: vec![0f32; self.ring_len],
             t: 0,
         }
     }
 
-    /// Ported near-verbatim from the spike's `PartitionedConvolver::process_block`. Allocates
-    /// nothing.
+    /// Ported near-verbatim from the spike's `PartitionedConvolver::process_block`, except for
+    /// the head partition's own tap loop (see below). Allocates nothing.
+    ///
+    /// Panics if `input.len()` exceeds this channel's prepared `block_size` — a call-site
+    /// programming error (the caller must size blocks to at most the value it originally passed
+    /// to `PreparedChannel::new`/`PreparedIr::from_wav_bytes`), same contract and rationale as
+    /// `namir-nam`'s `PreparedWaveNet::process_block`.
+    ///
+    /// **Head partition: vectorized block-at-a-time, not per-sample-with-modulo.** This M3
+    /// close-out pass's reference-machine benchmarking found the original per-sample loop —
+    /// `y += head[k] * head_history[(t - k) % head_len]`, a `head_len`-deep scalar loop *with a
+    /// modulo per tap* run once per sample — was a second major unvectorized cost alongside
+    /// `namir-nam`'s WaveNet activations (see that crate's `wavenet.rs` for the matching fix).
+    /// The replacement builds `padded = head_history ++ input` once per block (the same
+    /// history-plus-input-window technique `namir-nam/src/wavenet.rs`'s `Conv1D::apply_into`
+    /// already uses) and, for each tap `k`, accumulates `output[i] += head[k] *
+    /// padded[history_len - k + i]` for the whole block via [`axpy`] — `head_len` vectorized
+    /// passes over the block instead of `head_len * block_size` scalar multiply-and-modulo steps.
+    /// `padded[history_len - k + i] == x` at block-local time `i - k`, matching the original
+    /// tap's `x[t - k]` exactly (`history_len - k >= 0` always, since `k < head_len =
+    /// history_len + 1`); a zero-initialized `head_history` at stream start reproduces the
+    /// original loop's explicit `dt > t` early-break for "no signal before t=0" without needing
+    /// the special case, since multiplying a still-zero history sample by `head[k]` is a no-op
+    /// either way.
     fn process_block(&self, state: &mut ChannelState, input: &[f32], output: &mut [f32]) {
+        let n = input.len();
+        assert!(
+            n <= self.block_size,
+            "block size {n} exceeds this channel's prepared block_size {}",
+            self.block_size
+        );
         let head_len = self.head.len();
-        let ring_len = state.ring.len() as u64;
-        for i in 0..input.len() {
+        let history_len = state.head_history.len();
+
+        if head_len > 0 {
+            let padded = &mut state.head_scratch[..history_len + n];
+            padded[..history_len].copy_from_slice(&state.head_history);
+            padded[history_len..].copy_from_slice(input);
+
+            output[..n].fill(0.0);
+            for k in 0..head_len {
+                let w = self.head[k];
+                if w == 0.0 {
+                    continue;
+                }
+                let offset = history_len - k;
+                axpy(&mut output[..n], &padded[offset..offset + n], w);
+            }
+
+            state.head_history.copy_from_slice(&padded[n..]);
+        } else {
+            output[..n].fill(0.0);
+        }
+
+        // Bitmask rather than `%`, same reasoning as `fft_stage_process_sample`'s own note: the
+        // ring is always power-of-two length, but that is a runtime fact the compiler cannot use.
+        debug_assert!(state.ring.len().is_power_of_two());
+        let ring_mask = state.ring.len() - 1;
+        for i in 0..n {
             let x = input[i];
             let t = state.t;
 
-            if head_len > 0 {
-                state.head_history[(t as usize) % head_len] = x;
-            }
-            let mut y = 0f32;
-            for k in 0..head_len {
-                let dt = t.wrapping_sub(k as u64);
-                if dt > t {
-                    break; // k > t: no history yet this far back
-                }
-                y += self.head[k] * state.head_history[(dt as usize) % head_len];
-            }
-
-            let pos = (t % ring_len) as usize;
-            y += state.ring[pos];
+            let pos = t as usize & ring_mask;
+            output[i] += state.ring[pos];
             state.ring[pos] = 0.0;
-            output[i] = y;
 
             for (stage, st) in self.stages.iter().zip(state.stage_states.iter_mut()) {
                 fft_stage_process_sample(stage, st, x, t, &mut state.ring);
@@ -716,8 +974,13 @@ mod tests {
     }
 
     #[test]
-    fn stagger_spreads_across_a_multi_member_group() {
-        // growth_factor = 2, IR long enough that the block_size-sized level has 2 full members.
+    fn the_block_size_level_cannot_be_staggered_and_correctly_reports_zero() {
+        // At size == block_size, a partition's FFT triggers exactly once per host block no
+        // matter what -- there is only one possible host block per period (period_blocks =
+        // size / block_size = 1), so there is nothing to spread. This is a real constraint, not
+        // a bug: verify it's reported honestly as stagger == 0 rather than the old scheme's
+        // cosmetic within-block-only offset (which changed *when inside a block* the FFT ran
+        // but never *which block*, i.e. never touched the metric R-8 actually cares about).
         let stages = build_schedule(1_000, 64, 2, 8192);
         let first_level: Vec<&StageSpec> = stages.iter().filter(|s| s.size == 64).collect();
         assert_eq!(
@@ -725,9 +988,152 @@ mod tests {
             2,
             "expected a full 2-member group at size 64"
         );
-        assert_eq!(first_level[0].stagger, 0);
-        assert_eq!(first_level[1].stagger, 64 / 2); // j=1: stagger = j * size / group_len
-        assert_ne!(first_level[0].stagger, first_level[1].stagger);
+        assert!(first_level.iter().all(|s| s.stagger == 0));
+    }
+
+    #[test]
+    fn stagger_spreads_across_a_multi_member_group_once_period_blocks_exceeds_one() {
+        // growth_factor = 2, IR long enough that the size-128 level (one level past block_size,
+        // so period_blocks = 128/64 = 2 -- two host blocks actually exist to spread across) has
+        // 2 full members.
+        //
+        // Asserted as a *property* (the two members occupy the two distinct block-aligned phases)
+        // rather than as literal values. An earlier revision pinned `level[0].stagger == 0` and
+        // `level[1].stagger == 64` exactly; the cross-size decorrelation shift added to
+        // `build_schedule` (see its pass-2 comment (b)) rotates each size's assignment by its own
+        // level index, which for this 2-phase level swaps which member gets which phase. That
+        // rotation is the entire point of the fix and changes nothing this test actually cares
+        // about -- both phases are still used, exactly once each -- so the assertion is written
+        // against the invariant instead of against one particular rotation of it.
+        let stages = build_schedule(1_000, 64, 2, 8192);
+        let level: Vec<&StageSpec> = stages.iter().filter(|s| s.size == 128).collect();
+        assert_eq!(level.len(), 2, "expected a full 2-member group at size 128");
+        assert_ne!(
+            level[0].stagger, level[1].stagger,
+            "the two members must not share a phase"
+        );
+        let mut phases: Vec<usize> = level.iter().map(|s| s.stagger).collect();
+        phases.sort_unstable();
+        assert_eq!(
+            phases,
+            vec![0, 64],
+            "both block-aligned phases of a 2-phase level should be used exactly once"
+        );
+    }
+
+    #[test]
+    fn stagger_spreads_across_repeated_groups_at_the_max_partition_ceiling() {
+        // R-8's actual measured gap (see convolver.rs's module doc comment, "R-8, verified and
+        // tuned"): once `size` reaches `max_partition` it stops growing, so a long IR produces
+        // many separate groups all sharing that one nominal size, which M2's per-group-only
+        // stagger (reset to {0, size/2} at every group boundary) collapsed onto just 2 host
+        // blocks no matter how many groups piled up. Confirms the fix: staggers at this size
+        // level now spread across far more than 2 distinct phases, and no phase is loaded with
+        // more than ceil(n_partitions / period_blocks) partitions.
+        //
+        // `ir_len` here is deliberately past D-9.7's real 10-second-at-engine-rate ceiling
+        // (`build_schedule` itself has no such cap -- that's applied elsewhere, by
+        // `truncate_to_engine_ceiling`, before a real IR ever reaches this function): the point
+        // is to comfortably exceed `period_blocks` partitions at the ceiling size so the
+        // round-robin wraparound path is actually exercised, not to claim IRs this long ship.
+        let ir_len = 3_000_000;
+        let block_size = 32;
+        let stages = build_schedule(
+            ir_len,
+            block_size,
+            DEFAULT_GROWTH_FACTOR,
+            DEFAULT_MAX_PARTITION,
+        );
+        let ceiling: Vec<&StageSpec> = stages
+            .iter()
+            .filter(|s| s.size == DEFAULT_MAX_PARTITION)
+            .collect();
+        let period_blocks = DEFAULT_MAX_PARTITION / block_size;
+        assert!(
+            ceiling.len() > period_blocks,
+            "test assumption: this grid point needs more max_partition-sized partitions ({}) \
+             than period_blocks ({period_blocks}) for the round-robin wraparound case to be \
+             exercised at all",
+            ceiling.len()
+        );
+        let mut counts: HashMap<usize, usize> = HashMap::new();
+        for s in &ceiling {
+            *counts.entry(s.stagger).or_insert(0) += 1;
+        }
+        assert!(
+            counts.len() > 2,
+            "expected staggers spread across far more than the old scheme's 2 phases, got {} \
+             distinct phases across {} partitions: {counts:?}",
+            counts.len(),
+            ceiling.len()
+        );
+        let max_per_phase = counts.values().copied().max().unwrap_or(0);
+        let expected_max_per_phase = ceiling.len().div_ceil(period_blocks);
+        assert_eq!(
+            max_per_phase, expected_max_per_phase,
+            "round-robin should load at most ceil(n/period_blocks) partitions onto any one phase"
+        );
+    }
+
+    /// R-8 regression guard, quantitative rather than structural: no single host block may carry
+    /// a wildly disproportionate share of the schedule's total FFT work.
+    ///
+    /// Every other stagger test above checks a *structural* property (phases are distinct, are
+    /// block-aligned, are balanced round-robin). None of them would have caught the cross-size
+    /// alignment defect `build_schedule`'s pass-2 comment (b) describes, because that defect
+    /// violated no structural property: within every size the phases were distinct, spread and
+    /// balanced. It only showed up once the sizes were considered *together*, as a pileup on one
+    /// host block. This test is the one that would have caught it, so it exists permanently.
+    ///
+    /// The model here is deliberately simple and self-contained (no measurement, no dependency on
+    /// this machine): a size-`P` partition triggers its FFT every `P` samples, first at absolute
+    /// sample `P - stagger - 1`, and costs `2P * log2(2P)` -- the standard real-FFT operation
+    /// count, used only to weight partitions against each other, so its absolute scale is
+    /// irrelevant. What is asserted is the *ratio* of the worst host block's weighted load to the
+    /// mean, over one full schedule period.
+    #[test]
+    fn no_single_host_block_carries_a_disproportionate_share_of_fft_work() {
+        // NFR-PERF-010's own literal condition: 2 s IR at 48 kHz, 64-sample host block, this
+        // crate's shipped schedule defaults.
+        let block_size = 64;
+        let stages = build_schedule(
+            96_000,
+            block_size,
+            DEFAULT_GROWTH_FACTOR,
+            DEFAULT_MAX_PARTITION,
+        );
+        let largest = stages.iter().map(|s| s.size).max().expect("non-empty");
+        let period_blocks = largest / block_size;
+
+        let mut load = vec![0f64; period_blocks];
+        for s in &stages {
+            let weight = 2.0 * s.size as f64 * ((2 * s.size) as f64).log2();
+            let first_block = (s.size - s.stagger - 1) / block_size;
+            let stride = (s.size / block_size).max(1);
+            let mut b = first_block % period_blocks;
+            // Walk this partition's whole orbit within one period.
+            for _ in 0..(period_blocks / stride).max(1) {
+                load[b] += weight;
+                b = (b + stride) % period_blocks;
+            }
+        }
+
+        let total: f64 = load.iter().sum();
+        let mean = total / period_blocks as f64;
+        let worst = load.iter().copied().fold(f64::MIN, f64::max);
+        let ratio = worst / mean;
+        println!("worst-host-block / mean FFT load: {ratio:.3}x (period {period_blocks} blocks)");
+
+        // The floor is set by physics, not by scheduling: the single largest partition's FFT is
+        // atomic -- it cannot be split across host blocks by any stagger -- so some block must
+        // carry it, and at this condition that alone is ~6.5x the mean. The bound below leaves
+        // headroom above that floor while still failing loudly if the cross-size alignment
+        // defect (measured at ~11.9x) is ever reintroduced.
+        assert!(
+            ratio < 8.0,
+            "worst host block carries {ratio:.2}x the mean block's FFT work (bound: 8.0). \
+             Load profile: {load:?}"
+        );
     }
 
     #[test]

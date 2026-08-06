@@ -9,26 +9,38 @@
 //! was the spike's own earlier bug, and this port preserves the two-buffer structure specifically
 //! to not reintroduce it.
 //!
-//! `PreparedNam` holds only immutable weights and configuration (and is `Sync` — no `unsafe impl`
-//! needed, see below); `NamState` holds only the per-instance causal-conv history and reusable
-//! scratch. This is D-9.1's split, structural rather than conventional, same as the spike.
+//! `PreparedWaveNet` holds only immutable weights and configuration (and is `Sync` — no
+//! `unsafe impl` needed, see below); `WaveNetState` holds only the per-instance causal-conv
+//! history and reusable scratch. This is D-9.1's split, structural rather than conventional, same
+//! as the spike.
 //!
 //! The one thing this port changes structurally from the spike (beyond the rename) is validation:
 //! the spike used `panic!`/`assert!` because it only ever saw its own trusted generator's output.
 //! This crate parses untrusted files (P6, FR-NAM-040), so every one of the spike's implicit
-//! assumptions becomes an explicit, catalogued `Result` failure in `PreparedNam::from_file`,
+//! assumptions becomes an explicit, catalogued `Result` failure in `PreparedWaveNet::from_file`,
 //! including a class of check the spike never needed at all: per NFR-SEC-020, every config
 //! dimension is validated against a documented ceiling *before* any arithmetic or allocation is
 //! derived from it. That ordering is load-bearing, not decorative — see the comment at the top of
-//! `PreparedNam::from_file` for why.
+//! `PreparedWaveNet::from_file` for why.
+//!
+//! # `PreparedWaveNet`/`WaveNetState`, not `PreparedNam`/`NamState`
+//!
+//! This module used to export `PreparedNam`/`NamState` directly (back when WaveNet was the only
+//! architecture this crate supported). Now that `lstm.rs` implements FR-NAM-020's other Must
+//! architecture, `PreparedNam`/`NamState` have moved to `model.rs`, as a small enum wrapping this
+//! module's `PreparedWaveNet`/`WaveNetState` and `lstm.rs`'s `PreparedLstm`/`LstmState`. This
+//! module's own types keep the plain, architecture-specific names an enum variant should have;
+//! `model.rs`'s doc comment explains the forwarding.
 
 use namir_core::SampleRate;
+use wide::f32x8;
 
 use crate::error_codes::{self, NamLoadError};
 use crate::file::{LayerArrayConfig, NamFile, NamMetadata};
+use crate::shared::{WeightReader, check_max, check_min1};
 
 /// A flat, row-major multi-channel signal buffer: `data[channel * n + t]`. Ported verbatim from
-/// the spike: one allocation per tensor rather than one per channel keeps `NamState`'s scratch
+/// the spike: one allocation per tensor rather than one per channel keeps `WaveNetState`'s scratch
 /// buffers few and reusable instead of many-and-tiny.
 type Sig = Vec<f32>;
 
@@ -62,7 +74,7 @@ const DEFAULT_SAMPLE_RATE_HZ: u32 = 48_000;
 /// name) with a closed enum parsed once, during validated construction. By the time a `Layer`
 /// exists, its activation is one of these four variants, so the per-sample `match` in
 /// `Layer::apply_into` can never hit an unreachable case — the possibility of an invalid
-/// activation string is moved entirely out of the RT path and into `PreparedNam::from_file`.
+/// activation string is moved entirely out of the RT path and into `PreparedWaveNet::from_file`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Activation {
     Tanh,
@@ -72,26 +84,60 @@ enum Activation {
 }
 
 impl Activation {
-    /// Math identical to the spike's `activation_apply`.
+    /// Math identical to the spike's `activation_apply`. `Tanh`/`Sigmoid` route through
+    /// [`vectorize_unary`] (R-4 follow-up, M3 §7's close-out pass) — see that function's doc
+    /// comment for why these two, not `ReLU`, needed a dedicated fix.
     fn apply(self, x: &mut [f32]) {
         match self {
-            Activation::Tanh => {
-                for v in x.iter_mut() {
-                    *v = v.tanh();
-                }
-            }
+            Activation::Tanh => vectorize_unary(x, f32x8::tanh, f32::tanh),
             Activation::ReLU => {
                 for v in x.iter_mut() {
                     *v = v.max(0.0);
                 }
             }
-            Activation::Sigmoid => {
-                for v in x.iter_mut() {
-                    *v = 1.0 / (1.0 + (-*v).exp());
-                }
-            }
+            Activation::Sigmoid => vectorize_unary(
+                x,
+                |v| f32x8::ONE / (f32x8::ONE + (-v).exp()),
+                |v| 1.0 / (1.0 + (-v).exp()),
+            ),
             Activation::Identity => {}
         }
+    }
+}
+
+/// Applies `vec_fn` to `x` 8 lanes at a time, `scalar_fn` to the `n % 8` leftover — the same
+/// chunk-then-scalar-remainder shape [`axpy`] below uses, applied to a per-element nonlinearity
+/// instead of a multiply-accumulate.
+///
+/// **Why this exists, on top of `axpy`'s existing vectorization:** this M3 close-out pass's own
+/// reference-machine benchmarking (`benches/wavenet_inner_loops.rs`, certified run on
+/// `docs/02-architecture.md` §2's pinned AMD Ryzen 9 5950X) measured the standard WaveNet shape's
+/// assembled cost at p99.9 ≈ 33-34% of one core — still well over the 25% budget even with
+/// `axpy` already vectorized. A targeted read of every non-`axpy` per-sample operation in this
+/// file found exactly one hot, unvectorized loop: `Activation::Tanh`/`Sigmoid` in the (default,
+/// `gated: false`) `Layer::apply_into` path, called once per layer over `channels * n` elements —
+/// 15,360 scalar `f32::tanh()` calls per 64-sample block for the standard shape's two ten-layer
+/// arrays (16 and 8 channels respectively), the only transcendental-heavy loop in the file and
+/// the dominant remaining cost `axpy`'s multiply-accumulate vectorization never touched.
+///
+/// **Why this is safe against the -100 dB numeric-parity test**
+/// (`tests/fixtures.rs::numeric_parity_against_an_independent_reference_implementation`):
+/// `wide::f32x8::tanh`/`exp` are not a per-lane scalar fallback — `wide`'s own source
+/// (`f32x8_.rs`) documents a range-reduced polynomial/`exp_m1`-based implementation with error
+/// bounded below 1 ULP of `f32` (~1.2e-7 relative) across the whole domain, several orders of
+/// magnitude inside the -100 dB (1e-5 relative) parity budget, and `Sigmoid`'s `f32x8::exp` plus
+/// exact SIMD `Div` (not an approximate `recip`) carries the same guarantee.
+#[inline]
+fn vectorize_unary(x: &mut [f32], vec_fn: impl Fn(f32x8) -> f32x8, scalar_fn: impl Fn(f32) -> f32) {
+    let n = x.len();
+    let lanes = n - n % 8;
+    let (vec_part, rem) = x.split_at_mut(lanes);
+    for chunk in vec_part.chunks_exact_mut(8) {
+        let v = vec_fn(f32x8::from(&*chunk));
+        chunk.copy_from_slice(&v.to_array());
+    }
+    for v in rem.iter_mut() {
+        *v = scalar_fn(*v);
     }
 }
 
@@ -110,6 +156,95 @@ impl TryFrom<&str> for Activation {
                 detail: format!("unsupported activation: {other:?}"),
             }),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// R-4 (M3 roadmap §7): vectorized AXPY, shared by all three of this file's hot inner loops.
+//
+// **Decision:** use the `wide` crate's `f32x8` for 8-lane float SIMD, not hand-written
+// `core::arch` intrinsics.
+//
+// **Rationale:** S-1's spike measured the scalar version of this file at 41% of one core
+// (p99.9) against NFR-PERF-010's 25% budget, and attributed the gap to "an absence of
+// vectorization, not a structural cost" — i.e. exactly the kind of gap `wide` closes without
+// otherwise changing the algorithm. `wide`'s public API (`f32x8::from`/`to_array`, `+`, `*`) is
+// entirely safe, so it fits inside this crate's `forbid(unsafe_code)` (workspace lint, D-5.3)
+// with no exception needed. It also compiles the same source for both x86_64 (SSE2/AVX, chosen
+// by `target_feature` at compile time) and aarch64/NEON, which matters for NFR-PORT-030's mobile
+// targets — hand-rolled intrinsics would need a second, separately-verified NEON path to match
+// that reach, doubling the surface this file's -100 dB numeric-parity test has to hold for.
+//
+// **Consequence:** dispatch is a compile-time target-feature choice baked into the binary, not
+// a runtime CPU-feature probe with a scalar fallback for older CPUs — accepted for this
+// milestone since the reference and CI machines are all baseline-recent x86_64/aarch64; revisit
+// if Namir ever needs to target hardware whose baseline excludes SSE2/NEON.
+//
+// **Alternatives rejected:** raw `core::arch` intrinsics (needs `unsafe`, forbidden here by
+// D-5.3, plus a hand-written NEON port); `std::simd` portable-SIMD (nightly-only, unavailable on
+// this workspace's stable `rust-version`, see the root `Cargo.toml`).
+//
+// **Measured** via `benches/wavenet_inner_loops.rs` (standard WaveNet shape, 64-sample blocks,
+// 100,000 measured blocks after a 5,000-block warmup, `cargo bench -p namir-nam`).
+//
+// Earlier revisions of this note recorded a long, inconclusive scalar-vs-vector comparison run on
+// a 4-core Intel Xeon sandbox, and concluded that whether `axpy`'s vectorization helped at all was
+// **not verified** — the measured gap sat inside the run-to-run spread. That whole analysis has
+// been superseded, and the reason it was inconclusive is now known: it was measuring two
+// confounds rather than the code.
+//
+// 1. **No AVX was enabled.** The workspace had no `target-cpu` set anywhere, so `wide`'s `pick!`
+//    macro selected its non-AVX path — two 4-lane SSE2 ops per `f32x8` operation rather than one
+//    genuinely 8-wide AVX op — even on hardware that supports AVX2. That is now fixed workspace-
+//    wide by **D-2.3** (`.cargo/config.toml`, `target-cpu=x86-64-v3`), and the effect is large and
+//    unambiguous. Measured on `docs/02-architecture.md` §2's actual reference machine:
+//
+//      SSE2 baseline:  p50 8.77%   p99.9 30.3%  of the block period
+//      AVX2 + FMA:     p50 ~6.5%   p99.9 ~10.5%
+//
+//    Numeric parity under FMA re-verified at -130.8 dB against the -100 dB bar (contracting a
+//    multiply-add into one rounding step is a *smaller* error than two, not a larger one).
+//
+// 2. **The benchmark was pinned to the wrong core.** Every benchmark in this workspace pinned to
+//    logical CPU 0, which on this machine absorbs `dxgkrnl.sys`'s GPU interrupts — 128-512 µs
+//    each, ~165 per second, and zero on all 31 other cores (established by an elevated
+//    `xperf -on Latency` trace). ISRs run at DIRQL, above every thread priority, so a large part
+//    of every `p99.9` figure in the superseded analysis above was the GPU driver rather than this
+//    file. See `pin_to_measurement_core` in any of this workspace's benchmarks.
+//
+// **Still true, and worth keeping:** this benchmark's `p50` is stable and trustworthy; its raw
+// `p99.9` is not reproducible run-to-run on a general-purpose desktop even after both fixes
+// (measured varying 17%-52% across ten identical runs of the chain benchmark, with `p50` pinned).
+// For a figure immune to that, `namir-engine/benches/tail_structure.rs` reports a per-residue
+// minimum estimate of the schedule's own worst-case block, which returns the same value on a busy
+// machine as on a quiet one. The rationale for vectorizing at all (closing "an absence of
+// vectorization" S-1 identified) never depended on these numbers, and is now also directly
+// supported by the AVX2 measurement above.
+// ---------------------------------------------------------------------------------------------
+
+/// `out[t] += w * in_[t]` for every `t`, the one AXPY shape `Conv1x1::apply_into`,
+/// `Conv1x1::apply_add_into` and `Conv1D::apply_into`'s tap loop all reduce to. Vectorized 8
+/// lanes at a time; the `n % 8` leftover runs as a plain scalar loop, so callers may pass any
+/// length including 0 and lengths under 8 (the self-consistency test exercises block size 1) —
+/// correctness does not depend on `n` being a multiple of the lane width.
+#[inline]
+fn axpy(out: &mut [f32], in_: &[f32], w: f32) {
+    debug_assert_eq!(out.len(), in_.len());
+    let n = out.len();
+    let lanes = n - n % 8;
+    let (out_vec_part, out_rem) = out.split_at_mut(lanes);
+    let (in_vec_part, in_rem) = in_.split_at(lanes);
+
+    let w_vec = f32x8::splat(w);
+    for (o, i) in out_vec_part
+        .chunks_exact_mut(8)
+        .zip(in_vec_part.chunks_exact(8))
+    {
+        let sum = f32x8::from(&*o) + w_vec * f32x8::from(i);
+        o.copy_from_slice(&sum.to_array());
+    }
+    for (o, &i) in out_rem.iter_mut().zip(in_rem.iter()) {
+        *o += w * i;
     }
 }
 
@@ -163,9 +298,7 @@ impl Conv1x1 {
                     continue;
                 }
                 let in_row = &input[ic * n..(ic + 1) * n];
-                for t in 0..n {
-                    out_row[t] += w * in_row[t];
-                }
+                axpy(out_row, in_row, w);
             }
         }
     }
@@ -186,9 +319,7 @@ impl Conv1x1 {
                     continue;
                 }
                 let in_row = &input[ic * n..(ic + 1) * n];
-                for t in 0..n {
-                    out_row[t] += w * in_row[t];
-                }
+                axpy(out_row, in_row, w);
             }
         }
     }
@@ -275,9 +406,7 @@ impl Conv1D {
                         continue;
                     }
                     let offset = k * self.dilation;
-                    for t in 0..n {
-                        out_row[t] += w * p[t + offset];
-                    }
+                    axpy(out_row, &p[offset..offset + n], w);
                 }
             }
         }
@@ -365,18 +494,16 @@ impl Layer {
             scratch.z_buf[..z_len].copy_from_slice(&scratch.conv_buf[..z_len]);
         }
 
-        for (s, z) in head_sum[..z_len]
-            .iter_mut()
-            .zip(scratch.z_buf[..z_len].iter())
-        {
-            *s += z;
-        }
+        // `axpy(w=1.0)`, not a plain `+=` loop (this M3 close-out pass's own vectorization fix,
+        // same rationale as `Activation::apply`'s `Tanh`/`Sigmoid` above): a straight `out[i] +=
+        // in[i]` loop over disjoint `&mut`/`&` slices is exactly `axpy`'s shape with `w` fixed at
+        // 1.0, so it costs nothing to route through the same vectorized primitive rather than
+        // trust the optimizer to notice on its own.
+        axpy(&mut head_sum[..z_len], &scratch.z_buf[..z_len], 1.0);
 
         self.residual
             .apply_into(&scratch.z_buf[..z_len], n, &mut next_input_out[..z_len]);
-        for i in 0..z_len {
-            next_input_out[i] += layer_input[i];
-        }
+        axpy(&mut next_input_out[..z_len], &layer_input[..z_len], 1.0);
     }
 }
 
@@ -405,7 +532,7 @@ struct ArrayScratch {
 /// `bool`, `usize`, the `Copy` `Activation` enum) is already auto-`Sync` on its own, and this
 /// crate forbids unsafe code anyway (workspace lint, D-5.3) — so no such impl exists here at all;
 /// `Sync` is simply derived.
-pub struct PreparedNam {
+pub struct PreparedWaveNet {
     arrays: Vec<LayerArray>,
     head_scale: f32,
     sample_rate: SampleRate,
@@ -414,14 +541,14 @@ pub struct PreparedNam {
 
 /// Per-instance mutable inference state: history plus reusable scratch, all sized once for a
 /// chosen max block size. Never shared across instances (D-9.1).
-pub struct NamState {
+pub struct WaveNetState {
     max_n: usize,
     condition: Sig, // max_n (mono audio input, reused as every layer's condition signal)
     arrays: Vec<ArrayScratch>,
 }
 
-impl NamState {
-    fn new(prepared: &PreparedNam, max_n: usize) -> Self {
+impl WaveNetState {
+    fn new(prepared: &PreparedWaveNet, max_n: usize) -> Self {
         let arrays = prepared
             .arrays
             .iter()
@@ -458,61 +585,9 @@ impl NamState {
     }
 }
 
-struct WeightReader<'a> {
-    weights: &'a [f32],
-    pos: usize,
-}
-
-impl<'a> WeightReader<'a> {
-    fn new(weights: &'a [f32]) -> Self {
-        Self { weights, pos: 0 }
-    }
-
-    /// Copies out `n` floats starting at the reader's current position and advances it. Every
-    /// call site passes an `n` built only from dimensions already checked against this crate's
-    /// NFR-SEC-020 ceilings (see `validate_layer_array_dims`), so `self.pos + n` cannot overflow
-    /// `usize` on any 64-bit target — the bound-inputs-first ordering in `PreparedNam::from_file`
-    /// is what makes that true, not a `checked_add` here.
-    fn take(&mut self, n: usize) -> Result<Vec<f32>, NamLoadError> {
-        if self.pos + n > self.weights.len() {
-            return Err(NamLoadError {
-                code: error_codes::WEIGHT_COUNT_MISMATCH,
-                detail: format!(
-                    "weight array exhausted: need {n} more floats at offset {}, only {} available",
-                    self.pos,
-                    self.weights.len().saturating_sub(self.pos)
-                ),
-            });
-        }
-        let slice = self.weights[self.pos..self.pos + n].to_vec();
-        self.pos += n;
-        Ok(slice)
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------------------------
-
-fn check_max(value: usize, max: usize, name: &str) -> Result<(), NamLoadError> {
-    if value > max {
-        return Err(NamLoadError {
-            code: error_codes::DIMENSION_LIMIT_EXCEEDED,
-            detail: format!("{name} = {value} exceeds the maximum of {max}"),
-        });
-    }
-    Ok(())
-}
-
-fn check_min1(value: usize, name: &str) -> Result<(), NamLoadError> {
-    if value == 0 {
-        return Err(NamLoadError {
-            code: error_codes::DIMENSION_LIMIT_EXCEEDED,
-            detail: format!("{name} must be at least 1, found 0"),
-        });
-    }
-    Ok(())
-}
 
 /// Validates one layer array's declared dimensions against this crate's NFR-SEC-020 ceilings,
 /// its lower bounds, and the `condition_size == 1` constraint (this implementation always feeds
@@ -573,7 +648,7 @@ fn validate_layer_array_dims(cfg: &LayerArrayConfig, index: usize) -> Result<(),
     Ok(())
 }
 
-impl PreparedNam {
+impl PreparedWaveNet {
     /// The semantic half of P6's "one hardened place `.nam` bytes go through" (the other half is
     /// `NamFile::parse`'s JSON-shape parsing). Validation order:
     ///
@@ -782,8 +857,8 @@ impl PreparedNam {
 
     /// `max_block_size` is the largest block size this state will ever be asked to process;
     /// every scratch buffer is sized once, here, and reused for the state's whole lifetime.
-    pub fn new_state(&self, max_block_size: usize) -> NamState {
-        NamState::new(self, max_block_size)
+    pub fn new_state(&self, max_block_size: usize) -> WaveNetState {
+        WaveNetState::new(self, max_block_size)
     }
 
     /// The allocation-free RT-path entry point. Writes `input.len()` frames of output into
@@ -796,7 +871,7 @@ impl PreparedNam {
     /// content, so a panic here is acceptable per the same reasoning
     /// `namir-engine/src/stage_io.rs`'s `StageIo::new` doc comment gives for its own analogous
     /// panic.
-    pub fn process_block(&self, state: &mut NamState, input: &[f32], out: &mut [f32]) {
+    pub fn process_block(&self, state: &mut WaveNetState, input: &[f32], out: &mut [f32]) {
         let n = input.len();
         assert!(
             n <= state.max_n,
@@ -804,7 +879,7 @@ impl PreparedNam {
             state.max_n
         );
 
-        let NamState {
+        let WaveNetState {
             condition,
             arrays: state_arrays,
             ..
@@ -873,7 +948,7 @@ impl PreparedNam {
 
     /// Convenience wrapper over `process_block` that allocates its own output buffer.
     /// **Not RT-safe** — for tests, tools, and other non-audio-thread callers only.
-    pub fn process(&self, state: &mut NamState, input: &[f32]) -> Vec<f32> {
+    pub fn process(&self, state: &mut WaveNetState, input: &[f32]) -> Vec<f32> {
         let out_len = self
             .arrays
             .last()
@@ -886,19 +961,21 @@ impl PreparedNam {
     }
 }
 
-/// Combines `NamFile::parse` and `PreparedNam::from_file`: the one function P6 calls "the one
-/// hardened place" `.nam` bytes go through end to end, from raw bytes to a validated,
-/// ready-to-run model.
-pub fn load(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
-    let file = NamFile::parse(bytes)?;
-    PreparedNam::from_file(&file)
-}
-
 #[cfg(test)]
-mod rt_harness {
+pub(crate) mod rt_harness {
     //! Copied from `namir-engine/src/rt_harness.rs` (self-contained; see that file's module doc
     //! for the full rationale for using `assert_no_alloc` rather than a hand-rolled
-    //! `GlobalAlloc` under this workspace's `unsafe_code = "forbid"` lint).
+    //! `GlobalAlloc` under this workspace's `unsafe_code = "forbid"` lint). `namir-ir`'s
+    //! `convolver.rs` carries its own separate copy of the same pattern, which is fine there
+    //! since it's a different crate with its own independent test binary.
+    //!
+    //! `pub(crate)`, not private: `#[global_allocator]` is a whole-*binary* constraint — a single
+    //! test binary can register at most one. `namir-nam`'s `--lib` test binary compiles every
+    //! module in this crate together, including `lstm.rs`, so `lstm.rs`'s own RT-allocation test
+    //! reuses *this* copy rather than declaring a second one (which would fail to compile at all,
+    //! "cannot define multiple global allocators"). That's the whole reason this crate has only
+    //! one `rt_harness` module instead of one per architecture file, unlike the WaveNet/LSTM
+    //! split everywhere else in this crate.
 
     use assert_no_alloc::AllocDisabler;
 
@@ -1019,7 +1096,7 @@ mod tests {
         }
     }
 
-    /// Computes exactly how many weights `PreparedNam::from_file` will consume for `cfg`, so
+    /// Computes exactly how many weights `PreparedWaveNet::from_file` will consume for `cfg`, so
     /// tests can hand-build a matching (or deliberately mismatched) flat weight array without
     /// going through JSON at all.
     fn weight_count_for(cfg: &LayerArrayConfig) -> usize {
@@ -1039,12 +1116,12 @@ mod tests {
         n
     }
 
-    /// `PreparedNam` deliberately has no `Debug` impl (nothing in this crate's public API needs
+    /// `PreparedWaveNet` deliberately has no `Debug` impl (nothing in this crate's public API needs
     /// one), so `Result::unwrap_err` — which requires `T: Debug` — can't be used directly on
-    /// `PreparedNam::from_file`'s `Result`. This is the small workaround.
-    fn expect_err(result: Result<PreparedNam, NamLoadError>) -> NamLoadError {
+    /// `PreparedWaveNet::from_file`'s `Result`. This is the small workaround.
+    fn expect_err(result: Result<PreparedWaveNet, NamLoadError>) -> NamLoadError {
         match result {
-            Ok(_) => panic!("expected PreparedNam::from_file to reject this file"),
+            Ok(_) => panic!("expected PreparedWaveNet::from_file to reject this file"),
             Err(e) => e,
         }
     }
@@ -1071,7 +1148,7 @@ mod tests {
     #[test]
     fn minimal_valid_file_loads_successfully() {
         let file = minimal_valid_file();
-        let prepared = PreparedNam::from_file(&file).expect("minimal valid file should load");
+        let prepared = PreparedWaveNet::from_file(&file).expect("minimal valid file should load");
         assert_eq!(prepared.sample_rate().hz(), 48_000);
     }
 
@@ -1079,7 +1156,7 @@ mod tests {
     fn missing_sample_rate_defaults_to_48khz() {
         let mut file = minimal_valid_file();
         file.sample_rate = None;
-        let prepared = PreparedNam::from_file(&file).unwrap();
+        let prepared = PreparedWaveNet::from_file(&file).unwrap();
         assert_eq!(prepared.sample_rate().hz(), 48_000);
     }
 
@@ -1087,7 +1164,7 @@ mod tests {
     fn rejects_wrong_architecture() {
         let mut file = minimal_valid_file();
         file.architecture = "LSTM".to_string();
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::UNSUPPORTED_ARCHITECTURE.id);
     }
 
@@ -1095,7 +1172,7 @@ mod tests {
     fn rejects_non_null_head_config() {
         let mut file = minimal_valid_file();
         file.config.head = Some(serde_json::json!({"whatever": 1}));
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::UNSUPPORTED_HEAD_CONFIG.id);
     }
 
@@ -1103,7 +1180,7 @@ mod tests {
     fn rejects_empty_layer_arrays() {
         let mut file = minimal_valid_file();
         file.config.layers.clear();
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::EMPTY_LAYER_ARRAYS.id);
     }
 
@@ -1111,7 +1188,7 @@ mod tests {
     fn rejects_unsupported_activation() {
         let mut file = minimal_valid_file();
         file.config.layers[0].activation = "GELU".to_string();
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::UNSUPPORTED_ACTIVATION.id);
     }
 
@@ -1119,7 +1196,7 @@ mod tests {
     fn rejects_condition_size_other_than_one() {
         let mut file = minimal_valid_file();
         file.config.layers[0].condition_size = 2;
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONDITION_SIZE.id);
     }
 
@@ -1130,7 +1207,7 @@ mod tests {
         // ask for on the order of 10^18 floats. The test completing at all (rather than hanging
         // or OOMing) demonstrates the ceiling check runs first.
         file.config.layers[0].channels = 999_999_999;
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
     }
 
@@ -1142,7 +1219,7 @@ mod tests {
         let mut file = minimal_valid_file();
         file.weights.pop();
         file.weights.pop();
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::WEIGHT_COUNT_MISMATCH.id);
     }
 
@@ -1167,7 +1244,7 @@ mod tests {
             sample_rate: Some(48_000),
             metadata: NamMetadata::default(),
         };
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::LAYER_ARRAY_CHAINING_MISMATCH.id);
     }
 
@@ -1175,21 +1252,24 @@ mod tests {
     fn rejects_zero_sample_rate() {
         let mut file = minimal_valid_file();
         file.sample_rate = Some(0);
-        let err = expect_err(PreparedNam::from_file(&file));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::INVALID_SAMPLE_RATE.id);
     }
 
     #[test]
     fn latency_samples_is_zero() {
-        let prepared = PreparedNam::from_file(&minimal_valid_file()).unwrap();
+        let prepared = PreparedWaveNet::from_file(&minimal_valid_file()).unwrap();
         assert_eq!(prepared.latency_samples(), 0);
     }
 
     #[test]
-    fn load_combines_parse_and_validate() {
+    fn parse_then_from_file_combines_parse_and_validate() {
         // Built directly as JSON (rather than round-tripping a `NamFile` value, which is
-        // `Deserialize`-only and has no `Serialize` impl to spare) to exercise `load`'s full
-        // bytes-to-`PreparedNam` path, mirroring `minimal_layer_array`'s shape.
+        // `Deserialize`-only and has no `Serialize` impl to spare) to exercise the full
+        // bytes-to-`PreparedWaveNet` path, mirroring `minimal_layer_array`'s shape. The top-level
+        // `crate::load` free function (now in `model.rs`, since it also has to dispatch to
+        // `lstm.rs` for LSTM files) has its own equivalent coverage there; this test is scoped to
+        // just this module's own `NamFile::parse` + `PreparedWaveNet::from_file` pair.
         let cfg = minimal_layer_array();
         let n = weight_count_for(&cfg);
         let mut weights = vec![0.01f32; n];
@@ -1214,14 +1294,16 @@ mod tests {
             "sample_rate": 48_000,
         });
         let bytes = serde_json::to_vec(&json).unwrap();
-        let prepared = load(&bytes).expect("round trip through JSON should load");
+        let file = NamFile::parse(&bytes).expect("round trip through JSON should parse");
+        let prepared =
+            PreparedWaveNet::from_file(&file).expect("round trip through JSON should load");
         assert_eq!(prepared.latency_samples(), 0);
     }
 
     #[test]
     fn process_block_does_not_allocate() {
         let file = minimal_valid_file();
-        let prepared = PreparedNam::from_file(&file).unwrap();
+        let prepared = PreparedWaveNet::from_file(&file).unwrap();
         let mut state = prepared.new_state(64);
         let input = vec![0.1f32; 64];
         let mut output = vec![0.0f32; 64]; // head_size == 1

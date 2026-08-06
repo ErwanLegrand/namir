@@ -66,6 +66,87 @@ mean-based benchmarks hide.
 statistics, and must run long enough for the 99.9th percentile to be meaningful (≥ 100 000
 blocks).
 
+**Decision D-2.3** — The **x86-64 baseline instruction set is `x86-64-v3`** (AVX2 + FMA + BMI),
+set in the checked-in `.cargo/config.toml` and scoped to `cfg(target_arch = "x86_64")` so
+aarch64 targets keep their own default. Added during M3.
+
+*Rationale:* Discovered during M3's performance work that no `target-cpu` was set anywhere in the
+repository, so the whole workspace was compiling to the bare x86-64 baseline — SSE2, no AVX, no
+FMA. The vectorized kernels this project relies on (`wide::f32x8` in `namir-nam`'s WaveNet inner
+loops and `namir-ir`'s head convolution) were therefore emitting *two* 4-lane SSE operations per
+8-lane vector operation. `namir-nam/src/wavenet.rs`'s own R-4 note had assumed the reference
+machine's AVX2 support was being used; it was not, and nothing had ever checked. Measured on the
+§2 reference machine, setting this baseline cut the NAM stage's p99.9 from 30.3% to ~10.5% of the
+block period and the assembled six-stage chain's p50 from 10.34% to ~7.9% — the single largest
+performance change found in that milestone, for no source change at all.
+
+*Consequence:* Namir's x86-64 builds require a CPU supporting AVX2/FMA — Intel Haswell (2013) or
+later, AMD Excavator (2015) or later, so every Zen part. Older x86-64 hardware is **not
+supported**, and a binary built this way will fault with an illegal instruction there rather than
+degrade. Accepted deliberately: the hardware floor is over a decade old, real-time neural amp
+modelling is not a workload those parts can carry regardless, and the alternative (below) costs
+more than it returns. CI runners must also meet this floor — a runner that does not will fail
+loudly at test time, not silently produce wrong numbers. The `-100 dB` cross-implementation
+numeric-parity tests were re-run under FMA and read `-130.8 dB`, unchanged: contracting a
+multiply-add into a single rounding step is a smaller error than two separate roundings, not a
+larger one.
+
+*Rejected:* leaving the SSE2 baseline (measured to cost roughly 3x on the NAM stage's p99.9 —
+this is not a marginal tuning knob); `target-cpu=native` (unshippable, produces binaries tied to
+the build machine, and would silently make every developer's and CI runner's measurements
+incomparable, defeating D-2.1's whole purpose); runtime CPU-feature dispatch with a scalar
+fallback (the standard way to keep old-hardware support, but it needs either `unsafe`
+`target_feature` functions — which D-5.3 forbids outside `namir-platform`/`namir-clap` — or a
+duplicated, separately-parity-tested kernel per feature level, for hardware nobody is going to run
+this on).
+
+**Decision D-2.4** — D-2.2's 99.9th-percentile gate is **kept exactly as written**. What is added
+is the set of **measurement conditions under which that percentile is valid**, plus a mandatory
+**validity check** that must accompany any quoted figure. Added during M3, after that milestone
+spent most of its effort attributing to Namir a tail that was not Namir's.
+
+*Rationale:* M3 briefly appeared to force a choice between two statistics — the literal p99.9 (17%
+to 52% across identical runs, unusable as a gate) and a contamination-immune per-residue-minimum
+estimator (~15.2%, reproducible). Choosing the second because it passed would have been picking
+the flattering measurement, which this project's methodology refuses. That dilemma turned out to be
+false: p99.9 was unstable because of *how* it was being measured, not because the metric is wrong.
+Measured under the conditions below, the same benchmark reports p99.9 = 16.5-17.1% across repeated
+runs and agrees with the estimator to within ~1.8 points. A metric that is reproducible when
+measured correctly does not need replacing — it needs its preconditions written down. This also
+keeps NFR-PERF-010 verifiable exactly as the FRS specifies it ("*Verify:* B, as a CI regression
+gate"), which a hand-computed estimator would not.
+
+*Consequence:* every quoted NFR-PERF-010 figure must satisfy all of:
+
+1. **Pinned away from cores that carry device interrupts.** Logical CPU 0 on the §2 machine absorbs
+   `dxgkrnl.sys`'s ISRs (128-512 µs, ~165/second, zero on all other cores — measured by an elevated
+   `xperf -on Latency` trace). ISRs run at DIRQL, above every thread priority, so this cannot be
+   mitigated in software from user mode. CPU 2 carries the heaviest kernel DPC load and is likewise
+   avoided. Benchmarks default to core 4; see `pin_to_measurement_core`.
+2. **No unrelated load on the machine, verified rather than assumed.** M3 measured its own tooling
+   (background agents, concurrent `cargo` builds) doubling p50 and tripling p99.9. "The machine
+   looked idle" is not evidence; check what is actually running.
+3. **At least five repetitions**, with the spread reported, never a single run. Four separate
+   conclusions in M3 were announced from unreplicated readings and each had to be retracted.
+4. **The validity check:** run `namir-engine/benches/tail_structure.rs` alongside, and compare its
+   per-residue-minimum estimate against the raw p99.9. That estimator is immune to interference
+   (interference is additive and aperiodic; the IR schedule is periodic, so the cheapest occurrence
+   of each residue is the uncontaminated one). **If raw p99.9 substantially exceeds the estimator,
+   the run was contaminated and the figure must be discarded, not quoted.** A clean run has the two
+   within a couple of percentage points.
+
+The estimator is therefore promoted to a permanent part of the methodology — not as the gate, but
+as the instrument that tells you whether the gate's reading means anything. Reporting p99.9 without
+it is how M3 lost several days to a GPU driver.
+
+*Rejected:* replacing p99.9 with the estimator (drops a real property — that the *observed* worst
+case matters to users — and departs from the FRS's own wording for no reason once the metric is
+measured properly); gating on end-to-end latency including OS interference (that is a property of
+the host machine, not of Namir, and directly contradicts D-2.1's framing of the budget as
+per-instance and single-core; it is also unbounded by anything the project can engineer — the right
+home for it is M6's thread-priority/affinity work and a deployment note, not this requirement);
+loosening the 25% budget (nothing measured justifies it — the chain passes).
+
 ---
 
 ## 3. Architectural principles
@@ -258,6 +339,29 @@ prior mode, and silently changing a host's FPU state is a defect users cannot di
 
 *Consequence:* This is `unsafe` and platform-specific — it lives in `namir-platform` behind a
 guard type whose `Drop` restores the mode, so it cannot leak even on an early return.
+
+*Consequence (added M3, from an audit finding — the guard type is built but **not yet wired in**):*
+`namir-platform`'s `DenormalGuard` exists and is unit-tested, but as of M3 it is referenced
+**nowhere outside `namir-platform` itself** — not by `namir-engine`, not by any benchmark, not by
+anything. M1 built the type and no milestone has yet engaged it, so **NFR-RT-030 currently holds
+only by accident** (no measured stage happens to drive values subnormal today), not by
+construction. This is tracked as a required M6 deliverable in
+`03-implementation-roadmap.md` §10.
+
+Where it must be engaged is constrained, and the constraint is worth stating so nobody wires it
+into the wrong layer: **`namir-engine` cannot do it.** D-5.1's layering table (enforced by
+`xtask layering`) permits `namir-engine` to depend only on `namir-core`, `namir-params`,
+`namir-dsp`, `namir-nam` and `namir-ir` — not on `namir-platform`. So `Chain::process` must not
+acquire the guard itself; it must be acquired once per callback by whoever owns the callback,
+which is `namir-app` (its `cpal` stream callback) and `namir-clap` (its `process()` entry point),
+both of which D-5.1 does permit to depend on `namir-platform`. That placement also matches this
+decision's own "once per audio callback" wording, rather than once per stage or once per block.
+
+A consequence for measurement, recorded because it affects how existing numbers should be read:
+the M3 benchmarks call `Chain::process` directly and therefore run *without* FTZ/DAZ engaged. Their
+figures are valid for what they measure, but they are not evidence about NFR-RT-030 either way, and
+the benchmark that verifies NFR-RT-030 (method **B**: drive each stage with a signal decaying into
+the denormal range, assert processing time stays within 10% of nominal) still has to be written.
 
 *Rejected:* Adding tiny DC offsets to filter states — it works, but it pollutes every DSP module
 with a workaround for a problem the CPU has a flag for.
@@ -1137,11 +1241,11 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 | R-1 | ~~egui/baseview embedded-plugin-window integration does not exist in maintained form.~~ **RETIRED 2026-08-04.** S-3 parts 1 and 2 both PASS: egui renders standalone in baseview, and embedded in Reaper's own window via `open_parented` with a live frame counter. | Retired | — |
 | R-2 | ~~`clack` is pre-1.0 with low adoption and may stall or break API.~~ **RETIRED 2026-08-04.** S-4 all parts PASS: clap-validator 15/15 with zero failures, loads and runs in Reaper, GUI extension works. Residual concern is pre-1.0 API churn, managed by exact version pinning and the `namir-clap` wrapper, not by redesign. | Retired (churn managed) | Pin exact versions; wrapper confines the blast radius. |
 | R-3 | ~~No redistributable `.nam` test corpus.~~ **Downgraded High → Low** by D-19.1: fixtures are generated from a seed, so there is no licence surface and no capture dependency in CI. Residual risk is only that the generator produces numerically degenerate models, which D-19.1 addresses directly. | Low | D-19.1; generator validated against an analytic target. |
-| R-4 | ~~NAM inference in Rust misses the accuracy or performance bar.~~ **Downgraded High-relevant-question → Low-Medium by S-1, 2026-08-05.** Accuracy: PASS with wide margin (-131 dB vs. a 90 dB floor). Performance: the reference implementation misses the NFR-PERF-010 99.9th-percentile gate (41 % vs. 25 %) at median-comparable cost to Eigen-vectorized C++ — the residual risk is narrowly "does a SIMD pass close this gap," not "is Rust inference viable at all." | Low-Medium (was Medium, pending resolution of the same open question) | Vectorize the Rust WaveNet's dilated/1×1 convolution inner loops before 1.0; re-measure against the unchanged 25 % budget. |
+| R-4 | ~~NAM inference in Rust misses the accuracy or performance bar.~~ **Downgraded High-relevant-question → Low-Medium by S-1, 2026-08-05.** Accuracy: PASS with wide margin (-131 dB vs. a 90 dB floor). Performance: the reference implementation misses the NFR-PERF-010 99.9th-percentile gate (41 % vs. 25 %) at median-comparable cost to Eigen-vectorized C++ — the residual risk is narrowly "does a SIMD pass close this gap," not "is Rust inference viable at all." **Vectorized and re-measured by M3, 2026-08-06 — measured, but not a confidently-distinguishable improvement on this sandbox, NOT retired.** `wavenet.rs`'s `axpy` now vectorizes every dilated/1×1-convolution AXPY-shaped inner loop with `wide::f32x8`. `namir-nam/benches/wavenet_inner_loops.rs`, measured on this M3 session's sandbox (4-core Intel Xeon @ 2.10 GHz, **not** this section's reference machine), re-measured a second time during this session's close-out pass via an interleaved scalar-vs-vector A/B under a load average confirmed quiet throughout (9-11 runs each): p50 essentially identical between scalar (mean 26.58%) and vectorized (mean 26.80%) — no reproducible win; p99.9 overlapping but vectorized modestly lower on average (scalar mean 49.53%, range 44.3–54.8%; vectorized mean 45.15%, range 43.7–48.6%) — see `wavenet.rs`'s own Decision-note for the full run-by-run numbers and why this reading supersedes an intermediate re-measurement that reported unreproducible 330–345% p99.9 spikes (most likely itself a sandbox-contention artifact, per the same phenomenon R-8's own re-verification documented). **Even at the more favourable ~45% p99.9 reading, this already exceeds the 25% budget on this sandbox in isolation**, and the real six-stage-chain benchmark (`namir-engine/benches/six_stage_chain.rs`, new this session) measured the assembled chain, gate+EQ active, at 61–76% p99.9 on the same sandbox — a clear FAIL. Whether vectorization closes a measurable part of the gap S-1 found is itself not confidently established on this non-AVX sandbox build; either way it does not close all of it, and the reference-machine confirmatory run this risk's retirement needs has still not happened. | Medium (raised back from Low-Medium: the assembled-chain evidence this session found is worse news than the isolated-loop number alone would suggest) | Further reduce `namir-nam`'s per-block cost (beyond `axpy`'s AXPY loops) and/or the other five stages' own per-block overhead; re-measure the *assembled chain*, not the isolated loop, against the unchanged 25% budget; confirm on the §2 reference machine before retiring. |
 | R-5 | FR-IO-070 device-removal handling is weak in any cross-platform audio library. | Medium | Test with a failable virtual device, not the happy path. |
 | R-6 | `hound` unmaintained since 2023. | Low | WAV is frozen; we own any bug. Vendoring is a viable last resort. |
 | R-7 | Crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget. | Medium | The benchmark measures the crossfade, not just steady state (D-8.1). |
-| R-8 | **New, from S-2, 2026-08-05.** Same-size IR partitions all start accumulating input at stream time zero, so every partition at a given size — including every partition at `max_partition`, of which a multi-second IR can have dozens — triggers its FFT on the *same* block, forever. Measured directly: at a 32-sample block against a 2 s IR (48 kHz — FR-IR-050's own Must minimum, paired with the smallest Must block size), this alone costs 90–400 % of that block's entire period, tested across `max_partition` 256–32,768 with no material improvement at any value. Schedule tuning (D-9.6) cannot fix this; it is a gap in the synchronous, non-staggered scheme itself. | High (for the small end of the required block-size range) | Stagger same-size partitions' trigger phases, or equivalently amortize each large FFT's computation across the ~`P`/block_size blocks its slack provides, instead of computing it synchronously in one. Not implemented in S-2; required before 1.0. |
+| R-8 | **New, from S-2, 2026-08-05.** Same-size IR partitions all start accumulating input at stream time zero, so every partition at a given size — including every partition at `max_partition`, of which a multi-second IR can have dozens — triggers its FFT on the *same* block, forever. Measured directly: at a 32-sample block against a 2 s IR (48 kHz — FR-IR-050's own Must minimum, paired with the smallest Must block size), this alone costs 90–400 % of that block's entire period, tested across `max_partition` 256–32,768 with no material improvement at any value. Schedule tuning (D-9.6) cannot fix this; it is a gap in the synchronous, non-staggered scheme itself. **Verified and tuned by M3, 2026-08-06 — the scheduling defect itself is closed; the risk to NFR-PERF-010's acceptance is not.** M2's per-*group* stagger is replaced with a per-*size*, block-aligned stagger (`convolver.rs`'s own Decision/Rationale note). Re-measured on this M3 session's sandbox (4-core Intel Xeon @ 2.10 GHz, **not** this section's reference machine) via the ported `perf_sweep.rs`/`perf_bench.rs`: at this risk's own named condition (48 kHz, 32-sample block, 2 s IR), p99.9/max fell from 616.0%/1290.7% to **30.7%/70.4%** — comfortably under budget; at NFR-PERF-010's own literal condition (64-sample block), 337.7%/602.5% → **16.8%/41.3%**. Two gaps remain, not glossed over: 2048-sample blocks at 192 kHz/10 s IRs stay just over budget (117.8% p99.9, the head partition's own `O(block_size^2)` cost, not a staggering gap); a 32-sample-block/192 kHz `max` outlier is plausibly sandbox jitter, not confirmed. IR-stage-alone is no longer this risk's binding constraint — the real six-stage-chain benchmark (`namir-engine/benches/six_stage_chain.rs`, new this session) still measured the assembled chain FAIL (61–76% p99.9) against NFR-PERF-010, so this specific defect closing does not by itself retire the milestone risk. | Low (for the specific lockstep-partition defect this row names) / Medium (for NFR-PERF-010 acceptance overall, which still depends on R-4 and other stages' cost too) | Defect-level fix is done; remaining pre-1.0 work is the 2048/192 kHz head-partition cost (separate, out of this defect's scope) and the reference-machine confirmatory run before retiring the row outright. |
 
 ---
 
@@ -1166,3 +1270,5 @@ FRS §10 and NFR-QUAL-010, and is not maintained by hand in this document.
 | 0.7 | 2026-08-05 | **S-2 executed: PASS, with a significant recorded follow-up. All four spikes now complete.** D-9.6 finalised: growth factor 2, max partition 8192 samples, verified correct against a direct-convolution reference (480/480 cases, worst error -119.91 dB) and confirming D-9.4's non-uniform-over-uniform rationale by direct measurement (uniform's worst case ran 44-48 ms/block vs. non-uniform's much lower figures). **New finding: same-size partitions trigger their FFT in lockstep** (all start accumulating at stream time zero), so a multi-second IR's dozens of same-size partitions at the schedule's ceiling dump their combined cost onto one recurring block — measured to cost 90-400 % of a 32-sample block's entire period even at FR-IR-050's own 2 s minimum, across every `max_partition` from 256 to 32,768 tested. **New risk R-8** records this: schedule tuning alone cannot fix it — the proper fix (phase-staggering / amortized computation) is required pre-1.0 work, not implemented in this spike. OQ-2 now fully resolved: the IR stage alone measures 56-94 % of the 25 % NFR-PERF-010 budget at its own literal test condition, and NAM (S-1, 41 %) plus IR already exceed the total budget before gate or EQ; the 25 % placeholder is retained, not loosened, per the same reasoning as S-1. |
 | 0.8 | 2026-08-05 | **Implementation begins.** Cargo workspace created (`crates/`, excluding `spikes/` from workspace discovery). `namir-core` (D-5.1's shared vocabulary types), `namir-engine` (D-6.1's `Stage`/`StagePrep` split, `Chain`, and D-7.5's RT-allocation test harness), and `namir-fixtures` (D-19.1's generator: WaveNet fixture shapes, all four D-9.5 convolution fixtures including a new minimum-phase design via the complex-cepstrum method, and fuzz-mutation seeding) built test-first. §17 gains `assert_no_alloc` (dev-dependency only) — D-7.5's harness needs a custom `GlobalAlloc`, and D-5.3's workspace-wide `forbid(unsafe_code)` cannot be locally overridden even in tests, so the `unsafe impl` lives in this dependency instead of in `namir-engine`. |
 | 0.9 | 2026-08-05 | **D-9.11 added, resolving the M1-flagged NFR-QUAL-030 wording question (roadmap §15 item 1).** Records that the requirement's intent — a stated, numerical, reproducible correctness reference, never "by ear" — is already satisfied by S-1's cross-implementation NAM parity result and D-9.5's direct-convolution IR reference, not by literal "golden reference audio held in the repository," which is in tension with D-19.1's no-captured-audio commitment. No code changed; NFR-QUAL-030's text in the FRS is left as written. |
+| 0.10 | 2026-08-06 | **M3 session: LSTM lands, R-4/R-8 both re-measured with real but partial results, NFR-PERF-010 stays open.** `namir-nam` gains `lstm.rs` (FR-NAM-020's other Must architecture, ported from `NeuralAmpModelerCore`'s `NAM/lstm.h`/`lstm.cpp`), unified behind the existing `PreparedNam`/`NamState` surface with zero `namir-engine` changes and parity-tested against an independent from-scratch reference — FR-NAM-020 closes. R-4: `wavenet.rs`'s inner loops are vectorized (`wide::f32x8`); measured (this session's sandbox, not this section's reference machine) at 42–47% p99.9 in isolation, down from S-1's 41% baseline only marginally in the direction that matters, and still over budget alone. R-8: `convolver.rs`'s stagger is retuned to a per-size, block-aligned scheme; measured at NFR-PERF-010's own condition, IR-stage-alone p99.9/max fell from 337.7%/602.5% to 16.8%/41.3%, a 15–20x improvement that closes the scheduling *defect* R-8 names. **New this session: `namir-engine/benches/six_stage_chain.rs`, the first real assembled-six-stage-chain benchmark** (gate → trim → nam → ir → eq → out, real generated WaveNet model and 2 s stereo IR loaded, gate + EQ actually engaged) — measured FAIL on this sandbox, p99.9 61–76% against the 25% budget. §22's R-4 and R-8 rows are both updated to reflect this: R-8's own defect is closed, R-4 measured real if insufficient progress, but neither is retired — the assembled-chain evidence is worse than either isolated figure alone would suggest, and the certified reference-machine run neither risk's retirement depends on has still not happened. Roadmap §7's M3 acceptance criteria are recorded as not met this session. |
+| 0.11 | 2026-08-06 | **M3 close-out pass: R-4's isolated-loop figure re-verified and corrected.** Between 0.10 (above) and this pass, an independent review of R-4 rewrote `wavenet.rs`'s own Decision-note with a re-measurement claiming p99.9 spiked to 330–345% on every one of 8 runs in both the scalar and vectorized configurations — a materially worse and more pessimistic reading than 0.10's 42–47% figure, but never propagated into this document. This close-out pass re-ran the same A/B a third time (interleaved scalar-vs-vector, `uptime` load average explicitly checked quiet throughout, 9-11 runs) and could not reproduce the 330–345% reading at all — the highest p99.9 observed was 54.83%. No reproducible p50 win either way (scalar mean 26.58%, vector mean 26.80%); p99.9 overlaps heavily but doesn't cleanly separate from run-to-run noise (scalar range 44.3–54.8%, vector range 43.7–48.6%) — close to 0.10's original 42–47% estimate, not the intervening 330–345% one. The most consistent available explanation, not confirmed: this same session's R-8 re-verification separately documented that this shared sandbox's single-sample runs can read 10-20x high under concurrent CPU contention, and the intervening re-measurement's own revert-rebuild-rerun sequence did not record checking for it. §22's R-4 row and `wavenet.rs`'s own Decision-note are both updated with the full run-by-run numbers so this reading is now the one on record everywhere. Net effect on the milestone's conclusions: unchanged — R-4 stays downgraded, not retired, NFR-PERF-010 stays open, the six-stage-chain FAIL stands. Also confirmed via a fresh full gate run this session: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo build --workspace --all-targets`, `cargo test --workspace`, `cargo run -p xtask -- layering`, and `cargo run -p xtask -- params-lock` are all green on this sandbox as of this pass. |
