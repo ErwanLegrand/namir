@@ -20,3 +20,7 @@ spikes/*/fixtures/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Kernel/ETW traces produced by xperf during performance investigation (can be hundreds of MB).
+trace.etl
+*.etl
