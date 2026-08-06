@@ -79,7 +79,7 @@ use rubato::{FftFixedInOut, Resampler};
 use crate::command::RetireSink;
 use crate::param::{ParamChange, ParamId};
 use crate::prepare::{PrepareContext, PrepareError};
-use crate::resource::Resource;
+use crate::resource::{Resource, ResourceKind};
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
 use crate::stages::HANDOVER_CROSSFADE_MS;
@@ -568,6 +568,14 @@ impl NamStage {
         None
     }
 
+    /// M5, red-first: FR-STATE-070's "the state shall load with that stage empty" has no way to
+    /// say so yet. This is a placeholder — it does nothing — so the failing test proving what
+    /// this method must do can be committed before the behaviour exists (NFR-QUAL-020). See
+    /// [`Stage::unload_resource`]'s doc comment for what the real implementation must be: the
+    /// mirror image of [`Self::install`], displacing the inactive slot into `self.retired` and
+    /// starting a crossfade toward `None` rather than toward a new slot.
+    pub(crate) fn unload(&mut self) {}
+
     /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
     /// see the field's own doc comment for the FR-CHAIN-040 rationale and for why it is
     /// deliberately `slots[active]`, not whichever slot a handover is fading into.
@@ -810,6 +818,14 @@ impl Stage for NamStage {
             && let Err(back) = out.push(resource)
         {
             self.retired = Some(back);
+        }
+    }
+
+    /// M5: FR-STATE-070's "the state shall load with that stage empty", entry point. Ignores a
+    /// `kind` that isn't ours, exactly as `apply` ignores a `ParamId` it doesn't own.
+    fn unload_resource(&mut self, kind: ResourceKind) {
+        if kind == ResourceKind::Nam {
+            self.unload();
         }
     }
 }
