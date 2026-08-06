@@ -27,7 +27,38 @@ namir-ir = { path = "../namir-ir" }
 # crate is used here rather than a hand-rolled `GlobalAlloc`: this crate's `unsafe_code =
 # "forbid"` rules out implementing that trait ourselves). Dev-dependency only, so it is never
 # linked into a release build of this crate.
-assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
+# `warn_release` alongside `warn_debug`: pre-existing gap found during M3's verification pass --
+# with `warn_debug` alone, `rt_harness` fails to *compile* under `cargo test --release` (see the
+# identical fix and rationale in `namir-nam`'s Cargo.toml). Dev-dependency only, so enabling both
+# features costs nothing in a release build of this crate.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
 # The Ir stage's own tests synthesize small in-memory WAV impulse responses, the same pattern
-# `namir-ir`'s own test suite uses (see `stages/ir.rs`'s test module).
+# `namir-ir`'s own test suite uses (see `stages/ir.rs`'s test module). Also used by
+# `benches/six_stage_chain.rs` to build its own synthetic 2 s stereo IR the same way.
 hound = "3.5"
+# M3's exit-criterion benchmark (`benches/six_stage_chain.rs`): D-19.1's generated-not-captured
+# "standard" WaveNet model and the `decaying_noise` IR fixture. Dev-dependency only, matching
+# `namir-nam`'s/`namir-ir`'s identical dev-only use of this crate for their own R-4/R-8 benches
+# -- `namir-fixtures` is test/bench tooling (`xtask`'s layering table exempts it entirely), never
+# a normal dependency.
+namir-fixtures = { path = "../namir-fixtures" }
+# Pins `benches/six_stage_chain.rs` to one core (D-2.1), same crate and version
+# `namir-nam`'s/`namir-ir`'s own D-2.1-pinned benches use.
+core_affinity = "0.8"
+
+[[bench]]
+name = "six_stage_chain"
+harness = false
+
+# Diagnostic companion to `six_stage_chain`: attributes that benchmark's assembled figure to
+# individual stages (gate/trim/eq/out had never been measured in isolation before M3's close-out).
+# Gates nothing -- see the file's own doc comment.
+[[bench]]
+name = "per_stage_cost"
+harness = false
+
+# Diagnostic (M3): is the chain's p99.9 tail code-driven or environmental? See the file's
+# own doc comment. Gates nothing.
+[[bench]]
+name = "tail_structure"
+harness = false
