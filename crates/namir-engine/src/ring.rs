@@ -93,6 +93,17 @@ impl<T> RingProducer<T> {
         }
     }
 
+    /// How many elements can be pushed before this ring is full.
+    ///
+    /// Used by the audio side to decide whether it has room to absorb what a command will cause
+    /// *before* committing to it — see `engine.rs`'s drain gate. A plain atomic load, so it is
+    /// wait-free like everything else here. The figure can only grow behind the caller's back (the
+    /// consumer only ever frees slots), so acting on a stale reading is conservative, never
+    /// optimistic.
+    pub fn slots(&self) -> usize {
+        self.inner.slots()
+    }
+
     /// Whether the consuming end has been dropped. D-8.1's degradation case: "If the worker dies,
     /// the ring fills and memory is retained but audio continues. Degradation, not failure (P8)."
     /// Callers use this to report the condition, never to change what the audio thread does.
@@ -105,6 +116,15 @@ impl<T> RingConsumer<T> {
     /// Pops the oldest element, or `None` if the ring is empty. Wait-free and allocation-free.
     pub fn try_pop(&mut self) -> Option<T> {
         self.inner.pop().ok()
+    }
+
+    /// Borrows the oldest element without removing it, or `None` if the ring is empty.
+    ///
+    /// This is what lets a consumer decide whether it can handle the next element *before*
+    /// committing to taking it — which matters because a popped element has to go somewhere, and
+    /// D-7.2 forbids dropping a command. Wait-free.
+    pub fn peek(&self) -> Option<&T> {
+        self.inner.peek().ok()
     }
 
     /// Whether the producing end has been dropped. See [`RingProducer::is_abandoned`].
