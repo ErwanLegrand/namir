@@ -49,3 +49,10 @@ core_affinity = "0.8"
 [[bench]]
 name = "six_stage_chain"
 harness = false
+
+# Diagnostic companion to `six_stage_chain`: attributes that benchmark's assembled figure to
+# individual stages (gate/trim/eq/out had never been measured in isolation before M3's close-out).
+# Gates nothing -- see the file's own doc comment.
+[[bench]]
+name = "per_stage_cost"
+harness = false
