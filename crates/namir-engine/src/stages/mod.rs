@@ -8,6 +8,16 @@ pub mod nam;
 pub mod out;
 pub mod trim;
 
+/// FR-NAM-070: "the crossfade shall be equal-power and 5-50 ms." 20 ms is this project's chosen
+/// point in that window, shared by the Nam and Ir stages.
+///
+/// **Public since M4, and defined once rather than twice.** `nam.rs` and `ir.rs` each carried their
+/// own private copy of this figure, which is a latent way for the two stages' fades to drift apart
+/// silently. It is public because `namir-worker` needs it: D-8.1's serialisation rule has to know
+/// how long a handover occupies a stage in order to keep two of them from overlapping, and hard-
+/// coding a second copy of the number over there would be the same mistake one layer further out.
+pub const HANDOVER_CROSSFADE_MS: f64 = 20.0;
+
 use crate::chain::Chain;
 use crate::prepare::{PrepareContext, PrepareError};
 use crate::stage::{Stage, StagePrep};
