@@ -295,8 +295,11 @@ sizes. The two together, before gate or EQ, already exceed the entire budget.
   the roadmap where that benchmark can be run against something real instead of a spike's
   isolated loop.
 
-**Status as of this session (2026-08-06) — honest accounting, not the original "Acceptance" text
-below, which this milestone has not yet earned in full:**
+**Status as of the prior session (2026-08-06) — honest accounting, not the original "Acceptance"
+text below, which this milestone had not yet earned in full. Superseded by the certified
+reference-machine pass recorded immediately below**, which is the first time any of this
+milestone's numbers come from `docs/02-architecture.md` §2's actual pinned machine rather than a
+CI sandbox proxy:
 
 - **LSTM: done.** `namir-nam/src/lstm.rs` ports `NeuralAmpModelerCore`'s `LSTMCell`/`LSTM` from
   its C++ source directly (module doc comment cites the exact fields/order read), unified behind
@@ -357,6 +360,147 @@ retire either risk has not been performed. Closing NFR-PERF-010 for real needs f
 cost reduction (candidates: `namir-nam`'s own remaining scalar-loop cost outside `axpy`, per-stage
 overhead in gate/trim/eq/out, or the R-8 doc comment's still-open 2048-block/192 kHz gap) plus a
 confirmatory run on the pinned reference machine — both left open, not silently deferred.
+
+**Certified reference-machine pass (this session, 2026-08-06).** This session ran directly on
+`docs/02-architecture.md` §2's pinned machine — confirmed, not assumed: `wmic`/`Get-CimInstance`
+on this host report an AMD Ryzen 9 5950X (16C/32T, 3401 MHz base) and 64 GB RAM, matching §2
+exactly, running Windows 11 Pro build 26200. Every figure below is therefore the certified
+NFR-PERF-010 number the prior session's own numbers explicitly said they were not.
+
+*Gates first:* `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo test --workspace` (314 tests), `xtask layering`, `xtask params-lock`, and `cargo
+deny check` all pass clean on this machine before any benchmark was trusted.
+
+*Baseline, before this session's changes (measured here first, to have a real reference-machine
+"before" rather than trusting the sandbox numbers above as a proxy):*
+
+| Benchmark | p50 | p99.9 |
+|---|---|---|
+| `wavenet_inner_loops` (NAM alone, standard shape) | ~12.1% | ~33.4–34.3% |
+| `namir-ir/examples/perf_bench 96000 64` (IR alone, 48 kHz condition, mono) | — | ~25.4–25.8% |
+| `six_stage_chain` (real assembled chain, stereo IR, gate+EQ active) | ~12.7% | ~52.2% |
+
+Already a clean, reproducible FAIL against the 25% budget — the isolated NAM figure alone (~33%)
+exceeds it, exactly as S-1's spike found, now confirmed on the actual reference machine rather than
+inferred from a weaker sandbox.
+
+*Two fixes landed this session, both root-caused by reading the hot loops directly rather than
+guessing:*
+
+1. **`namir-nam/src/wavenet.rs`: vectorized `Tanh`/`Sigmoid`, not just `axpy`.** R-4's original
+   vectorization (prior sessions) covered every multiply-accumulate loop but left the file's only
+   transcendental-heavy loop scalar: the standard WaveNet shape's two ten-layer arrays call
+   `f32::tanh()` roughly 15,360 times per 64-sample block, none of it going through `axpy` (`axpy`
+   only handles multiply-accumulate, not a nonlinearity). Fixed via a new `vectorize_unary` helper
+   plus `wide::f32x8`'s own `tanh`/`exp` methods — genuinely vectorized (not a per-lane scalar
+   fallback; `wide`'s source documents sub-ULP accuracy via range-reduced polynomial/`exp_m1`),
+   confirmed safe against the -100 dB numeric-parity test (`tests/fixtures.rs`), which reads
+   **-130.8 dB** after the change (was passing before too, but this is the actual post-change
+   margin, with plenty of headroom). The same treatment was applied to `Layer::apply_into`'s
+   head-sum and residual accumulation (`axpy(w=1.0)` instead of a hand-rolled `+=` loop) for
+   consistency; measured to make no further difference (LLVM already auto-vectorized those simple
+   loops), so it's a robustness/consistency change, not a counted performance win.
+2. **`namir-ir/src/convolver.rs`: vectorized the head partition's direct-convolution loop.** The
+   original loop computed `y[i] = sum_k head[k] * head_history[(t-k) % head_len]` per *sample*,
+   with a modulo *per tap* — `namir-nam`'s `Conv1D::apply_into` had already solved exactly this
+   shape (a causal FIR) with a history-plus-input `padded` buffer and a per-tap vectorized `axpy`
+   over the whole block; this session ported that technique here, replacing the ring-buffer/modulo
+   scheme with a linear history buffer (`ChannelState.head_history`) and a reused `head_scratch`
+   padded buffer, sized once per channel from a newly-stored `PreparedChannel::block_size` (the
+   caller's declared max per-call `input.len()`, not previously kept). Added `wide` as a direct
+   dependency of `namir-ir` for this (same crate/version/rationale `namir-nam` already uses it
+   with; `cargo deny check` and `xtask layering` both stay clean). All 39 `namir-ir` tests pass
+   unchanged, including `partitioned_matches_direct_across_fixtures_block_sizes_and_ir_lengths`
+   (the -100 dB check against `direct_convolve`, D-9.5's permanent reference).
+
+*Measured impact — a genuine, if partial, win, established by a controlled A/B on this machine
+(not a before/after across separate sessions, which this same milestone's history shows can be
+confounded by the reference machine's own run-to-run variance — see the note below):*
+
+| Benchmark | p50 before → after | p99.9 before → after |
+|---|---|---|
+| `wavenet_inner_loops` (NAM alone) | ~12.1% → ~8.8–9.2% (real, reproducible ~25% relative cut) | ~33–34% → ~30–35% (unchanged within run-to-run noise) |
+| `perf_bench 96000 64` (IR alone, 48 kHz) | not separately tracked | ~25.4–25.8% → ~24.8–25.0% (no measurable change) |
+| `six_stage_chain` (real assembled chain) | ~12.7% → ~10.0–10.1% (stable across 5 repeats) | ~52.2% → ~49.2–49.5% (stable across 5 repeats) |
+
+**Why the head-conv fix barely moved either isolated-IR or chain-level p99.9, despite being a real
+compute-cost reduction (verified: same test suite, same numeric parity, fewer scalar ops):**
+`perf_bench.rs`'s own module doc comment already explains the mechanism — a partition's FFT
+triggers *periodically* (every `size` samples), so the IR benchmark's p99.9 event is a recurring
+large-FFT-trigger block, not an average block. The head partition's per-sample cost, vectorized or
+not, is small next to a triggering partition's FFT/spectral-multiply/overlap-add cost, so cutting
+it reduces the *typical* block's cost (which would show in a p50 if this benchmark tracked one)
+without moving the *worst* block's cost at all. The same asymmetry explains why `wavenet_inner_loops`'s
+own p99.9 didn't move even though its p50 clearly did: whatever drives that file's tail (cache
+effects, branch misprediction on the `w == 0.0` skip checks, or plain OS scheduling jitter on a
+general-purpose desktop with no elevated thread priority — thread-priority elevation is explicitly
+an M6 `namir-platform` deliverable, not yet built) is apparently insensitive to the steady-state
+per-sample compute cost this session's fixes reduced. The chain-level benchmark's own p99.9 *did*
+move by a real, reproducible ~3 percentage points (52.2% → 49.2–49.5%, confirmed via a clean
+stash/pop A/B on identical hardware in the same session, not a cross-session comparison) — smaller
+than the p50 win would suggest, consistent with the tail being only partly, not wholly, explained
+by the per-sample costs this session's fixes touched.
+
+**A methodological finding worth recording for future certified runs on this machine:** this
+session's first read of the post-fix IR-alone benchmark showed a dramatic ~9.5% p99.9 (vs. the
+~25% reported in the table above) — before a controlled, same-session A/B (stash the fix, rebuild,
+remeasure; pop it back, rebuild, remeasure) showed the true, reproducible effect was near zero.
+The most likely explanation, not confirmed at the time: this is a general-purpose desktop, not a
+quieted benchmarking rig — `Get-Process` during this session showed ordinary background load (a
+browser, Discord, a stray leftover `find` process from this session's own earlier exploration) and
+CPU clock speed readings at or near base (no sustained boost observed), so an isolated run can land
+in a favourable clock/scheduling window that a same-day repeat does not reproduce.
+
+**Follow-up, same session: tested that explanation directly, rather than leaving it a guess.** The
+operator closed every non-essential background application (Firefox, Discord, WacomCenterUI,
+MuseHub — the processes `Get-Process` had flagged) and switched this machine's Windows power mode
+from Balanced to Best Performance, then asked for a clean re-run. Result, 5-6 repeats per
+benchmark:
+
+| Benchmark | p99.9 (background load, Balanced) | p99.9 (quiet, Best Performance) |
+|---|---|---|
+| `wavenet_inner_loops` (NAM alone) | ~30–35% (visibly spread across repeats) | **~29.8–30.1%** (tight, all 5 runs within 0.3 pp) |
+| `perf_bench 96000 64` (IR alone, 48 kHz) | ~24.8–25.0% | **~24.6–25.0%** (unchanged) |
+| `six_stage_chain` (real assembled chain) | ~49.2–49.5% | **~48.2–48.7%** (tight, all 6 runs within 0.5 pp) |
+
+**The headline finding: quieting the machine made every number far more *reproducible* (run-to-run
+spread collapsed from several points to a few tenths of a point) but barely changed the *level* of
+any of them** — the chain's p99.9 moved by about half a point, nowhere near enough to explain the
+2x-over-budget gap, and NAM/IR alone moved even less. This is a real answer, not a non-result: it
+means the tail this benchmark measures is **inherent to the workload itself, not an artifact of
+this being a shared desktop with other software running**. For the IR-alone case this is exactly
+what `perf_bench.rs`'s own doc comment already predicted (the p99.9 event is a periodically
+recurring large-FFT-partition trigger, a property of the schedule, not the OS); for NAM and the
+full chain it now rules out "background contention" as the explanation for the earlier session's
+spread, leaving cache effects, branch prediction, or genuine compute-cost variance across different
+regions of the WaveNet's own weight-dependent control flow (`if w == 0.0 { continue; }` in `axpy`'s
+callers) as the more likely remaining candidates — still unconfirmed, but now narrowed by ruling
+out the OS-level explanation with a real experiment rather than a guess. Practically: **the earlier
+"background load" figures (~49.2–49.5%, ~30–35%) were already close enough to trustworthy that this
+session's Acceptance verdict does not change** — the quiet-machine numbers below supersede them as
+the more precise reading, but not as a different verdict.
+
+**Acceptance — still not met, now on certified, quiet-machine reference numbers.** FR-NAM-020
+(LSTM) stays closed (unaffected by this session). NFR-PERF-010 does **not** close: the real
+assembled chain measures **p99.9 ≈ 48.2–48.7%** of one core against a 25% budget on
+`docs/02-architecture.md` §2's own pinned machine, quiet and at Best Performance — roughly 2x over,
+a real but small improvement over this session's own measured ~52.2% pre-fix baseline (itself also
+now confirmed not to be an artifact of background load) but nowhere near closing the gap. R-4 and
+R-8 both stay **downgraded, not retired**: R-4's vectorization now provably covers every hot loop
+this session could find in `wavenet.rs` (not just `axpy`), and R-8's scheduling defect is unaffected
+by this session (untouched); neither the isolated NAM figure (~29.8-30.1% p99.9, still exceeds
+budget alone) nor the assembled-chain figure is under budget. Closing NFR-PERF-010 for real now
+needs a **structural** reduction, not further micro-vectorization or environment tuning — both
+levers this session had available are now spent and both moved the needle only modestly. Candidates
+worth trying next: reducing NAM's own tanh call count (e.g. batching activations across layers
+rather than per-layer, or accepting a coarser/cheaper approximation — there is `-130.8 dB` of
+headroom against the `-100 dB` parity bar to spend before that's even a risk), reducing per-block
+overhead in gate/trim/eq/out (never individually measured in isolation this session), or revisiting
+the IR schedule's own partition-size/growth-factor defaults per-condition rather than only its
+stagger phase (R-8's fix; the trigger-cost magnitude itself is untouched by staggering). M6's
+thread-priority elevation is no longer the leading candidate for closing this gap, now that a real
+experiment has shown the tail survives a quiet, performance-mode machine — still worth building for
+other reasons, but not expected to be what retires NFR-PERF-010.
 
 ---
 

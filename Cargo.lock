@@ -222,6 +222,7 @@ dependencies = [
  "realfft",
  "rubato",
  "rustfft",
+ "wide",
 ]
 
 [[package]]

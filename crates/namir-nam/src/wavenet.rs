@@ -84,26 +84,60 @@ enum Activation {
 }
 
 impl Activation {
-    /// Math identical to the spike's `activation_apply`.
+    /// Math identical to the spike's `activation_apply`. `Tanh`/`Sigmoid` route through
+    /// [`vectorize_unary`] (R-4 follow-up, M3 §7's close-out pass) — see that function's doc
+    /// comment for why these two, not `ReLU`, needed a dedicated fix.
     fn apply(self, x: &mut [f32]) {
         match self {
-            Activation::Tanh => {
-                for v in x.iter_mut() {
-                    *v = v.tanh();
-                }
-            }
+            Activation::Tanh => vectorize_unary(x, f32x8::tanh, f32::tanh),
             Activation::ReLU => {
                 for v in x.iter_mut() {
                     *v = v.max(0.0);
                 }
             }
-            Activation::Sigmoid => {
-                for v in x.iter_mut() {
-                    *v = 1.0 / (1.0 + (-*v).exp());
-                }
-            }
+            Activation::Sigmoid => vectorize_unary(
+                x,
+                |v| f32x8::ONE / (f32x8::ONE + (-v).exp()),
+                |v| 1.0 / (1.0 + (-v).exp()),
+            ),
             Activation::Identity => {}
         }
+    }
+}
+
+/// Applies `vec_fn` to `x` 8 lanes at a time, `scalar_fn` to the `n % 8` leftover — the same
+/// chunk-then-scalar-remainder shape [`axpy`] below uses, applied to a per-element nonlinearity
+/// instead of a multiply-accumulate.
+///
+/// **Why this exists, on top of `axpy`'s existing vectorization:** this M3 close-out pass's own
+/// reference-machine benchmarking (`benches/wavenet_inner_loops.rs`, certified run on
+/// `docs/02-architecture.md` §2's pinned AMD Ryzen 9 5950X) measured the standard WaveNet shape's
+/// assembled cost at p99.9 ≈ 33-34% of one core — still well over the 25% budget even with
+/// `axpy` already vectorized. A targeted read of every non-`axpy` per-sample operation in this
+/// file found exactly one hot, unvectorized loop: `Activation::Tanh`/`Sigmoid` in the (default,
+/// `gated: false`) `Layer::apply_into` path, called once per layer over `channels * n` elements —
+/// 15,360 scalar `f32::tanh()` calls per 64-sample block for the standard shape's two ten-layer
+/// arrays (16 and 8 channels respectively), the only transcendental-heavy loop in the file and
+/// the dominant remaining cost `axpy`'s multiply-accumulate vectorization never touched.
+///
+/// **Why this is safe against the -100 dB numeric-parity test**
+/// (`tests/fixtures.rs::numeric_parity_against_an_independent_reference_implementation`):
+/// `wide::f32x8::tanh`/`exp` are not a per-lane scalar fallback — `wide`'s own source
+/// (`f32x8_.rs`) documents a range-reduced polynomial/`exp_m1`-based implementation with error
+/// bounded below 1 ULP of `f32` (~1.2e-7 relative) across the whole domain, several orders of
+/// magnitude inside the -100 dB (1e-5 relative) parity budget, and `Sigmoid`'s `f32x8::exp` plus
+/// exact SIMD `Div` (not an approximate `recip`) carries the same guarantee.
+#[inline]
+fn vectorize_unary(x: &mut [f32], vec_fn: impl Fn(f32x8) -> f32x8, scalar_fn: impl Fn(f32) -> f32) {
+    let n = x.len();
+    let lanes = n - n % 8;
+    let (vec_part, rem) = x.split_at_mut(lanes);
+    for chunk in vec_part.chunks_exact_mut(8) {
+        let v = vec_fn(f32x8::from(&*chunk));
+        chunk.copy_from_slice(&v.to_array());
+    }
+    for v in rem.iter_mut() {
+        *v = scalar_fn(*v);
     }
 }
 
@@ -474,18 +508,16 @@ impl Layer {
             scratch.z_buf[..z_len].copy_from_slice(&scratch.conv_buf[..z_len]);
         }
 
-        for (s, z) in head_sum[..z_len]
-            .iter_mut()
-            .zip(scratch.z_buf[..z_len].iter())
-        {
-            *s += z;
-        }
+        // `axpy(w=1.0)`, not a plain `+=` loop (this M3 close-out pass's own vectorization fix,
+        // same rationale as `Activation::apply`'s `Tanh`/`Sigmoid` above): a straight `out[i] +=
+        // in[i]` loop over disjoint `&mut`/`&` slices is exactly `axpy`'s shape with `w` fixed at
+        // 1.0, so it costs nothing to route through the same vectorized primitive rather than
+        // trust the optimizer to notice on its own.
+        axpy(&mut head_sum[..z_len], &scratch.z_buf[..z_len], 1.0);
 
         self.residual
             .apply_into(&scratch.z_buf[..z_len], n, &mut next_input_out[..z_len]);
-        for i in 0..z_len {
-            next_input_out[i] += layer_input[i];
-        }
+        axpy(&mut next_input_out[..z_len], &layer_input[..z_len], 1.0);
     }
 }
 
