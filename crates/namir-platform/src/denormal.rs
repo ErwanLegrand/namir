@@ -35,11 +35,27 @@ pub struct DenormalGuard {
     previous_mxcsr: u32,
 }
 
+/// Puts the FPU into flush-to-zero / denormals-are-zero mode for as long as it's alive, restoring
+/// the exact prior mode on drop. `Drop` runs unconditionally — on an early return or a
+/// panic-driven unwind through the guard's scope — which is D-7.4's whole point: the mode "cannot
+/// leak even on an early return."
+///
+/// On an architecture this crate doesn't have a denormal-control implementation for, the guard
+/// still constructs and drops cleanly; it just doesn't change anything (NFR-PORT-030 must not be
+/// precluded by this guard failing to compile on, say, a 32-bit ARM target).
 #[cfg(target_arch = "aarch64")]
 pub struct DenormalGuard {
     previous_fpcr: u64,
 }
 
+/// Puts the FPU into flush-to-zero / denormals-are-zero mode for as long as it's alive, restoring
+/// the exact prior mode on drop. `Drop` runs unconditionally — on an early return or a
+/// panic-driven unwind through the guard's scope — which is D-7.4's whole point: the mode "cannot
+/// leak even on an early return."
+///
+/// On an architecture this crate doesn't have a denormal-control implementation for, the guard
+/// still constructs and drops cleanly; it just doesn't change anything (NFR-PORT-030 must not be
+/// precluded by this guard failing to compile on, say, a 32-bit ARM target).
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub struct DenormalGuard;
 
