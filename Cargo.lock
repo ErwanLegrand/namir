@@ -254,6 +254,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "namir-worker"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "namir-core",
+ "namir-engine",
+ "namir-fixtures",
+ "namir-ir",
+ "namir-nam",
+]
+
+[[package]]
 name = "num-complex"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
