@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use namir_core::ContentHash;
 
-use crate::entry::LibraryEntry;
+use crate::entry::{FileTime, LibraryEntry};
 
 /// The library index. `BTreeMap` for `by_path` (not `HashMap`) purely so iteration order is
 /// deterministic — useful for tests and for a future UI listing — not because anything here
@@ -16,6 +16,12 @@ use crate::entry::LibraryEntry;
 pub struct Index {
     by_path: BTreeMap<PathBuf, LibraryEntry>,
     by_hash: HashMap<ContentHash, Vec<PathBuf>>,
+    /// When the most recent *complete* scan finished, if any. `scan.rs`'s `Scanner` consults this
+    /// to close D-12.1's mtime-settling gap — see that module's doc comment on why a file whose
+    /// mtime lands close to this timestamp is rehashed regardless of whether it matches the
+    /// stored `(size, mtime)`. Persisted by `store.rs` alongside the entries, so the protection
+    /// survives a restart rather than resetting to "no prior scan" every time the process starts.
+    last_scan_completed_at: Option<FileTime>,
 }
 
 impl Index {
@@ -83,6 +89,18 @@ impl Index {
                 self.by_hash.remove(&hash);
             }
         }
+    }
+
+    /// When the most recent complete scan finished, if any — `None` before this index has ever
+    /// finished a scan.
+    pub fn last_scan_completed_at(&self) -> Option<FileTime> {
+        self.last_scan_completed_at
+    }
+
+    /// Records that a scan completed at `at`. `store.rs` persists this; `scan.rs`'s `Scanner`
+    /// reads it back via [`Self::last_scan_completed_at`] on the *next* scan.
+    pub(crate) fn set_last_scan_completed_at(&mut self, at: FileTime) {
+        self.last_scan_completed_at = Some(at);
     }
 }
 

@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::entry::LibraryEntry;
+use crate::entry::{FileTime, LibraryEntry};
 use crate::error::{LibraryError, LibraryWarning};
 use crate::error_codes;
 use crate::index::Index;
@@ -55,6 +55,12 @@ const STORE_FORMAT_VERSION: u32 = 1;
 struct OnDisk {
     format_version: u32,
     entries: Vec<LibraryEntry>,
+    /// D-12.1's mtime-settling protection (see `index.rs`'s field of the same name) — persisted
+    /// so it survives a restart. `#[serde(default)]` so an index written before this field
+    /// existed still loads (D-11.2's tolerant-reading spirit, applied to this crate's own format
+    /// rather than namir-state's).
+    #[serde(default)]
+    last_scan_completed_at: Option<FileTime>,
 }
 
 /// Owns the on-disk index file's path and knows how to (re)load and atomically replace it.
@@ -117,6 +123,9 @@ impl IndexStore {
         for entry in on_disk.entries {
             index.upsert(entry);
         }
+        if let Some(at) = on_disk.last_scan_completed_at {
+            index.set_last_scan_completed_at(at);
+        }
         LoadOutcome::Loaded(index)
     }
 
@@ -128,6 +137,7 @@ impl IndexStore {
         let on_disk = OnDisk {
             format_version: STORE_FORMAT_VERSION,
             entries: index.iter().cloned().collect(),
+            last_scan_completed_at: index.last_scan_completed_at(),
         };
         let bytes = serde_json::to_vec_pretty(&on_disk)
             .expect("an Index built from LibraryEntry values always serialises");
@@ -220,6 +230,36 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(reloaded.len(), 1);
         assert_eq!(reloaded.get(Path::new("marshall/plexi.nam")), Some(&entry));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// D-12.1's mtime-settling protection must survive a restart, or a process that reopens the
+    /// index right after a scan loses the very window it's supposed to guard.
+    #[test]
+    fn last_scan_completed_at_survives_a_save_and_reload() {
+        let path = temp_index_path("scan_completed_at");
+        let (store, mut index, _) = IndexStore::open(path.clone());
+        let stamp = FileTime::now();
+        index.set_last_scan_completed_at(stamp);
+        store.save_atomic(&index).unwrap();
+
+        let (_, reloaded, _) = IndexStore::open(path.clone());
+        assert_eq!(reloaded.last_scan_completed_at(), Some(stamp));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// D-11.2's tolerant-reading spirit, applied to this crate's own on-disk format: an index
+    /// written before `last_scan_completed_at` existed (or by a future build that omits it for
+    /// some other reason) must still load.
+    #[test]
+    fn a_missing_last_scan_completed_at_field_defaults_to_none() {
+        let path = temp_index_path("no_scan_completed_at_field");
+        std::fs::write(&path, br#"{"format_version": 1, "entries": []}"#).unwrap();
+        let (_, index, warnings) = IndexStore::open(path.clone());
+        assert!(warnings.is_empty());
+        assert_eq!(index.last_scan_completed_at(), None);
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
