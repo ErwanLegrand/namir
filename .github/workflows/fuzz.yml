@@ -16,6 +16,13 @@ on:
   pull_request:
     branches: [trunk]
 
+# Principle of least privilege for the GITHUB_TOKEN (flagged by CodeQL's "Workflow does not
+# contain permissions" check): the one job here only checks out the repo, installs cargo-fuzz,
+# and runs a bounded local fuzz smoke test -- it never writes to the repo -- so a workflow-wide
+# `contents: read` covers it, with no per-job override needed.
+permissions:
+  contents: read
+
 jobs:
   # Bounded smoke run, not a fuzzing campaign: the question this job answers is "does the target
   # still build and run cleanly against its seed corpus for a minute", not "did we find a new
