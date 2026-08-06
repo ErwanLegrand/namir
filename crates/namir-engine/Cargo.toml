@@ -10,6 +10,17 @@ workspace = true
 
 [dependencies]
 namir-core = { path = "../namir-core" }
+namir-params = { path = "../namir-params" }
+namir-dsp = { path = "../namir-dsp" }
+namir-nam = { path = "../namir-nam" }
+# D-9.2/9.3: the Nam stage wraps `namir-nam`'s model with a block-based resampler around it, per
+# this crate's own layering (D-5.1: namir-engine may depend on nam but nam may not depend on an
+# external resampler itself -- resampling is a stage concern, not a model-inference concern).
+rubato = "0.16"
+# The Ir stage wraps `namir-ir`'s convolver (`namir-ir` did not exist yet when this crate's
+# dependency list was last edited -- added here as this M2 wave's one exception to "only touch
+# your own stage file").
+namir-ir = { path = "../namir-ir" }
 
 [dev-dependencies]
 # D-7.5's RT-allocation test harness (see src/rt_harness.rs's module doc for why an external
@@ -17,3 +28,6 @@ namir-core = { path = "../namir-core" }
 # "forbid"` rules out implementing that trait ourselves). Dev-dependency only, so it is never
 # linked into a release build of this crate.
 assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
+# The Ir stage's own tests synthesize small in-memory WAV impulse responses, the same pattern
+# `namir-ir`'s own test suite uses (see `stages/ir.rs`'s test module).
+hound = "3.5"

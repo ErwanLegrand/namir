@@ -1,0 +1,20 @@
+[package]
+name = "namir-ir"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+hound = "3.5"
+rubato = "0.16"
+realfft = "3.5"
+rustfft = "6.4"
+
+[dev-dependencies]
+namir-fixtures = { path = "../namir-fixtures" }
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug"] }
