@@ -16,9 +16,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [trunk]
   pull_request:
-    branches: [main]
+    branches: [trunk]
 
 # Principle of least privilege for the GITHUB_TOKEN (flagged by CodeQL's "Workflow does not
 # contain permissions" check): every job here only checks out the repo, builds, and reads --

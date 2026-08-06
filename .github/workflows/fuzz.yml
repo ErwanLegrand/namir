@@ -12,9 +12,9 @@ name: Fuzz
 
 on:
   push:
-    branches: [main]
+    branches: [trunk]
   pull_request:
-    branches: [main]
+    branches: [trunk]
 
 # Principle of least privilege for the GITHUB_TOKEN (flagged by CodeQL's "Workflow does not
 # contain permissions" check): the one job here only checks out the repo, installs cargo-fuzz,
