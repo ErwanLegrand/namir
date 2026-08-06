@@ -954,9 +954,11 @@ allocation while an "audio section" marker is active. D-5.3's workspace-wide `un
 implementing `GlobalAlloc` (an `unsafe trait`) inside `namir-engine` itself is not an option.
 `assert_no_alloc` puts that `unsafe impl` in its own crate instead, which is consistent with
 D-5.3's isolation intent even though it isn't the literal case D-5.3 anticipated (a dependency
-carrying the unsafe rather than a designated in-tree crate). It runs with its `warn_debug`
-feature (count violations rather than aborting the process), so the harness's own test can turn
-a violation into an ordinary `#[should_panic]`.
+carrying the unsafe rather than a designated in-tree crate). It runs with its `warn_debug` and
+`warn_release` features (count violations rather than aborting the process, in debug and release
+profiles respectively — each is gated on its own `debug_assertions` state, so both are needed for
+the harness to compile under `cargo test` and `cargo test --release` alike), so the harness's own
+test can turn a violation into an ordinary `#[should_panic]`.
 
 **Note on `rtrb` (added M4):** the same isolation argument as `assert_no_alloc` above, with one
 difference a reviewer should not have to discover for themselves — **`rtrb` is a normal dependency
