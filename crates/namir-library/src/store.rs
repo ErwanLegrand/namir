@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use crate::entry::{FileTime, LibraryEntry};
 use crate::error::{LibraryError, LibraryWarning};
 use crate::error_codes;
+use crate::favourites::Favourites;
 use crate::index::Index;
 
 const STORE_FORMAT_VERSION: u32 = 1;
@@ -61,6 +62,10 @@ struct OnDisk {
     /// rather than namir-state's).
     #[serde(default)]
     last_scan_completed_at: Option<FileTime>,
+    /// FR-LIB-050's favourite marks. `#[serde(default)]` for the same forward-compatibility
+    /// reason as `last_scan_completed_at`.
+    #[serde(default)]
+    favourites: Favourites,
 }
 
 /// Owns the on-disk index file's path and knows how to (re)load and atomically replace it.
@@ -126,6 +131,7 @@ impl IndexStore {
         if let Some(at) = on_disk.last_scan_completed_at {
             index.set_last_scan_completed_at(at);
         }
+        *index.favourites_mut() = on_disk.favourites;
         LoadOutcome::Loaded(index)
     }
 
@@ -138,6 +144,7 @@ impl IndexStore {
             format_version: STORE_FORMAT_VERSION,
             entries: index.iter().cloned().collect(),
             last_scan_completed_at: index.last_scan_completed_at(),
+            favourites: index.favourites().clone(),
         };
         let bytes = serde_json::to_vec_pretty(&on_disk)
             .expect("an Index built from LibraryEntry values always serialises");

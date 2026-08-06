@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use namir_core::ContentHash;
 
 use crate::entry::{FileTime, LibraryEntry};
+use crate::favourites::Favourites;
 
 /// The library index. `BTreeMap` for `by_path` (not `HashMap`) purely so iteration order is
 /// deterministic — useful for tests and for a future UI listing — not because anything here
@@ -22,6 +23,10 @@ pub struct Index {
     /// stored `(size, mtime)`. Persisted by `store.rs` alongside the entries, so the protection
     /// survives a restart rather than resetting to "no prior scan" every time the process starts.
     last_scan_completed_at: Option<FileTime>,
+    /// FR-LIB-050's favourite marks, keyed by content hash — kept alongside the entries here
+    /// (rather than a separate file) since AQ-3's single-document store already exists and a
+    /// second small file would just be a second thing that can go missing independently.
+    favourites: Favourites,
 }
 
 impl Index {
@@ -101,6 +106,18 @@ impl Index {
     /// reads it back via [`Self::last_scan_completed_at`] on the *next* scan.
     pub(crate) fn set_last_scan_completed_at(&mut self, at: FileTime) {
         self.last_scan_completed_at = Some(at);
+    }
+
+    /// FR-LIB-050's favourite marks. `&mut` access, not a wrapper method per mark/unmark, since
+    /// `Favourites` is already a small, self-contained public type — adding `Index::mark_favourite`
+    /// etc. would just be forwarding methods with nothing of this type's own to add.
+    pub fn favourites(&self) -> &Favourites {
+        &self.favourites
+    }
+
+    /// Mutable access to [`Self::favourites`] — see that method's doc comment.
+    pub fn favourites_mut(&mut self) -> &mut Favourites {
+        &mut self.favourites
     }
 }
 
