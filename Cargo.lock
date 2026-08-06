@@ -297,6 +297,7 @@ dependencies = [
  "namir-engine",
  "namir-fixtures",
  "namir-ir",
+ "namir-library",
  "namir-nam",
 ]
 
