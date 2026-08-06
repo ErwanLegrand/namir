@@ -21,6 +21,16 @@ rubato = "0.16"
 # dependency list was last edited -- added here as this M2 wave's one exception to "only touch
 # your own stage file").
 namir-ir = { path = "../namir-ir" }
+# M4: D-7.2's SPSC command ring and D-8.1's return ring (see src/ring.rs's module doc for the full
+# Decision/Rationale block). Same composition move src/rt_harness.rs documents for
+# `assert_no_alloc`: this crate's `unsafe_code = "forbid"` (D-5.3, workspace lint) cannot be
+# relaxed by a nested `#[allow]`, and a wait-free SPSC queue carrying `Arc<Prepared*>` cannot be
+# written in safe Rust -- so the unsafe lives in the dependency, not here. Verified against this
+# project's own constraints before adoption: MIT OR Apache-2.0 (NFR-LIC-020, already on
+# deny.toml's allow-list), **zero** transitive dependencies, no build script, `no_std`-capable and
+# pure Rust (so it cross-compiles for NFR-PORT-030's aarch64 mobile targets), and its own
+# `rust-version = "1.38"` is far below this workspace's 1.97 MSRV (NFR-PORT-010).
+rtrb = "0.3.4"
 
 [dev-dependencies]
 # D-7.5's RT-allocation test harness (see src/rt_harness.rs's module doc for why an external
