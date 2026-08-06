@@ -678,6 +678,12 @@ cannot be guaranteed.**
 **Size: L.** **Depends on:** M2 (needs real stages with the dual-resource shape already built in).
 **Blocks:** M5.
 
+> ⚠️ **This section's "Acceptance" paragraph below predicts that R-7 retires. It does not.** Read
+> "M4 status — this session" at the end of this section: the crossfade was measured for the first
+> time, and a NAM handover alone stays within NFR-PERF-010's budget while a *simultaneous* NAM and
+> IR handover does not. The original text is left unedited as the record of what the milestone
+> expected.
+
 **Deliverables:**
 
 - `namir-engine`'s real **D-7.2 SPSC command ring** (wait-free from the audio thread's side,
@@ -694,6 +700,109 @@ cannot be guaranteed.**
 cross-instance weight sharing becomes achievable (though it isn't exercised for real until M6's
 `namir-clap`). **R-7 retires**: the crossfade's transient 2× cost is now something the benchmark
 harness can actually measure, not a stated concern.
+---
+
+### M4 status — this session, 2026-08-06
+
+Appended rather than rewriting the Deliverables and Acceptance text above, following §7's own
+convention. Where this section and the text above disagree, this section is what happened.
+
+**All three deliverables landed.** `namir-engine` gained D-7.2's SPSC command ring and D-8.1's
+return ring (`ring.rs`, on the new `rtrb` dependency — `02-architecture.md` §17), D-7.3's real
+lock-free telemetry ring (`telemetry_ring.rs`, plain `AtomicU64`s and no dependency at all), and
+`AudioEngine`, which owns the rings so `Chain` stays the pure DSP object `six_stage_chain.rs`
+measures. `namir-worker` exists, with D-7.1's pool, D-8.2's cache, D-16.3's per-job panic isolation,
+and the worker halves of D-8.1 — and **no third-party dependency of its own**.
+
+**The codebase's one known P1 violation is closed, and a second one nobody had documented with it.**
+M2's `nam.rs`/`ir.rs` dropped the outgoing slot on the audio thread the instant a handover
+completed; both files admitted it in their module docs. It is now a move into a one-slot retire pen
+that the return ring drains. The second site turned up while wiring the first: an offer arriving
+mid-fade *replaced* the slot still fading in, and replacing it dropped it — harmless while the
+loader was documented non-RT and only tests called it, a real violation once offers install on the
+audio thread. Both are closed the same way.
+
+The evidence is not an assertion. The tightened tests were committed **first**, failing with 21 and
+7 deallocations respectively, and the fix committed second — NFR-QUAL-020's "evidenced by commit
+order", honoured literally. Both stages now drive a complete real-to-real handover to completion
+*inside* `rt_harness::audio_section`, which they demonstrably could not before.
+
+**Two decisions needed correcting, not merely implementing** — both recorded as
+`*Consequence (added M4)*` notes in `02-architecture.md`:
+
+- **D-8.1 understates step 1.** "The stage is prepared with capacity for two live resources
+  precisely so this needs no allocation" is true of the slot *array* and false of the slot
+  *contents*: installing a bare `Arc<PreparedNam>` still builds this instance's `NamState` and, at a
+  mismatched rate, a whole `rubato` resampler pair. So a command carries a built, boxed slot, which
+  also makes D-7.2's "carries a pointer, never the model" literally true rather than an argument.
+- **D-8.2's cache key is insufficient as written.** `PreparedIr::from_wav_bytes` bakes in both the
+  engine rate and the block size, and `process_block` **asserts** the block size its schedule was
+  built for — so a hit keyed on content hash alone could hand one instance an IR prepared for
+  another's smaller block, and the failure mode is a *panic on the audio thread*, not a wrong sound.
+  Keyed `(hash, rate, block_size)` instead.
+
+**Acceptance — FR-NAM-070 and FR-IR-060 close; R-7 does not retire.**
+
+FR-NAM-070 and FR-IR-060 are each verified by their own literal *Verify: I* method — swapped under a
+continuous sine, asserting no discontinuity beyond a stated threshold and no dropout, with the whole
+run inside the D-7.5 harness. FR-CLAP-090's sharing mechanism is built and tested at the worker
+level and remains, as the Acceptance text above already said, *achievable* rather than exercised
+until M6.
+
+**R-7 was measured and stays open, which is the one place this milestone's original Acceptance text
+was wrong.** It predicted retirement on the grounds that the transient would become measurable. It
+is now measured, and the measurement does not support retiring it — though it does narrow it
+sharply. On the §2 reference machine under D-2.4's conditions, **six retained repetitions of ten**
+(four discarded on D-2.4's own estimator check):
+
+| Arm | p99.9 across retained runs | vs. the 25% budget |
+|---|---|---|
+| A — steady, no handover | **16.25–16.51%** (estimator 14.60–15.29%) | pass; reproduces M3's certified figure |
+| B — NAM handover, all four rates | **21.32–24.31%** | **pass** |
+| C — IR handover, all four rates | **17.97–24.63%** | **pass**, with little margin |
+| D — NAM **and** IR simultaneously | **25.06–31.49%** | **fail at every rate** |
+
+So R-7's own wording — "crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget" — is
+**half right, and the half that is wrong is the half it names.** A NAM handover alone stays inside
+budget even at a 94%-duty swap rate faster than any human audition. What exceeds the budget is two
+stages crossfading at once, which R-7 does not mention. Arm D's spread is under 0.6 points across
+six runs — tighter than arm A's — so this is a property of the workload, not noise.
+
+The mitigation is named in §22 and deliberately **not** built here: a worker-side rule that a NAM
+and an IR handover are never in flight simultaneously would eliminate arm D by construction, for one
+state bit per instance. The operator's call was to certify the measurement first rather than fix and
+measure in the same pass. Shortening the crossfade toward FR-NAM-070's 5 ms floor is *not* an
+alternative — it reduces the transient's duty cycle, not its 2× peak.
+
+**What M4 does not close, stated rather than left to inference:**
+
+- **NFR-RT-010 is Partial, not Done.** M4 closed the one known audio-thread allocation and proves a
+  complete handover allocation-free, but the requirement's *Verify* clause also demands a stress
+  test "with concurrent model loading, preset recall and library scanning". Preset recall is M5's
+  `namir-state` and scanning is M5's `namir-library`; neither exists, so only the model-loading axis
+  is covered.
+- **NFR-PERF-050** (500 ms for a 50 MB load) now has a worker to measure but no benchmark yet.
+- **The mobile cross-builds are unverified for `namir-worker`.** `-p namir-worker` is added to both
+  CI jobs, and nothing in the crate should block either target, but those jobs run on
+  ubuntu/macOS-hosted runners which the concurrent GitHub incident left stuck — so this is claimed
+  by inspection, not by a green run.
+
+**Two methodology notes this milestone earned.**
+
+First, D-2.4's estimator has a limit worth recording: it is **not** a valid validity check for the
+IR-swapping arms. It assumes cost is periodic in block index, and recycled IR slots each carry their
+own stream position, so the expensive partition triggers land on varying residues. The tell was
+unmistakable — arm C's estimator reads *below* arm A's, which is impossible for a lower bound on the
+same schedule doing strictly more work. Arms C and D are therefore validity-checked against arm A's
+estimator, measured in the same run.
+
+Second, and more embarrassing: **two of the four discarded repetitions were contaminated by this
+session's own polling** — a shell command every few seconds to check whether the run had finished.
+That is exactly the phenomenon M3's close-out recorded ("the later measurement sessions ran
+concurrently with background analysis agents and repeated `cargo` builds"), reproduced by someone
+who had just finished reading the warning about it. D-2.4's "no unrelated load on the machine,
+verified rather than assumed" includes the tooling watching the benchmark.
+
 
 ---
 
