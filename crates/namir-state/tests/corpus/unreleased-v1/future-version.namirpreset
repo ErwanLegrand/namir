@@ -1,0 +1,6 @@
+{
+  "format_version": 2,
+  "parameters": {
+    "trim.gain_db": 0.5
+  }
+}
