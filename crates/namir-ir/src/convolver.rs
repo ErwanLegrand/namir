@@ -453,13 +453,24 @@ fn fft_stage_process_sample(
     let start_abs: i64 = t_abs as i64 + 1 - stage.size as i64 + stage.offset as i64;
     let valid_len = stage.size + stage.actual_len - 1;
     let scale = 1.0 / stage.fft_len as f32; // realfft's inverse transform is unnormalized
-    let ring_len = ring.len() as i64;
+    // Bitmask, not `%`: `ring.len()` is always a power of two (`PreparedChannel::new` builds it
+    // with `.next_power_of_two()`), but it is a *runtime* value, so the compiler cannot prove that
+    // and must emit a real 64-bit integer division for `%` -- tens of cycles, executed
+    // `valid_len` times (~16k for a size-8192 partition) on every single trigger. This loop's
+    // total cost across a schedule period is proportional to the IR's whole tap count and is
+    // essentially invariant to partition size, which is why it dominates the measured tail and why
+    // sweeping `max_partition` never moved it (M3; see `namir-engine/benches/tail_structure.rs`).
+    debug_assert!(
+        ring.len().is_power_of_two(),
+        "ring length must be a power of two for the mask below to equal a modulo"
+    );
+    let ring_mask = ring.len() - 1;
     for i in 0..valid_len {
         let real_time = start_abs + i as i64;
         if real_time < 0 {
             continue; // exactly-zero contribution (see doc comment above) -- skip, don't wrap.
         }
-        let pos = (real_time % ring_len) as usize;
+        let pos = real_time as usize & ring_mask;
         ring[pos] += state.time_scratch[i] * scale;
     }
 }
@@ -598,12 +609,15 @@ impl PreparedChannel {
             output[..n].fill(0.0);
         }
 
-        let ring_len = state.ring.len() as u64;
+        // Bitmask rather than `%`, same reasoning as `fft_stage_process_sample`'s own note: the
+        // ring is always power-of-two length, but that is a runtime fact the compiler cannot use.
+        debug_assert!(state.ring.len().is_power_of_two());
+        let ring_mask = state.ring.len() - 1;
         for i in 0..n {
             let x = input[i];
             let t = state.t;
 
-            let pos = (t % ring_len) as usize;
+            let pos = t as usize & ring_mask;
             output[i] += state.ring[pos];
             state.ring[pos] = 0.0;
 
