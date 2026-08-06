@@ -3,16 +3,20 @@
 
 pub mod eq;
 pub mod gate;
+pub mod ir;
 pub mod nam;
 pub mod out;
 pub mod trim;
-// `ir` is added once `namir-ir` exists (this crate's own second implementation wave).
 
 use crate::chain::Chain;
 use crate::prepare::{PrepareContext, PrepareError};
+use crate::stage::{Stage, StagePrep};
 
-/// Builds the fixed 1.0 signal chain. **Not yet wired** — assembled once every one of the six
-/// stages exists; see this module's own tracking in `03-implementation-roadmap.md` §6.
+/// Builds the fixed 1.0 signal chain (FR-CHAIN-010) with M2's cross-cutting features
+/// (FR-CHAIN-030/080/090) active — this is the one real entry point M2 delivers for assembling a
+/// product-shaped chain; every other construction path (`Chain::new` called directly, as this
+/// crate's own tests still do) is test/scaffolding-only and does not get those features, per
+/// `Chain::prepare_crosscutting`'s own doc comment.
 ///
 /// Runtime order is **gate before trim**, not FR-CHAIN-010's literal prose order ("input trim →
 /// noise gate → ..."): `02-architecture.md` D-9.8 records this as a deliberate usability decision
@@ -20,6 +24,75 @@ use crate::prepare::{PrepareContext, PrepareError};
 /// user adjusts trim), explicitly flagged there for review rather than an oversight, and
 /// `03-implementation-roadmap.md` §6 directs M2 to build the actual chain that way:
 /// `gate → trim → nam → ir → eq → out`.
-pub fn build_default_chain(_ctx: &PrepareContext) -> Result<Chain, PrepareError> {
-    todo!("wired once every one of the six stages exists")
+///
+/// None of the six stages has a resource loaded yet (no NAM model, no IR) — per FR-CHAIN-040/
+/// FR-NAM-130/FR-IR-100 every stage that can hold one already behaves as bypassed until a future
+/// caller (M4's worker, once it exists) calls `NamStage::load_model`/`IrStage::load_ir`.
+pub fn build_default_chain(ctx: &PrepareContext) -> Result<Chain, PrepareError> {
+    let gate_stage = gate::GatePrep.prepare(ctx)?;
+    let trim_stage = trim::TrimPrep.prepare(ctx)?;
+    let nam_stage = nam::NamPrep.prepare(ctx)?;
+    let ir_stage = ir::IrPrep.prepare(ctx)?;
+    let eq_stage = eq::EqPrep.prepare(ctx)?;
+    let out_stage = out::OutPrep.prepare(ctx)?;
+
+    let stages: Vec<Box<dyn Stage>> = vec![
+        Box::new(gate_stage),
+        Box::new(trim_stage),
+        Box::new(nam_stage),
+        Box::new(ir_stage),
+        Box::new(eq_stage),
+        Box::new(out_stage),
+    ];
+
+    let mut chain = Chain::new(stages);
+    chain.prepare_crosscutting(ctx);
+    Ok(chain)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use namir_core::{ChannelConfig, SampleRate};
+
+    fn ctx(channel_config: ChannelConfig) -> PrepareContext {
+        PrepareContext::new(SampleRate::new(48_000).unwrap(), 64, channel_config).unwrap()
+    }
+
+    /// The whole point of M2: this compiles and runs at all, for every channel configuration
+    /// FR-CHAIN-060 requires, with nothing loaded (FR-CHAIN-040) and produces silence in, silence
+    /// out without panicking, allocating on the audio thread, or emitting a non-finite sample.
+    #[test]
+    fn builds_and_runs_silently_for_every_channel_config() {
+        for channel_config in [
+            ChannelConfig::Mono,
+            ChannelConfig::MonoToStereo,
+            ChannelConfig::Stereo,
+        ] {
+            let ctx = ctx(channel_config);
+            let mut chain = build_default_chain(&ctx).unwrap();
+            let n = channel_config.output_channels() as usize;
+            let mut bufs: Vec<Vec<f32>> = (0..n).map(|_| vec![0.0f32; 64]).collect();
+            let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
+            let mut io = crate::stage_io::StageIo::new(&mut refs, 64);
+            crate::rt_harness::audio_section(|| chain.process(&mut io));
+            for ch in io.channels_mut() {
+                for s in ch {
+                    assert!(s.is_finite());
+                    assert_eq!(*s, 0.0, "expected silence with nothing loaded");
+                }
+            }
+            assert_eq!(chain.fault_count(), 0);
+        }
+    }
+
+    #[test]
+    fn reports_a_nonzero_latency_only_from_stages_that_declare_one() {
+        let ctx = ctx(ChannelConfig::Mono);
+        let chain = build_default_chain(&ctx).unwrap();
+        // At M2, with nothing loaded, every stage's own latency_samples() is 0 (Nam's resampler
+        // is bypassed at 48 kHz == its own default assumption, and no model is loaded to report a
+        // different one anyway).
+        assert_eq!(chain.latency_samples(), 0);
+    }
 }
