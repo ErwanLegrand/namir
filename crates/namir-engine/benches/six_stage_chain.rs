@@ -158,12 +158,66 @@ fn stereo_ir_wav_bytes() -> Vec<u8> {
     write_stereo_wav(SAMPLE_RATE_HZ, &left, &right)
 }
 
+/// Pins this thread to one core (D-2.1), **deliberately not core 0**.
+///
+/// # Why not core 0 — measured, not assumed
+///
+/// Every benchmark in this workspace originally pinned to `get_core_ids().next()`, i.e. logical
+/// CPU 0. An elevated `xperf -on Latency` trace on the `docs/02-architecture.md` §2 reference
+/// machine showed why that was the worst possible choice: `dxgkrnl.sys` (the DirectX/GPU kernel
+/// driver) issues **6,494 interrupts of 128-512 µs** over a 39.4 s trace — about 165 per second —
+/// and its ISR time lands on **CPU 0 exclusively** (1,670,068 µs on CPU 0, exactly 0 µs on all 31
+/// other logical CPUs; a steady ~4.2% of CPU 0's wall clock, every second).
+///
+/// ISRs execute at DIRQL, above every thread priority, which is why raising the process to
+/// Windows `High` priority changed nothing when that was tried. Pinned to CPU 0, the IR stage
+/// measured p99.9 = 258 µs; on any other core the same binary measures 55 µs — a 4.7x difference
+/// entirely attributable to the GPU driver, and on a clean core p99 (51.6 µs) and p99.9 (55.0 µs)
+/// converge, which is the tight schedule-bounded distribution the cost model predicted all along.
+///
+/// The same trace shows CPU 0 is not the only contaminated core: in the **DPC** table
+/// `ntoskrnl.exe` accumulates 50,151 µs on **CPU 2** — the highest of any core, a steady
+/// ~1,500-2,100 µs every second — because Windows routes ISRs and much of its DPC load to
+/// *different* cores. Measured on the chain benchmark in one interleaved sequence: core 0 gives
+/// p99.9 ~34.8%, core 2 gives 24.4-25.2%, cores 4/8/12 give ~17-24%. The *ordering* (0 worst,
+/// 2 next, 4+ best) is reproducible and corroborated by the trace above. The *absolute* figure is
+/// **not** yet stable: one session measured cores 4/8/12 at a tight 16.5-18.1% across twelve runs,
+/// a later session measured the same cores at ~24% across nine runs -- machine quiet, no ETW
+/// session active, same binary, in both. That ~40% session-to-session shift is unexplained, and is
+/// why no NFR-PERF-010 pass/fail verdict should be read off these numbers yet: only same-session,
+/// interleaved comparisons are currently trustworthy on this machine.
+///
+/// So core 0 measurements were not measuring Namir. This defaults to **index 4**, the first core
+/// the trace shows clean of both the GPU ISR load and the kernel DPC load; override with
+/// `NAMIR_PIN_CORE=<index>` to reproduce the contaminated figures or to probe a specific core.
+/// Index is clamped into range, so this is safe on machines with few cores.
+///
+/// **This is a measurement fix, not a product fix.** A real audio callback that happens to be
+/// scheduled onto CPU 0 on a machine like this would suffer the same 128-512 µs stalls. Giving the
+/// audio thread sensible affinity/priority is `namir-platform`'s job and is tracked as M6 work.
+fn pin_to_measurement_core() {
+    let Some(ids) = core_affinity::get_core_ids() else {
+        return;
+    };
+    if ids.is_empty() {
+        return;
+    }
+    // Default index 4: clean of both CPU 0's GPU ISRs and CPU 2's kernel DPC load per the trace
+    // described above, and on an SMT machine whose logical CPUs pair as (0,1), (2,3), ... it is
+    // also the first thread of its own physical core rather than anyone's sibling -- a sibling
+    // shares execution resources and would reintroduce part of the problem.
+    let idx = std::env::var("NAMIR_PIN_CORE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4)
+        .min(ids.len() - 1);
+    core_affinity::set_for_current(ids[idx]);
+}
+
 fn main() {
     // Pin to one core, per D-2.1: every figure is single-core, and cross-core migration would
     // pollute the tail with scheduler noise unrelated to the chain's own cost.
-    if let Some(id) = core_affinity::get_core_ids().and_then(|ids| ids.into_iter().next()) {
-        core_affinity::set_for_current(id);
-    }
+    pin_to_measurement_core();
 
     let sample_rate = SampleRate::new(SAMPLE_RATE_HZ).expect("48 kHz is a valid SampleRate");
     let ctx = PrepareContext::new(sample_rate, BLOCK_SIZE, ChannelConfig::Stereo)
