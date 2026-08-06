@@ -10,6 +10,13 @@ workspace = true
 
 [dependencies]
 namir-core = { path = "../namir-core" }
+namir-params = { path = "../namir-params" }
+namir-dsp = { path = "../namir-dsp" }
+namir-nam = { path = "../namir-nam" }
+# D-9.2/9.3: the Nam stage wraps `namir-nam`'s model with a block-based resampler around it, per
+# this crate's own layering (D-5.1: namir-engine may depend on nam but nam may not depend on an
+# external resampler itself -- resampling is a stage concern, not a model-inference concern).
+rubato = "0.16"
 
 [dev-dependencies]
 # D-7.5's RT-allocation test harness (see src/rt_harness.rs's module doc for why an external
