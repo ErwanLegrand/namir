@@ -90,9 +90,15 @@ fn pin_to_measurement_core() {
         return;
     }
     // Default index 4: clean of both CPU 0's GPU ISRs and CPU 2's kernel DPC load per the trace
-    // described above, and on an SMT machine whose logical CPUs pair as (0,1), (2,3), ... it is
-    // also the first thread of its own physical core rather than anyone's sibling -- a sibling
-    // shares execution resources and would reintroduce part of the problem.
+    // described above.
+    //
+    // Even indices are NOT required, contrary to an earlier revision of this comment which
+    // reasoned that on an SMT machine whose logical CPUs pair as (0,1), (2,3), ... an odd index
+    // is a sibling sharing execution resources. Measured, that reasoning is inert while the
+    // sibling is idle: the contamination-immune estimator returns 15.26 / 15.32 / 15.53 / 15.39 /
+    // 15.30 / 15.23% on cores 4 / 5 / 8 / 9 / 12 / 13 respectively -- odd and even
+    // indistinguishable. It would matter only if something were actually scheduled on the paired
+    // thread, which is a reason to prefer an idle core, not specifically an even one.
     let idx = std::env::var("NAMIR_PIN_CORE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
