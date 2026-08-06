@@ -63,6 +63,37 @@ pub const PARAMETER_INVALID: ErrorCode = ErrorCode {
                         default.",
 };
 
+/// FR-STATE-070: none of a `FileRef`'s three resolution candidates (library-relative path,
+/// absolute path, content-hash search) located the file. Produced by `resolve::MissingFile`'s
+/// own `warning()` method, not by `resolve()` itself — it is a caller's choice whether a missing
+/// reference is worth surfacing this way, not something forced on every `Resolution::Missing`.
+pub const REFERENCE_NOT_FOUND: ErrorCode = ErrorCode {
+    id: "state.reference.not_found",
+    severity: Severity::Warning,
+    message_template: "The file \"{display_name}\" (hash {hash}) could not be found.",
+};
+
+/// D-11.1: `format_version` is the one field this format treats as non-negotiable — a document
+/// missing it, or carrying a non-integer value for it, is not a Namir document at all rather
+/// than an old or malformed one.
+pub const MISSING_FORMAT_VERSION: ErrorCode = ErrorCode {
+    id: "state.format.missing_version",
+    severity: Severity::Error,
+    message_template: "This file has no format_version field and cannot be identified as a Namir \
+                        state document.",
+};
+
+/// D-11.2: a document from a build newer than this one loads tolerantly rather than being
+/// rejected — "a project saved by a newer Namir and opened by an older one does not silently
+/// lose settings on the next save". A warning, not an error: the load proceeds.
+pub const NEWER_FORMAT_VERSION: ErrorCode = ErrorCode {
+    id: "state.format.newer",
+    severity: Severity::Warning,
+    message_template: "This document was saved by a newer version of Namir (format_version \
+                        {found}, this build understands up to {understood}). Some settings may \
+                        not be applied.",
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +104,9 @@ mod tests {
         UNKNOWN_PARAMETER,
         PARAMETER_OUT_OF_RANGE,
         PARAMETER_INVALID,
+        REFERENCE_NOT_FOUND,
+        MISSING_FORMAT_VERSION,
+        NEWER_FORMAT_VERSION,
     ];
 
     /// FR-ERR-020: every user-visible error maps to exactly one catalogue entry, verified
