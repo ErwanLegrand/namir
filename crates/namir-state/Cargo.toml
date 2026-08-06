@@ -1,0 +1,27 @@
+[package]
+name = "namir-state"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+namir-params = { path = "../namir-params" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Deliberately absent, each a decision rather than an oversight:
+#  - no filesystem/path-resolution crate: D-5.1 forbids this crate from touching a filesystem at
+#    all (resolve.rs's FileResolver port is the seam; namir-library implements it, namir-worker
+#    drives it -- see docs/02-architecture.md D-11.3's M5 consequence note).
+#  - no namir-nam/namir-ir: this crate never parses a model or IR, only records a hash/path
+#    triple identifying one (D-11.3). xtask layering's LAYERING_TABLE enforces this.
+#  - `serde_json`'s `preserve_order` feature is not enabled: D-11.1 wants *sorted*, not
+#    insertion-order, keys -- serde_json::Map is a BTreeMap without it, which is what makes
+#    stable key ordering free rather than something this crate has to implement.
+
+[dev-dependencies]
+namir-fixtures = { path = "../namir-fixtures" }
