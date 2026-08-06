@@ -18,8 +18,13 @@ pub const MALFORMED_JSON: ErrorCode = ErrorCode {
     message_template: "The model file is not valid JSON.",
 };
 
-/// `architecture` is not `"WaveNet"` (FR-NAM-040: "of an unknown architecture"). LSTM is a
-/// documented open scope gap (see the crate doc comment), not a bug, so it also lands here.
+/// `architecture` is neither `"WaveNet"` nor `"LSTM"` (FR-NAM-040: "of an unknown architecture")
+/// — the two names `model::load`'s dispatch and each architecture module's own `from_file` check
+/// recognize. Both `wavenet::PreparedWaveNet::from_file` and `lstm::PreparedLstm::from_file` also
+/// return this same code if handed a file whose `architecture` field doesn't match their own
+/// expected name (e.g. an `LstmFile` sniffed as `"LSTM"` but whose `config` was somehow parsed
+/// with `architecture: "WaveNet"` still set) — one catalogue entry for "this isn't the
+/// architecture I was asked to load," not one per architecture module.
 pub const UNSUPPORTED_ARCHITECTURE: ErrorCode = ErrorCode {
     id: "nam.load.unsupported_architecture",
     severity: Severity::Error,
@@ -95,6 +100,17 @@ pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode {
     message_template: "This model declares a sample rate of 0 Hz, which is not valid.",
 };
 
+/// An LSTM model's `input_size`, `in_channels`, or `out_channels` is not `1` — this
+/// implementation always feeds the raw mono signal as the sole input and produces a single mono
+/// output (matching every real non-parametric LSTM export), mirroring `UNSUPPORTED_CONDITION_SIZE`
+/// for WaveNet: a different declared width isn't representable by this code and must be rejected
+/// cleanly rather than silently misinterpreted (e.g. by reading past the intended input width).
+pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode {
+    id: "nam.load.unsupported_lstm_channels",
+    severity: Severity::Error,
+    message_template: "This LSTM model's input/output channel configuration is not supported.",
+};
+
 /// Carries a `namir_core::ErrorCode` (D-16.1) plus a `detail` string naming the specific reason
 /// (FR-NAM-040 requires the rejection message to name "the specific reason"). This crate only
 /// ever sees bytes, not a file path, so `detail` carries whatever numbers/names are relevant to
@@ -133,6 +149,7 @@ const ALL: &[ErrorCode] = &[
     LAYER_ARRAY_CHAINING_MISMATCH,
     DIMENSION_LIMIT_EXCEEDED,
     INVALID_SAMPLE_RATE,
+    UNSUPPORTED_LSTM_CHANNELS,
 ];
 
 #[cfg(test)]
