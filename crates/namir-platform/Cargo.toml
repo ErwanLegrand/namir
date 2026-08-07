@@ -24,3 +24,24 @@ missing_docs = "warn"
 
 [dependencies]
 namir-core = { path = "../namir-core" }
+
+# `thread_priority.rs`'s Unix (Linux/macOS) implementation needs `pthread_setschedparam` and
+# `libc::sched_param` matching each target's real C-ABI struct layout exactly -- Darwin's carries
+# a private padding field this crate cannot see or reproduce correctly by hand-rolled `extern`
+# declarations the way Windows's three kernel32 functions below are. Getting that layout wrong
+# would be a genuine out-of-bounds read across an FFI boundary, not a style nit, so this is one of
+# the rare cases where a vetted crate is the *safer* choice despite this workspace's usual
+# dependency bar (`rtrb`'s adoption criteria, restated at D-12.3: "zero transitive dependencies,
+# no build script, `no_std`-capable pure Rust" -- `libc` does carry a build script, which is
+# exactly what counted against `libc` itself when D-12.3 rejected `redb` partly for depending on
+# it). See `thread_priority.rs`'s own module doc comment for the full reasoning. MIT OR
+# Apache-2.0, already on `deny.toml`'s allow list. `cfg`-scoped to exactly the two platforms that
+# use it, so it never reaches Windows, Android or iOS builds of this crate.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2"
+
+# Windows's three functions (`GetCurrentThread`/`SetThreadPriority`/`GetLastError`) are hand-rolled
+# `extern` declarations in `thread_priority.rs` instead, deliberately not `windows`/`windows-sys`:
+# unlike `libc::sched_param` above, none of these three carries a struct-layout risk (two take/
+# return only a handle and an `i32`/`u32`; the third takes nothing), so the usual dependency bar
+# applies unmodified and is met more cheaply by three `extern` declarations than by a new crate.
