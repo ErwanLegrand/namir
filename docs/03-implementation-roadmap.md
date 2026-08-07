@@ -894,6 +894,146 @@ themselves.
 
 ---
 
+### M5 status — this session, 2026-08-07
+
+Appended rather than rewriting the Deliverables and Acceptance text above, following §7's own
+convention (M4's own status sections are the precedent this one follows).
+
+**Both deliverables landed, plus the composition layer the original text under-scoped.** The
+Deliverables above name `namir-state` and `namir-library` but not what actually turns them into
+FR-STATE-030/050/070's live behaviour: `namir-engine` gained `Command::Unload` (FR-STATE-070's "the
+state shall load with that stage empty" had no engine mechanism until this milestone — the
+crossfade machinery already treated a `None` slot as dry passthrough, so this needed no new DSP,
+only new plumbing), and `namir-worker` gained `Instance::unload`, `Instance::recall`
+(FR-STATE-030/050) and `library::LibraryService` (D-12.2's "cancellable worker job" finally whole —
+the mechanism in `namir-library`, the thread in `namir-worker`, exactly as the M2 seam analysis
+below predicted). None of that was a separate milestone deliverable in the original scope; it
+turned out to be necessary to close the requirements the original Acceptance line claims.
+
+**AQ-3 decided:** a single pretty-printed JSON document, atomic replace (temp file, `sync_all`,
+`rename`). `docs/02-architecture.md` D-12.3 records the full Decision/Rationale/Rejected form; §15
+below is struck through accordingly.
+
+**Should-scope closed too:** FR-STATE-080 (embedded model/IR data, `base64` — the one new
+third-party dependency this milestone added, `namir-core`/`namir-library` add none), FR-LIB-050
+(favourites, keyed by content hash so a mark survives a file moving), FR-LIB-060 (ordered
+next/previous over a caller-supplied search result).
+
+**Six corrections to the governing documents, each recorded as a `*Consequence (added M5)*` note
+in `docs/02-architecture.md` at the section the correction belongs to, not collected in one place**
+(the same style the twelve pre-existing M4-and-earlier notes already use): D-5.1's `namir-library`
+row contradicted itself (Platform code? said "via `namir-platform`", May-depend-on omitted it,
+`xtask layering` enforces the latter — corrected to "No"); FR-LIB-070 and D-12.1 as originally
+written contradicted each other (a same-length edit landing within one mtime tick was invisible to
+the literal "compare size and mtime" rule — closed by the mtime-settling-window fix, R3 below);
+D-2.1's "never wall-clock" rule is scoped to audio-thread per-block budgets by new decision D-2.5,
+since NFR-PERF-030/040/050/060 are wall-clock by their own FRS wording and this milestone is the
+first to actually hit that gap; `.gitattributes`'s `* text=auto eol=lf` would have silently repaired
+a CRLF-emitting serialiser bug in the checked-in NFR-PORT-050 corpus, closed by marking
+`*.namirpreset binary`; FR-STATE-070 was silent on which of several configured library roots a
+relative path resolves against and on what a hash-mismatched path hit means, both resolved (no root
+identity is stored; a mismatch falls through, never substitutes); and global bypass/output ceiling
+have no `ParamDescriptor` home, flagged (not solved) as a decision M6's CLAP adapter needs to make.
+
+**`docs/04-state-and-preset-format.md` is new** — NFR-DOC-010's format reference, written to the
+level a third party can implement a reader from alone. Both of NFR-DOC-010's and FR-STATE-040's
+manual tests (`docs/manual-tests/`) were executed, not merely scripted: a Python reader written
+using *only* that document (no Rust source) correctly extracted every parameter and both file
+references from a document `xtask preset` (new subcommand, since no product shell exists yet to
+produce one) generated; a hand-edited copy diffed to exactly one changed line and reloaded with the
+edit in effect and zero warnings.
+
+**Five red-first pairs, three genuinely so.** R1 (unknown-field preservation via the `Document`
+carrier, not `#[serde(flatten)]`) and R3 (D-12.1's mtime-settling window) were both real: the
+naive implementation the requirement's literal wording suggests is provably wrong, demonstrated by
+a failing commit before the fix. `Command::Unload` (R2 in the build order, not one of the plan's
+five lettered pairs) was likewise genuine — `NamStage`/`IrStage::unload` stubbed as no-ops first,
+proven to fail the crossfade-to-dry assertion, then implemented. **R4 (preset recall serialisation)
+and R5 (the three-axis stress test) were not manufactured reds, and said so at the time rather than
+faked for form:** `Instance::recall` is one function with no thread spawned inside it, so the
+tempting parallel-submission bypass R-7's rule warns against isn't merely avoided by discipline,
+it isn't expressible without restructuring `Instance` first — forcing an artificial failing version
+of that shape would have been exactly the "manufacturing a red where the first implementation would
+have passed" trap the plan itself warns against. Both landed green on arrival, with the regression
+test included as real evidence regardless.
+
+**NFR-RT-010 moves Partial → Done.** `crates/namir-worker/tests/rt_stress.rs` runs model loading,
+preset recall and library scanning concurrently against a live `AudioEngine` inside D-7.5's
+`audio_section` for two seconds — the two axes M4 recorded as the reason it could not close. Zero
+allocations, zero dropout, zero panics, every produced error catalogue-coded, no block over 200x its
+period, and counters proving all three axes genuinely ran (>=3 loads, >=3 recalls, >=1 completed
+scan) — stable across four repeated local runs, debug and release.
+
+**NFR-PERF-050 and NFR-PERF-060 measured, both comfortably inside budget.**
+`namir-worker/benches/resource_load.rs`: a standard model p50 ~700 us / p99 ~950 us; a 2 s stereo IR
+p50 ~4.4 ms / p99 ~5 ms; a ~50 MB uncalibrated worst-case fixture (not a shape the NAM ecosystem
+actually produces, measured only because the requirement states its ceiling in file-size terms) p50
+~125 ms / p99 ~128 ms — roughly 4x headroom against the 500 ms ceiling even on the pathological
+case. `namir-library/benches/library_scan.rs`: arm C (incremental, unchanged, 5 repetitions)
+22.1–25.8 ms against the 2 s ceiling; arm D (1% modified) 34–36 ms with all 100 hash-change
+assertions passing; FR-LIB-030 conclusive both full local runs (`max(C) < min(B)`, no overlap).
+Arm A (full scan, first touch) read ~53–55 s both runs — consistent with this workspace's own
+documented Defender-contamination pattern on a burst of just-written files, reported per that arm's
+own "not gated" status rather than investigated further.
+
+**R-7 re-run, and the reason it needed to be:** preset recall is a new, more frequent way to reach
+R-7's worst condition than a human changing two controls by hand. Five repetitions on this session's
+own sandbox (not the §2 reference machine). Two were contaminated by the benchmark's own stated
+check — not just arm A's raw/estimator gap, which one contaminated run passed while still showing a
+23-point gap on arm C, a stronger signal arm A alone does not catch — and were discarded. Across the
+three clean runs, arm E (serialised) at periods 32/64/128 read 22.16–24.35%, matching the original
+22.20–24.63% figure closely; period 16 read 26.43–32.36%, matching the already-documented
+26.99–31.89% benchmark-simulation artifact from M4's own close-out (not a real-world condition — see
+`docs/02-architecture.md` §22's R-7 row). **No evidence of regression; the risk remains retired.**
+M5 added no code to the crossfade/chain path this benchmark exercises, so a regression was never
+mechanically plausible; this was a check against a new *access pattern*, not a suspected code
+change.
+
+**NFR-QUAL-040's second fuzz target, landed in M5 rather than deferred to M7** (the plan's own
+decision #3: D-11.1 chose JSON specifically so there would be one parser to harden across every
+consumer, and `namir-fixtures::mutate` is already format-agnostic). `crates/namir-state/fuzz`
+mirrors `namir-nam/fuzz` exactly. Locally executed for 60 s under nightly + `cargo-fuzz`: this
+machine's rustup nightly install bundles no Windows ASan runtime at all (confirmed the *existing*
+`load_nam` target hits the identical `STATUS_DLL_NOT_FOUND` here, so this is a pre-existing
+environment gap, not new); adding MSVC's own bundled `clang_rt.asan_dynamic-x86_64.dll` to `PATH`
+resolved it — 955,695–972,242 executions across two runs, zero crashes. `.github/workflows/fuzz.yml`
+gains the matching CI leg (`fuzz-smoke-state`), which is what actually validates execution going
+forward.
+
+**CI:** both mobile cross-build jobs' `-p` lists gain `namir-state`/`namir-library`, per D-5.1's
+"builds for mobile: yes" and exactly what the pre-existing comment above those jobs predicted this
+milestone would do. The no-cxx-toolchain job's dependency audit gains a note: `base64` carries no
+build script, so it was never a C++-toolchain risk. Both changes validated by YAML parse only —
+this session has no GitHub Actions runner, and the GitHub Actions incident this whole milestone
+worked around (branching from `claude/milestone-m4-workflow-handover` rather than `trunk`, since PR
+#3/M4 has not merged) blocks a real CI run regardless — claimed by inspection, matching this
+project's established convention for CI changes that can't be locally executed.
+
+**What M5 does not close, stated rather than left to inference — the honest restatement of the
+Acceptance line above, which over-claims "close in full":**
+
+Of §5.9/§5.10's twelve Must requirements, **seven close in full**, each by its own literal *Verify*
+method: FR-STATE-010, FR-STATE-040, FR-STATE-050, FR-LIB-010, FR-LIB-030, FR-LIB-040, FR-LIB-070.
+**Five close only their M5-resolvable half**, completed elsewhere: FR-STATE-030 (recall exists and
+is tested at the worker level; a host/plugin-instance UI to trigger it is M6), FR-STATE-060
+(cross-process, bit-identical restore is the M5-resolvable half of "restart the host" — a literal
+host restart needs M6's product shells), FR-STATE-070 (resolution, the locate-manually *data*, and
+the embedded fallback all exist; the "offer to locate it manually" *affordance* is M6 UI), FR-LIB-020
+(the scan mechanism, cancellation and the pool-driven job are all built and tested; scan-progress
+*visibility* is M6 UI). FR-STATE-020 closes its own mechanism (the corpus test harness and its
+release gate) but cannot close in full until a first version actually ships — its corpus is defined
+over released versions, and none exist yet. Of the four Shoulds, FR-STATE-080 and FR-LIB-050 close;
+FR-STATE-090 (factory presets, gated on AQ-4, scheduled M7) and FR-LIB-060's *Verify: M* against a
+real UI (the mechanism itself already closes, see above) remain M6/M7.
+
+**NFR-PORT-050 and NFR-PORT-030 close on their Windows leg** (this session's own platform) **and are
+claimed by inspection on Linux/macOS**, following M4's identical convention, since the GitHub
+incident leaves those runners stuck. NFR-RT-010, NFR-PERF-050, NFR-PERF-060, NFR-SEC-020,
+NFR-DOC-010 and NFR-QUAL-040 all close, the last four not named in the original Acceptance line at
+all.
+
+---
+
 ## 10. M6 — Product shells: platform, app, UI, CLAP
 
 **Size: XL.** **Depends on:** M2 (real chain), M5 (state/library for save/load and browsing).
@@ -1097,6 +1237,39 @@ milestone's own evidence directly justifies, each named:
 cross-instance sharing mechanism is built and tested at the worker level, but §8's own acceptance
 text says it "isn't exercised for real until M6's `namir-clap`", and that remains true.
 
+**Six further live updates, made in the M5 session**, following the same rule — only cells this
+milestone's own evidence directly justifies, each named. See this section's own §9 M5-status
+addendum above for the full per-requirement accounting; only the cell movements themselves are
+recorded here.
+
+- **5.9 STATE Done 0 -> 3, Not-started 7 -> 0, Partial 0 -> 4.** FR-STATE-010, -040, -050 close in
+  full. FR-STATE-020, -030, -060, -070 each close only their M5-resolvable half (a released-version
+  corpus, a host/plugin UI to trigger recall, a literal host restart, and the locate-manually UI
+  affordance respectively are M6+ or, for -020, the first release itself) — Partial, not Done,
+  deliberately.
+- **5.10 LIB Done 0 -> 4, Not-started 5 -> 0, Partial 0 -> 1.** FR-LIB-010, -030, -040, -070 close in
+  full. FR-LIB-020's scan mechanism, cancellation and pool-driven job are all built and tested;
+  scan-progress *visibility* is M6 UI — Partial.
+- **6.1 RT Done 1 -> 2, Partial 2 -> 1.** NFR-RT-010 moves Partial -> Done:
+  `crates/namir-worker/tests/rt_stress.rs` supplies the two axes (preset recall, library scanning)
+  M4's close-out recorded as the reason it could not close, run concurrently with model loading
+  against a live `AudioEngine` inside the D-7.5 harness.
+- **6.2 PERF Done 1 -> 3, Not-started 5 -> 3.** NFR-PERF-050 (50 MB load within 500 ms) and
+  NFR-PERF-060 (10 000-file incremental rescan within 2 s) both close, measured with margin —
+  see this section's own M5-status addendum for the figures.
+- **6.4 QUAL Done 0 -> 1, Partial 4 -> 3.** NFR-QUAL-040 closes: "the preset and state readers"
+  now have a `cargo-fuzz` target of their own (`crates/namir-state/fuzz`), landed in M5 rather than
+  deferred to M7 per the plan's own decision that D-11.1's one-parser-per-format choice forfeits
+  its reason otherwise.
+- **6.6 SEC Done 0 -> 1, Partial 3 -> 2.** NFR-SEC-020 closes: the byte-count ceiling
+  (`namir_core::MAX_FILE_BYTES`, moved there this milestone specifically so `namir-library` could
+  reach it without depending on `namir-worker`) is now enforced at every point untrusted bytes
+  enter this codebase — `namir-worker`'s file loads, `namir-library`'s scanner, and
+  `namir-state`'s embedded-data decode.
+- **6.8 DOC Done 0 -> 1, Partial 2 -> 1.** NFR-DOC-010 closes:
+  `docs/04-state-and-preset-format.md`, with both its own manual test and FR-STATE-040's executed
+  and recorded in `docs/manual-tests/` rather than left as an unrun script.
+
 ---
 
 ## 15. Appendix: open decisions to make, not build
@@ -1110,8 +1283,9 @@ that happens to depend on them first.
    cross-implementation, which is arguably a stronger standard than "golden reference audio" but
    is literally different wording. Resolve during M1 with a short addendum to
    `02-architecture.md`, not new code.~~ **Resolved:** `02-architecture.md` D-9.11 (§9.4).
-2. **AQ-3** (embedded index store for `namir-library`, D-12.3) — due at M5, constrained but not
-   decided.
+2. ~~**AQ-3** (embedded index store for `namir-library`, D-12.3) — due at M5, constrained but not
+   decided.~~ **Resolved at M5, 2026-08-07:** `02-architecture.md` D-12.3 — a single
+   pretty-printed JSON document, written whole and replaced atomically. No new dependency.
 3. **AQ-4** (licence of NAM's standardized capture input signal) — due before M8, blocks factory
    presets only.
 4. **Whether `namir-nam`'s FR-NAM-030 parity claim should be re-anchored against
