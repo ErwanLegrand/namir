@@ -11,3 +11,12 @@
 *.flac binary
 *.nam  binary
 *.bin  binary
+
+# M5, docs/02-architecture.md D-2.5's "Consequence (added M5)" note: namir-state's checked-in
+# corpus (crates/namir-state/tests/corpus/) proves NFR-PORT-050's byte-level portability
+# invariants (no \r, no BOM, canonical float formatting) by asserting on the writer's raw
+# output bytes. `* text=auto eol=lf` above would silently normalise a serialiser regression
+# that started emitting CRLF back to LF on commit, so the very corpus meant to catch that
+# regression would pass against a broken writer. Preset/state documents are plain JSON text,
+# but they must be treated as opaque bytes for exactly this reason.
+*.namirpreset binary

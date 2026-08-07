@@ -36,7 +36,10 @@
 //! (zero-latency-by-construction non-uniform partitioned convolution), FR-IR-050/D-9.7 (IRs up to
 //! a documented 10-second-at-engine-rate ceiling, processed in full; longer ones truncated with
 //! the truncation reported), D-9.5 (a permanent direct-convolution reference the partitioned path
-//! is verified against), R-8 (same-size-partition phase staggering).
+//! is verified against), R-8 (same-size-partition phase staggering). Added M5: [`probe_wav`], a
+//! header-only read (native sample rate, channels, bit depth, declared frame count) for
+//! `namir-library`'s FR-LIB-040 search index, which has no `engine_rate`/`block_size` to give
+//! [`PreparedIr::from_wav_bytes`] and no reason to decode or resample every file it indexes.
 //!
 //! Out of scope, deliberately, for this crate:
 //! - **FR-IR-070** (high-pass/low-pass shaping and level control around the convolution) —
@@ -56,3 +59,4 @@ pub use convolver::{
     direct_convolve,
 };
 pub use error_codes::IrLoadError;
+pub use wav::{SampleFormat, WavInfo, probe_wav};

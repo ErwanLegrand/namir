@@ -147,6 +147,46 @@ per-instance and single-core; it is also unbounded by anything the project can e
 home for it is M6's thread-priority/affinity work and a deployment note, not this requirement);
 loosening the 25% budget (nothing measured justifies it — the chain passes).
 
+**Decision D-2.5 (added M5)** — D-2.1's "never as wall-clock time" is **scoped to audio-thread
+per-block budgets**, not restated as a blanket rule. NFR-PERF-030/040/050/060 are stated in
+wall-clock by the FRS itself and are not per-block audio-thread figures, so D-2.1 does not — and
+was never meant to — forbid them; a milestone gating a wall-clock requirement is complying with the
+FRS, not violating D-2.1. M5 is the first milestone to measure a wall-clock NFR (NFR-PERF-060,
+FR-LIB-030's incremental library scan) and is the first to need this stated rather than assumed.
+
+*Rationale:* D-2.1's own rationale is entirely about a *per-block audio callback budget silently
+changing meaning when the block size changes* — that argument has no purchase on a one-shot,
+off-audio-thread operation like a library scan or a model load, which has no block size to change
+meaning against. Leaving D-2.1 unscoped would either force a nonsensical "fraction of one core"
+restatement of a 2-second wall-clock budget, or tempt an implementer to quietly ignore D-2.1 without
+saying so. Neither is acceptable in a project whose methodology (D-2.1 through D-2.4) already
+exists to stop exactly that kind of quiet reinterpretation.
+
+*Consequence — the additional measurement conditions a wall-clock, I/O-bound benchmark needs.*
+D-2.4's four conditions (core selection, no unrelated load, ≥ 5 repetitions, the estimator
+cross-check) are written for a CPU-bound per-block measurement; each is still necessary for an
+I/O-bound one and none is sufficient on its own. A quoted wall-clock figure must additionally state:
+
+1. **Page-cache state, per arm, never assumed.** A "second run is faster" claim conflates OS page
+   caching with any incrementality the code itself provides unless the comparison holds cache state
+   constant across the two arms being compared.
+2. **Anti-malware state.** A real-time scanner dominates the cost of a many-thousand-file traversal
+   and its overhead is non-deterministic run to run. State whether it was active.
+3. **Volume, filesystem and cluster size named** — the same figure means something different on a
+   different filesystem, and this document's own reference machine (§2) does not currently record
+   its drive's filesystem.
+4. **Corpus size, file count and tree shape printed by the benchmark itself**, not left to the
+   reader to infer from the harness source, whenever the corpus is a synthetic stand-in rather than
+   a captured real-world library (as D-19.1 requires it to be).
+5. **mtime settling** — a corpus generated immediately before the benchmark run has every file's
+   mtime reading "now", which can mask a change-detection rule's real-world granularity behaviour
+   (see D-12.1's consequence note in §12).
+
+*Rejected:* leaving D-2.1 as an unscoped blanket rule and either restating every wall-clock NFR as a
+meaningless single-core fraction, or measuring wall-clock NFRs without ever writing down that D-2.1
+does not apply to them (the FRS-vs-architecture-doc contradiction M5's own drafting hit, and the
+reason this decision exists rather than being silently worked around).
+
 ---
 
 ## 3. Architectural principles
@@ -209,7 +249,7 @@ dependency rule.
 | `namir-ir` | IR file decoding, resampling, partitioned convolution. | core, dsp | No | Yes |
 | `namir-engine` | The `Stage` trait, the chain, RT-safe scheduling, resource handover, telemetry. | core, params, dsp, nam, ir | No | Yes |
 | `namir-state` | Preset and plugin-state document, versioning, file-reference resolution. | core, params | No | Yes |
-| `namir-library` | Library index, scanning, hashing, search, persistence. | core, nam, ir, state | Path handling only, via `namir-platform` | Yes |
+| `namir-library` | Library index, scanning, hashing, search, persistence. | core, nam, ir, state | No | Yes |
 | `namir-platform` | Filesystem locations, config dirs, logging sink, thread priority. **The only crate with `#[cfg(target_os)]`.** | core | Yes | Yes |
 | `namir-worker` | Off-thread orchestration: load requests, resource cache, scan jobs. | everything above | No | Yes |
 | `namir-ui` | egui-based interface. Renderer- and window-agnostic. | core, params, library, state | No | Yes |
@@ -234,6 +274,18 @@ Unsafe is permitted only in `namir-platform`, `namir-clap`, and any SIMD kernel 
 which carries a written safety argument per unsafe block.
 
 *Traces:* NFR-QUAL-070.
+
+*Consequence (added M5)* — `namir-library`'s row above previously read "Path handling only, via
+`namir-platform`" in the *Platform code?* column while its *May depend on* column omitted
+`namir-platform` — a contradiction `xtask layering`'s mechanical edge check (D-5.2) would reject the
+moment `namir-library` tried to act on the first reading. `namir-platform` is also an M6 deliverable
+and does not exist as anything but `DenormalGuard` when `namir-library` is built at M5. Resolved by
+correcting the cell to "No": `namir-library` never learns where library roots or its index file
+live. `LibraryService::open(index_path, roots)`, in `namir-worker`, takes both as constructor
+arguments — the same discipline `namir-worker`'s pre-existing `LoadSource::File` already applies
+("the *caller* supplies the path, so this crate never assumes a filesystem layout"). M6's product
+shells obtain the real paths from `namir-platform` and pass them in; `namir-library` stays
+unaware of `namir-platform` at every point in the roadmap, not only until M6.
 
 ---
 
@@ -478,6 +530,20 @@ nor FR-IR-060 forbids this: each requires *its own* changeover to be crossfaded 
 neither requires the two to coincide. The rule is per-instance, so two plugin instances may still
 crossfade at the same time — correct, because NFR-PERF-010's budget is itself per-instance.
 
+*Consequence (added M5):* **an unload is a handover to nothing, and is therefore also subject to
+the rule above.** FR-STATE-070 says "the state shall load with that stage empty" when a preset's
+model or IR reference cannot be resolved — closing that gap needed a way to *remove* an installed
+resource, which this decision's four steps never anticipated (they only ever add one). M5 adds
+`Command::Unload`/`Chain::unload` and a `NamStage`/`IrStage::unload` method apiece: step 3's
+crossfade already treats a `None` slot as a dry passthrough on either side of the fade (needed
+already for the very first load into an empty stage), so fading *into* `None` reuses that same
+state machine rather than adding a second one, and the outgoing slot still leaves through step 4's
+return ring, never dropped. Because it is a handover like any other, it is exactly as capable of
+overlapping the *other* target's handover and reproducing R-7's over-budget condition — a preset
+recall that unloads one stage while loading the other is not a hypothetical, it is what a preset
+with only one of the two references set does. `namir-worker`'s serialisation rule (the consequence
+above) therefore treats `Unload` the same as `Load` when M5's `recall.rs` submits it.
+
 *Rejected:* Muting during the swap (fails FR-NAM-070's no-dropout intent). Rejected: a mutex
 around the resource slot with `try_lock` on the audio thread — `try_lock` is wait-free but a
 failed acquisition means the swap silently doesn't happen, which is a worse failure than the
@@ -707,6 +773,21 @@ point.
 
 *Traces:* FR-PARAM-040, FR-PARAM-050.
 
+*Consequence (added M5, flagged rather than closed) —* FR-STATE-010 requires the state format to
+cover "the complete user-settable state", but two such values have no `ParamDescriptor` at all:
+FR-CHAIN-030's global bypass and FR-CHAIN-090's output ceiling are fields on `namir_engine::Chain`
+directly, set via `Command::SetGlobalBypass`/`SetOutputCeilingDb`, not `Command::Param`. §11's
+`namir-state` therefore covers them with a second, parallel mechanism — a `global` document section
+backed by nothing but a plain struct — rather than folding them into `parameters`/`REGISTRY`. That
+is not a bug (both values genuinely have no natural `ParamDescriptor` home: bypass in particular is
+usually transport-level in a host, not an ordinary automatable control), but it means there are now
+**two** mechanisms for user-settable values in one format, and M6's CLAP adapter will want bypass
+exposed as a **host** parameter, which this shape does not provide for on its own. Evidence the gap
+was noticed once already and left unclosed: `namir_params::descriptor`'s own test module carries a
+fully-formed `out.channel_mode` descriptor that was never moved into `REGISTRY`. Flagged here as a
+decision M6 needs to make (a new `D-10.4`, once taken), not solved by this milestone pre-emptively
+guessing at CLAP's own shape for host-exposed bypass.
+
 ---
 
 ## 11. State and presets — OQ-7
@@ -727,6 +808,18 @@ and a serialiser with non-deterministic map ordering makes every save a spurious
 against NFR-DOC-010's "third party can write a compatible reader"); binary formats (fails
 FR-STATE-040 outright).
 
+*Consequence (added M5)* — This decision's own "stable key ordering" consequence above is
+undermined by a repository-level default nobody had checked against it: `.gitattributes`'s `*
+text=auto eol=lf` normalises every text file's line endings on commit. A `.namirpreset` file is
+plain JSON text, so it would fall under that rule — meaning a serialiser regression that started
+emitting `\r\n` would be silently repaired by Git before it ever reached a diff or a checked-in
+test fixture, and the very corpus meant to catch that class of bug (`crates/namir-state/tests/
+corpus/`, asserting on the writer's raw output bytes per NFR-PORT-050) would pass against a broken
+writer. **Corrected:** `.gitattributes` marks `*.namirpreset binary`, alongside the existing
+`*.nam`/`*.wav`/`*.bin` entries — a preset/state document is JSON text by construction, but must be
+treated as opaque bytes for this one purpose, the same way this project's other structured-text
+fixtures already are.
+
 **Decision D-11.2** — Deserialisation is tolerant and versioned: unknown fields are preserved and
 written back; missing fields take documented defaults; `format_version` gates migrations.
 
@@ -746,6 +839,32 @@ primitive, but using a broken hash for identity invites collisions in a shared c
 *Consequence:* The library index must maintain a hash → path map (§12), otherwise the third
 resolution step in FR-STATE-070 cannot work.
 
+*Consequence (added M5)* — D-5.1 puts the dependency edge as `namir-library → namir-state`, the
+opposite direction from what "the library index must maintain a hash → path map" above might
+suggest is needed for resolution to work. Resolved by splitting the algorithm from its data:
+`namir-state` defines the **order** (`resolve::candidates`, yielding library-relative, then
+absolute, then content-hash, always in that sequence since `hash` is non-optional) and a
+`FileResolver` port with one method per step; `namir-library` implements the port. The trait runs
+against the dependency edge, not with it, so no edge reversal is needed.
+
+*Consequence (added M5)* — Two things D-11.3 as originally written left unstated, both closed by
+FR-STATE-070's own rationale ("failing to open a project because a file moved is unacceptable;
+failing silently is worse"):
+
+1. **Which library root** a stored relative path is relative to, when FR-LIB-010 permits several.
+   Resolved: the reference stores only the relative path, with no root identity, and a resolver
+   tries every configured root in configured order. Storing a root index or name would embed
+   machine-specific data in the one field D-11.3 exists to keep portable (UC-3: sending a project to
+   someone whose roots are named differently).
+2. **What a path hit whose content does not match the recorded hash means.** P7 ("identity is the
+   content hash, paths are hints") and FR-STATE-070's own rationale together require that this is
+   **not** treated as a resolution: silently loading a different amp under an old path is exactly
+   the "failing silently" the rationale calls worse than failing outright. A library-relative or
+   absolute path hit is verified against the recorded hash before being accepted; a mismatch falls
+   through to the next candidate exactly as a missing file would, and the near-miss (the path that
+   was tried, and what it actually hashed to) is carried into the failure report so a future UI can
+   offer "use it anyway" as an explicit choice rather than a silent default.
+
 ---
 
 ## 12. Library subsystem
@@ -757,17 +876,80 @@ mtime before rehashing.
 *Traces:* FR-LIB-030, NFR-PERF-060 (10 000 files rescanned in ≤ 2 s — achievable only because
 unchanged files are not rehashed).
 
+*Consequence (added M5) — the rule as originally written contradicts FR-LIB-070.* FR-LIB-070
+requires that files which "change … shall be reflected in the library within one rescan". A file
+edited in place to the same length, within the same filesystem's mtime granularity as the previous
+scan, is invisible to "comparing size and mtime" taken literally — and a hand-edited `.nam`
+metadata field is exactly this same-length case, not an edge case. FR-LIB-070 cannot honestly close
+against D-12.1 as originally stated. **Corrected rule:** a file is rehashed if its size differs,
+**or** if its mtime differs, **or** if its mtime falls within the previous scan's own completion
+timestamp plus the filesystem's mtime granularity (NTFS: 100 ns claimed, ~1 s to ~2 s observed
+depending on volume; treated conservatively as 2 s) — i.e. a file that could plausibly have changed
+*during or immediately after* the scan that indexed it is rehashed the next time regardless of what
+its mtime reads. This costs nothing in the common case (an unchanged library's files have mtimes far
+older than any recent scan) and closes the window D-12.1's literal wording left open.
+
 **Decision D-12.2** — Scanning is a cancellable worker job reporting progress; the UI never waits
 on it (FR-LIB-020, FR-UI-060).
 
-**Decision D-12.3** — The index is stored as a single-file embedded key-value store or a simple
-append-only log with compaction — **decided in implementation, constrained here**: no dependency
-carrying a copyleft licence, no C or C++ dependency (NFR-PORT-040), and corruption must degrade to
-a full rescan rather than to a crash or to wrong results (P8).
+*Consequence (added M5)* — D-5.1 forbids `namir-library` from depending on `namir-worker`, so
+"cancellable worker job" is necessarily split: `namir-library`'s scanner is a caller-pumped step
+machine (`Scanner::step`, doing at most one directory expansion or one file examination per call
+and returning progress), with cancellation expressed as the caller simply not calling it again.
+`namir-worker` owns the thread, the cancellation flag and the progress cadence, driving the step
+machine on its existing pool. `namir-library` needs no concurrency primitives and never learns
+threads exist. A cancelled scan commits every record it already examined — discarding correctly
+hashed work would make cancellation pure waste — but **suppresses the removal list**: a scan that
+did not see the whole tree cannot conclude a file it didn't reach is gone, and treating "not seen"
+as "deleted" would silently empty a user's library on every cancelled scan, violating both P8 and
+FR-LIB-070's "never crash Namir or the host" spirit (an emptied library is a data-loss failure mode,
+not a crash, but the requirement's intent is the same: a missing file must degrade gracefully, not
+propagate as false information).
+
+**Decision D-12.3 (AQ-3 resolved — added M5)** — The index is stored as a single pretty-printed
+JSON document, written whole and replaced atomically (temp file, `sync_all`, `std::fs::rename` over
+the destination — which replaces an existing file on both Unix and Windows, so no
+platform-conditional code is needed). This is **not** a copy of D-11.1's state-document choice made
+by default; it is AQ-3 decided against D-12.3's own constraints (no copyleft dependency, no C/C++
+dependency per NFR-PORT-040, corruption degrades to a full rescan rather than a crash or wrong
+results per P8), with reasoning recorded here rather than left to the code.
+
+*Rationale:* FR-LIB-040's free-text search has no key by which it could be an indexed lookup — it
+filters over every record's name and every metadata field — so the whole index must be resident in
+memory regardless of how it is stored on disk (at 10 000 records of a few hundred bytes each, well
+under 5 MB). An embedded key-value store's entire value proposition — random access to one record
+without its neighbours — is therefore a property this workload has no use for: the index is a
+rebuildable cache, not a database. A single JSON document reuses `serde_json`, already the one
+hardened parser D-11.1 chose specifically so there would be only one to fuzz (P6) — a second,
+third-party binary format would be a second attack surface owned by someone else. Atomic
+whole-file replacement makes a torn write **impossible by construction**: a reader sees either the
+complete old file or the complete new one, never a partial one, which satisfies D-12.3's corruption
+clause by construction rather than by recovery logic. Any other read failure (missing file, wrong
+`format_version`, malformed JSON) yields an empty index and a warning rather than an error — the
+next scan repopulates it, which is D-12.3's "degrades to a full rescan" exactly as stated.
+
+*Rejected:* an append-only log with compaction (D-12.3's other named option) — it can tear on a
+crash mid-append, which atomic whole-file replacement cannot, and it needs its own compaction
+policy, for an incremental-write saving (avoiding rewriting ~3 MB) measured at roughly 10 ms, which
+does not justify the added failure mode against a workload NFR-PERF-060 already budgets 2 seconds
+for. `redb` 4.1.0 (MIT OR Apache-2.0, verified 2026; one transitive dependency, `libc`, unix-only) —
+it clears the licence bar but carries a build script, as does `libc`, and §17's adoption bar for a
+new dependency (set by `rtrb`'s adoption: "zero transitive dependencies, no build script,
+`no_std`-capable pure Rust, MSRV far below this workspace's own") is not met on three of its four
+criteria. D-17.1 rejected `symphonia` over a licence nuance on a **Should** requirement; taking on
+an embedded B-tree store's build-script and cross-compilation risk (both new crates must build for
+`aarch64-linux-android`/`aarch64-apple-ios`, NFR-PORT-030) for a 5 MB rebuildable cache on a **Must**
+is a weaker case than that one was, and D-17.1 already set the precedent for how this project
+weighs that trade.
 
 **Decision D-12.4 (for RD-1)** — A library entry carries an `origin` field from the outset —
 `Local` in 1.0, extensible to a remote source later. Tone3000 integration then adds a variant
 rather than a schema migration across every user's index.
+
+*Consequence (added M5)* — `Origin` also carries an `Unknown(String)` catch-all in addition to
+`Local`, so a 1.0 build reading an index a later build wrote keeps the record rather than dropping
+it. This is D-12.4's own "adds a variant rather than a schema migration" applied in the direction
+D-12.4 did not originally state: forward-compatibility of the *reader*, not only of the *format*.
 
 ---
 
@@ -984,6 +1166,23 @@ hundred lines of `std::sync`; and the pool must be able to *inspect* its queue, 
 does not allow), no async runtime (D-7.1 rejects that explicitly), and no counting-allocator crate
 (which would need an `unsafe impl` D-5.3 forbids here). `namir-worker` therefore adds **no**
 third-party dependency of its own.
+
+**What M5 deliberately did not add**, following the same convention: no embedded key-value store or
+database crate for `namir-library`'s index (AQ-3/D-12.3 — a single JSON document reusing
+`serde_json`, already in the tree via `namir-nam`, serves a 10 000-record rebuildable cache better
+than a B-tree store built for random access this workload never performs); no search-index crate
+(`fst`, `tantivy`) for FR-LIB-040 — a linear scan over a precomputed lowercase blob is sub-millisecond
+at this scale and adds nothing a real search library would improve on; no directory-walking crate
+(`walkdir`) — `std::fs::read_dir` plus `DirEntry::file_type()` (which does not follow symlinks, so
+loops are impossible by construction) is sufficient and keeps the caller-pumped step machine's
+control flow local. `namir-library` therefore adds **no** third-party dependency beyond
+`serde`/`serde_json`, both already present in the workspace. `namir-state` adds exactly **one**:
+`base64` (FR-STATE-080's embedded-data encoding, D-11.1's own note), checked against this
+workspace's adoption bar before taking it (MIT OR Apache-2.0, zero transitive dependencies, no
+build script, `no_std`-capable, MSRV far below this workspace's own) and built with
+`default-features = false, features = ["alloc"]` specifically to exclude the default
+`simd-unsafe` feature, so the dependency carries no unsafe SIMD code path at all rather than merely
+one this crate never calls into.
 
 ---
 
@@ -1352,7 +1551,7 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 |---|---|---|
 | **AQ-1** | ~~Redistributable `.nam` and IR corpus.~~ **Resolved by D-19.1** — all automated fixtures are generated; captures are perceptual-review material only. | — |
 | **AQ-2** | ~~Confirm D-9.8 (gate detector before input trim).~~ **Confirmed by the author, 2026-08-04.** D-9.8 stands. | — |
-| **AQ-3** | Choice of embedded index store for D-12.3, within the stated constraints. | Test phase |
+| **AQ-3** | ~~Choice of embedded index store for D-12.3, within the stated constraints.~~ **Resolved at M5, 2026-08-07: a single pretty-printed JSON document, written whole and replaced atomically. No new dependency.** See D-12.3. | — |
 | **AQ-4** | Licence of NAM's standardised capture input signal, if any author capture is to be redistributed. Does not block the test phase (D-19.1), only the shipping of captures. | Before shipping factory presets |
 | **AQ-5** | ~~Bass-amp DI tap point.~~ **Resolved 2026-08-04: DI is post-EQ; the limiter is switchable.** Two consequences for the capture session, recorded so they are not rediscovered afterwards: (a) the **limiter must be switched off** — it is time-variant and violates the constraint in D-19.1; (b) because the DI is post-EQ, the amp's EQ setting is baked into the capture, so the EQ must be set flat and its position recorded in the model metadata. | — |
 
@@ -1368,7 +1567,7 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 | R-4 | ~~NAM inference in Rust misses the accuracy or performance bar.~~ **Downgraded High-relevant-question → Low-Medium by S-1, 2026-08-05.** Accuracy: PASS with wide margin (-131 dB vs. a 90 dB floor). Performance: the reference implementation misses the NFR-PERF-010 99.9th-percentile gate (41 % vs. 25 %) at median-comparable cost to Eigen-vectorized C++ — the residual risk is narrowly "does a SIMD pass close this gap," not "is Rust inference viable at all." **Vectorized and re-measured by M3, 2026-08-06 — measured, but not a confidently-distinguishable improvement on this sandbox, NOT retired.** `wavenet.rs`'s `axpy` now vectorizes every dilated/1×1-convolution AXPY-shaped inner loop with `wide::f32x8`. `namir-nam/benches/wavenet_inner_loops.rs`, measured on this M3 session's sandbox (4-core Intel Xeon @ 2.10 GHz, **not** this section's reference machine), re-measured a second time during this session's close-out pass via an interleaved scalar-vs-vector A/B under a load average confirmed quiet throughout (9-11 runs each): p50 essentially identical between scalar (mean 26.58%) and vectorized (mean 26.80%) — no reproducible win; p99.9 overlapping but vectorized modestly lower on average (scalar mean 49.53%, range 44.3–54.8%; vectorized mean 45.15%, range 43.7–48.6%) — see `wavenet.rs`'s own Decision-note for the full run-by-run numbers and why this reading supersedes an intermediate re-measurement that reported unreproducible 330–345% p99.9 spikes (most likely itself a sandbox-contention artifact, per the same phenomenon R-8's own re-verification documented). **Even at the more favourable ~45% p99.9 reading, this already exceeds the 25% budget on this sandbox in isolation**, and the real six-stage-chain benchmark (`namir-engine/benches/six_stage_chain.rs`, new this session) measured the assembled chain, gate+EQ active, at 61–76% p99.9 on the same sandbox — a clear FAIL. Whether vectorization closes a measurable part of the gap S-1 found is itself not confidently established on this non-AVX sandbox build. **RETIRED at M3's close-out, 2026-08-06 — this row's own "confirm on the reference machine before retiring" condition is now met, and the answer differs from everything above it.** The sandbox figures were measuring two confounds rather than the code. First, no `target-cpu` was set anywhere in the repository, so the workspace compiled to bare x86-64 (SSE2, no AVX, no FMA) and every `wide::f32x8` became two 4-lane SSE ops; setting `x86-64-v3` (now **D-2.3**) took the NAM stage from p99.9 30.3% to **~10.5%** on the §2 reference machine, with numeric parity re-verified under FMA at -130.8 dB. Second, every benchmark pinned to CPU 0, which absorbs the GPU driver's ISRs (see D-2.4). The assembled chain now measures p99.9 **16.45-17.08%** against the 25% budget on the §2 machine across five repetitions under D-2.4's conditions. Vectorization's benefit is directly measured rather than inferred, and NFR-PERF-010 closes. | Retired 2026-08-06 | Retired: D-2.3's AVX2/FMA baseline plus D-2.4's measurement conditions; NFR-PERF-010 certified on the §2 reference machine. |
 | R-5 | FR-IO-070 device-removal handling is weak in any cross-platform audio library. | Medium | Test with a failable virtual device, not the happy path. |
 | R-6 | `hound` unmaintained since 2023. | Low | WAV is frozen; we own any bug. Vendoring is a viable last resort. |
-| R-7 | ~~Crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget.~~ **RETIRED at M4, 2026-08-06 — measured, and then mitigated and re-measured.** Measured first (`namir-engine/benches/handover_crossfade.rs`, §2 reference machine, D-2.4 conditions, six retained repetitions of ten): this risk's wording is half right with the wrong half named. A NAM handover alone stays inside the 25% budget at every swap rate tested (worst **24.31%**), including a duty faster than any human audition, and an IR handover alone likewise (worst **24.63%**). What exceeded the budget was **both stages crossfading at once**: 25.06–31.49%. Mitigated by a worker-side rule (`namir-worker`'s `Instance::serialise_against_other_target`): a NAM and an IR handover are never offered simultaneously, the second waiting out the first's crossfade on a worker thread, which D-7.1 permits workers to do. Re-measured with arms D and E **interleaved in the same runs** (six retained repetitions of nine, the only comparison form this machine supports reliably): unserialised **28.77–31.26%** against serialised **22.20–24.63%** at every rate where the rule applies, with the measured both-fades-active overlap going from 10.9–43.8% to **exactly 0%**. Steady state read 16.04–16.84% in the same runs. **Every condition the system can actually produce is now within budget.** | Retired 2026-08-06 | Retired: the over-budget condition is removed by construction, not by hoping users avoid it. **Two residuals recorded rather than glossed.** (a) The margin at the worst achievable condition is about **0.4 points** (24.63% against 25%), so this is the path any future per-stage cost increase will breach first — a reason to re-run this benchmark whenever NAM or IR per-block cost changes, and the reason it exists as a permanent target rather than a one-off. (b) The benchmark's arm E at `period 16` still reads 26.99–31.89% with 75% overlap, and that is **not** a failure of the mitigation: half a period is 8 blocks against a 15-block fade, so the bench's fixed-offset *simulation* of the rule cannot serialise there. The real rule does not offset, it waits — at least 25 ms, or ~19 blocks, which exceeds the fade — so the condition arm E period 16 depicts is one the worker cannot produce. |
+| R-7 | ~~Crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget.~~ **RETIRED at M4, 2026-08-06 — measured, and then mitigated and re-measured.** Measured first (`namir-engine/benches/handover_crossfade.rs`, §2 reference machine, D-2.4 conditions, six retained repetitions of ten): this risk's wording is half right with the wrong half named. A NAM handover alone stays inside the 25% budget at every swap rate tested (worst **24.31%**), including a duty faster than any human audition, and an IR handover alone likewise (worst **24.63%**). What exceeded the budget was **both stages crossfading at once**: 25.06–31.49%. Mitigated by a worker-side rule (`namir-worker`'s `Instance::serialise_against_other_target`): a NAM and an IR handover are never offered simultaneously, the second waiting out the first's crossfade on a worker thread, which D-7.1 permits workers to do. Re-measured with arms D and E **interleaved in the same runs** (six retained repetitions of nine, the only comparison form this machine supports reliably): unserialised **28.77–31.26%** against serialised **22.20–24.63%** at every rate where the rule applies, with the measured both-fades-active overlap going from 10.9–43.8% to **exactly 0%**. Steady state read 16.04–16.84% in the same runs. **Every condition the system can actually produce is now within budget.** | Retired 2026-08-06 | Retired: the over-budget condition is removed by construction, not by hoping users avoid it. **Two residuals recorded rather than glossed.** (a) The margin at the worst achievable condition is about **0.4 points** (24.63% against 25%), so this is the path any future per-stage cost increase will breach first — a reason to re-run this benchmark whenever NAM or IR per-block cost changes, and the reason it exists as a permanent target rather than a one-off. (b) The benchmark's arm E at `period 16` still reads 26.99–31.89% with 75% overlap, and that is **not** a failure of the mitigation: half a period is 8 blocks against a 15-block fade, so the bench's fixed-offset *simulation* of the rule cannot serialise there. The real rule does not offset, it waits — at least 25 ms, or ~19 blocks, which exceeds the fade — so the condition arm E period 16 depicts is one the worker cannot produce. **Re-run at M5's close, 2026-08-07, per this row's own "reason it exists as a permanent target rather than a one-off"** — preset recall (this milestone) is a new, more frequent way to reach the both-stages-changing condition than a human clicking two controls. Five repetitions, this session's own sandbox (**not** the §2 reference machine, which this session has no access to). Two of five were contaminated by the benchmark's own stated check — not just arm A's raw/estimator gap, which one run passed while still showing a 23-point gap on arm C, a stronger signal arm A alone cannot catch — and are discarded. Across the three clean runs, arm E at periods 32/64/128 (period 16 excluded per residual (b) above) read **22.16-24.35%**, matching the original 22.20-24.63% range closely; period 16 read 26.43-32.36%, matching the already-documented 26.99-31.89% benchmark-simulation artifact. **No evidence of regression; the risk remains retired.** M5 added no code to `namir-engine`'s crossfade/chain path this benchmark exercises (`Command::Unload` is the only M5 addition here, and this benchmark never issues one), so a regression was never mechanically plausible — this re-run is a check against the *system* (preset recall's new access pattern), not against a suspected code change. |
 | R-8 | **New, from S-2, 2026-08-05.** Same-size IR partitions all start accumulating input at stream time zero, so every partition at a given size — including every partition at `max_partition`, of which a multi-second IR can have dozens — triggers its FFT on the *same* block, forever. Measured directly: at a 32-sample block against a 2 s IR (48 kHz — FR-IR-050's own Must minimum, paired with the smallest Must block size), this alone costs 90–400 % of that block's entire period, tested across `max_partition` 256–32,768 with no material improvement at any value. Schedule tuning (D-9.6) cannot fix this; it is a gap in the synchronous, non-staggered scheme itself. **Verified and tuned by M3, 2026-08-06 — the scheduling defect itself is closed; the risk to NFR-PERF-010's acceptance is not.** M2's per-*group* stagger is replaced with a per-*size*, block-aligned stagger (`convolver.rs`'s own Decision/Rationale note). Re-measured on this M3 session's sandbox (4-core Intel Xeon @ 2.10 GHz, **not** this section's reference machine) via the ported `perf_sweep.rs`/`perf_bench.rs`: at this risk's own named condition (48 kHz, 32-sample block, 2 s IR), p99.9/max fell from 616.0%/1290.7% to **30.7%/70.4%** — comfortably under budget; at NFR-PERF-010's own literal condition (64-sample block), 337.7%/602.5% → **16.8%/41.3%**. Two gaps remain, not glossed over: 2048-sample blocks at 192 kHz/10 s IRs stay just over budget (117.8% p99.9, the head partition's own `O(block_size^2)` cost, not a staggering gap); a 32-sample-block/192 kHz `max` outlier is plausibly sandbox jitter, not confirmed. IR-stage-alone is no longer this risk's binding constraint. **RETIRED at M3's close-out, 2026-08-06.** `build_schedule`'s cross-size phase alignment is fixed with a permanent quantitative regression test (worst-block modelled FFT load 11.893x -> 6.793x the mean, against a 6.507x floor), and the residual tail this row was suspected of causing turned out not to be Namir's at all: an elevated `xperf` trace attributed it to `dxgkrnl.sys` issuing ~165 interrupts/second of 128-512 us, landing on CPU 0 exclusively — the core every benchmark here used to pin to. On a clean core the IR stage's p99 and p99.9 converge (51.6 / 55.0 us), which is the tight schedule-bounded distribution the cost model predicted throughout: the model was right, the measurement was contaminated. See D-2.4. | Retired 2026-08-06 | Retired: the scheduling defect is fixed with a permanent regression test; the residual tail was the GPU driver, addressed by D-2.4's core-selection rule. |
 
 ---
@@ -1399,3 +1598,4 @@ FRS §10 and NFR-QUAL-010, and is not maintained by hand in this document.
 | 0.12 | 2026-08-06 | **Recorded retrospectively during M4, closing a gap M3's close-out left in this log.** §2 gained **D-2.3** and **D-2.4** and the certified NFR-PERF-010 pass during M3, but no changelog row was ever written for any of them — so this document's own history said the requirement was still open while §2 said it had closed. D-2.3: the x86-64 baseline is `x86-64-v3` (AVX2+FMA+BMI), set in `.cargo/config.toml`; no `target-cpu` had ever been set, so every `wide::f32x8` was compiling to two 4-lane SSE ops. Setting it took the NAM stage from p99.9 30.3% to ~10.5% on the §2 reference machine with numeric parity unchanged at -130.8 dB — by §2's own account the single largest performance change in the project, and it was absent from this log entirely. D-2.4: D-2.2's p99.9 gate is kept exactly as written, with the measurement conditions under which it is valid added (pin away from device-ISR cores — `dxgkrnl.sys` puts ~165 interrupts/second of 128-512 µs on CPU 0 exclusively; verify the machine is quiet rather than assuming; ≥ 5 repetitions with the spread; and a mandatory cross-check against `tail_structure.rs`'s contamination-immune estimator, discarding any run whose raw p99.9 substantially exceeds it). NFR-PERF-010 closes at p99.9 **16.45-17.08%** against its 25% budget. §22's R-4 and R-8 rows are updated to **Retired** in the same pass — they had still read Medium while the roadmap's M3 close-out said both had retired. |
 | 0.13 | 2026-08-06 | **M4: resource handover, worker, and cross-instance sharing.** `namir-engine` gains D-7.2's SPSC command ring and D-8.1's return ring (`ring.rs`, on the new `rtrb` dependency — §17), D-7.3's lock-free telemetry ring (`telemetry_ring.rs`, plain `AtomicU64`s, no dependency: a `TelemetryEntry` is exactly 64 bits, so tearing within an entry is impossible by construction while the across-entry tearing D-7.3 permits stays possible), and `AudioEngine`, which owns the rings so `Chain` stays the pure DSP object `six_stage_chain.rs` measures. New crate **`namir-worker`** (D-5.1's row, finally built): D-7.1's pool, D-8.2's cache, and the worker halves of D-8.1 — with **no** third-party dependency of its own. **The one known P1 violation in the codebase is closed**: a completing crossfade used to drop the outgoing slot on the audio thread, and a second, previously-undocumented site did the same to a slot displaced mid-fade; both are now moves into a retire pen that the return ring drains. Evidence: both stages' handover tests now run a full real-to-real handover *inside* the D-7.5 harness, which they could not before. FR-NAM-070 and FR-IR-060 close, each verified by its own literal *Verify: I* method. Five decisions gained M4 consequence notes recording things they did not anticipate: D-7.1 (the pool formula yields zero on one core), D-7.2 (bounded retry; the two rings' full-ring policies compose), D-8.1 (the worker must prepare the whole *slot*, not just the `Arc`; the second drop site; deferred finalization), D-8.2 (**the IR cache key must include engine rate and block size**, or a hit can hand back an IR whose `process_block` asserts — a panic on the audio thread, not a wrong sound). R-7's benchmark exists for the first time (`benches/handover_crossfade.rs`); see §22 for its disposition. |
 | 0.14 | 2026-08-06 | **M4 follow-up: R-7's mitigation built and measured; the risk retires.** M4's first pass measured the crossfade and found the over-budget condition was not the one R-7 names — a NAM handover alone fits, and so does an IR handover alone; what does not fit is both at once. `namir-worker` now serialises them: before offering a handover for one target, an instance waits out any handover it recently offered for the other. A timer rather than telemetry feedback, and for a real reason rather than simplicity — the *first* load into an empty stage retires nothing and reports no fade in flight between submission and the audio thread's next block, so a purely feedback-driven rule races; a timer needs no feedback, cannot deadlock, and expires anyway if the audio thread stalls, which is the right failure mode. D-8.1 gains a `*Consequence (added M4)*` note recording the rule and its one user-visible effect: changing model and IR in a single action starts the second changeover ~20 ms after the first rather than simultaneously, which neither FR-NAM-070 nor FR-IR-060 forbids (each requires *its own* changeover to be glitch-free). `HANDOVER_CROSSFADE_MS` is promoted to a single public constant in `namir-engine`, having been privately duplicated in `nam.rs` and `ir.rs` — two copies of a figure the two stages must agree on, with the worker now needing a third. Measured with arms D and E interleaved in the same runs: **28.77–31.26% unserialised against 22.20–24.63% serialised**, overlap 10.9–43.8% → **0%**. §22's R-7 row retires with two residuals recorded, including that the remaining margin is only ~0.4 points. |
+| 0.15 | 2026-08-07 | **M5: state, presets, and library.** Two new crates land: `namir-state` (D-11.1's JSON preset/state format, D-11.2's tolerant/versioned deserialisation via a never-discarded `Document` carrier rather than `#[serde(flatten)]`, D-11.3's three-way file reference and FR-STATE-070's resolution order behind a `FileResolver` port `namir-library` implements against the opposite dependency edge) and `namir-library` (D-12.1's incremental index — corrected mid-milestone, see below — D-12.2's caller-pumped scan step machine, **AQ-3 resolved**: a single pretty-printed JSON document, atomic replace, no new dependency). `namir-engine` gains `Command::Unload` (FR-STATE-070's "load with that stage empty" reuses the existing crossfade-to-`None` machinery, no new DSP). `namir-worker` gains `library::LibraryService` (driving the scan step machine on its pool, D-12.2's split finally whole) and `Instance::recall` (FR-STATE-030/050, sequential through the existing `load`/`unload` primitives specifically so R-7's cross-target serialisation rule cannot be bypassed by construction). **Six corrections to the governing documents**, each its own `*Consequence (added M5)*` note at the relevant section rather than collected in one place: D-5.1's self-contradictory `namir-library` platform-code cell; FR-LIB-070 vs. D-12.1's literal wording (a same-length edit inside one mtime tick was invisible — closed by a settling-window rule); new **D-2.5** scoping D-2.1's wall-clock rule to audio-thread budgets specifically, since four M5 requirements are wall-clock by their own FRS wording; `.gitattributes` marking `*.namirpreset binary` before Git's line-ending normalisation could silently repair a serialiser regression in the checked-in portability corpus; FR-STATE-070's silence on which library root and on a hash-mismatched path hit (resolved: no stored root identity, a mismatch falls through rather than substituting); and global bypass/output ceiling's missing `ParamDescriptor` home, flagged for an M6 decision. NFR-RT-010 moves Partial → Done (`crates/namir-worker/tests/rt_stress.rs`, all three axes concurrent, zero audio-thread allocation). NFR-PERF-050 and NFR-PERF-060 both close with margin (`benches/resource_load.rs`, `benches/library_scan.rs`). NFR-QUAL-040's second fuzz target (`crates/namir-state/fuzz`) lands in M5 rather than M7. NFR-DOC-010 closes: `docs/04-state-and-preset-format.md`, with its own and FR-STATE-040's manual tests actually executed rather than left as unrun scripts. `handover_crossfade.rs` re-run at close (preset recall is a new, more frequent path to R-7's worst condition): five repetitions on this session's own sandbox, two discarded as contaminated, the three clean runs matching M4's original figures closely — **no evidence of regression; R-7 remains retired.** §14's snapshot gains six live-updated cells (5.9, 5.10, 6.1, 6.2, 6.4, 6.6, 6.8) and §15 strikes AQ-3. The FRS §5.9/§5.10 "close in full" acceptance line in roadmap §9 is restated honestly: seven of twelve Musts close in full, five close only their M5-resolvable half (the rest is M6 UI or, for FR-STATE-020, the first release itself). |

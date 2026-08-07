@@ -30,6 +30,11 @@ pub enum CommandKind {
     LoadNam,
     /// A prepared impulse response, to be installed with a crossfade.
     LoadIr,
+    /// M5: unload the Nam stage's model, crossfading to dry (FR-STATE-070's "the state shall
+    /// load with that stage empty"). See [`Command::Unload`].
+    UnloadNam,
+    /// M5: unload the Ir stage's impulse response, crossfading to dry. See [`Command::Unload`].
+    UnloadIr,
     /// A global-bypass change (FR-CHAIN-030).
     SetGlobalBypass,
     /// An output-ceiling change in dB (FR-CHAIN-090).
@@ -52,6 +57,15 @@ pub enum Command {
     Param(crate::param::ParamChange),
     /// D-8.1 step 2: install a prepared resource, beginning a crossfade.
     Load(Resource),
+    /// M5's mirror image of [`Self::Load`]: FR-STATE-070's "the state shall load with that
+    /// stage empty" has no way to say so without this. Names the *stage*, not a resource —
+    /// there is nothing to hand over — and starts exactly the same crossfade `Load` starts,
+    /// fading toward `None` rather than toward a new slot. `NamStage`/`IrStage`'s existing
+    /// dry-passthrough handling of a `None` slot mid-crossfade (see `stages/nam.rs`'s module
+    /// doc comment) is the entire mechanism; this needs no new DSP. Consequence note under
+    /// D-8.1 (`docs/02-architecture.md`): an unload is a handover to nothing, and is therefore
+    /// also subject to R-7's serialisation rule.
+    Unload(ResourceKind),
     /// FR-CHAIN-030's global bypass.
     SetGlobalBypass(bool),
     /// FR-CHAIN-090's output ceiling, in dB.
@@ -91,6 +105,10 @@ impl Command {
             Self::Load(r) => match r.kind() {
                 ResourceKind::Nam => CommandKind::LoadNam,
                 ResourceKind::Ir => CommandKind::LoadIr,
+            },
+            Self::Unload(kind) => match kind {
+                ResourceKind::Nam => CommandKind::UnloadNam,
+                ResourceKind::Ir => CommandKind::UnloadIr,
             },
             Self::SetGlobalBypass(_) => CommandKind::SetGlobalBypass,
             Self::SetOutputCeilingDb(_) => CommandKind::SetOutputCeilingDb,

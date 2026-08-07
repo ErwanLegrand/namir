@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use crate::command::RetireSink;
 use crate::param::ParamChange;
-use crate::resource::Resource;
+use crate::resource::{Resource, ResourceKind};
 use crate::stage::Stage;
 use crate::stage_io::StageIo;
 use crate::telemetry::{TelemetryEntry, TelemetrySink};
@@ -299,6 +299,17 @@ impl Chain {
             if offer.is_none() {
                 return;
             }
+        }
+    }
+
+    /// M5's mirror of [`Chain::offer`]: broadcasts an unload request for `kind` to every stage,
+    /// exactly as [`Chain::apply`] broadcasts a parameter change. Unlike `offer` there is no
+    /// payload to stop early for — `kind` names a stage rather than carrying a resource that one
+    /// stage removes from circulation — so every stage sees the call and each ignores a `kind`
+    /// it does not own.
+    pub fn unload(&mut self, kind: ResourceKind) {
+        for stage in &mut self.stages {
+            stage.unload_resource(kind);
         }
     }
 

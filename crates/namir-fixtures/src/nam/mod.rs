@@ -487,6 +487,64 @@ pub fn generate(shape: WaveNetShape, seed: u64) -> Result<NamModel, DegenerateFi
     Ok(model)
 }
 
+/// D-19.1's fixture for NFR-PERF-050's 50 MB worst-case load-time figure.
+///
+/// **Deliberately not RMS-calibrated**, unlike [`generate`]'s real architecture shapes:
+/// NFR-PERF-050 is entirely about parse/allocate time, this fixture is never processed through
+/// `Stage::process` or judged on tone, and running `generate`'s two calibration inference passes
+/// over a network with millions of parameters would make generating this fixture itself
+/// impractically slow — the whole reason this is a separate function rather than a fifth
+/// [`WaveNetShape`] variant reusing [`generate`]. Weights are the same fan-in-scaled constrained
+/// init [`build_weights`] always uses (so the file is at least a structurally plausible WaveNet,
+/// not garbage bytes padded to size), just never measured or rescaled.
+///
+/// **Honest caveat, worth repeating wherever this fixture is used:** a 50 MB `.nam` file is not a
+/// shape the NAM ecosystem actually produces — a real exported model runs from a few hundred KB to
+/// a few MB. This exists purely to give NFR-PERF-050's stated ceiling a concrete file to measure
+/// against, not because it represents anything a user will ever load.
+///
+/// `channels` is exposed rather than a target byte count so this function stays a pure,
+/// deterministic generator with no internal search loop; a caller wanting a specific file size
+/// (`benches/resource_load.rs`) picks a `channels` value once, empirically, and pins the result
+/// with its own test.
+pub fn generate_oversized_uncalibrated(channels: usize, seed: u64) -> NamModel {
+    let specs = vec![LayerArrayConfig {
+        input_size: 1,
+        condition_size: 1,
+        head_size: 1,
+        channels,
+        kernel_size: 3,
+        dilations: vec![1, 2, 4, 8],
+        activation: "Tanh".to_string(),
+        gated: false,
+        head_bias: true,
+    }];
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(seed);
+    let head_scale = 0.02f32;
+    let weights = build_weights(&specs, &mut rng, head_scale);
+    NamModel {
+        version: "0.5.5".to_string(),
+        architecture: "WaveNet".to_string(),
+        config: WaveNetConfig {
+            layers: specs,
+            head_scale,
+            head: None,
+        },
+        weights,
+        sample_rate: SAMPLE_RATE,
+        metadata: NamMetadata {
+            name: format!("namir-fixtures oversized ({channels}-channel) WaveNet"),
+            modeled_by: "namir-fixtures".to_string(),
+            gear_type: "amp".to_string(),
+            tone_type: "clean".to_string(),
+            description: "Uncalibrated load-time fixture (D-19.1/NFR-PERF-050): not RMS-\
+                calibrated, not a shape the NAM ecosystem produces, exists only to measure \
+                parse/allocate time at a stated worst-case file size."
+                .to_string(),
+        },
+    }
+}
+
 /// Builds the flat weight array in the order `lstm_infer::run` (and `namir-nam`'s `lstm.rs`)
 /// consume it: per layer `[W, b, h0, c0]` (layer 0's `W` has `cell_input_size == input_size`,
 /// every later layer's has `cell_input_size == hidden_size`), then `head_weight`, `head_bias` —
@@ -631,6 +689,33 @@ mod tests {
         let a = generate(WaveNetShape::Standard, 1).unwrap();
         let b = generate(WaveNetShape::Standard, 2).unwrap();
         assert_ne!(a.weights, b.weights);
+    }
+
+    /// Pins `generate_oversized_uncalibrated`'s size at the channel count
+    /// `benches/resource_load.rs` (namir-worker) actually uses, so a future change to
+    /// `build_weights`'s layout or this function's own dilation list is caught here rather than
+    /// silently drifting the benchmark away from NFR-PERF-050's stated 50 MB figure. Empirically
+    /// chosen (see this crate's own commit history for the probe that found it): 430 channels
+    /// currently yields ~49.6 MB.
+    #[test]
+    fn oversized_fixture_at_430_channels_is_close_to_50mb() {
+        let bytes = generate_oversized_uncalibrated(430, 1).to_json_bytes();
+        let mb = bytes.len() as f64 / (1024.0 * 1024.0);
+        assert!(
+            (45.0..55.0).contains(&mb),
+            "430-channel oversized fixture is {mb:.1} MB, expected roughly 50 MB -- update the \
+             channel count in both this test and namir-worker's benches/resource_load.rs"
+        );
+    }
+
+    #[test]
+    fn oversized_fixture_is_deterministic_and_loadable_as_valid_json() {
+        let a = generate_oversized_uncalibrated(16, 7);
+        let b = generate_oversized_uncalibrated(16, 7);
+        assert_eq!(a, b);
+        let bytes = a.to_json_bytes();
+        let restored = NamModel::from_json_bytes(&bytes).unwrap();
+        assert_eq!(restored, a);
     }
 
     #[test]

@@ -9,9 +9,28 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+namir-core = { path = "../namir-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
 rand_pcg = "0.3"
 realfft = "3.5"
 rustfft = "6.4"
+# M5's `library` module writes real `.wav` bytes for its 10,000-file synthetic corpus (FR-LIB-020
+# et al.) so each file round-trips through `namir_ir::probe_wav` for real, the same way `nam`'s
+# fixtures round-trip through a real `.nam` parser. `namir-ir`'s own tests already write WAV via
+# `hound::WavWriter` directly (e.g. `convolver.rs`), but that helper is private to that crate's
+# `#[cfg(test)]` module and namir-fixtures cannot reach it, nor should namir-fixtures depend on
+# namir-ir just to borrow a test helper (D-5.1: namir-ir does not appear on this crate's allowed
+# edge list). Pinned to the same "3.5" namir-ir and namir-worker already use, so there is only one
+# hound version in the dependency tree.
+hound = "3.5"
+
+[dev-dependencies]
+# Both are the real, hardened parsers this crate's own `library` module tests validate its
+# generated corpus against (P6: one hardened parser per format, so this crate must call the real
+# ones rather than re-checking its own output by construction). Both take `namir-fixtures` as a
+# dev-dependency in the other direction already (their parity/robustness tests), so this is the
+# same pairing running the other way round for a different purpose, not a new layering shape.
+namir-nam = { path = "../namir-nam" }
+namir-ir = { path = "../namir-ir" }

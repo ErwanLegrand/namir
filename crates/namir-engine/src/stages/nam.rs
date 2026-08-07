@@ -79,7 +79,7 @@ use rubato::{FftFixedInOut, Resampler};
 use crate::command::RetireSink;
 use crate::param::{ParamChange, ParamId};
 use crate::prepare::{PrepareContext, PrepareError};
-use crate::resource::Resource;
+use crate::resource::{Resource, ResourceKind};
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
 use crate::stages::HANDOVER_CROSSFADE_MS;
@@ -568,6 +568,37 @@ impl NamStage {
         None
     }
 
+    /// **RT-safe.** FR-STATE-070's "the state shall load with that stage empty": the mirror
+    /// image of [`Self::install`]. Displaces the inactive slot into `self.retired` exactly as
+    /// `install` does (never dropped — see that method's doc comment), but leaves the inactive
+    /// position `None` instead of putting a new slot there, and starts the same
+    /// [`HANDOVER_CROSSFADE_MS`]-long fade. `process_channel0` already treats a `None` slot as a
+    /// dry passthrough on either side of a fade (this module's own doc comment), so fading
+    /// *into* `None` needs no new DSP — it is an entry point onto the existing state machine,
+    /// not a new one. Once the fade completes, the ordinary finalization block moves the
+    /// (formerly active) outgoing slot into `self.retired` and flips `active` onto the now-empty
+    /// slot, exactly as it does after any other handover.
+    pub(crate) fn unload(&mut self) {
+        if self.retired.is_some() {
+            debug_assert!(
+                false,
+                "unload with a retirement still parked: the engine's drain gate should \
+                 have held this command back"
+            );
+            return;
+        }
+        let inactive = 1 - self.active;
+        if let Some(displaced) = self.slots[inactive].take() {
+            // A move, not a drop. See `install`'s doc comment.
+            self.retired = Some(Resource::nam(displaced, self.prepared_for));
+        }
+        self.crossfade = Some(Crossfade {
+            remaining: self.crossfade_total_samples,
+            total: self.crossfade_total_samples,
+        });
+        self.recompute_mix_target();
+    }
+
     /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
     /// see the field's own doc comment for the FR-CHAIN-040 rationale and for why it is
     /// deliberately `slots[active]`, not whichever slot a handover is fading into.
@@ -810,6 +841,14 @@ impl Stage for NamStage {
             && let Err(back) = out.push(resource)
         {
             self.retired = Some(back);
+        }
+    }
+
+    /// M5: FR-STATE-070's "the state shall load with that stage empty", entry point. Ignores a
+    /// `kind` that isn't ours, exactly as `apply` ignores a `ParamId` it doesn't own.
+    fn unload_resource(&mut self, kind: ResourceKind) {
+        if kind == ResourceKind::Nam {
+            self.unload();
         }
     }
 }

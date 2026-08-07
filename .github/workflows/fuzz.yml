@@ -4,9 +4,10 @@
 # matrix in ci.yml free of that requirement is simpler to reason about than threading a
 # per-job toolchain override through a single file.
 #
-# `crates/namir-nam/fuzz` is its own cargo-fuzz project with its own empty [workspace] table (see
-# its Cargo.toml's own comment) and is excluded from the root workspace, so it needs its own
-# checkout-relative working directory rather than a `-p` flag from the repo root.
+# `crates/namir-nam/fuzz` and `crates/namir-state/fuzz` are each their own cargo-fuzz project with
+# their own empty [workspace] table (see either Cargo.toml's own comment) and are excluded from
+# the root workspace, so each needs its own checkout-relative working directory rather than a `-p`
+# flag from the repo root.
 
 name: Fuzz
 
@@ -46,3 +47,25 @@ jobs:
       - name: cargo fuzz run load_nam -- -max_total_time=60
         working-directory: crates/namir-nam/fuzz
         run: cargo fuzz run load_nam -- -max_total_time=60
+
+  # M5: NFR-QUAL-040's second named reader ("the preset and state readers"). Same bounded-smoke
+  # shape as the job above -- see that job's own comment for why 60s and why this isn't trying to
+  # find a new crash today.
+  fuzz-smoke-state:
+    name: fuzz smoke (read_state, 60s)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/namir-state/fuzz
+
+      - name: cargo install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: cargo fuzz run read_state -- -max_total_time=60
+        working-directory: crates/namir-state/fuzz
+        run: cargo fuzz run read_state -- -max_total_time=60
