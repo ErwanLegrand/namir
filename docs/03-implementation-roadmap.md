@@ -1086,6 +1086,23 @@ all.
 **Acceptance:** FRS §5.11 (IO), §5.12 (CLAP), §5.13 (UI) close — three entire sections that were
 100% Not-started at M0.
 
+**Note (added M6, `namir-app` built, `namir-clap` built in parallel by a separate session):**
+FR-IO's Musts close with two documented exceptions rather than fully, found while building
+against D-13.1's pinned `cpal` v0.18.1 rather than assumed: **FR-IO-020's WASAPI exclusive mode is
+architecturally absent from that dependency** (verified against its vendored source, not
+inferred — see `docs/02-architecture.md`'s D-13.1 consequence note and
+`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`), and **R-5's own literal ask — a real
+failable device to test FR-IO-070 against — was not available this session**
+(`docs/manual-tests/fr-io-070-device-removal.md`). Both are recorded as open, not silently folded
+into "Acceptance" above. Device enumeration, sample-rate/buffer negotiation, settings persistence
+with graceful fallback, and a real opened/playing stream were all verified against real WASAPI
+hardware in this session (`docs/manual-tests/fr-io-010-device-enumeration.md` and
+`fr-io-080-settings-persistence.md`'s executed runs). Separately, building `namir-app` surfaced
+that `namir_worker::Instance` (M4) has no public way to submit an ordinary parameter change,
+despite D-7.2's own module doc comment describing exactly that shared-submitter architecture —
+see `docs/02-architecture.md`'s D-7.2 consequence note for the full finding and the additive fix
+it proposes; `namir-clap` needs the identical workaround or fix.
+
 ---
 
 ## 11. M7 — Compliance and hardening closure

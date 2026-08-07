@@ -403,6 +403,31 @@ changes queued behind it — which is acceptable because the only way to reach t
 that submits without draining, and the worker drains before it submits. The state is published as
 `telemetry.engine.deferred_blocks` rather than being invisible.
 
+*Consequence (added M6, an API gap found building `namir-app`, not yet fixed anywhere):* this
+decision's own wording — "a mutex on the producer side... serialises UI and worker submissions" —
+and `namir_worker::submit::CommandSubmitter::try_submit`'s own doc comment ("this is what the UI
+thread uses") both describe an architecture where the UI thread and a worker thread share *one*
+`CommandSubmitter` for one engine instance. `namir_worker::Instance` (M4) does not actually let
+that happen: `Instance::new` takes ownership of the whole `WorkerEndpoint`, including its one
+`RingProducer<Command>`, and wraps it in a **private** `CommandSubmitter` field. `Instance`'s
+public surface is exactly `new`/`drain_retired`/`load`/`unload`/`recall` — nothing submits a bare
+`Command::Param` or `Command::Reset`, and nothing exposes the submitter for a caller to do so
+itself. A product shell therefore cannot use `Instance` for ordinary per-knob-turn parameter
+changes at all — the single highest-frequency interaction the whole system has. `namir-app`
+works around this without modifying `namir-worker` (two agents were building product shells
+against it concurrently this round, so a structural change was deliberately left for a coordinated
+follow-up rather than made unilaterally): it does not construct an `Instance`, and instead builds
+its own `Arc<CommandSubmitter>` directly from `namir_engine::split`'s `WorkerEndpoint`, shared
+between the UI thread (`try_submit`) and its own re-derived load/unload/recall orchestration
+(`crates/namir-app/src/engine_live.rs`, which reuses every substantial piece —
+`ResourceCache`, `Command::load_nam`/`load_ir`, `namir_state::candidates`/`FileResolver` — and
+only re-derives the thin ordering glue `Instance` would otherwise have provided: R-7's
+serialisation wait and the drain-before-submit sequence). `namir-clap` needs the identical fix and
+should not have to rediscover this independently — flagged here for both crates' sake. The
+smallest closing change would be additive: `Instance::submitter(&self) -> Arc<CommandSubmitter>`
+(or an equivalent that lets a caller share the ring producer `Instance` already owns), with no
+existing signature changed.
+
 **Decision D-7.3** — Audio thread outbound communication (meters, gate reduction, fault flags,
 xrun counts) uses **atomics and a lock-free telemetry ring**, read at UI frame rate. Loss is
 acceptable outbound and the buffer overwrites oldest.
@@ -997,6 +1022,40 @@ build dependency.
 *Consequence:* FR-IO-070 (device removal while in use) is the requirement most likely to expose
 gaps in any cross-platform audio library. It is called out as a risk in §22 and needs a real test
 with a device that can be made to fail, not a happy-path test.
+
+*Consequence (added M6, from building `namir-app` — corrects the claim two paragraphs above):*
+**"cpal covers these" was wrong for WASAPI exclusive mode specifically.** Reading `cpal` 0.18.1's
+own WASAPI backend source (`host/wasapi/device.rs`, both `build_input_stream_raw_inner` and
+`build_output_stream_raw_inner`) shows the share mode is a hardcoded `AUDCLNT_SHAREMODE_SHARED`
+local with no parameter, feature, or extension trait anywhere in the crate to request
+`AUDCLNT_SHAREMODE_EXCLUSIVE` instead — checked against the vendored source directly, not inferred.
+Shared mode, ALSA, and CoreAudio are all covered as this decision originally said; exclusive mode
+is not, on any platform, through this dependency as pinned. `namir-app` cannot work around this
+itself: D-5.3 confines `unsafe` to `namir-platform`/`namir-clap` (plus a future SIMD kernel
+module), and a raw WASAPI `IAudioClient::Initialize(..., AUDCLNT_SHAREMODE_EXCLUSIVE, ...)` call
+needs exactly that. Closing this gap needs either a `namir-platform`-owned unsafe WASAPI-exclusive
+helper (mirroring `DenormalGuard`/`elevate_current_thread_priority`'s existing pattern) or an
+upstream `cpal` change; neither is built as of M6. `AppSettings::exclusive_mode` exists as a
+forward-compatible persisted field so a future fix needs no settings migration, but nothing reads
+it yet. See `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` for the full record.
+
+*Consequence (added M6, from building it):* `namir-app` implements this decision: `AudioBackend`/
+`AudioStream` (`crates/namir-app/src/audio_io.rs`) are the Namir-owned trait, with a real `cpal`
+implementation confined to that one module — verified against real WASAPI hardware in this
+session (a PreSonus AudioBox 22VSL interface): device enumeration, sample-rate/buffer negotiation,
+and a real opened, playing stream, all recorded in
+`docs/manual-tests/fr-io-010-device-enumeration.md`'s executed run. FR-IO-080 (settings
+persistence, including the degrade-gracefully-on-a-missing-remembered-device case) was also
+verified against the real filesystem and a real fallback in the same session — see
+`docs/manual-tests/fr-io-080-settings-persistence.md`. FR-IO-050 (latency) and FR-IO-060 (xruns)
+are built and unit-tested for the parts that do not require real hardware to observe (buffer-based
+latency estimate, dropout counting) but not for their real-hardware-only halves (a true measured
+loopback figure; inducing a genuine backend xrun) — see those two manual-test docs. FR-IO-070
+(device removal) has its report/stop-cleanly machinery built and tested against every piece not
+requiring a device that can be told to fail on command, but R-5's own literal ask (such a device)
+remains unmet, as §22 already anticipated it might. FR-IO-090 (channel mapping) is implemented for
+a single physical input channel (optionally remapped) but not for `ChannelConfig::Stereo`'s
+genuinely independent two-channel input.
 
 **Decision D-13.2** — Filesystem locations, config directories, log sinks and thread priority
 elevation live in `namir-platform` and nowhere else (P5, NFR-PORT-020).
