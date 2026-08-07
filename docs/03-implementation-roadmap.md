@@ -678,6 +678,12 @@ cannot be guaranteed.**
 **Size: L.** **Depends on:** M2 (needs real stages with the dual-resource shape already built in).
 **Blocks:** M5.
 
+> ⚠️ **Read both status sections at the end of this section before trusting anything here about
+> R-7.** The "Acceptance" paragraph below predicts R-7 retires; the first status section records
+> that the measurement did *not* support that; the close-out records that it does, once the
+> mitigation the measurement pointed at was built. The original text is left unedited as the record
+> of what the milestone expected before it measured anything.
+
 **Deliverables:**
 
 - `namir-engine`'s real **D-7.2 SPSC command ring** (wait-free from the audio thread's side,
@@ -694,6 +700,171 @@ cannot be guaranteed.**
 cross-instance weight sharing becomes achievable (though it isn't exercised for real until M6's
 `namir-clap`). **R-7 retires**: the crossfade's transient 2× cost is now something the benchmark
 harness can actually measure, not a stated concern.
+---
+
+### M4 status — this session, 2026-08-06
+
+Appended rather than rewriting the Deliverables and Acceptance text above, following §7's own
+convention. Where this section and the text above disagree, this section is what happened.
+
+**All three deliverables landed.** `namir-engine` gained D-7.2's SPSC command ring and D-8.1's
+return ring (`ring.rs`, on the new `rtrb` dependency — `02-architecture.md` §17), D-7.3's real
+lock-free telemetry ring (`telemetry_ring.rs`, plain `AtomicU64`s and no dependency at all), and
+`AudioEngine`, which owns the rings so `Chain` stays the pure DSP object `six_stage_chain.rs`
+measures. `namir-worker` exists, with D-7.1's pool, D-8.2's cache, D-16.3's per-job panic isolation,
+and the worker halves of D-8.1 — and **no third-party dependency of its own**.
+
+**The codebase's one known P1 violation is closed, and a second one nobody had documented with it.**
+M2's `nam.rs`/`ir.rs` dropped the outgoing slot on the audio thread the instant a handover
+completed; both files admitted it in their module docs. It is now a move into a one-slot retire pen
+that the return ring drains. The second site turned up while wiring the first: an offer arriving
+mid-fade *replaced* the slot still fading in, and replacing it dropped it — harmless while the
+loader was documented non-RT and only tests called it, a real violation once offers install on the
+audio thread. Both are closed the same way.
+
+The evidence is not an assertion. The tightened tests were committed **first**, failing with 21 and
+7 deallocations respectively, and the fix committed second — NFR-QUAL-020's "evidenced by commit
+order", honoured literally. Both stages now drive a complete real-to-real handover to completion
+*inside* `rt_harness::audio_section`, which they demonstrably could not before.
+
+**Two decisions needed correcting, not merely implementing** — both recorded as
+`*Consequence (added M4)*` notes in `02-architecture.md`:
+
+- **D-8.1 understates step 1.** "The stage is prepared with capacity for two live resources
+  precisely so this needs no allocation" is true of the slot *array* and false of the slot
+  *contents*: installing a bare `Arc<PreparedNam>` still builds this instance's `NamState` and, at a
+  mismatched rate, a whole `rubato` resampler pair. So a command carries a built, boxed slot, which
+  also makes D-7.2's "carries a pointer, never the model" literally true rather than an argument.
+- **D-8.2's cache key is insufficient as written.** `PreparedIr::from_wav_bytes` bakes in both the
+  engine rate and the block size, and `process_block` **asserts** the block size its schedule was
+  built for — so a hit keyed on content hash alone could hand one instance an IR prepared for
+  another's smaller block, and the failure mode is a *panic on the audio thread*, not a wrong sound.
+  Keyed `(hash, rate, block_size)` instead.
+
+**Acceptance — FR-NAM-070 and FR-IR-060 close; R-7 does not retire.**
+
+FR-NAM-070 and FR-IR-060 are each verified by their own literal *Verify: I* method — swapped under a
+continuous sine, asserting no discontinuity beyond a stated threshold and no dropout, with the whole
+run inside the D-7.5 harness. FR-CLAP-090's sharing mechanism is built and tested at the worker
+level and remains, as the Acceptance text above already said, *achievable* rather than exercised
+until M6.
+
+**R-7 was measured and stays open, which is the one place this milestone's original Acceptance text
+was wrong.** It predicted retirement on the grounds that the transient would become measurable. It
+is now measured, and the measurement does not support retiring it — though it does narrow it
+sharply. On the §2 reference machine under D-2.4's conditions, **six retained repetitions of ten**
+(four discarded on D-2.4's own estimator check):
+
+| Arm | p99.9 across retained runs | vs. the 25% budget |
+|---|---|---|
+| A — steady, no handover | **16.25–16.51%** (estimator 14.60–15.29%) | pass; reproduces M3's certified figure |
+| B — NAM handover, all four rates | **21.32–24.31%** | **pass** |
+| C — IR handover, all four rates | **17.97–24.63%** | **pass**, with little margin |
+| D — NAM **and** IR simultaneously | **25.06–31.49%** | **fail at every rate** |
+
+So R-7's own wording — "crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget" — is
+**half right, and the half that is wrong is the half it names.** A NAM handover alone stays inside
+budget even at a 94%-duty swap rate faster than any human audition. What exceeds the budget is two
+stages crossfading at once, which R-7 does not mention. Arm D's spread is under 0.6 points across
+six runs — tighter than arm A's — so this is a property of the workload, not noise.
+
+The mitigation is named in §22 and deliberately **not** built here: a worker-side rule that a NAM
+and an IR handover are never in flight simultaneously would eliminate arm D by construction, for one
+state bit per instance. The operator's call was to certify the measurement first rather than fix and
+measure in the same pass. Shortening the crossfade toward FR-NAM-070's 5 ms floor is *not* an
+alternative — it reduces the transient's duty cycle, not its 2× peak.
+
+**What M4 does not close, stated rather than left to inference:**
+
+- **NFR-RT-010 is Partial, not Done.** M4 closed the one known audio-thread allocation and proves a
+  complete handover allocation-free, but the requirement's *Verify* clause also demands a stress
+  test "with concurrent model loading, preset recall and library scanning". Preset recall is M5's
+  `namir-state` and scanning is M5's `namir-library`; neither exists, so only the model-loading axis
+  is covered.
+- **NFR-PERF-050** (500 ms for a 50 MB load) now has a worker to measure but no benchmark yet.
+- **The mobile cross-builds are unverified for `namir-worker`.** `-p namir-worker` is added to both
+  CI jobs, and nothing in the crate should block either target, but those jobs run on
+  ubuntu/macOS-hosted runners which the concurrent GitHub incident left stuck — so this is claimed
+  by inspection, not by a green run.
+
+**Two methodology notes this milestone earned.**
+
+First, D-2.4's estimator has a limit worth recording: it is **not** a valid validity check for the
+IR-swapping arms. It assumes cost is periodic in block index, and recycled IR slots each carry their
+own stream position, so the expensive partition triggers land on varying residues. The tell was
+unmistakable — arm C's estimator reads *below* arm A's, which is impossible for a lower bound on the
+same schedule doing strictly more work. Arms C and D are therefore validity-checked against arm A's
+estimator, measured in the same run.
+
+Second, and more embarrassing: **two of the four discarded repetitions were contaminated by this
+session's own polling** — a shell command every few seconds to check whether the run had finished.
+That is exactly the phenomenon M3's close-out recorded ("the later measurement sessions ran
+concurrently with background analysis agents and repeated `cargo` builds"), reproduced by someone
+who had just finished reading the warning about it. D-2.4's "no unrelated load on the machine,
+verified rather than assumed" includes the tooling watching the benchmark.
+
+---
+
+### M4 close-out: R-7 mitigated, measured again, and retired
+
+The status section above records R-7 as open with a quantified cause. That cause has since been
+removed, and this section supersedes that verdict — but not the measurement it rests on, which
+stands and is what identified the fix.
+
+**What was built.** `namir-worker`'s `Instance` now serialises cross-target handovers: before
+offering one for a target, it waits out any handover it recently offered for the *other*. The wait
+happens on a worker thread, which D-7.1 explicitly permits workers to do, and sits immediately
+before the offer rather than at the top of `load()` — preparation has already consumed real time and
+that time counts toward the other stage's fade, so waiting first would charge the delay twice.
+
+It is a **timer**, not telemetry feedback, and that is a real constraint rather than a preference.
+The closed-loop signal exists (`telemetry.*.handover_active`), but it cannot stand alone: the *first*
+load into an empty stage retires nothing, and between submission and the audio thread's next block
+it reports no fade in flight — so a purely feedback-driven rule races and lets both through anyway.
+A timer needs no feedback, cannot deadlock, and if the audio thread stalls it expires regardless,
+which is the right failure mode.
+
+`HANDOVER_CROSSFADE_MS` was promoted to a single public constant in `namir-engine` in the same pass.
+It had been privately duplicated in `nam.rs` and `ir.rs` — two copies of a figure the two stages must
+agree on — and the worker needed a third, which would have compounded the problem rather than
+inherited it.
+
+**What it measures.** Arms D (unserialised) and E (serialised) run **interleaved in the same
+process**, which is the only comparison form this machine supports reliably. Six retained
+repetitions of nine, D-2.4 conditions, arm A reading 16.04–16.84% throughout:
+
+| Handover rate | D — both at once | E — serialised | measured overlap, D → E |
+|---|---|---|---|
+| every 32 blocks | 30.08–31.26% | **23.20–24.63%** | 43.8% → **0%** |
+| every 64 blocks | 29.66–30.25% | **22.20–23.31%** | 21.9% → **0%** |
+| every 128 blocks | 28.77–29.47% | **22.44–23.49%** | 10.9% → **0%** |
+
+A 6–7 point reduction, and every rate lands inside NFR-PERF-010's 25% budget. The `overlap` column
+is the check that the rule is actually in force rather than assumed — it is measured from the
+stages' own telemetry, not from the bench's intent.
+
+**Acceptance — R-7 retires.** Every condition the system can actually produce is within budget, and
+`02-architecture.md` §22's row is updated accordingly.
+
+**Two residuals recorded rather than glossed over.**
+
+1. **The margin is thin: about 0.4 points** at the worst achievable condition (24.63% against 25%).
+   This is now the path any future increase in NAM or IR per-block cost will breach first, which is
+   the reason `handover_crossfade.rs` is a permanent target rather than a one-off measurement.
+2. **Arm E at `period 16` still reads 26.99–31.89% with 75% overlap, and that is not a failure of
+   the mitigation.** `namir-engine` may not depend on `namir-worker` (D-5.1), so arm E reproduces
+   the rule's *effect* with a fixed half-period offset rather than calling the rule. At period 16
+   half a period is 8 blocks against a 15-block fade, so the simulation cannot serialise there. The
+   real rule does not offset, it **waits** — at least 25 ms, about 19 blocks, which exceeds the fade
+   — so the overlapping condition that row depicts is one the worker cannot produce. The row is kept
+   in the output rather than suppressed, because a benchmark that quietly hid the case where its own
+   approximation breaks down would be worse than one that shows it.
+
+**A distinction worth keeping straight, since one run does not establish both:** arm E measures what
+serialising costs the *audio thread*; `namir-worker`'s three unit tests measure that the rule
+*holds* (cross-target handovers separated by at least the crossfade, same-target reloads not delayed,
+a failed load not arming the timer). Neither piece of evidence substitutes for the other.
+
 
 ---
 
@@ -861,8 +1032,8 @@ stage/product) / **Not started**.
 | 5.1 CHAIN | 7 | 0 | 2 | 5 |
 | 5.2 IN | 3 | 0 | 3 | 0 |
 | 5.3 GATE | 3 | 0 | 3 | 0 |
-| 5.4 NAM | 11 | 2 | 5 | 4 |
-| 5.5 IR | 7 | 0 | 0 | 7 |
+| 5.4 NAM | 11 | 3 | 4 | 4 |
+| 5.5 IR | 7 | 1 | 0 | 6 |
 | 5.6 EQ | 3 | 0 | 3 | 0 |
 | 5.7 OUT | 2 | 0 | 1 | 1 |
 | 5.8 PARAM | 5 | 0 | 1 | 4 |
@@ -872,7 +1043,7 @@ stage/product) / **Not started**.
 | 5.12 CLAP | 10 | 0 | 0 | 10 |
 | 5.13 UI | 7 | 0 | 0 | 7 |
 | 5.14 ERR | 6 | 0 | 4 | 2 |
-| 6.1 RT | 4 | 0 | 1 | 3 |
+| 6.1 RT | 4 | 1 | 2 | 1 |
 | 6.2 PERF | 6 | 1 | 0 | 5 |
 | 6.3 PORT | 5 | 0 | 4 | 1 |
 | 6.4 QUAL | 6 | 0 | 4 | 2 |
@@ -904,6 +1075,27 @@ do not: the disagreement was an artifact of measuring while this project's own t
 the machine, and D-2.4 records the conditions that prevent a repeat. The other five Musts in 6.2
 (NFR-PERF-020 latency, 030-060) are untouched by M3 and stay Not-started -- only the one cell M3's
 evidence directly justifies moves, matching how 5.4 NAM was handled above.
+
+**Three further live updates, made in the M4 session**, following the same rule — only cells this
+milestone's own evidence directly justifies, each named:
+
+- **5.4 NAM Done 2 -> 3, Partial 5 -> 4.** FR-NAM-070 (glitch-free crossfaded model swap) closes,
+  verified by its own literal *Verify: I* method in
+  `namir-engine/src/engine.rs`'s `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`.
+- **5.5 IR Done 0 -> 1, Not-started 7 -> 6.** FR-IR-060 closes, same method, same file.
+- **6.1 RT Done 0 -> 1, Partial 1 -> 2, Not-started 3 -> 1.** NFR-RT-020 (wait-free from the audio
+  thread's side) closes: there is now a real ring to verify rather than an absence, and its
+  *Verify: S plus code review* is met by the type-level SPSC split plus the D-7.5 harness covering
+  every ring operation. **NFR-RT-010 moves Not-started -> Partial, deliberately not Done** — M4
+  closed the one known audio-thread allocation and drives a complete handover inside the harness,
+  but the requirement's *Verify* clause also demands a stress test "with concurrent model loading,
+  preset recall and library scanning", and preset recall is M5's `namir-state` while scanning is
+  M5's `namir-library`. Neither exists, so only the model-loading axis is covered. Recorded as
+  Partial rather than claimed.
+
+**Not moved, and worth stating so nobody moves it:** 5.12 CLAP stays 0 Done. FR-CLAP-090's
+cross-instance sharing mechanism is built and tested at the worker level, but §8's own acceptance
+text says it "isn't exercised for real until M6's `namir-clap`", and that remains true.
 
 ---
 
