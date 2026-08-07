@@ -1,0 +1,53 @@
+[package]
+name = "namir-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# D-5.3: this crate is NOT on the unsafe carve-out list (namir-platform, namir-clap, SIMD kernel
+# modules), so it takes the workspace lints unchanged -- `unsafe_code = "forbid"`. `cpal`'s own
+# unsafe (WASAPI/ALSA/CoreAudio FFI) is confined to `cpal` itself; nothing in this crate needs to
+# reach through it.
+[lints]
+workspace = true
+
+[lib]
+name = "namir_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "namir"
+path = "src/main.rs"
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+namir-params = { path = "../namir-params" }
+namir-engine = { path = "../namir-engine" }
+namir-state = { path = "../namir-state" }
+namir-library = { path = "../namir-library" }
+namir-platform = { path = "../namir-platform" }
+namir-worker = { path = "../namir-worker" }
+namir-ui = { path = "../namir-ui" }
+
+# D-13.1: "Audio I/O for the standalone app uses cpal ... behind a Namir-owned trait so the engine
+# and UI never see cpal types." Pinned to the exact version D-13.1 verified (Apache-2.0,
+# 2026-06-07), matching docs/02-architecture.md §17's dependency register.
+cpal = "0.18.1"
+# The input-callback -> output-callback bridge (`bridge.rs`): the two cpal callbacks run on two
+# different OS-owned threads with no ordering relationship, so getting a captured block from the
+# input thread to the output thread needs its own wait-free SPSC ring, distinct from
+# namir-engine's command/telemetry rings (this is raw `f32` audio, not a `Command`). Reuses the
+# same crate `namir-engine` already vetted for this exact purpose (D-7.2's own module doc comment;
+# see that module for the full adoption argument) rather than re-litigating it or hand-rolling a
+# second lock-free queue -- already MIT OR Apache-2.0 on `deny.toml`'s allow list, zero transitive
+# dependencies, no build script.
+rtrb = "0.3.4"
+# `AppSettings` (FR-IO-080's persisted device/rate/buffer/channel-mapping choices) needs a format;
+# `serde`/`serde_json` are already this workspace's convention for exactly this shape of data
+# (`namir-state`'s identical dependency, same versions).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+namir-fixtures = { path = "../namir-fixtures" }
