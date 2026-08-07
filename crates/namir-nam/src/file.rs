@@ -106,26 +106,46 @@ pub struct LayerArrayConfig {
 
 /// FR-NAM-080: "Namir shall read and display the model's metadata where present: name, author
 /// (`modeled_by`), gear make/model/type, tone type, and any free-text description." All fields
-/// default to empty since real files may omit any of them.
+/// default to empty since real files may omit any of them — **or set them to JSON `null`**, which
+/// a real exporter does for whichever fields a user left blank in its own metadata form (found
+/// against real, community-exported `.nam` files, not this crate's own generated fixtures, which
+/// D-19.1 never gives a reason to omit a key *or* null it). `#[serde(default)]` alone only covers
+/// the absent-key case: `null` is a present value, so serde still tries to deserialize it as the
+/// field's declared type and fails with exactly the "invalid type: null, expected a string" error
+/// this shape produced. [`null_or_default`] closes that gap for every field here.
 ///
 /// `PartialEq` added M5: `probe.rs`'s tests compare a probe's metadata against a full parse's.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct NamMetadata {
     /// The model's display name.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_or_default")]
     pub name: String,
     /// Author/creator credit, per FR-NAM-080's "author (`modeled_by`)".
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_or_default")]
     pub modeled_by: String,
     /// Modeled gear's make/model/type, as free text.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_or_default")]
     pub gear_type: String,
     /// Modeled gear's tone type (e.g. "clean", "high gain"), as free text.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_or_default")]
     pub tone_type: String,
     /// Free-text description, shown as-is.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_or_default")]
     pub description: String,
+}
+
+/// Treats a present-but-`null` JSON value the same as an absent key: both become `T::default()`.
+/// Combined with `#[serde(default)]` (which only handles the absent-key case on its own), this is
+/// the standard serde pattern for "optional in practice, but not typed `Option<T>`, because the
+/// field is always logically present, just sometimes empty" — matching `NamMetadata`'s own FR-NAM-080
+/// framing ("display the model's metadata where present"), rather than making every reader of this
+/// struct unwrap an `Option` for a value that is always meaningfully either "text" or "no text".
+fn null_or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl NamFile {
@@ -291,6 +311,30 @@ mod tests {
         assert_eq!(file.version, None);
         assert_eq!(file.metadata.name, "");
         assert_eq!(file.config.head, None);
+    }
+
+    /// The bug this test exists to pin down: a real, community-exported `.nam` file (not this
+    /// crate's own generated fixtures) sets unfilled `metadata` fields to JSON `null` rather than
+    /// omitting the key, which `#[serde(default)]` alone does not cover -- only the missing-key
+    /// case in [`tolerates_missing_optional_fields`] above. Every field a real exporter has been
+    /// observed to null must parse to the same default a missing key would.
+    #[test]
+    fn tolerates_null_metadata_fields_the_same_as_missing_ones() {
+        let mut value: serde_json::Value = serde_json::from_slice(&minimal_valid_json()).unwrap();
+        value["metadata"] = serde_json::json!({
+            "name": null,
+            "modeled_by": null,
+            "gear_type": null,
+            "tone_type": null,
+            "description": null,
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let file = NamFile::parse(&bytes).unwrap();
+        assert_eq!(file.metadata.name, "");
+        assert_eq!(file.metadata.modeled_by, "");
+        assert_eq!(file.metadata.gear_type, "");
+        assert_eq!(file.metadata.tone_type, "");
+        assert_eq!(file.metadata.description, "");
     }
 
     #[test]
