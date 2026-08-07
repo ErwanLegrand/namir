@@ -32,3 +32,10 @@ serde_json = "1"
 
 [dev-dependencies]
 namir-fixtures = { path = "../namir-fixtures" }
+# NFR-PERF-060's benchmark (benches/library_scan.rs) pins away from CPU 0/2, same reasoning and
+# same crate/version as every other D-2.1-pinned benchmark in this workspace.
+core_affinity = "0.8"
+
+[[bench]]
+name = "library_scan"
+harness = false
