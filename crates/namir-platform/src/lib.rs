@@ -6,11 +6,14 @@
 //! D-5.1's table names this crate for).
 //!
 //! **M6 brings this crate to D-13.2/D-13.3's full scope** (`03-implementation-roadmap.md` §10):
-//! [`paths`] (config directory, log sink) is the first piece landing; D-13.3's CLAP search-path
-//! table and thread-priority elevation follow in the same module doc-comment style.
+//! [`paths`] (config directory, log sink) and [`clap_paths`] (D-13.3's CLAP search-path table,
+//! confirmed by S-4 to matter: Reaper silently ignores the naive `%APPDATA%` location) both land
+//! now; thread-priority elevation follows in the same module doc-comment style.
 
+mod clap_paths;
 mod denormal;
 mod paths;
 
+pub use clap_paths::{ClapInstallScope, clap_install_dir};
 pub use denormal::DenormalGuard;
 pub use paths::{config_dir, log_file_path};
