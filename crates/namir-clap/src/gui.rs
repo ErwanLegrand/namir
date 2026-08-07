@@ -47,12 +47,21 @@
 //!
 //! **What this crate does verify, rather than trust blindly.** `is_api_supported`/
 //! `get_preferred_api` restrict this plugin to `GuiApiType::WIN32`, non-floating, *before*
-//! `set_parent` is ever reachable — so the one variant of the `clap_window_t` union this function
-//! reads is exactly the one the plugin itself declared it understands; a host that ignored that
-//! declaration and called `set_parent` with a mismatched `api_type` would be violating CLAP's
-//! contract independently of this function, and `borrow_handle_unchecked`'s own failure return
-//! (mapped to `PluginError::Message` below, not a panic or further `unsafe`) is the fallback if
-//! the handle still cannot be interpreted.
+//! `set_parent` is ever reachable — so the variant this plugin *expects* to read is fixed.
+//! `clack_extensions::gui::Window::raw_window_handle` only returns `Err(HandleError::NotSupported)`
+//! for an *unrecognised* `clap_window_t.api` string; for any recognised one (`"win32"`, `"cocoa"`,
+//! `"x11"`, ...) it returns `Ok`, regardless of whether that tag matches the `GuiApiType` this
+//! plugin negotiated. A host that violates the `set_parent` contract by sending a *recognised but
+//! wrong* tag (e.g. `"cocoa"` on Windows) would therefore make `borrow_handle_unchecked()` return
+//! `Ok(WindowHandle(AppKit(..)))` here — not an error — and handing that straight to
+//! `namir_ui::open_parented` would reach `baseview`'s Windows backend with a non-`Win32` raw
+//! handle, which panics (`unsupported parent handle`). `clack_plugin`'s C trampoline catches that
+//! panic at the FFI boundary (`PluginWrapper::handle`'s `catch_unwind`) so it cannot become
+//! undefined behaviour, but the panic would fire *before* this crate's own `GUI_INVALID_PARENT`
+//! diagnostic ever gets a chance to, so the user would see nothing but a silently-failed GUI open.
+//! This crate closes that gap itself, below, by matching on `handle.as_raw()` and treating anything
+//! other than `RawWindowHandle::Win32` the same way an unrecognised tag is already treated — a
+//! pushed notice and an `Err`, never a fallthrough into `open_parented` with the wrong variant.
 //!
 //! Confined to this one module per D-5.3/NFR-QUAL-070 — `#![allow(unsafe_code)]` below opts only
 //! this file back into the one `unsafe` block above out of this crate's `[lints.rust] unsafe_code
@@ -114,9 +123,10 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
         // teardown) — the same foreign-ABI trust every CLAP host/plugin pair makes in both
         // directions, and the only alternative to accepting it is not implementing FR-CLAP-100
         // at all. `is_api_supported`/`get_preferred_api` above restrict this plugin to
-        // `GuiApiType::WIN32`, non-floating, before this call is ever reachable, and a failed
-        // reinterpretation here returns `Err` rather than panicking or performing any further
-        // `unsafe` operation.
+        // `GuiApiType::WIN32`, non-floating, before this call is ever reachable; the explicit
+        // `RawWindowHandle::Win32` match immediately below (not present in the original spike)
+        // is what actually enforces that restriction against a host that sent a recognised-but-
+        // wrong tag, rather than trusting the host had called `is_api_supported` honestly.
         let handle = unsafe { window.borrow_handle_unchecked() }.map_err(|_| {
             self.shared.inner.push_notice(
                 crate::error_codes::GUI_INVALID_PARENT,
@@ -124,6 +134,34 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
             );
             PluginError::Message("host window handle unavailable")
         })?;
+
+        // See this function's SAFETY comment and this module's doc comment: a recognised-but-
+        // wrong `clap_window_t` tag reaches here as `Ok`, not `Err`, so this variant check is the
+        // only thing standing between a spec-violating host and a panic inside `baseview`'s
+        // Windows backend (which would otherwise fire before `GUI_INVALID_PARENT` ever gets
+        // pushed).
+        if !matches!(
+            handle.as_raw(),
+            raw_window_handle::RawWindowHandle::Win32(_)
+        ) {
+            self.shared.inner.push_notice(
+                crate::error_codes::GUI_INVALID_PARENT,
+                "the host supplied a window handle for a different windowing API than the one \
+                 this plugin negotiated",
+            );
+            return Err(PluginError::Message(
+                "host window handle does not match the negotiated GUI API",
+            ));
+        }
+
+        // A prior embedded window, still present because a (spec-violating) host called
+        // `set_parent` twice without an intervening `destroy()`: close it explicitly first.
+        // `baseview::WindowHandle` has no `Drop` impl (`.close()` is the only teardown path), so
+        // simply overwriting `self.window` below would leak the native child window rather than
+        // merely leaking Rust memory.
+        if let Some(previous) = self.window.take() {
+            previous.close();
+        }
 
         let host = ClapUiHost::new(
             std::sync::Arc::clone(&self.shared.inner),
