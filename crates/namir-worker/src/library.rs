@@ -107,6 +107,41 @@ impl LibraryService {
         &self.roots
     }
 
+    /// The one per-user default location every product shell shares, at an explicitly-supplied
+    /// config directory: an index at `<config_dir>/library-index.json` and one root,
+    /// `<config_dir>/Library`, created if it doesn't exist yet (a scan over a directory that
+    /// doesn't exist would otherwise report every already-known entry as removed relative to
+    /// nothing — P8: degrade gracefully rather than surface a spurious warning on a first launch).
+    ///
+    /// Takes `config_dir` as a parameter, rather than calling `namir_platform::config_dir()`
+    /// itself, for the same reason `namir_platform::paths`' own `config_dir_from` takes an
+    /// injectable environment lookup instead of reading `std::env` directly: a test can supply a
+    /// throwaway directory without touching this machine's real per-user config location.
+    /// [`Self::open_default`] is the real-environment caller.
+    pub fn open_at(config_dir: &std::path::Path) -> (LibraryService, Vec<WorkerError>) {
+        let index_path = config_dir.join("library-index.json");
+        let default_root = config_dir.join("Library");
+        let _ = std::fs::create_dir_all(&default_root);
+        Self::open(index_path, vec![default_root])
+    }
+
+    /// [`Self::open_at`], resolved against this machine's real `namir_platform::config_dir()`.
+    /// `None` under the same conditions that itself degrades to `None` for.
+    ///
+    /// **This is the only correct way for a product shell to open its default library.** See this
+    /// module's own history: `namir-clap` once opened with an empty root list instead of this
+    /// default, on the theory that "no UI to configure a root yet" meant "leave it unconfigured"
+    /// was harmless. It wasn't: `namir-library`'s scan rule is that a *complete* walk (which a
+    /// walk over zero roots trivially is) concludes every path it didn't see is removed, so a
+    /// rescan against an empty root list didn't just fail to find new files, it erased every
+    /// entry `namir-app` had already indexed at the *same* index path both products share. Both
+    /// product shells now call this one function instead of each computing the default
+    /// independently, specifically so this can't happen a second time by two crates' bootstrap
+    /// logic drifting apart.
+    pub fn open_default() -> Option<(LibraryService, Vec<WorkerError>)> {
+        Some(Self::open_at(&namir_platform::config_dir()?))
+    }
+
     /// A cheap, point-in-time view of the index — safe from any thread, at any time, including
     /// concurrently with a running scan (see this struct's own doc comment).
     pub fn snapshot(&self) -> Arc<Index> {
@@ -298,6 +333,71 @@ mod tests {
         assert_eq!(reloaded.len(), 2);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_at_places_the_index_and_default_root_under_config_dir() {
+        let dir = std::path::PathBuf::from("/config/dir");
+        let (service, warnings) = LibraryService::open_at(&dir);
+        assert!(warnings.is_empty());
+        assert_eq!(service.roots(), [dir.join("Library")].as_slice());
+    }
+
+    /// A first launch (no config directory yet at all) opens cleanly with an empty index and no
+    /// warnings, and the default root now exists on disk for a future scan to walk.
+    #[test]
+    fn open_at_creates_the_default_root_on_first_launch() {
+        let dir = temp_dir("open_at_first_launch");
+        let _ = std::fs::remove_dir_all(&dir); // temp_dir() itself creates it; start from absent.
+        let (service, warnings) = LibraryService::open_at(&dir);
+        assert!(warnings.is_empty());
+        assert!(service.snapshot().is_empty());
+        assert!(dir.join("Library").is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The regression this function exists to prevent: two independent product shells (or one
+    /// shell across two runs) each calling `open_at` against the *same* config directory must
+    /// resolve to the *same* root, so a scan run by either one finds -- and never erases -- what
+    /// the other already indexed. Before `open_at`/`open_default` existed, `namir-clap` opened its
+    /// own `LibraryService` with an empty root list; a scan against zero roots completes
+    /// trivially and, per `namir_library::scan`'s own "a complete walk removes every path it
+    /// didn't see" rule, would have wiped every entry a prior `namir-app` scan had already
+    /// committed to this same index file. This test proves that can't happen through this
+    /// function: opening twice and scanning both times retains the file the first scan found.
+    #[test]
+    fn two_opens_of_the_same_config_dir_share_a_root_and_a_second_scan_does_not_erase_the_first() {
+        let dir = temp_dir("shared_config_dir");
+        let pool = ThreadPool::with_threads(1);
+
+        let (first, _) = LibraryService::open_at(&dir);
+        write_nam(&dir.join("Library"), "a.nam");
+        let (tx, rx) = mpsc::channel();
+        first
+            .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+            .unwrap();
+        let outcome = recv(&rx);
+        assert!(outcome.complete);
+        assert_eq!(outcome.upserted, 1);
+        assert_eq!(first.snapshot().len(), 1);
+
+        // A second, independently-constructed service against the identical config_dir -- the
+        // shape of a second product shell opening the same per-user location.
+        let (second, _) = LibraryService::open_at(&dir);
+        assert_eq!(second.roots(), first.roots());
+        let (tx2, rx2) = mpsc::channel();
+        second
+            .start_scan(&pool, |_| {}, move |outcome| tx2.send(outcome).unwrap())
+            .unwrap();
+        let outcome2 = recv(&rx2);
+        assert!(outcome2.complete);
+        assert_eq!(
+            outcome2.removed, 0,
+            "a second open against the same config dir must not lose the first scan's file"
+        );
+        assert_eq!(second.snapshot().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A second `start_scan` while one is already running is refused rather than started, and

@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use namir_core::SampleRate;
-use namir_engine::{Command, PrepareContext, Resource, RingConsumer, WorkerEndpoint};
+use namir_engine::{Command, ParamChange, PrepareContext, Resource, RingConsumer, WorkerEndpoint};
 
 pub use cache::{CacheOutcome, IrKey, ResourceCache};
 pub use error::WorkerError;
@@ -302,6 +302,23 @@ impl Instance {
             freed += 1;
         }
         freed
+    }
+
+    /// Submits one plain parameter change (FR-PARAM-030's UI/host-automation half — not a
+    /// resource load, which stays behind [`Self::load`]/[`Self::unload`]'s heavier ceremony).
+    /// **Never blocks** — a single [`CommandSubmitter::try_submit`] attempt, exactly what
+    /// `try_submit`'s own doc comment calls "what the UI thread uses". A caller that misses
+    /// (ring momentarily full) is free to retry on a later frame; D-15.3 already accepts that a
+    /// UI parameter change is not worth stalling a frame for. M6's `namir-clap` is this method's
+    /// first caller, for both GUI-originated changes and CLAP host automation reaching the GUI
+    /// thread's own producer path — see that crate's `ui_host.rs` module doc comment for why
+    /// host automation *arriving in `process()`* deliberately does **not** use this method (it
+    /// goes through `namir_engine::AudioEngine::apply_param_direct` instead, since by the time
+    /// `process()` runs, the caller already holds exclusive audio-thread access and going back
+    /// through this producer-side mutex would risk blocking on whatever holds it, including this
+    /// very method's own worker-side sibling, [`Self::load`]).
+    pub fn try_submit_param(&mut self, change: ParamChange) -> Result<(), SubmitError> {
+        self.submitter.try_submit(Command::Param(change))
     }
 
     /// D-8.1 steps 1, 2 and 4 for one load request, start to finish.
@@ -702,5 +719,57 @@ mod tests {
         let source = LoadSource::File(std::path::PathBuf::from("no-such-file-here.nam"));
         let err = source.read().unwrap_err();
         assert_eq!(err.code.id, error_codes::FILE_UNREADABLE.id);
+    }
+
+    /// **M6's non-blocking parameter path** (`namir-clap`'s `ui_host.rs`): a plain param change
+    /// reaches the audio thread's chain through the ordinary command ring, exactly as one
+    /// submitted through `Command::Param` directly would.
+    #[test]
+    fn try_submit_param_delivers_a_plain_parameter_change() {
+        let c = ctx();
+        let (mut engine, endpoint) = build_default_engine(&c).unwrap();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+        // An arbitrary id, deliberately not a `namir_params` descriptor's -- this crate takes no
+        // dependency on `namir-params` even in tests (see this `Cargo.toml`'s own comment on why
+        // D-5.1 permitting it is not a reason to take it). `Chain::apply` routing an id no stage
+        // claims is already covered at the `namir-engine` level; what this test proves is that
+        // the change reaches the ring and the audio thread keeps producing finite samples.
+        instance
+            .try_submit_param(namir_engine::ParamChange {
+                id: namir_engine::ParamId(12345),
+                value: -6.0,
+            })
+            .expect("the ring should have room for one change");
+
+        let mut buf = [0.05f32; BLOCK];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = namir_engine::StageIo::new(&mut channels, BLOCK);
+        engine.process(&mut io);
+        assert!(buf.iter().all(|s| s.is_finite()));
+    }
+
+    /// `try_submit_param` never blocks: a full ring hands the change back as `SubmitError::Timeout`
+    /// on the very first attempt rather than retrying.
+    #[test]
+    fn try_submit_param_never_blocks_on_a_full_ring() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+        // Fill the ring (default capacity 256) without anything draining it.
+        for i in 0..300u32 {
+            let _ = instance.try_submit_param(namir_engine::ParamChange {
+                id: namir_engine::ParamId(i),
+                value: 0.0,
+            });
+        }
+        let started = Instant::now();
+        let result = instance.try_submit_param(namir_engine::ParamChange {
+            id: namir_engine::ParamId(0),
+            value: 0.0,
+        });
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(matches!(result, Err(SubmitError::Timeout(_))));
     }
 }

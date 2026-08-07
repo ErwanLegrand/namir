@@ -1,8 +1,25 @@
 //! [`State`]: the typed projection over a [`Document`] — what FR-STATE-010's "complete
-//! user-settable state" round-trips through. Four sections: `parameters`
-//! ([`ParamValues`]/`REGISTRY`), `global` (bypass, output ceiling — see [`crate::global`]'s
-//! module doc comment for why these need a section of their own), and `references.nam` /
-//! `references.ir` ([`FileRef`], D-11.3).
+//! user-settable state" round-trips through. Two sections: `parameters` ([`ParamValues`]/
+//! `REGISTRY`, which since D-10.4 includes `global.bypass`/`global.output_ceiling_db` alongside
+//! every stage's own parameters) and `references.nam` / `references.ir` ([`FileRef`], D-11.3).
+//!
+//! # D-10.4: `global` is no longer a section of its own
+//!
+//! Before D-10.4, FR-CHAIN-030's bypass and FR-CHAIN-090's output ceiling had no
+//! `ParamDescriptor` at all, so this crate carried them in a second, parallel `global` document
+//! section backed by nothing but a plain struct (`docs/02-architecture.md`'s D-10.3 consequence
+//! note; the type used to live here as `crate::global::Global`). Now that
+//! `namir_params::global::GLOBAL_BYPASS`/`OUTPUT_CEILING_DB` are ordinary `REGISTRY` entries, both
+//! values are ordinary [`ParamValues`] entries too — `State` has no `global` field, and
+//! [`Self::global_bypass`]/[`Self::output_ceiling_db`] (and their `set_*` counterparts) are thin
+//! convenience accessors over `self.params`, not a second source of truth.
+//!
+//! [`Self::from_document`] still *reads* the old `global` section, as a fallback for whichever of
+//! the two keys `parameters` doesn't itself carry (D-11.2: "a project saved by a newer Namir and
+//! opened by an older one does not silently lose settings" applied to this crate's own past
+//! format, not just a hypothetical future one). Every write goes through [`Self::into_document`]/
+//! [`Self::write_onto`], neither of which ever produces a `global` section again — see those
+//! methods' own doc comments.
 //!
 //! # Why a typed projection over a carrier, not a plain `#[derive(Deserialize)]` struct
 //!
@@ -12,11 +29,11 @@
 //! untouched, at any nesting depth — which is D-11.2's write-back promise, not merely its
 //! top-level approximation.
 
+use namir_params::global::{GLOBAL_BYPASS, OUTPUT_CEILING_DB};
 use serde_json::{Map, Value};
 
 use crate::document::Document;
 use crate::error::{StateError, StateWarning};
-use crate::global::Global;
 use crate::migrate;
 use crate::params::ParamValues;
 use crate::reference::FileRef;
@@ -24,11 +41,10 @@ use crate::reference::FileRef;
 /// The typed view of a state/preset document this build understands.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
-    /// Every `namir_params::REGISTRY` entry's current value.
+    /// Every `namir_params::REGISTRY` entry's current value — since D-10.4, this includes
+    /// `global.bypass`/`global.output_ceiling_db` (see [`Self::global_bypass`]/
+    /// [`Self::output_ceiling_db`]) alongside every stage's own parameters.
     pub params: ParamValues,
-    /// FR-CHAIN-030/090's bypass and output ceiling — not a `ParamDescriptor`; see
-    /// [`crate::global`]'s module doc comment.
-    pub global: Global,
     /// FR-STATE-070's reference to the loaded NAM model, if any.
     pub nam: Option<FileRef>,
     /// FR-STATE-070's reference to the loaded IR, if any.
@@ -36,15 +52,46 @@ pub struct State {
 }
 
 impl State {
-    /// A freshly created state: every parameter at its documented default (FR-STATE-020), global
-    /// bypass off, output ceiling at 0 dB, no model or IR referenced.
+    /// A freshly created state: every parameter at its documented default (FR-STATE-020) —
+    /// global bypass off, output ceiling at 0 dB included, since both are `REGISTRY` entries — no
+    /// model or IR referenced.
     pub fn defaults() -> Self {
         Self {
             params: ParamValues::defaults(),
-            global: Global::defaults(),
             nam: None,
             ir: None,
         }
+    }
+
+    /// FR-CHAIN-030's chain-wide bypass, read from `self.params`'s `global.bypass` entry (a
+    /// `namir_params::ParamKind::Stepped` value: `>= 0.5` is "On", the same convention every
+    /// stepped parameter uses at the `namir-engine` boundary).
+    pub fn global_bypass(&self) -> bool {
+        self.params.get(GLOBAL_BYPASS.key).is_some_and(|v| v >= 0.5)
+    }
+
+    /// Sets `self.params`'s `global.bypass` entry. Infallible — `global.bypass` is always a
+    /// `REGISTRY` entry — unlike [`ParamValues::set`]'s own `Result`, which exists for a caller
+    /// that has to handle an arbitrary, possibly-unknown key.
+    pub fn set_global_bypass(&mut self, enabled: bool) {
+        self.params
+            .set(GLOBAL_BYPASS.key, if enabled { 1.0 } else { 0.0 })
+            .expect("global.bypass is always a REGISTRY entry");
+    }
+
+    /// FR-CHAIN-090's output ceiling in dB, read from `self.params`'s `global.output_ceiling_db`
+    /// entry.
+    pub fn output_ceiling_db(&self) -> f32 {
+        self.params.get(OUTPUT_CEILING_DB.key).unwrap_or(0.0)
+    }
+
+    /// Sets `self.params`'s `global.output_ceiling_db` entry (clamped to that descriptor's range,
+    /// exactly as [`ParamValues::set`] clamps any other continuous parameter). Infallible for the
+    /// same reason [`Self::set_global_bypass`] is.
+    pub fn set_output_ceiling_db(&mut self, db: f32) {
+        self.params
+            .set(OUTPUT_CEILING_DB.key, db)
+            .expect("global.output_ceiling_db is always a REGISTRY entry");
     }
 
     /// Parses `bytes` into a `State`: [`Document::parse`], then [`crate::migrate::migrate`]
@@ -66,7 +113,8 @@ impl State {
     pub fn from_document(document: Document) -> (State, Vec<StateWarning>) {
         let mut warnings = Vec::new();
 
-        let params = match document.section("parameters") {
+        let params_section = document.section("parameters");
+        let mut params = match params_section {
             Some(section) => {
                 let (params, param_warnings) = ParamValues::from_document_section(section);
                 warnings.extend(param_warnings);
@@ -75,10 +123,37 @@ impl State {
             None => ParamValues::defaults(),
         };
 
-        let global = document
-            .section("global")
-            .map(Global::from_value)
-            .unwrap_or_else(Global::defaults);
+        // D-10.4: a document written before this decision carries `global.bypass`/
+        // `global.output_ceiling_db` in a separate, now-retired `global` section instead of as
+        // `parameters` entries -- read that shape as a fallback, but only for whichever of the
+        // two new keys `parameters` doesn't itself already carry. `parameters` (this build's own
+        // current shape) always wins when both are present, so a document this build's own
+        // writer already produced is never second-guessed by a stray legacy section a
+        // hand-editor left behind (see this module's own doc comment for why a legacy `global`
+        // section is otherwise left untouched by a write, not deleted).
+        if let Some(legacy) = document.section("global") {
+            let already_has_bypass =
+                params_section.is_some_and(|s| s.contains_key(GLOBAL_BYPASS.key));
+            let already_has_ceiling =
+                params_section.is_some_and(|s| s.contains_key(OUTPUT_CEILING_DB.key));
+            if !already_has_bypass
+                && let Some(bypass) = legacy.get("bypass").and_then(Value::as_bool)
+            {
+                params
+                    .set(GLOBAL_BYPASS.key, if bypass { 1.0 } else { 0.0 })
+                    .expect("global.bypass is always a REGISTRY entry");
+            }
+            if !already_has_ceiling
+                && let Some(ceiling) = legacy
+                    .get("output_ceiling_db")
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.is_finite())
+            {
+                params
+                    .set(OUTPUT_CEILING_DB.key, ceiling as f32)
+                    .expect("global.output_ceiling_db is always a REGISTRY entry");
+            }
+        }
 
         let (nam, ir) = match document.section("references") {
             Some(section) => {
@@ -89,15 +164,7 @@ impl State {
             None => (None, None),
         };
 
-        (
-            State {
-                params,
-                global,
-                nam,
-                ir,
-            },
-            warnings,
-        )
+        (State { params, nam, ir }, warnings)
     }
 
     /// Serialises this state back into pretty-printed, sorted-key bytes (D-11.1). Equivalent to
@@ -110,10 +177,12 @@ impl State {
 
     /// Builds a fresh [`Document`] from this state — every section this crate owns, sorted,
     /// nothing else. Used by [`Self::write`] directly.
+    ///
+    /// **D-10.4:** never produces a `global` section — `global.bypass`/`global.output_ceiling_db`
+    /// are already inside `self.params.to_document_section()`, since both are `REGISTRY` entries.
     pub fn into_document(self) -> Document {
         let mut document = Document::empty();
         document.set_section("parameters", self.params.to_document_section());
-        document.set_section("global", self.global.to_value());
         document.set_section("references", references_section(&self.nam, &self.ir));
         document
     }
@@ -127,10 +196,19 @@ impl State {
     /// at once. The one exception is `references.nam`/`references.ir`'s own internal shape — see
     /// [`FileRef`]'s doc comment on why an unrecognised field *inside* a single reference object
     /// is not yet preserved.
+    ///
+    /// **D-10.4:** if `onto` carries a legacy `global` section (D-11.2 tolerance: this build can
+    /// still have read one, via [`Self::from_document`]), it is left exactly as it is here — the
+    /// same treatment any other section this build no longer owns gets. It becomes inert rather
+    /// than actively wrong the moment this call also writes `parameters.global.bypass`/
+    /// `global.output_ceiling_db`: [`Self::from_document`] always prefers the `parameters` shape
+    /// over the legacy one once both are present, so the stale section is simply never read
+    /// again. Deleting it outright was considered and rejected — it would make `write_onto`
+    /// special-case one specific section name instead of treating "unrecognised" uniformly,
+    /// which is exactly the discipline D-11.2's write-back promise depends on.
     pub fn write_onto(&self, onto: &Document) -> Document {
         let mut document = onto.clone();
         document.merge_section("parameters", self.params.to_document_section());
-        document.merge_section("global", self.global.to_value());
         document.merge_section("references", references_section(&self.nam, &self.ir));
         document
     }
@@ -189,8 +267,8 @@ mod tests {
         let mut state = State::defaults();
         state.params.set("trim.gain_db", 3.5).unwrap();
         state.params.set("eq.mid_q", 1.1).unwrap();
-        state.global.bypass = true;
-        state.global.output_ceiling_db = -3.0;
+        state.set_global_bypass(true);
+        state.set_output_ceiling_db(-3.0);
         state.nam = Some(a_reference("plexi.nam"));
         state.ir = Some(a_reference("1960a.wav"));
 
@@ -293,10 +371,94 @@ mod tests {
     #[test]
     fn global_round_trips() {
         let mut state = State::defaults();
-        state.global.bypass = true;
-        state.global.output_ceiling_db = -12.0;
+        state.set_global_bypass(true);
+        state.set_output_ceiling_db(-12.0);
         let (restored, warnings) = State::from_document(state.clone().into_document());
         assert!(warnings.is_empty());
-        assert_eq!(restored.global, state.global);
+        assert_eq!(restored.global_bypass(), state.global_bypass());
+        assert_eq!(restored.output_ceiling_db(), state.output_ceiling_db());
+    }
+
+    /// D-10.4: `global.bypass`/`global.output_ceiling_db` are `REGISTRY` entries now, so they
+    /// live inside `parameters` like any other parameter -- there is no separate `global` section
+    /// in a document this build's own writer produces.
+    #[test]
+    fn into_document_never_produces_a_global_section() {
+        let mut state = State::defaults();
+        state.set_global_bypass(true);
+        state.set_output_ceiling_db(-6.0);
+        let document = state.into_document();
+        assert!(document.section("global").is_none());
+        let params = document.section("parameters").unwrap();
+        assert_eq!(params.get("global.bypass"), Some(&Value::from(1.0)));
+        assert_eq!(
+            params.get("global.output_ceiling_db"),
+            Some(&Value::from(-6.0))
+        );
+    }
+
+    /// D-10.4's backward-compatibility half (D-11.2): a document written before this decision
+    /// carries `global.bypass`/`global.output_ceiling_db` in the old, now-retired `global`
+    /// section rather than inside `parameters` -- this build must still read it correctly rather
+    /// than silently reverting an existing preset's bypass/ceiling to its default.
+    #[test]
+    fn a_legacy_global_section_is_read_as_a_fallback() {
+        let mut document = Document::empty();
+        let mut legacy = Map::new();
+        legacy.insert("bypass".to_string(), Value::from(true));
+        legacy.insert("output_ceiling_db".to_string(), Value::from(-9.0));
+        document.set_section("global", legacy);
+
+        let (state, warnings) = State::from_document(document);
+        assert!(warnings.is_empty());
+        assert!(state.global_bypass());
+        assert_eq!(state.output_ceiling_db(), -9.0);
+    }
+
+    /// The `parameters` shape wins when a document somehow carries both -- this build's own
+    /// current shape is never second-guessed by a stray legacy section.
+    #[test]
+    fn parameters_shape_takes_precedence_over_a_legacy_global_section() {
+        let mut document = Document::empty();
+        let mut legacy = Map::new();
+        legacy.insert("bypass".to_string(), Value::from(true));
+        legacy.insert("output_ceiling_db".to_string(), Value::from(-9.0));
+        document.set_section("global", legacy);
+
+        let mut params = Map::new();
+        params.insert("global.bypass".to_string(), Value::from(0.0));
+        params.insert("global.output_ceiling_db".to_string(), Value::from(-1.0));
+        document.set_section("parameters", params);
+
+        let (state, warnings) = State::from_document(document);
+        assert!(warnings.is_empty());
+        assert!(!state.global_bypass());
+        assert_eq!(state.output_ceiling_db(), -1.0);
+    }
+
+    /// A load-modify-save cycle of a legacy document upgrades it to the new shape in `parameters`
+    /// -- "always write the new shape" -- while leaving the now-inert legacy `global` section
+    /// alone (this module's own doc comment on `write_onto` explains why that section is left in
+    /// place rather than deleted).
+    #[test]
+    fn a_legacy_document_upgrades_to_the_new_shape_on_save() {
+        let mut original = Document::empty();
+        let mut legacy = Map::new();
+        legacy.insert("bypass".to_string(), Value::from(true));
+        legacy.insert("output_ceiling_db".to_string(), Value::from(-9.0));
+        original.set_section("global", legacy);
+
+        let (state, _) = State::from_document(original.clone());
+        let saved = state.write_onto(&original);
+
+        let params = saved.section("parameters").unwrap();
+        assert_eq!(params.get("global.bypass"), Some(&Value::from(1.0)));
+        assert_eq!(
+            params.get("global.output_ceiling_db"),
+            Some(&Value::from(-9.0))
+        );
+        // The stale legacy section survives (D-11.2's uniform "unrecognised section" treatment)
+        // but is inert: from_document above already preferred the parameters shape once written.
+        assert!(saved.section("global").is_some());
     }
 }
