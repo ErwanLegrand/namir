@@ -143,13 +143,19 @@ pub struct Report {
     pub source_hits: HashMap<String, Vec<String>>,
 }
 
-/// Reconciles `requirements` against `manual_test_filenames` (every real filename under
-/// `docs/manual-tests/`, e.g. `"fr-io-020-wasapi-exclusive-mode.md"`) and `source_hits` (every id
-/// this run found a `// trace:` annotation or matching test-fn name for, already resolved to the
-/// crate name(s) it was found in by the caller).
+/// Reconciles `requirements` against `manual_test_docs` (every real `(filename, content)` pair
+/// under `docs/manual-tests/`, e.g. `("fr-io-020-wasapi-exclusive-mode.md", "...")`) and
+/// `source_hits` (every id this run found a `// trace:` annotation or matching test-fn name for,
+/// already resolved to the crate name(s) it was found in by the caller).
+///
+/// A manual-test file matches a `Verify: M` requirement if either its filename starts with the
+/// id's lowercase prefix (the usual one-file-per-requirement case) *or* its content contains the
+/// literal id (a file documented as covering more than one requirement in its
+/// `**Requirement (literal):**` line, e.g. `fr-io-010-device-enumeration.md` also covering
+/// FR-IO-040, is real and must not be missed just because its filename only names the first one).
 pub fn build_report(
     requirements: &[Requirement],
-    manual_test_filenames: &[String],
+    manual_test_docs: &[(String, String)],
     source_hits: &HashMap<String, Vec<String>>,
 ) -> Report {
     let mut missing = Vec::new();
@@ -158,11 +164,10 @@ pub fn build_report(
     for req in requirements {
         if req.verify == 'M' {
             let prefix = format!("{}-", manual_test_prefix(&req.id));
-            match manual_test_filenames
-                .iter()
-                .find(|f| f.to_lowercase().starts_with(&prefix))
-            {
-                Some(file) => {
+            match manual_test_docs.iter().find(|(name, content)| {
+                name.to_lowercase().starts_with(&prefix) || content.contains(&req.id)
+            }) {
+                Some((file, _)) => {
                     manual_hits.insert(req.id.clone(), file.clone());
                 }
                 None => missing.push(req.clone()),
@@ -340,17 +345,40 @@ mod tests {
     }
 
     #[test]
-    fn build_report_resolves_a_manual_verified_requirement() {
+    fn build_report_resolves_a_manual_verified_requirement_by_filename() {
         let reqs = vec![Requirement {
             id: "FR-IO-020".into(),
             verify: 'M',
         }];
-        let files = vec!["fr-io-020-wasapi-exclusive-mode.md".to_string()];
-        let report = build_report(&reqs, &files, &HashMap::new());
+        let docs = vec![(
+            "fr-io-020-wasapi-exclusive-mode.md".to_string(),
+            "irrelevant content".to_string(),
+        )];
+        let report = build_report(&reqs, &docs, &HashMap::new());
         assert!(report.missing.is_empty());
         assert_eq!(
             report.manual_hits.get("FR-IO-020").unwrap(),
             "fr-io-020-wasapi-exclusive-mode.md"
+        );
+    }
+
+    #[test]
+    fn build_report_resolves_a_manual_verified_requirement_named_only_in_content() {
+        // fr-io-010-device-enumeration.md's own filename only names FR-IO-010, but its content
+        // documents FR-IO-040 too -- a real file this project already has, so this must resolve.
+        let reqs = vec![Requirement {
+            id: "FR-IO-040".into(),
+            verify: 'M',
+        }];
+        let docs = vec![(
+            "fr-io-010-device-enumeration.md".to_string(),
+            "**Requirement (literal):** FR-IO-010 ... FR-IO-040 ...".to_string(),
+        )];
+        let report = build_report(&reqs, &docs, &HashMap::new());
+        assert!(report.missing.is_empty());
+        assert_eq!(
+            report.manual_hits.get("FR-IO-040").unwrap(),
+            "fr-io-010-device-enumeration.md"
         );
     }
 
