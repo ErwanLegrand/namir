@@ -15,13 +15,15 @@
 //!
 //! Step 3, the crossfade, belongs to `namir-engine` and this crate never sees it.
 //!
-//! M5 adds a third role, alongside handover and (soon) recall: [`library::LibraryService`] drives
-//! D-12.2's "cancellable worker job" on [`pool::ThreadPool`] — the pool this crate's doc comment
-//! always said would live here, before `namir-library` existed to need it.
+//! M5 adds two more roles, alongside handover: [`library::LibraryService`] drives D-12.2's
+//! "cancellable worker job" on [`pool::ThreadPool`] — the pool this crate's doc comment always
+//! said would live here, before `namir-library` existed to need it — and [`recall`] replays a
+//! `namir_state::State` onto a live instance (FR-STATE-030/050), the crate that can see both
+//! `namir-state` and `namir-engine` at once composing them, exactly as `namir-state`'s own crate
+//! doc comment says this crate would.
 //!
 //! # Deliberately out of scope
 //!
-//! - **Preset recall** — needs `namir-state`; M5, later in the build order.
 //! - **A `LoadSource::File` path resolver** beyond `std::fs::read`. Anything that needs to *know*
 //!   where files live is `namir-platform`'s job (D-13.2), and this crate carries no platform code
 //!   at all (D-5.1's own column, enforced by `xtask layering`'s cfg scan) — [`library::LibraryService::open`]
@@ -35,6 +37,7 @@ pub mod error;
 pub mod error_codes;
 pub mod library;
 pub mod pool;
+pub mod recall;
 pub mod submit;
 
 use std::sync::Arc;
@@ -79,6 +82,15 @@ impl Target {
         match self {
             Self::Nam => Self::Ir,
             Self::Ir => Self::Nam,
+        }
+    }
+
+    /// The `namir_engine::ResourceKind` this target names — [`Instance::unload`]'s own
+    /// `Command::Unload` needs the engine's vocabulary, not this crate's.
+    fn resource_kind(self) -> namir_engine::ResourceKind {
+        match self {
+            Self::Nam => namir_engine::ResourceKind::Nam,
+            Self::Ir => namir_engine::ResourceKind::Ir,
         }
     }
 }
@@ -153,6 +165,15 @@ pub enum JobResult {
     /// Prepared successfully, but the audio thread never drained the ring within the deadline, so
     /// the resource was dropped **here**, on the worker.
     NotDelivered(WorkerError),
+    /// M5, FR-STATE-070's "the state shall load with that stage empty": the stage was emptied
+    /// rather than given a new resource. [`Instance::unload`]'s success case — the `Unload`
+    /// analogue of `Loaded`, minus `cache_hit` (nothing was read or parsed) and `warning`
+    /// (unloading has no D-9.7-style non-fatal condition to report).
+    Unloaded {
+        /// How long the whole request took, from the caller's call into [`Instance::unload`] to
+        /// the command landing in the ring.
+        elapsed: Duration,
+    },
 }
 
 /// One completed request, as reported back to the UI.
@@ -317,6 +338,41 @@ impl Instance {
             target,
             source: described,
             result: outcome,
+        }
+    }
+
+    /// M5: FR-STATE-070's "the state shall load with that stage empty" — the worker-side entry
+    /// point onto `Command::Unload`, mirroring [`Self::load`]'s structure exactly (drain first,
+    /// serialise against the other target, submit, record the handover) because an unload is a
+    /// handover like any other, subject to R-7's rule the same way (`docs/02-architecture.md`'s
+    /// D-8.1 M5 consequence note: "an unload is a handover to nothing"). **This is why
+    /// [`crate::recall`] calls this method rather than submitting `Command::Unload` itself** — a
+    /// bespoke submit path here would silently skip the serialisation this method provides.
+    pub fn unload(&mut self, target: Target) -> JobOutcome {
+        let started = Instant::now();
+        self.drain_retired();
+        self.serialise_against_other_target(target);
+        let result = match self
+            .submitter
+            .submit(Command::Unload(target.resource_kind()))
+        {
+            Ok(()) => {
+                self.last_handover[target.index()] = Some(Instant::now());
+                JobResult::Unloaded {
+                    elapsed: started.elapsed(),
+                }
+            }
+            Err(SubmitError::Timeout(_)) | Err(SubmitError::Abandoned(_)) => {
+                JobResult::NotDelivered(WorkerError::new(
+                    error_codes::NOT_DELIVERED,
+                    "(no reference)".to_string(),
+                ))
+            }
+        };
+        JobOutcome {
+            target,
+            source: "(no reference)".to_string(),
+            result,
         }
     }
 
