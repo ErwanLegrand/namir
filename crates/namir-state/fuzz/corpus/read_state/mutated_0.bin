@@ -1,0 +1,47 @@
+{
+  "format_version": 1,
+  "global": {
+    "bypass": true,
+    "output_ceiling_db": -1.0
+  },
+  "parameters": {
+    "eq.enabled": 1.0,
+    "eq.high_pass_enabled": 0.0,
+    "eq.high_pass_freq_hz": 80.0,
+    "eq.high_shelf_freq_hz": 3000.0,
+    "eq.high_shelf_gain_db": 0.0,
+    "eq.low_pass_enabled": 0.0,
+    "eq.low_pass_freq_hz": 18000.0,
+    "eq.low_shelf_freq_hz": 100.0,
+    "eq.low_shelf_gain_db": 0.0,
+    "eq.mid_freq_hz": 1000.0,
+    "eq.mid_gain_db": 0.0,
+    "eq.mid_q": 0.70700001716613?7,
+    "gate.attack_ms": 1.0,
+    "gate.enabled": 1.0,
+    "gate.hold_ms": 30.0,
+    "gate.release_ms": 100.0,
+    "gate.threshold_db": -70.0,
+    "ir.enabled": 1.0,
+    "ir.high_cut_enabled": 0.0,
+    "ir.high_cut_freq_hz": 8000.0,
+    "ir.level_db": 0.0,
+    "ir.low_cut_enabled": 0.0,
+    "ir.low_cut_freq_hz": 80.0,
+    "nam.enabled": 1.0,
+    "out.gain_db": 0.0,
+    "trim.dc_blocker_enabled": 1.0,
+    "trim.gain_db": 3.0
+  },
+  "references": {
+    "nam": {
+      "display_name": "seed.nam",
+      "embedded": {
+        "data": "eyJmYWtlIjogIm1pbmltYWwgbmFtLXNoYXBlZCBqc29uIGZvciBjb3JwdXMgc2VlZGluZyJ9",
+        "encoding": "base64",
+        "media_type": "application/vnd.namir.nam+json"
+      },
+      "hash": "169314c553366e14385ad7e38c052bb1b4468b0853cc30abf7758e9ae93a38c8"
+    }
+  }
+}
