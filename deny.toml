@@ -35,6 +35,22 @@ allow = [
     "CC0-1.0",
     "MIT-0",
     "Unlicense",
+    # M6's namir-ui pulls in D-15.1/D-15.2's egui/egui-baseview/baseview stack for the first time
+    # in the main workspace (spikes/s3-egui-baseview and spikes/s4-clack-clap already exercised it,
+    # but spikes carry their own pinned Cargo.lock and are excluded from this workspace, so this is
+    # the first time `cargo deny check` has actually seen these three). None are copyleft, so none
+    # conflict with NFR-LIC-020's rejection criterion, even though none are literally "MIT OR
+    # Apache-2.0":
+    #  - BSL-1.0 (Boost Software License 1.0): OSI-approved, FSF-free, permissive -- via
+    #    `clipboard-win`/`error-code` (egui-baseview's clipboard dependency, `copypasta`).
+    #  - OFL-1.1 (SIL Open Font License) and Ubuntu-font-1.0: font-specific permissive licences
+    #    covering `epaint_default_fonts`' bundled glyph data (egui's `default_fonts` feature, on by
+    #    default) -- both licences explicitly permit embedding the font in and distributing it with
+    #    software under any licence; they restrict only redistributing/selling the *font file*
+    #    itself under a different name, which this workspace never does.
+    "BSL-1.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
 ]
 confidence-threshold = 0.8
 
