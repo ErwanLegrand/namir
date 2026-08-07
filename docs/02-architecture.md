@@ -252,9 +252,29 @@ dependency rule.
 | `namir-library` | Library index, scanning, hashing, search, persistence. | core, nam, ir, state | No | Yes |
 | `namir-platform` | Filesystem locations, config dirs, logging sink, thread priority. **The only crate with `#[cfg(target_os)]`.** | core | Yes | Yes |
 | `namir-worker` | Off-thread orchestration: load requests, resource cache, scan jobs. | everything above | No | Yes |
-| `namir-ui` | egui-based interface. Renderer- and window-agnostic. | core, params, library, state | No | Yes |
+| `namir-ui` | egui-based interface. Renderer- and window-agnostic. | core, params, library, state | No | No *(M7)* |
 | `namir-app` | Standalone application: audio device I/O, window, settings. | everything | Via platform + cpal | Not for 1.0 |
 | `namir-clap` | CLAP adapter. **The only crate that names CLAP.** | everything except app | Via clack | No |
+
+*Consequence (added M7)* — `namir-ui`'s "Builds for mobile?" cell is corrected from this table's
+original "Yes" to "No". That original entry predated `namir-ui`'s actual construction at M6; once
+built, it took a direct dependency on `baseview` 0.2 (`crates/namir-ui/Cargo.toml`) for
+`egui-baseview`'s windowing. `baseview-0.2.2/src/platform.rs` compiles a backend only under
+`#[cfg(target_os = "macos")]` / `"linux"` / `"windows"` — neither `"android"` nor `"ios"` matches
+any of those, so the module is empty on both mobile targets and nothing using
+`baseview::Window`/`WindowHandle` can compile there. Verified directly, not inferred: `cargo check
+--target aarch64-linux-android -p namir-ui` was run on this session's machine (which does carry the
+Android NDK and the `aarch64-linux-android`/`aarch64-apple-ios` `rustup` targets, unlike the M6
+session's own Windows machine) and reached the dependency graph baseview pulls in without a
+platform-mismatch error surfacing yet at the point it failed for an unrelated, already-documented
+reason (`blake3`'s NEON C build step needing `aarch64-linux-android-clang`, the same gap this
+document's CI job for the *other* mobile-capable crates already works around) — the platform-cfg
+read above is a source-level fact about `baseview` 0.2.2, not a guess. `namir-ui` is therefore
+excluded from `.github/workflows/ci.yml`'s `mobile-cross-build-android`/`-ios` `-p` lists rather
+than added to them. This is a real, if distant, constraint on RD's mobile aspiration (P5): whichever
+future milestone actually targets mobile will need a different UI windowing story for `namir-ui`
+specifically (egui has other mobile-capable backends; `baseview` is desktop-only by design), not
+just a CI list update.
 
 **Decision D-5.2** — The layering is enforced mechanically in CI, not by convention.
 

@@ -260,6 +260,18 @@ jobs:
   # either mobile target either. `paths.rs`/`clap_paths.rs` (D-13.2's config/log paths, D-13.3's
   # CLAP install paths) use only `std::env`/`std::path` and add no dependency at all.
   #
+  # M7: checked, deliberately NOT adding namir-ui here despite D-5.1's original table having
+  # predicted it would land in this list once M6 built it. It doesn't build for mobile: it depends
+  # directly on `baseview` 0.2 (crates/namir-ui/Cargo.toml), whose platform.rs only compiles a
+  # backend under target_os "macos"/"linux"/"windows" -- neither "android" nor "ios" matches, so
+  # the module is empty and anything using baseview::Window fails to compile on either mobile
+  # target. Verified this session via `cargo check --target aarch64-linux-android -p namir-ui`
+  # (this machine has the NDK and both mobile rustup targets installed, unlike M6's authoring
+  # machine); it got through baseview's own compilation before failing on the already-documented
+  # blake3/NEON-needs-a-C-cross-compiler gap below, and platform.rs's cfg gating is a plain
+  # source-level fact regardless. See docs/02-architecture.md D-5.1's "Consequence (added M7)"
+  # note, which also corrects that table's "Builds for mobile?" cell for namir-ui from Yes to No.
+  #
   # These are library-only builds (no bins), so in principle they don't need a working final
   # linker for the target platform -- an rlib build has no link step. That reasoning holds for
   # the *link* step. It does NOT extend to every build-script compile step upstream of it: see
