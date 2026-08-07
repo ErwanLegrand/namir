@@ -8,6 +8,7 @@
 mod cargo_meta;
 mod layering;
 mod params_lock;
+mod preset;
 
 use std::path::{Path, PathBuf};
 
@@ -110,7 +111,9 @@ fn run_params_lock(root: &Path, write: bool) -> bool {
 }
 
 fn print_usage() {
-    println!("usage: cargo run -p xtask -- <layering|params-lock [--write]>");
+    println!(
+        "usage: cargo run -p xtask -- <layering|params-lock [--write]|preset [output-path]|preset --verify <path>>"
+    );
 }
 
 fn main() {
@@ -123,6 +126,7 @@ fn main() {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
         }
+        Some("preset") => preset::run(&args[1..]),
         _ => {
             print_usage();
             std::process::exit(2);

@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "future_top_level_section": {
+    "a_field_this_build_has_never_heard_of": true,
+    "nested": {
+      "deeper_field": [1, 2, 3]
+    }
+  },
+  "parameters": {
+    "comp.ratio": 4.0,
+    "trim.gain_db": 1.5
+  }
+}

@@ -177,20 +177,34 @@ jobs:
         # it actually bites on aarch64). That's still a C compiler, not C++, so it does not trip
         # this job's specific gate on this job's native x86_64 target, but it is the kind of
         # thing this comment exists to flag rather than let be a surprise.
+        #
+        # M5 note: this audit still holds. namir-state adds exactly one new normal dependency,
+        # `base64` -- checked against this workspace's adoption bar and confirmed to carry no
+        # build script at all (see namir-state's own Cargo.toml comment on the crate), so it
+        # cannot need a C++ compiler to begin with. namir-library adds none of its own beyond
+        # serde/serde_json, already covered above. Both new crates are ordinary `--workspace`
+        # members, so this job's existing invocation already covers them -- no change needed
+        # beyond this note.
         run: cargo build --workspace --all-targets
 
   # Covers D-18.1's "cross-build of the mobile-capable crates for aarch64-linux-android and
   # aarch64-apple-ios" (NFR-PORT-030's verification clause), scoped to D-5.1's "builds for
   # mobile: yes" crates that exist as of M2: namir-core, namir-params, namir-dsp, namir-nam,
-  # namir-ir, namir-engine, namir-platform, and namir-worker as of M4 (namir-fixtures is dev/test
-  # tooling, not in D-5.1's table, so it's excluded). This list grows incrementally as M5 lands
-  # namir-state/namir-library, then M6's namir-ui -- update the `-p` list in both jobs below (and
-  # check it against D-5.1's actual table) each time a new crate is marked "builds for mobile:
-  # yes", per the roadmap's own framing of this gate as incremental, not built once.
+  # namir-ir, namir-engine, namir-platform, and namir-worker as of M4, namir-state and
+  # namir-library as of M5 (namir-fixtures is dev/test tooling, not in D-5.1's table, so it's
+  # excluded). This list grows incrementally as M6 lands namir-ui -- update the `-p` list in both
+  # jobs below (and check it against D-5.1's actual table) each time a new crate is marked "builds
+  # for mobile: yes", per the roadmap's own framing of this gate as incremental, not built once.
   #
   # namir-worker was added at M4, not M6 as an earlier revision of this comment predicted. Nothing
   # in it blocks a mobile build: std::thread/std::sync/std::fs, available_parallelism and `rtrb`
   # (pure Rust, no_std-capable, zero dependencies) are all available on both targets.
+  #
+  # namir-state and namir-library were added at M5, exactly as this comment predicted. Neither
+  # blocks a mobile build either: namir-state's only new dependency (`base64`, `default-features =
+  # false, features = ["alloc"]`) is no_std-capable and carries no build script; namir-library adds
+  # no third-party dependency of its own beyond serde/serde_json, both already proven mobile-safe
+  # by every crate above it in this list.
   #
   # These are library-only builds (no bins), so in principle they don't need a working final
   # linker for the target platform -- an rlib build has no link step. That reasoning holds for
@@ -238,7 +252,7 @@ jobs:
       - name: cargo build --target aarch64-linux-android (library crates only)
         run: >
           cargo build --target aarch64-linux-android
-          -p namir-core -p namir-params -p namir-dsp -p namir-nam -p namir-ir -p namir-engine -p namir-platform -p namir-worker
+          -p namir-core -p namir-params -p namir-dsp -p namir-nam -p namir-ir -p namir-engine -p namir-state -p namir-library -p namir-platform -p namir-worker
 
   mobile-cross-build-ios:
     name: mobile cross-build (aarch64-apple-ios)
@@ -262,7 +276,7 @@ jobs:
         # repro. Flagging the asymmetry rather than implying both jobs were equally checked.
         run: >
           cargo build --target aarch64-apple-ios
-          -p namir-core -p namir-params -p namir-dsp -p namir-nam -p namir-ir -p namir-engine -p namir-platform -p namir-worker
+          -p namir-core -p namir-params -p namir-dsp -p namir-nam -p namir-ir -p namir-engine -p namir-state -p namir-library -p namir-platform -p namir-worker
 
   # Covers docs/03-implementation-roadmap.md §5's "a cargo-llvm-cov coverage report generated on
   # every push, informational only, no blocking threshold". Deliberately no pass/fail condition

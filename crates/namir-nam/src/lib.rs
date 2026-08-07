@@ -41,11 +41,12 @@
 //! In scope: FR-NAM-010 (load/validate `.nam` files by content), FR-NAM-020 (both Must
 //! architectures — WaveNet, `wavenet.rs`; LSTM, `lstm.rs` — unified behind
 //! [`PreparedNam`]/[`NamState`] by `model.rs`'s small architecture-dispatching enum), FR-NAM-040
-//! (malformed files rejected with a specific reason, never a panic), FR-NAM-080 (metadata),
-//! FR-NAM-110 (latency = 0 — both architectures are causal and block-preserving, see each
-//! module's own doc comment). A `.nam` file whose `architecture` is neither `"WaveNet"` nor
-//! `"LSTM"` is rejected via [`NamLoadError`] with `error_codes::UNSUPPORTED_ARCHITECTURE`, not
-//! silently misread.
+//! (malformed files rejected with a specific reason, never a panic), FR-NAM-080 (metadata, both
+//! the full parse's `NamFile::metadata`/`LstmFile::metadata` and, added M5, [`probe_metadata`]'s
+//! weights-free read for `namir-library`'s FR-LIB-040 search index), FR-NAM-110 (latency = 0 —
+//! both architectures are causal and block-preserving, see each module's own doc comment). A
+//! `.nam` file whose `architecture` is neither `"WaveNet"` nor `"LSTM"` is rejected via
+//! [`NamLoadError`] with `error_codes::UNSUPPORTED_ARCHITECTURE`, not silently misread.
 //!
 //! Out of scope, deliberately, for this crate:
 //! - FR-NAM-050/060 (resampling to the model's declared sample rate) — a stage wrapping this one.
@@ -61,9 +62,11 @@ mod error_codes;
 mod file;
 mod lstm;
 mod model;
+mod probe;
 mod shared;
 mod wavenet;
 
 pub use error_codes::NamLoadError;
 pub use file::{LayerArrayConfig, LstmConfigJson, LstmFile, NamFile, NamMetadata, WaveNetConfig};
 pub use model::{NamState, PreparedNam, load};
+pub use probe::{NamProbe, probe_metadata};

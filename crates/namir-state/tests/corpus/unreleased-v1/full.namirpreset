@@ -1,0 +1,32 @@
+{
+  "format_version": 1,
+  "parameters": {
+    "eq.enabled": 0.0,
+    "eq.high_pass_enabled": 1.0,
+    "eq.high_pass_freq_hz": 90.0,
+    "eq.high_shelf_freq_hz": 3500.0,
+    "eq.high_shelf_gain_db": 1.0,
+    "eq.low_pass_enabled": 1.0,
+    "eq.low_pass_freq_hz": 17000.0,
+    "eq.low_shelf_freq_hz": 120.0,
+    "eq.low_shelf_gain_db": 1.5,
+    "eq.mid_freq_hz": 800.0,
+    "eq.mid_gain_db": -2.0,
+    "eq.mid_q": 1.1,
+    "gate.attack_ms": 5.0,
+    "gate.enabled": 0.0,
+    "gate.hold_ms": 50.0,
+    "gate.release_ms": 150.0,
+    "gate.threshold_db": -58.0,
+    "ir.enabled": 0.0,
+    "ir.high_cut_enabled": 1.0,
+    "ir.high_cut_freq_hz": 9000.0,
+    "ir.level_db": -3.0,
+    "ir.low_cut_enabled": 1.0,
+    "ir.low_cut_freq_hz": 100.0,
+    "nam.enabled": 0.0,
+    "out.gain_db": -3.0,
+    "trim.dc_blocker_enabled": 0.0,
+    "trim.gain_db": 2.5
+  }
+}

@@ -1,0 +1,41 @@
+[package]
+name = "namir-library"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+namir-nam = { path = "../namir-nam" }
+namir-ir = { path = "../namir-ir" }
+namir-state = { path = "../namir-state" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Deliberately absent, each a decision rather than an oversight:
+#  - no embedded key-value store crate (AQ-3/D-12.3, docs/02-architecture.md): the index has no
+#    key by which FR-LIB-040's free-text search could be an indexed lookup -- it filters over
+#    every record's name and metadata -- so the whole index is always resident in memory
+#    regardless of on-disk format, and an embedded B-tree store buys random access this workload
+#    never performs. store.rs's single-JSON-document, atomic-replace approach reuses serde_json,
+#    already in the tree via namir-state, rather than adding a second binary format to fuzz.
+#  - no search-index crate (fst, tantivy): a linear scan over a precomputed lowercase blob is
+#    sub-millisecond at 10,000 records and adds nothing a real search library would improve on.
+#  - no directory-walking crate (walkdir): std::fs::read_dir plus DirEntry::file_type() (which
+#    does not follow symlinks, so loops are impossible by construction) is sufficient and keeps
+#    the caller-pumped step machine's control flow local (see scan.rs).
+#  - no namir-params, no namir-engine, no namir-worker: D-5.1's layering table permits none of
+#    them for this crate (`xtask layering`'s LAYERING_TABLE already carries this row).
+
+[dev-dependencies]
+namir-fixtures = { path = "../namir-fixtures" }
+# NFR-PERF-060's benchmark (benches/library_scan.rs) pins away from CPU 0/2, same reasoning and
+# same crate/version as every other D-2.1-pinned benchmark in this workspace.
+core_affinity = "0.8"
+
+[[bench]]
+name = "library_scan"
+harness = false

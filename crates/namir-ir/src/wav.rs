@@ -54,10 +54,13 @@ pub(crate) struct DecodedWav {
     pub was_truncated: bool,
 }
 
-/// Decodes `bytes` as a WAV file per FR-IR-010's matrix. See the module doc comment for the
-/// NFR-SEC-020 allocation ceiling and the conversion this performs.
-pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedWav, IrLoadError> {
-    let mut reader = hound::WavReader::new(Cursor::new(bytes)).map_err(|e| IrLoadError {
+/// The header validation `decode` and `probe` both need, factored out so the two never drift:
+/// a header that `probe_wav` accepts must be one `decode` would go on to accept too (modulo
+/// `EMPTY_IR`, which needs the declared-frame check `probe_wav` also performs — see both
+/// callers). Returns the parsed `hound::WavReader` so `decode` can go on to read samples from it
+/// without re-parsing the header a second time.
+fn open_and_validate_header(bytes: &[u8]) -> Result<hound::WavReader<Cursor<&[u8]>>, IrLoadError> {
+    let reader = hound::WavReader::new(Cursor::new(bytes)).map_err(|e| IrLoadError {
         code: error_codes::MALFORMED_WAV,
         detail: e.to_string(),
     })?;
@@ -95,6 +98,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedWav, IrLoadError> {
             ),
         });
     }
+
+    Ok(reader)
+}
+
+/// Decodes `bytes` as a WAV file per FR-IR-010's matrix. See the module doc comment for the
+/// NFR-SEC-020 allocation ceiling and the conversion this performs.
+pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedWav, IrLoadError> {
+    let mut reader = open_and_validate_header(bytes)?;
+    let spec = reader.spec();
 
     let declared_frames = reader.duration() as u64;
     if declared_frames == 0 {
@@ -156,6 +168,74 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedWav, IrLoadError> {
         sample_rate: spec.sample_rate,
         channel_data,
         was_truncated,
+    })
+}
+
+/// A WAV file's sample encoding, mirrored from `hound::SampleFormat` rather than re-exported
+/// directly — `namir-library` (M5) consumes [`WavInfo`] without taking a `hound` dependency of
+/// its own, matching how [`DecodedWav`] already keeps hound's types out of this crate's own
+/// public surface (`DecodedWav` is `pub(crate)`, but `WavInfo`, added M5, is not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleFormat {
+    /// 16-, 24- or 32-bit signed integer PCM.
+    Int,
+    /// 32-bit IEEE float.
+    Float,
+}
+
+/// Header-only information about a WAV file — everything [`decode`] validates, minus the audio
+/// data itself. Added M5 so `namir-library`'s scan can learn an IR's native sample rate, channel
+/// count and format without decoding, resampling, or building a convolution schedule for it, none
+/// of which a library index has any use for (and the latter two need an `engine_rate`/`block_size`
+/// this crate's caller doesn't have during a scan — see [`probe_wav`]'s own doc comment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WavInfo {
+    /// The file's own sample rate, before any resampling `PreparedIr::from_wav_bytes` would apply.
+    pub sample_rate: u32,
+    /// 1 (mono) or 2 (stereo) — the same range [`decode`] enforces.
+    pub channels: u16,
+    /// 16, 24 or 32 — one of the depths [`decode`]'s FR-IR-010 matrix supports.
+    pub bits_per_sample: u16,
+    /// Integer or float PCM — see [`SampleFormat`].
+    pub sample_format: SampleFormat,
+    /// The file header's **own declared** frame count, exactly as `hound::WavReader::duration`
+    /// reports it. **Untrusted — never size an allocation from this value.** This module's own
+    /// doc comment records why: hound derives it from the `data` chunk's declared byte length
+    /// without checking that length against how many bytes the file actually has, so a hostile
+    /// file can declare an enormous count backed by only a few real bytes. A caller wanting to
+    /// display "≈4m32s" or sort by length may use it; a caller sizing a `Vec` must not, and
+    /// `probe_wav` itself never does.
+    pub declared_frames: u64,
+}
+
+/// Reads a WAV file's header only — no sample data, no allocation proportional to the file's
+/// length, no resampling. FR-IR-030's resample-to-engine-rate step and D-9.4's convolution
+/// schedule both need an `engine_rate`/`block_size` that only `namir-engine`'s stage has, and
+/// D-5.1 forbids `namir-library` (this function's motivating caller) from depending on
+/// `namir-engine` at all — so `probe_wav` is deliberately shallower than
+/// [`PreparedIr::from_wav_bytes`](crate::PreparedIr::from_wav_bytes): it answers "what is this
+/// file", not "how would this engine play it".
+///
+/// Applies the same FR-IR-010 format/channel/rate validation `decode` does, and a file it rejects
+/// fails with the identical catalogued [`IrLoadError`] `decode` would give the same bytes — with
+/// one deliberate exception: a zero-frame file probes successfully (it is a legitimate, if
+/// useless, library entry to display) but `decode` still refuses to load it
+/// (`error_codes::EMPTY_IR`), because "usable as a convolution kernel" is a stronger, load-time
+/// judgment this shallower header check does not make. So "probes successfully" means "a library
+/// entry worth indexing", not "guaranteed loadable" — a caller that wants the stronger guarantee
+/// still has to call `decode`/`PreparedIr::from_wav_bytes`.
+pub fn probe_wav(bytes: &[u8]) -> Result<WavInfo, IrLoadError> {
+    let reader = open_and_validate_header(bytes)?;
+    let spec = reader.spec();
+    Ok(WavInfo {
+        sample_rate: spec.sample_rate,
+        channels: spec.channels,
+        bits_per_sample: spec.bits_per_sample,
+        sample_format: match spec.sample_format {
+            hound::SampleFormat::Int => SampleFormat::Int,
+            hound::SampleFormat::Float => SampleFormat::Float,
+        },
+        declared_frames: reader.duration() as u64,
     })
 }
 
@@ -427,5 +507,153 @@ mod tests {
         let decoded = decode(&bytes).unwrap();
         assert!(!decoded.was_truncated);
         assert_eq!(decoded.channel_data[0].len(), frames);
+    }
+
+    // -------------------------------------------------------------------------------------
+    // probe_wav (added M5): header-only reads.
+    // -------------------------------------------------------------------------------------
+
+    /// Hand-assembles minimal WAV bytes whose `data` chunk **declares** `declared_data_bytes`
+    /// but is backed by only `real_data.len()` actual bytes — the hostile shape this module's
+    /// own doc comment warns `hound::WavReader::duration()` trusts blindly. `hound::WavWriter`
+    /// cannot produce this (it always writes the length it actually wrote), so this is built by
+    /// hand, one field at a time, matching the canonical RIFF/WAVE layout.
+    fn wav_with_declared_length_exceeding_actual_bytes(
+        sample_rate: u32,
+        channels: u16,
+        bits_per_sample: u16,
+        declared_data_bytes: u32,
+        real_data: &[u8],
+    ) -> Vec<u8> {
+        let byte_rate = sample_rate * channels as u32 * (bits_per_sample as u32 / 8);
+        let block_align = channels * (bits_per_sample / 8);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        // Overall RIFF chunk size: also lies, consistently with the data chunk, but hound is not
+        // observed to validate this one against the reader's actual length either. `wrapping_add`
+        // because the whole point of this helper is to write a size field the real byte count
+        // doesn't back -- an overflow here would just be a different flavour of the same lie.
+        buf.extend_from_slice(&36u32.wrapping_add(declared_data_bytes).to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size (PCM)
+        buf.extend_from_slice(&1u16.to_le_bytes()); // audio format = PCM
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&byte_rate.to_le_bytes());
+        buf.extend_from_slice(&block_align.to_le_bytes());
+        buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&declared_data_bytes.to_le_bytes()); // the lie
+        buf.extend_from_slice(real_data); // far fewer bytes than declared
+        buf
+    }
+
+    #[test]
+    fn probe_wav_reads_header_fields_matching_decode() {
+        let bytes = write_int_wav(44_100, 2, 24, &[0, 0, 100, -100]);
+        let info = probe_wav(&bytes).unwrap();
+        assert_eq!(info.sample_rate, 44_100);
+        assert_eq!(info.channels, 2);
+        assert_eq!(info.bits_per_sample, 24);
+        assert_eq!(info.sample_format, SampleFormat::Int);
+        assert_eq!(info.declared_frames, 2);
+    }
+
+    #[test]
+    fn probe_wav_reads_float_format() {
+        let bytes = write_float_wav(48_000, 1, &[0.0, 0.5]);
+        let info = probe_wav(&bytes).unwrap();
+        assert_eq!(info.sample_format, SampleFormat::Float);
+    }
+
+    /// The reason `probe_wav` exists rather than `namir-library` calling `decode` and discarding
+    /// the samples: a header declaring gigabytes of audio, backed by only a handful of real
+    /// bytes, must be probed without any allocation sized from that declared length — because
+    /// `probe_wav` never allocates a sample buffer at all, this is true by construction, and this
+    /// test is the tripwire that would catch a future change accidentally adding one.
+    #[test]
+    fn probe_wav_does_not_allocate_from_a_hostile_declared_length() {
+        // Declares ~4 GiB of 16-bit mono audio data (over an hour at 192 kHz), backed by 4 real
+        // bytes -- i.e. 2 real frames. A buffer actually sized from the declared length would be
+        // a multi-gigabyte allocation attempt; this must return promptly instead.
+        let declared_data_bytes = 0xFFFF_FFF0u32;
+        let real_data = 4i16.to_le_bytes(); // one real i16 sample
+        let bytes = wav_with_declared_length_exceeding_actual_bytes(
+            192_000,
+            1,
+            16,
+            declared_data_bytes,
+            &real_data,
+        );
+
+        let info = probe_wav(&bytes).unwrap();
+        assert_eq!(info.sample_rate, 192_000);
+        // declared_frames reflects the header's lie, exactly as this type's doc comment warns --
+        // callers must treat it as untrusted, which is why decode() re-derives its own capped
+        // frame count independently rather than trusting this value for anything but display.
+        assert_eq!(
+            info.declared_frames,
+            (declared_data_bytes / 2) as u64,
+            "declared_frames must reflect the header field verbatim, untrusted or not"
+        );
+
+        // decode() on the same hostile bytes must reject it as malformed (data runs out before
+        // the declared frame count), not attempt to honour the declared length -- confirming
+        // probe_wav's promise ("a file probe_wav accepts, decode would go on to accept") holds
+        // even when the header lies: both agree the file is unusable, for the same reason.
+        let err = decode(&bytes).unwrap_err();
+        assert_eq!(err.code.id, error_codes::MALFORMED_WAV.id);
+    }
+
+    #[test]
+    fn probe_wav_rejects_the_same_malformed_bytes_decode_rejects() {
+        let probe_err = probe_wav(b"not a wav file at all").unwrap_err();
+        let decode_err = decode(b"not a wav file at all").unwrap_err();
+        assert_eq!(probe_err.code.id, decode_err.code.id);
+        assert_eq!(probe_err.code.id, error_codes::MALFORMED_WAV.id);
+    }
+
+    #[test]
+    fn probe_wav_rejects_unsupported_channel_count() {
+        let spec = hound::WavSpec {
+            channels: 3,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let cursor = Cursor::new(&mut buf);
+            let mut writer = hound::WavWriter::new(cursor, spec).unwrap();
+            writer.write_sample(0i16).unwrap();
+            writer.write_sample(0i16).unwrap();
+            writer.write_sample(0i16).unwrap();
+            writer.finalize().unwrap();
+        }
+        let err = probe_wav(&buf).unwrap_err();
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_FORMAT.id);
+    }
+
+    #[test]
+    fn probe_wav_rejects_out_of_range_sample_rate() {
+        let bytes = write_int_wav(4_000, 1, 16, &[0]);
+        let err = probe_wav(&bytes).unwrap_err();
+        assert_eq!(err.code.id, error_codes::INVALID_SAMPLE_RATE.id);
+    }
+
+    /// Unlike `decode`, `probe_wav` does not reject a zero-frame file: `EMPTY_IR` is a
+    /// convolution-usability judgment (D-9's "an IR with nothing in it is not a usable IR"), not
+    /// a header-shape fact. An empty file is a legitimate, if useless, library entry to index and
+    /// display -- `decode` remains the gate that refuses to actually load it.
+    #[test]
+    fn probe_wav_accepts_a_zero_frame_file_decode_would_reject() {
+        let bytes = write_int_wav(48_000, 1, 16, &[]);
+        let info = probe_wav(&bytes).unwrap();
+        assert_eq!(info.declared_frames, 0);
+        assert_eq!(
+            decode(&bytes).unwrap_err().code.id,
+            error_codes::EMPTY_IR.id
+        );
     }
 }

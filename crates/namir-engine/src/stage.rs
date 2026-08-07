@@ -1,7 +1,7 @@
 use crate::command::RetireSink;
 use crate::param::ParamChange;
 use crate::prepare::{PrepareContext, PrepareError};
-use crate::resource::Resource;
+use crate::resource::{Resource, ResourceKind};
 use crate::stage_io::StageIo;
 use crate::telemetry::TelemetrySink;
 
@@ -81,4 +81,15 @@ pub trait Stage: Send {
     ///
     /// Default: no-op.
     fn collect_retired(&mut self, _out: &mut RetireSink<'_>) {}
+
+    /// M5's mirror of [`Stage::accept_resource`]: the chain broadcasts an unload request for
+    /// `kind`, and the stage that owns that kind of resource begins a crossfade toward `None` —
+    /// the same crossfade an `accept_resource` install begins, just fading toward nothing rather
+    /// than toward a new slot. Every other stage ignores a `kind` it does not own, exactly as
+    /// [`Stage::apply`] ignores a `ParamId` it does not own.
+    ///
+    /// Default: no-op — same default the other resource-handover methods carry, and the same
+    /// trap applies (see this trait's own doc comment): a resource-holding stage that forgets to
+    /// override this will silently ignore every unload request for its kind.
+    fn unload_resource(&mut self, _kind: ResourceKind) {}
 }

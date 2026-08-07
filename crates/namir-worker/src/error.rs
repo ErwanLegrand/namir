@@ -62,6 +62,32 @@ impl From<namir_ir::IrLoadError> for WorkerError {
     }
 }
 
+/// M5: `library.rs` drives `namir-library`'s scan and store on this crate's pool, and both can
+/// report a `library.*` id (a directory that couldn't be read, an index file that failed to
+/// parse). Same pass-through rule as the two impls above — the specific `library.*` id survives.
+impl From<namir_library::LibraryError> for WorkerError {
+    fn from(e: namir_library::LibraryError) -> Self {
+        Self {
+            code: e.code,
+            detail: e.detail,
+        }
+    }
+}
+
+/// The warning-side mirror of the impl above. `namir-library` splits errors and warnings into two
+/// types with identical shape (see that crate's `error.rs`); this crate does not make the same
+/// split (`JobResult::Loaded`'s own `warning: Option<WorkerError>` field already uses `WorkerError`
+/// for a non-fatal condition, distinguished by the catalogue entry's own `Severity`), so both
+/// convert to the same target type here.
+impl From<namir_library::LibraryWarning> for WorkerError {
+    fn from(w: namir_library::LibraryWarning) -> Self {
+        Self {
+            code: w.code,
+            detail: w.detail,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

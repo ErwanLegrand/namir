@@ -1,0 +1,10 @@
+{
+  "format_version": 1,
+  "global": {
+    "bypass": true,
+    "output_ceiling_db": -1.0
+  },
+  "parameters": {
+    "eq.enabled": 1.0,
+    "eq.high_pass_enabled": 0.0,
+ 

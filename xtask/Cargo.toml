@@ -11,5 +11,11 @@ workspace = true
 
 [dependencies]
 namir-params = { path = "../crates/namir-params" }
+# M5: `preset` subcommand writes a sample .namirpreset document for FR-STATE-040's and
+# NFR-DOC-010's manual tests (docs/manual-tests/) -- the same "tooling consuming a product crate's
+# public API, not a product edge" reasoning this crate's own doc comment already gives for
+# depending on namir-params.
+namir-core = { path = "../crates/namir-core" }
+namir-state = { path = "../crates/namir-state" }
 cargo_metadata = "0.19"
 walkdir = "2"
