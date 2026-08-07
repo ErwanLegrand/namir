@@ -185,6 +185,18 @@ jobs:
         # serde/serde_json, already covered above. Both new crates are ordinary `--workspace`
         # members, so this job's existing invocation already covers them -- no change needed
         # beyond this note.
+        #
+        # M6 note: namir-platform's full scope (`thread_priority.rs`) adds `libc`, scoped in its
+        # Cargo.toml to `cfg(any(target_os = "linux", target_os = "macos"))` only -- absent on
+        # this job's Windows/native-x86_64-Linux build only in the sense that it's a real
+        # dependency edge on this job's own OS (ubuntu-latest is `target_os = "linux"`). Checked:
+        # `cargo tree -p namir-platform --target x86_64-unknown-linux-gnu -e normal,build` shows
+        # `libc` carries no `[build-dependencies]` of its own -- unlike blake3 above, its build
+        # script (which exists, and is exactly what counted against it at D-12.3, see
+        # `namir-platform/Cargo.toml`'s own comment) only probes the rustc/target version to set
+        # `--cfg` flags; it does not shell out to `cc` and so cannot need a C++ compiler either.
+        # No Windows-side dependency was added -- `thread_priority.rs`'s Windows implementation is
+        # three hand-rolled `extern` declarations against `kernel32.dll`, already always present.
         run: cargo build --workspace --all-targets
 
   # Covers D-18.1's "cross-build of the mobile-capable crates for aarch64-linux-android and
@@ -205,6 +217,18 @@ jobs:
   # false, features = ["alloc"]`) is no_std-capable and carries no build script; namir-library adds
   # no third-party dependency of its own beyond serde/serde_json, both already proven mobile-safe
   # by every crate above it in this list.
+  #
+  # namir-platform reached D-13.2/D-13.3's full scope at M6 (this list's own entry for it already
+  # existed since M2, when it carried only D-7.4's DenormalGuard). Its one new dependency, `libc`
+  # (`thread_priority.rs`'s Linux/macOS pthread bindings), is `cfg`-scoped in its Cargo.toml to
+  # exactly `target_os = "linux"` / `target_os = "macos"` -- neither matches `aarch64-linux-android`
+  # or `aarch64-apple-ios`, so it is absent from this crate's dependency tree on both mobile
+  # targets entirely (confirmed: `cargo tree -p namir-platform --target aarch64-linux-android -e
+  # normal,build` and the `aarch64-apple-ios` equivalent both show no `libc` node at all, unlike
+  # the native-Linux tree this job's sibling job builds against). `thread_priority.rs`'s Windows
+  # implementation is hand-rolled `extern` declarations, not a dependency, so it adds nothing to
+  # either mobile target either. `paths.rs`/`clap_paths.rs` (D-13.2's config/log paths, D-13.3's
+  # CLAP install paths) use only `std::env`/`std::path` and add no dependency at all.
   #
   # These are library-only builds (no bins), so in principle they don't need a working final
   # linker for the target platform -- an rlib build has no link step. That reasoning holds for
