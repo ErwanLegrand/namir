@@ -55,6 +55,16 @@ namir-fixtures = { path = "../namir-fixtures" }
 # Pins `benches/six_stage_chain.rs` to one core (D-2.1), same crate and version
 # `namir-nam`'s/`namir-ir`'s own D-2.1-pinned benches use.
 core_affinity = "0.8"
+# NFR-RT-030's benchmark (`benches/denormal_guard.rs`) needs `namir_platform::DenormalGuard` to
+# engage FTZ/DAZ around measured blocks. D-5.1's layering table (`xtask/src/layering.rs`) does not
+# permit `namir-engine` to depend on `namir-platform` as a *normal* dependency -- `namir-engine`
+# must stay build-order-independent of the product-shell layer that owns platform concerns -- but
+# the layering scanner only inspects normal/build edges (see that module's own doc comment) and
+# exempts dev-dependencies outright, the same carve-out `namir-nam`'s dev-dependency on
+# `namir-fixtures` already relies on for its own parity tests. Dev-dependency only, so this is
+# never linked into a release build of this crate, and `cargo run -p xtask -- layering` does not
+# see this edge at all.
+namir-platform = { path = "../namir-platform" }
 
 [[bench]]
 name = "six_stage_chain"
@@ -78,4 +88,11 @@ harness = false
 # real ring. Gates nothing by itself; see the file's own doc comment for the D-2.4 run procedure.
 [[bench]]
 name = "handover_crossfade"
+harness = false
+
+# M6: NFR-RT-030's verification (Verify method B), open since M1 built `DenormalGuard` with no
+# audio path ever acquiring it and no benchmark ever built to check it -- see the file's own doc
+# comment for the full history and methodology. Gates NFR-RT-030 itself, not NFR-PERF-010.
+[[bench]]
+name = "denormal_guard"
 harness = false
