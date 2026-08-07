@@ -291,14 +291,15 @@ fn leaf_dir_name(bank: usize, folder: usize) -> (String, String) {
 /// reads the winner's instead — both built byte-identical content from the same seed, so which
 /// one "wins" is immaterial.
 ///
-/// **The publish step retries, rather than assuming a single failed `rename` definitively means
-/// "someone else already published it".** Found by real CI (this crate's own dev sandbox never
-/// exercised it, since its cache was already warm by the time this milestone ran `cargo test
-/// --workspace` there): with several processes each generating a different seed's corpus
-/// concurrently on a shared, possibly I/O-contended runner, a `rename` can fail for reasons other
-/// than a genuine race loss, and a caller that discards its own fully-built corpus on that
-/// assumption and finds nothing at the destination either has nowhere left to go. See
-/// [`build_and_publish_corpus`]'s own doc comment for the retry shape.
+/// **The publish step does not trust a single failed `rename` to mean "someone else already
+/// published it", and does not trust an existing `dir` to mean it holds something valid.** Found
+/// by real CI (this crate's own dev sandbox never exercised it, since its corpus cache was
+/// already warm or uncontended every time this milestone ran `cargo test --workspace` there): a
+/// non-empty `dir` can be stale, invalid content left by an earlier interrupted build rather than
+/// a genuine winner's publish, and if so, every future `rename` onto it fails forever — no amount
+/// of retrying a read-only check recovers from that. The publish step validates what is actually
+/// at `dir` and clears it if it is not a valid corpus, before attempting to claim the path, over
+/// several bounded retries. See [`build_and_publish_corpus`]'s own doc comment for the full shape.
 ///
 /// # Errors
 ///
@@ -426,8 +427,8 @@ fn manifest_entries_to_library_entries(
         .collect()
 }
 
-/// Bounded retries around the publish step's rename-then-verify sequence — see
-/// [`build_and_publish_corpus`]'s doc comment for why a single attempt is not enough.
+/// Bounded retries around the publish step — see [`build_and_publish_corpus`]'s doc comment for
+/// why one attempt is not enough.
 const MAX_PUBLISH_ATTEMPTS: u32 = 20;
 
 /// Backoff between publish attempts. 20 attempts costs at most ~2 s of sleeping in the worst case
@@ -439,17 +440,21 @@ const PUBLISH_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 /// Cold-cache path: builds a full corpus into a private temp directory, writes its manifest, then
 /// atomically publishes it to `dir` (see [`generate_shared_corpus`]'s doc comment on the race).
 ///
-/// **The publish step retries the rename-then-verify sequence, not just the verify half.** A
-/// single failed `rename` does not necessarily mean "another caller already published `dir`
-/// first" — it can also fail for a transient reason (observed on CI: several processes each
-/// building a *different* seed's corpus at once, all writing heavily under the same
-/// `cache_root()` parent directory, occasionally makes an unrelated `rename` fail under I/O
-/// pressure). Treating every failure as "I lost, read theirs" and discarding a perfectly good,
-/// fully-built corpus on that assumption is only safe if the assumption is actually true; when it
-/// isn't, nothing is ever found at `dir` either, and the original single-shot version failed
-/// outright right there. Retrying both the rename (in case nobody has actually published yet) and
-/// the readback (in case a genuine winner's publish needs a moment to become visible) recovers
-/// from both without needing to tell the two cases apart.
+/// **The publish step actively clears whatever is at `dir` before claiming it, rather than
+/// assuming any existing entry there is a valid winner's publish.** The original version treated
+/// a failed `rename` as proof "another caller already published `dir` first" and moved on to read
+/// it. That is too strong an assumption: `dir` can also be occupied by *stale, invalid* content —
+/// observed on CI (not reproducible on this crate's own dev sandbox, whose corpus cache was
+/// already warm or empty-and-uncontended every time this milestone ran `cargo test --workspace`
+/// there) — a directory left behind by an earlier, interrupted build (a previous CI attempt that
+/// failed partway, or a build-cache restore of one) is non-empty but never becomes valid, so
+/// *every* `rename` onto it fails forever and no amount of retrying the read-back alone recovers.
+/// This version checks what is actually at `dir` first: a *valid* corpus (real winner or an
+/// earlier attempt's own success) is used as-is; anything else — missing, corrupt, or genuinely
+/// stale — is removed before attempting to claim the path, so a bad destination can never
+/// permanently block every future attempt. Content is deterministic per `(seed, key)`, so
+/// clearing and re-publishing loses nothing even in the case this turns out to have been a
+/// genuine, resolvable race rather than stale state.
 fn build_and_publish_corpus(dir: &Path, seed: u64, key: &str) -> io::Result<LibraryCorpus> {
     record_build_attempt(seed);
     let nonce = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -472,28 +477,49 @@ fn build_and_publish_corpus(dir: &Path, seed: u64, key: &str) -> io::Result<Libr
         return Err(e);
     }
 
-    for attempt in 0..MAX_PUBLISH_ATTEMPTS {
-        // Harmless if `tmp_dir` no longer exists (an earlier attempt already moved it): this
-        // just fails with `NotFound`, and the `try_load_cached` check below still runs.
-        let _ = fs::rename(&tmp_dir, dir);
+    // Diagnostics only -- captures the *last* attempt's state so a persistent (not transient)
+    // failure reports something actionable instead of the same opaque message every time. Not
+    // load-bearing for the retry logic itself.
+    let mut last_rename_err: Option<io::Error> = None;
+    let mut last_readback_err: Option<io::Error> = None;
 
-        if let Some(corpus) = try_load_cached(dir, seed, key)? {
-            // Whether we won or another caller did, `dir` now holds a valid corpus. If our own
-            // `tmp_dir` is still around (we lost, or our rename hasn't taken effect for some
-            // other reason), it is now redundant.
-            let _ = fs::remove_dir_all(&tmp_dir);
-            return Ok(corpus);
+    for attempt in 0..MAX_PUBLISH_ATTEMPTS {
+        match try_load_cached(dir, seed, key) {
+            Ok(Some(corpus)) => {
+                // A valid corpus already sits at `dir` -- ours from an earlier attempt in this
+                // same loop, or a genuine other winner's. Either way, use it.
+                let _ = fs::remove_dir_all(&tmp_dir);
+                return Ok(corpus);
+            }
+            Ok(None) => last_readback_err = None,
+            Err(e) => last_readback_err = Some(e),
         }
+
+        // Nothing valid at `dir`. Clear whatever is there -- absent, corrupt, or stale -- before
+        // trying to claim the path, so a non-empty-but-invalid destination can never make every
+        // future `rename` fail forever. A `NotFound` error here (the ordinary case: nothing to
+        // clear) is expected and ignored.
+        let _ = fs::remove_dir_all(dir);
+        last_rename_err = fs::rename(&tmp_dir, dir).err();
 
         if attempt + 1 < MAX_PUBLISH_ATTEMPTS {
             std::thread::sleep(PUBLISH_RETRY_BACKOFF);
         }
     }
 
+    // One last check: the final iteration's rename may have succeeded even though the loop ran
+    // out of attempts before re-checking.
+    if let Some(corpus) = try_load_cached(dir, seed, key)? {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Ok(corpus);
+    }
+
     let _ = fs::remove_dir_all(&tmp_dir);
-    Err(io::Error::other(
-        "corpus directory missing immediately after publish",
-    ))
+    Err(io::Error::other(format!(
+        "corpus directory missing immediately after publish (after {MAX_PUBLISH_ATTEMPTS} \
+         attempts; last rename error: {last_rename_err:?}; last try_load_cached error: \
+         {last_readback_err:?})"
+    )))
 }
 
 /// Actually writes [`TOTAL_COUNT`] fixture files (plus the manifest) into `root`, which must
@@ -619,6 +645,30 @@ mod tests {
             assert_eq!(ea.kind, eb.kind);
             assert_eq!(ea.content_hash, eb.content_hash);
         }
+    }
+
+    /// Regression test for the CI-only failure this crate's own dev sandbox could never
+    /// reproduce (its cache was always either warm or cleanly absent): a *non-empty but invalid*
+    /// directory already sitting at the publish destination -- content left by an earlier,
+    /// interrupted build, simulated here directly rather than by racing real processes -- must not
+    /// permanently block every future `rename` onto it. `build_and_publish_corpus` is expected to
+    /// notice the existing entry is not a valid corpus, clear it, and publish successfully anyway.
+    #[test]
+    fn stale_invalid_content_at_the_destination_is_cleared_and_replaced() {
+        const STALE_SEED: u64 = 99_991;
+        let dir = cache_root().join(format!("lib-corpus-{}", cache_key(STALE_SEED)));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create a stale destination directory");
+        fs::write(dir.join("leftover_junk.bin"), b"not a manifest, not empty")
+            .expect("write stale content into the destination");
+
+        let corpus =
+            generate_shared_corpus(STALE_SEED).expect("should self-heal past the stale content");
+        assert_eq!(corpus.entries.len(), TOTAL_COUNT);
+        assert!(
+            dir.join(MANIFEST_FILE_NAME).exists(),
+            "a valid manifest should now be published at the destination"
+        );
     }
 
     #[test]
