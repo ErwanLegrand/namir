@@ -1,0 +1,67 @@
+[package]
+name = "namir-clap"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Not `[lints] workspace = true`, deliberately -- same shape as `namir-platform`'s own
+# `Cargo.toml` (see that file's comment for the full argument). The workspace's
+# `[workspace.lints.rust]` sets `unsafe_code = "forbid"`, which resists a later local
+# `#![allow(unsafe_code)]`; `namir-clap` is the other of the two crates (with `namir-platform`)
+# D-5.3 permits to carry `unsafe` at all (the raw-window-handle bridge in `src/gui.rs`'s
+# `set_parent`, with its own written safety argument -- see that module's doc comment). `deny`
+# here, not `forbid`, is what makes that one designated block legal while still failing the build
+# on any *other* stray `unsafe` in this crate.
+[lints.rust]
+unsafe_code = "deny"
+# NFR-DOC-020, matching the workspace's `missing_docs = "warn"` (root `Cargo.toml`) -- not
+# inherited automatically since this crate has its own `[lints.rust]` table instead of
+# `[lints] workspace = true` (see this table's own comment above).
+missing_docs = "warn"
+
+# A CLAP plugin is a shared library the host `dlopen`s; `lib` is also kept so `cargo test -p
+# namir-clap` can run this crate's own unit tests without going through the `cdylib` entry point.
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+namir-params = { path = "../namir-params" }
+namir-state = { path = "../namir-state" }
+namir-library = { path = "../namir-library" }
+namir-platform = { path = "../namir-platform" }
+namir-engine = { path = "../namir-engine" }
+namir-worker = { path = "../namir-worker" }
+namir-ui = { path = "../namir-ui" }
+
+# D-14.2's decision, S-4-validated (`docs/02-architecture.md` §19: clap-validator 15/15, loads
+# and runs in Reaper, GUI extension confirmed). Exact versions pinned to what
+# `spikes/s4-clack-clap`'s own `Cargo.lock` resolved to, matching that spike's own comment on
+# pre-1.0 API churn (R-2, retired but "managed by exact version pinning").
+clack-plugin = "0.1.1"
+clack-extensions = { version = "0.1.1", features = [
+    "clack-plugin",
+    "gui",
+    "raw-window-handle_06",
+    "audio-ports",
+    "params",
+    "state",
+    "latency",
+] }
+# `namir_ui::app::open_parented`'s `parent: &P` bound is `P: raw_window_handle::HasWindowHandle`;
+# this crate's own `set_parent` (`src/gui.rs`) needs to name the trait directly to satisfy it.
+# Pinned to the same 0.6 line `namir-ui`'s own `Cargo.toml` uses.
+raw-window-handle = "0.6"
+# Only needed to name `baseview::WindowHandle`'s type in `NamirMainThread`'s own field
+# (`namir_ui::app::open_parented`'s return type) -- this crate never opens a `baseview` window
+# itself. Pinned to the same 0.2.x line `namir-ui`'s own `Cargo.toml` uses (and `spikes/
+# s4-clack-clap`'s `Cargo.lock` resolved to).
+baseview = "0.2"
+
+[dev-dependencies]
+# Test-only: `state_ext.rs`'s D-11.2 write-back test reads a saved document's raw JSON to check an
+# unrelated section survived, since `namir_state::Document`'s own section accessors are
+# `pub(crate)` to that crate. Not a new dependency in spirit -- `namir-state` already depends on
+# it and re-exports nothing narrower for this purpose.
+serde_json = "1"
