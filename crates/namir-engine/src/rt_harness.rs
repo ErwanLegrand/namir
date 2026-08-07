@@ -12,8 +12,10 @@
 //!
 //! Its default behaviour on a violation is to abort the process
 //! (`std::alloc::handle_alloc_error`), which `#[should_panic]` cannot observe — an abort kills
-//! the whole test binary, not just the offending test. The `warn_debug` feature (enabled in
-//! Cargo.toml, dev-dependency only) switches it to counting violations instead of aborting;
+//! the whole test binary, not just the offending test. The `warn_debug`/`warn_release` features
+//! (both enabled in Cargo.toml, dev-dependency only) switch it to counting violations instead of
+//! aborting -- one per profile, since each is gated on its own `debug_assertions` state, so both
+//! are needed for `cargo test` and `cargo test --release` alike;
 //! `audio_section` below turns that count back into an actual `panic!`, which is the observable
 //! "panics on allocation" behaviour D-7.5 asks for.
 
