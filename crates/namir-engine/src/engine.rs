@@ -197,6 +197,36 @@ impl AudioEngine {
         self.publish_telemetry();
     }
 
+    /// Applies one parameter change immediately, **bypassing the command ring entirely**.
+    ///
+    /// **Who this is for, and why it's sound:** a caller that already holds `&mut AudioEngine`
+    /// *from the audio thread itself* — M6's `namir-clap`, specifically, for host automation
+    /// (`ParamValueEvent`s) arriving in CLAP's `process()` callback. That callback already *is*
+    /// Namir's audio thread for a plugin instance, and the borrow checker's `&mut self` here is
+    /// the same exclusivity guarantee the ring exists to simulate across an actual thread
+    /// boundary — there is no boundary to cross, so there is nothing wait-free machinery would
+    /// buy over calling straight through to [`Chain::apply`]. FR-PARAM-030 ("parameter changes
+    /// ... converge to the same engine state regardless of source") still holds: this calls the
+    /// identical [`Chain::apply`] the ring-drain path in [`Self::process`] calls, so a UI/worker
+    /// change and a host-automation change of the same parameter produce the same state either
+    /// way — only same-block ordering relative to a ring-drained change is unspecified (this
+    /// runs before `process`'s own drain in every call site that uses it), which is documented
+    /// at the call site rather than here.
+    ///
+    /// Wait-free (NFR-RT-010): identical cost to one [`Chain::apply`] call, no ring, no lock, no
+    /// allocation.
+    pub fn apply_param_direct(&mut self, change: crate::param::ParamChange) {
+        self.chain.apply(change);
+    }
+
+    /// [`Chain::reset`], direct — the same audio-thread-exclusivity argument
+    /// [`Self::apply_param_direct`]'s doc comment makes, applied to CLAP's `PluginAudioProcessor::
+    /// reset` (transport stop/reposition), which the host calls directly on the audio thread
+    /// rather than through any ring.
+    pub fn reset_direct(&mut self) {
+        self.chain.reset();
+    }
+
     /// Read-only access to the chain, for callers that need its latency/tail reporting.
     pub fn chain(&self) -> &Chain {
         &self.chain
@@ -809,6 +839,34 @@ mod tests {
                 .iter()
                 .any(|e| e.id == TELEMETRY_DEFERRED_BLOCKS),
             "the engine's own readings should be present alongside the stages'"
+        );
+    }
+
+    /// **M6, `namir-clap`'s host-automation path.** [`AudioEngine::apply_param_direct`] must take
+    /// effect on the very next `process` — it bypasses the ring, so there is no drain step for it
+    /// to wait on — and must converge to the same state a ring-delivered [`Command::Param`] of the
+    /// same change would (FR-PARAM-030).
+    #[test]
+    fn apply_param_direct_takes_effect_on_the_next_process_call_like_a_ring_delivered_change() {
+        let c = ctx();
+        let (mut direct_engine, _worker) = build_default_engine(&c).unwrap();
+        let (mut ring_engine, mut ring_worker) = build_default_engine(&c).unwrap();
+
+        let change = ParamChange {
+            id: ParamId(namir_params::global::OUTPUT_CEILING_DB.id.0),
+            value: -6.0,
+        };
+
+        direct_engine.apply_param_direct(change);
+        let direct_out = run_sine(&mut direct_engine, 4, 220.0, |_| {});
+
+        submit(&mut ring_worker, Command::Param(change));
+        let ring_out = run_sine(&mut ring_engine, 4, 220.0, |_| {});
+
+        assert_eq!(
+            direct_out, ring_out,
+            "a direct-applied change must converge to the same engine state as the same change \
+             delivered through the ring"
         );
     }
 
