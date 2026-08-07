@@ -79,16 +79,21 @@ pub struct RecallOutcome {
 }
 
 /// FR-STATE-070's read-hash-compare loop over [`namir_state::candidates`], driven against a real
-/// `resolver` and the real filesystem. Deliberately not `namir_state::resolve` (existence-only,
-/// by design — see that module's doc comment): a path candidate that exists but whose *content*
-/// no longer matches `reference.hash` is not a hit, and only reading the bytes can tell the two
-/// apart. This crate is where that read happens anyway (`ResourceCache::get_or_load_*` needs the
-/// bytes to hash and parse regardless of which candidate produced them), so `FileResolver`
-/// deliberately never reads a file itself — see `namir_state::resolve`'s module doc comment.
+/// `resolver` and the real filesystem, **plus FR-STATE-080's embedded-data fallback**: if none of
+/// the three external candidates produce a content match, and the reference carries an embedded
+/// copy of the resource, that copy is used — verified against `reference.hash` the same way an
+/// external candidate is, so a corrupted or mismatched embed is a miss too, not a silent
+/// substitution. This is deliberately the *last* resort, after every external candidate: a
+/// resolvable library or absolute path is what FR-STATE-070 is actually about, and an embedded
+/// copy exists for the case none of those apply (sharing a preset with someone whose library is
+/// configured differently, or — this crate's own cross-process restore test — no library at all).
 ///
-/// **FR-STATE-080's embedded-data fallback is deliberately not wired in here yet** — it lands
-/// with the next task in the build order (cross-process restore and embedded data). A
-/// `reference.embedded` blob is simply not consulted by this function today.
+/// Deliberately not `namir_state::resolve` (existence-only, by design — see that module's doc
+/// comment): a path candidate that exists but whose *content* no longer matches `reference.hash`
+/// is not a hit, and only reading the bytes can tell the two apart. This crate is where that read
+/// happens anyway (`ResourceCache::get_or_load_*` needs the bytes to hash and parse regardless of
+/// which candidate produced them), so `FileResolver` deliberately never reads a file itself — see
+/// `namir_state::resolve`'s module doc comment.
 fn locate(reference: &FileRef, resolver: &dyn FileResolver) -> Result<Vec<u8>, MissingFile> {
     for candidate in namir_state::candidates(reference) {
         let path: Option<PathBuf> = match candidate {
@@ -107,6 +112,11 @@ fn locate(reference: &FileRef, resolver: &dyn FileResolver) -> Result<Vec<u8>, M
         }
         // P7: "identity is the content hash, paths are hints." A different file now lives at
         // this path -- not a hit, fall through to the next candidate rather than loading it.
+    }
+    if let Some(embedded) = &reference.embedded
+        && namir_core::ContentHash::of(&embedded.data) == reference.hash
+    {
+        return Ok(embedded.data.clone());
     }
     Err(MissingFile {
         display_name: reference.display_name.clone(),
@@ -441,5 +451,70 @@ mod tests {
         let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
         let outcome = instance.unload(Target::Nam);
         assert!(matches!(outcome.result, JobResult::Unloaded { .. }));
+    }
+
+    /// FR-STATE-080: a reference with no resolvable external candidate at all -- no
+    /// `library_relative`, no `absolute`, and a resolver that misses on hash too -- still loads
+    /// when it carries an embedded copy whose content matches the declared hash.
+    #[test]
+    fn a_reference_with_no_external_candidate_loads_from_its_embedded_copy() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+        let resolver = FakeResolver::default(); // nothing registered -- every candidate misses
+
+        let model = model_bytes(7);
+        let hash = ContentHash::of(&model);
+        let mut state = namir_state::State::defaults();
+        state.nam = Some(FileRef {
+            hash,
+            library_relative: None,
+            absolute: None,
+            display_name: "embedded-only.nam".to_string(),
+            embedded: Some(namir_state::EmbeddedRef {
+                media_type: "application/vnd.namir.nam+json".to_string(),
+                data: model,
+            }),
+        });
+
+        let outcome = instance.recall(&cache, &state, &resolver);
+        assert!(
+            matches!(outcome.nam, ResourceRecall::Loaded(_)),
+            "expected the embedded copy to load, got {:?}",
+            outcome.nam
+        );
+    }
+
+    /// P7 applied to the embedded fallback too: an embedded blob whose content does not match the
+    /// declared hash is not used -- the reference still ends up `Missing`, not silently loaded
+    /// with the wrong content.
+    #[test]
+    fn an_embedded_copy_whose_hash_does_not_match_is_not_used() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+        let resolver = FakeResolver::default();
+
+        let declared_hash = ContentHash::of(&model_bytes(8)); // never actually embedded
+        let mut state = namir_state::State::defaults();
+        state.nam = Some(FileRef {
+            hash: declared_hash,
+            library_relative: None,
+            absolute: None,
+            display_name: "mismatched-embed.nam".to_string(),
+            embedded: Some(namir_state::EmbeddedRef {
+                media_type: "application/vnd.namir.nam+json".to_string(),
+                data: model_bytes(9), // different content, different hash
+            }),
+        });
+
+        let outcome = instance.recall(&cache, &state, &resolver);
+        assert!(
+            matches!(outcome.nam, ResourceRecall::Missing { .. }),
+            "a hash-mismatched embed must not be treated as found, got {:?}",
+            outcome.nam
+        );
     }
 }
