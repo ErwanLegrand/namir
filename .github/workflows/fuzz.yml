@@ -4,10 +4,10 @@
 # matrix in ci.yml free of that requirement is simpler to reason about than threading a
 # per-job toolchain override through a single file.
 #
-# `crates/namir-nam/fuzz` and `crates/namir-state/fuzz` are each their own cargo-fuzz project with
-# their own empty [workspace] table (see either Cargo.toml's own comment) and are excluded from
-# the root workspace, so each needs its own checkout-relative working directory rather than a `-p`
-# flag from the repo root.
+# `crates/namir-nam/fuzz`, `crates/namir-state/fuzz` and `crates/namir-ir/fuzz` are each their own
+# cargo-fuzz project with their own empty [workspace] table (see either Cargo.toml's own comment)
+# and are excluded from the root workspace, so each needs its own checkout-relative working
+# directory rather than a `-p` flag from the repo root.
 
 name: Fuzz
 
@@ -69,3 +69,26 @@ jobs:
       - name: cargo fuzz run read_state -- -max_total_time=60
         working-directory: crates/namir-state/fuzz
         run: cargo fuzz run read_state -- -max_total_time=60
+
+  # M7: NFR-QUAL-040's third named reader (`namir-ir`'s WAV/IR header parser, `probe_wav`) --
+  # namir-nam and namir-state already had this coverage since M1/M5; namir-ir's own parser was a
+  # real, previously-unclosed gap this milestone found and closed. Same bounded-smoke shape as the
+  # two jobs above.
+  fuzz-smoke-ir:
+    name: fuzz smoke (probe_wav, 60s)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/namir-ir/fuzz
+
+      - name: cargo install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: cargo fuzz run probe_wav -- -max_total_time=60
+        working-directory: crates/namir-ir/fuzz
+        run: cargo fuzz run probe_wav -- -max_total_time=60
