@@ -18,6 +18,8 @@
     "gate.hold_ms": 50.0,
     "gate.release_ms": 150.0,
     "gate.threshold_db": -58.0,
+    "global.bypass": 1.0,
+    "global.output_ceiling_db": -3.0,
     "ir.enabled": 0.0,
     "ir.high_cut_enabled": 1.0,
     "ir.high_cut_freq_hz": 9000.0,

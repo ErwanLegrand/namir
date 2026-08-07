@@ -6,12 +6,14 @@
 //! a real `namir_state::FileResolver` (`namir-library`'s `LibraryResolver`, wired by whatever
 //! product shell owns both crates) and this crate's own [`ResourceCache`].
 //!
-//! # Order: globals, then every parameter, then the two resources
+//! # Order: every parameter, then the two resources
 //!
 //! Parameters land *before* resources so a swapped-in model arrives into an already-correct
 //! trim/gate/EQ rather than into stale values that then jump underneath it mid-crossfade —
 //! FR-STATE-050's "no click" would otherwise have to survive two simultaneous changes at once
-//! instead of one.
+//! instead of one. D-10.4: `global.bypass`/`global.output_ceiling_db` are ordinary `REGISTRY`
+//! entries now, so the single `state.params.iter()` loop below already carries them — there is
+//! no longer a separate "globals" pass ahead of it.
 //!
 //! # R4: each resource goes through `Instance::load`/`Instance::unload`, never a bespoke submit
 //!
@@ -137,20 +139,9 @@ impl Instance {
     ) -> RecallOutcome {
         let mut commands_not_delivered = 0usize;
 
-        if self
-            .submitter
-            .submit(Command::SetGlobalBypass(state.global.bypass))
-            .is_err()
-        {
-            commands_not_delivered += 1;
-        }
-        if self
-            .submitter
-            .submit(Command::SetOutputCeilingDb(state.global.output_ceiling_db))
-            .is_err()
-        {
-            commands_not_delivered += 1;
-        }
+        // D-10.4: `global.bypass`/`global.output_ceiling_db` are ordinary `REGISTRY` entries now,
+        // so `state.params.iter()` below already carries them -- there is no longer a dedicated
+        // `Command::SetGlobalBypass`/`SetOutputCeilingDb` to submit separately first.
         for (descriptor, value) in state.params.iter() {
             let change = ParamChange {
                 id: ParamId(descriptor.id.0),
@@ -428,8 +419,8 @@ mod tests {
         let resolver = FakeResolver::default();
 
         let mut state = namir_state::State::defaults();
-        state.global.bypass = true;
-        state.global.output_ceiling_db = -6.0;
+        state.set_global_bypass(true);
+        state.set_output_ceiling_db(-6.0);
 
         let outcome = instance.recall(&cache, &state, &resolver);
         assert_eq!(outcome.commands_not_delivered, 0);

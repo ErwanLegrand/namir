@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 
+use namir_params::global::{GLOBAL_BYPASS, OUTPUT_CEILING_DB};
+
 use crate::command::RetireSink;
-use crate::param::ParamChange;
+use crate::param::{ParamChange, ParamId};
 use crate::resource::{Resource, ResourceKind};
 use crate::stage::Stage;
 use crate::stage_io::StageIo;
@@ -11,6 +13,15 @@ use crate::telemetry::{TelemetryEntry, TelemetrySink};
 /// per-stage ones. Same readout-not-parameter convention every stage's telemetry id uses, so it is
 /// never added to `namir_params::REGISTRY` and `params.lock` is unaffected.
 const TELEMETRY_FAULT_COUNT: u32 = namir_params::ParamId::from_key("telemetry.chain.fault_count").0;
+
+/// D-10.4: this chain's own RT-facing `namir_engine::ParamId`s for FR-CHAIN-030's global bypass
+/// and FR-CHAIN-090's output ceiling, converted once from `namir_params`'s own ids for the same
+/// keys — the identical per-stage convention `stages/trim.rs`'s `GAIN_DB_ID` documents, applied
+/// here to the two chain-level (not stage-owned) descriptors `namir_params::global` declares.
+/// [`Chain::apply`] matches on these the same way a stage's own `apply` matches on its ids.
+const GLOBAL_BYPASS_ID: ParamId = ParamId(GLOBAL_BYPASS.id.0);
+/// See [`GLOBAL_BYPASS_ID`].
+const OUTPUT_CEILING_DB_ID: ParamId = ParamId(OUTPUT_CEILING_DB.id.0);
 
 /// D-6.1: "the chain is `Vec<Box<dyn Stage>>` built once during preparation." Building that
 /// vector — running each configured stage's `StagePrep::prepare` and boxing the result — is the
@@ -185,6 +196,11 @@ impl Chain {
     /// besides the stages themselves, so `process` just runs them as it always has. No existing
     /// test calls this — it is exercised only by this module's new cross-cutting tests, which do
     /// call `prepare_crosscutting` first.
+    ///
+    /// **D-10.4:** the product path no longer calls this directly — a `global.bypass` change now
+    /// arrives as an ordinary [`ParamChange`] through [`Chain::apply`], exactly like every stage
+    /// parameter, and `apply` calls this method internally. It stays `pub` as the low-level setter
+    /// this module's own tests (and any other direct `Chain` construction) use.
     pub fn set_global_bypass(&mut self, enabled: bool) {
         self.global_bypass = enabled;
     }
@@ -196,6 +212,9 @@ impl Chain {
     /// consistent convention). Defaults to `db_to_linear(0.0)` = 1.0, i.e. 0 dBFS, from
     /// `Chain::new` onward — set this before or after `prepare_crosscutting`, in either order;
     /// see this struct's own doc comment for why the two are independent.
+    ///
+    /// **D-10.4:** see [`Self::set_global_bypass`]'s identical note — the product path now reaches
+    /// this through [`Chain::apply`] and a `global.output_ceiling_db` [`ParamChange`].
     pub fn set_output_ceiling_db(&mut self, db: f32) {
         self.output_ceiling_linear = namir_core::db_to_linear(db);
     }
@@ -276,10 +295,30 @@ impl Chain {
         max_contribution
     }
 
-    /// Broadcasts to every stage. RD-2's per-instance parameter addressing (D-10.2) is future
-    /// work by design — 1.0's fixed chain has no ambiguity to resolve, so each stage just
-    /// ignores ids it doesn't own.
+    /// D-10.4: first checks `change` against the chain's own two descriptors
+    /// (`global.bypass`/`global.output_ceiling_db` — [`GLOBAL_BYPASS_ID`]/[`OUTPUT_CEILING_DB_ID`])
+    /// before falling back to broadcasting to every stage, exactly mirroring how a stage's own
+    /// `apply` matches its ids. This is the one place `Chain` itself, rather than a `Stage`, owns
+    /// a `ParamId` — before D-10.4 these two values had no `ParamChange` routing at all and were
+    /// only reachable through [`Self::set_global_bypass`]/[`Self::set_output_ceiling_db`] directly
+    /// (still called here, so the two setters remain the single place that actually mutates the
+    /// fields).
+    ///
+    /// A change that matches neither is broadcast to every stage. RD-2's per-instance parameter
+    /// addressing (D-10.2) is future work by design — 1.0's fixed chain has no ambiguity to
+    /// resolve, so each stage just ignores ids it doesn't own.
     pub fn apply(&mut self, change: ParamChange) {
+        if change.id == GLOBAL_BYPASS_ID {
+            // Stepped param value is the index as f32 (`ParamChange`'s own doc comment); index 1
+            // is "On" per `GLOBAL_BYPASS`'s descriptor -- the same `>= 0.5` convention
+            // `stages/trim.rs`'s `DC_BLOCKER_ENABLED` handling uses.
+            self.set_global_bypass(change.value >= 0.5);
+            return;
+        }
+        if change.id == OUTPUT_CEILING_DB_ID {
+            self.set_output_ceiling_db(change.value);
+            return;
+        }
         for stage in &mut self.stages {
             stage.apply(change);
         }
@@ -653,5 +692,123 @@ mod tests {
         let mut channels2: [&mut [f32]; 1] = [&mut buf2];
         let mut io2 = StageIo::new(&mut channels2, 64);
         audio_section(|| chain.process(&mut io2));
+    }
+
+    // --- D-10.4: `apply` now routes `global.bypass`/`global.output_ceiling_db` `ParamChange`s
+    // the same way it routes any stage's own parameters, instead of only being reachable through
+    // `set_global_bypass`/`set_output_ceiling_db` directly. These mirror the two
+    // `prepare_crosscutting`/`output_ceiling_clamps_magnitude_preserving_sign` tests above, driven
+    // through `apply` instead, to prove the new path produces the identical effect. ---
+
+    #[test]
+    fn apply_routes_global_bypass_param_change_to_the_bypass_path() {
+        // +6 dB stage: if `apply`'s GLOBAL_BYPASS_ID handling didn't actually flip
+        // `global_bypass`, this would come out gained rather than passed straight through -- the
+        // same "unity gain passthrough" signature
+        // `prepare_crosscutting_bypass_is_unity_gain_passthrough_at_zero_latency` checks against
+        // `set_global_bypass` directly.
+        let prep = FixedGainPrep { gain_db: 6.0 };
+        let stage = prep.prepare(&ctx()).unwrap();
+        let mut chain = Chain::new(vec![Box::new(stage)]);
+        chain.prepare_crosscutting(&ctx());
+
+        chain.apply(ParamChange {
+            id: GLOBAL_BYPASS_ID,
+            value: 1.0, // Stepped index 1 == "On", per GLOBAL_BYPASS's descriptor.
+        });
+
+        let mut left = [0.1f32, 0.2, 0.3, 0.4];
+        let mut channels: [&mut [f32]; 1] = [&mut left];
+        let mut io = StageIo::new(&mut channels, 4);
+        audio_section(|| chain.process(&mut io));
+
+        assert_eq!(io.channel(0), &[0.1, 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn apply_routes_global_bypass_off_value_back_through_the_stage_path() {
+        // The inverse of the test above: index 0 ("Off") through `apply` must leave the chain
+        // running its stages, not stuck bypassed from a prior change.
+        let prep = FixedGainPrep { gain_db: 6.0 };
+        let stage = prep.prepare(&ctx()).unwrap();
+        let mut chain = Chain::new(vec![Box::new(stage)]);
+        chain.prepare_crosscutting(&ctx());
+        chain.set_global_bypass(true);
+
+        chain.apply(ParamChange {
+            id: GLOBAL_BYPASS_ID,
+            value: 0.0,
+        });
+
+        // Small input: with the stage's +6 dB applied (bypass off), 0.1 * db_to_linear(6.0) stays
+        // comfortably under the default 0 dBFS output ceiling that `prepare_crosscutting` also
+        // activates -- a larger input here would have this test's own gain clamp against that
+        // ceiling instead of exercising the bypass-off path it means to check.
+        let mut left = [0.1f32; 4];
+        let mut channels: [&mut [f32]; 1] = [&mut left];
+        let mut io = StageIo::new(&mut channels, 4);
+        audio_section(|| chain.process(&mut io));
+
+        let expected = 0.1 * namir_core::db_to_linear(6.0);
+        for s in io.channel(0) {
+            assert!((*s - expected).abs() < 1e-4, "got {s}, expected {expected}");
+        }
+    }
+
+    #[test]
+    fn apply_routes_output_ceiling_param_change_to_the_clamp() {
+        // Same setup and assertions as `output_ceiling_clamps_magnitude_preserving_sign`, but the
+        // ceiling arrives through `apply` rather than `set_output_ceiling_db` directly.
+        let prep = FixedGainPrep { gain_db: 20.0 };
+        let stage = prep.prepare(&ctx()).unwrap();
+        let mut chain = Chain::new(vec![Box::new(stage)]);
+        chain.prepare_crosscutting(&ctx());
+
+        chain.apply(ParamChange {
+            id: OUTPUT_CEILING_DB_ID,
+            value: -6.0,
+        });
+        let ceiling = namir_core::db_to_linear(-6.0);
+
+        let mut buf = [1.0f32, -1.0];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, 2);
+        audio_section(|| chain.process(&mut io));
+
+        let out = io.channel(0);
+        assert!((out[0] - ceiling).abs() < 1e-5);
+        assert!((out[1] - (-ceiling)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn apply_does_not_broadcast_global_ids_to_stages() {
+        // A stage that panics if `apply` ever reaches it with any id -- proves `Chain::apply`
+        // truly intercepts GLOBAL_BYPASS_ID/OUTPUT_CEILING_DB_ID rather than merely handling them
+        // *in addition to* the broadcast.
+        struct PanicsOnApply;
+        impl Stage for PanicsOnApply {
+            fn process(&mut self, _io: &mut StageIo<'_>) {}
+            fn reset(&mut self) {}
+            fn latency_samples(&self) -> u32 {
+                0
+            }
+            fn tail_samples(&self) -> u32 {
+                0
+            }
+            fn apply(&mut self, change: ParamChange) {
+                panic!("stage should never see a chain-level id, got {change:?}");
+            }
+            fn telemetry(&self, _out: &mut TelemetrySink<'_>) {}
+        }
+
+        let mut chain = Chain::new(vec![Box::new(PanicsOnApply)]);
+        chain.apply(ParamChange {
+            id: GLOBAL_BYPASS_ID,
+            value: 1.0,
+        });
+        chain.apply(ParamChange {
+            id: OUTPUT_CEILING_DB_ID,
+            value: -3.0,
+        });
     }
 }

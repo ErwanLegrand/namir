@@ -784,9 +784,40 @@ usually transport-level in a host, not an ordinary automatable control), but it 
 **two** mechanisms for user-settable values in one format, and M6's CLAP adapter will want bypass
 exposed as a **host** parameter, which this shape does not provide for on its own. Evidence the gap
 was noticed once already and left unclosed: `namir_params::descriptor`'s own test module carries a
-fully-formed `out.channel_mode` descriptor that was never moved into `REGISTRY`. Flagged here as a
-decision M6 needs to make (a new `D-10.4`, once taken), not solved by this milestone pre-emptively
-guessing at CLAP's own shape for host-exposed bypass.
+fully-formed `out.channel_mode` descriptor that was never moved into `REGISTRY`. ~~Flagged here as
+a decision M6 needs to make (a new `D-10.4`, once taken), not solved by this milestone pre-emptively
+guessing at CLAP's own shape for host-exposed bypass.~~ **Resolved by D-10.4** (added M6): both
+values are now real `ParamDescriptor`s and the `global` document section is retired. See D-10.4
+below.
+
+**Decision D-10.4 (added M6)** — `global.bypass` (FR-CHAIN-030) and `global.output_ceiling_db`
+(FR-CHAIN-090) are declared as ordinary `ParamDescriptor`s (`namir_params::global::GLOBAL_BYPASS`/
+`OUTPUT_CEILING_DB`) and added to `REGISTRY`, exactly like every stage's own parameters.
+
+*Rationale:* D-10.3's own consequence note above records the gap this closes. Both values are real,
+user-settable, host-automatable state (FR-STATE-010) that had no `ParamDescriptor` home: routed
+instead through dedicated `Chain::set_global_bypass`/`set_output_ceiling_db` methods, dedicated
+`Command::SetGlobalBypass`/`SetOutputCeilingDb` variants, and a parallel `global` section in
+`namir-state`'s document format — a second, special-cased mechanism alongside the
+`parameters`/`REGISTRY` path every other control already used. M6's `namir-clap` is the concrete
+reason this needed deciding now rather than later: a CLAP host expects to control bypass through
+its own automation surface like any other parameter, not through a side channel only Rust code
+could reach. Giving both values a real descriptor removes exactly the special case FR-PARAM-030
+("parameter changes shall be accepted from the UI, CLAP automation, and preset loading, and
+converge to the same engine state regardless of source") already requires every other control to
+satisfy.
+
+*Consequence:* `namir_engine::Chain::apply`/`Command::Param` now carry `global.bypass`/
+`global.output_ceiling_db` changes the same way they carry every stage's own parameters —
+`Chain::apply` recognises the two ids itself before falling back to broadcasting to every stage.
+The dedicated `Command::SetGlobalBypass`/`SetOutputCeilingDb` variants are retired; `Chain`'s own
+`set_global_bypass`/`set_output_ceiling_db` methods remain as the low-level setters `Chain::apply`
+and this crate's tests call directly. `namir-state`'s document format drops the separate `global`
+section in favour of two more `parameters` entries (`global.bypass`, `global.output_ceiling_db`);
+D-11.2's tolerant/versioned deserialisation reads an existing document's old `global` section as a
+fallback for whichever of the two keys `parameters` doesn't itself carry, so an already-saved
+`.namirpreset` file still loads correctly, but every save now writes the new shape.
+`docs/04-state-and-preset-format.md` §5/§9 are updated accordingly.
 
 ---
 
