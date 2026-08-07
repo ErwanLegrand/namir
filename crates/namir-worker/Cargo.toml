@@ -18,6 +18,7 @@ namir-nam = { path = "../namir-nam" }
 namir-ir = { path = "../namir-ir" }
 namir-engine = { path = "../namir-engine" }
 namir-library = { path = "../namir-library" }
+namir-state = { path = "../namir-state" }
 # Deliberately absent, each a decision rather than an oversight:
 #  - no async runtime: D-7.1 rejects tokio et al. explicitly ("it brings a scheduler, a large
 #    dependency surface and no benefit for a workload that is a handful of long CPU/IO tasks");
@@ -26,9 +27,9 @@ namir-library = { path = "../namir-library" }
 #  - no `rtrb`: namir-engine owns the ring types and hands out its own endpoints, so the
 #    dependency stays confined to the one crate that needs it;
 #  - no namir-params/namir-dsp/namir-platform: D-5.1 permits all three, which is not a reason to
-#    take them. namir-state is M5's *other* new crate and does not exist yet; `library.rs` reaches
-#    it indirectly (`namir-library` already depends on it) rather than pulling it in a second time
-#    for no code this crate needs on its own.
+#    take them. `recall.rs` reads a `namir_params::ParamDescriptor`'s `.id` field through
+#    `namir_state::ParamValues::iter()`'s own return type without ever naming `namir_params`
+#    itself, the same way `library.rs` reaches `namir-state` indirectly through `namir-library`.
 
 [dev-dependencies]
 namir-fixtures = { path = "../namir-fixtures" }
