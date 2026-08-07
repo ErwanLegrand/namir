@@ -240,6 +240,7 @@ dependencies = [
 name = "namir-library"
 version = "0.1.0"
 dependencies = [
+ "core_affinity",
  "namir-core",
  "namir-fixtures",
  "namir-ir",
