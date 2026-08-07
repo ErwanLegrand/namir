@@ -676,7 +676,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "namir-core",
  "namir-params",
+ "namir-state",
  "walkdir",
 ]
 
