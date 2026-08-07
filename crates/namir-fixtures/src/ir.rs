@@ -62,6 +62,47 @@ pub fn to_mono_wav_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     buf
 }
 
+/// The stereo counterpart of [`to_mono_wav_bytes`]: interleaved 16-bit PCM `.wav` bytes from two
+/// equal-length channels. Added for NFR-PERF-050's benchmark fixture (`namir-worker`'s
+/// `benches/resource_load.rs`), which needs a "2 s stereo IR" — the one shape this module could
+/// not previously produce at all, mono being every other fixture's whole point (D-9.5's
+/// convolution-correctness fixtures are deliberately single-channel; stereo-ness was never their
+/// subject). Same clamp-not-panic behaviour as the mono encoder.
+///
+/// Panics if `left.len() != right.len()` — the two channels of one stereo file always run the
+/// same duration; a caller passing mismatched lengths has a bug worth surfacing immediately
+/// rather than silently truncating one channel.
+pub fn to_stereo_wav_bytes(left: &[f32], right: &[f32], sample_rate: u32) -> Vec<u8> {
+    assert_eq!(
+        left.len(),
+        right.len(),
+        "stereo channels must be equal length"
+    );
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut writer =
+            hound::WavWriter::new(cursor, spec).expect("in-memory WAV writer construction");
+        for (&l, &r) in left.iter().zip(right.iter()) {
+            for s in [l, r] {
+                let clamped = s.clamp(-1.0, 1.0);
+                let i16_sample = (clamped * i16::MAX as f32).round() as i16;
+                writer
+                    .write_sample(i16_sample)
+                    .expect("in-memory WAV write");
+            }
+        }
+        writer.finalize().expect("in-memory WAV finalize");
+    }
+    buf
+}
+
 /// Exponentially decaying white noise: the standard stand-in for a "realistic-shaped" IR. A
 /// real cabinet/room IR's cost depends only on its length, not its exact taps, so this is
 /// exercised for cost/coverage rather than tonal fidelity.
@@ -215,6 +256,27 @@ mod tests {
         let mut reader = hound::WavReader::new(std::io::Cursor::new(&bytes)).unwrap();
         let samples: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
         assert_eq!(samples, vec![i16::MAX, -i16::MAX, 0]);
+    }
+
+    #[test]
+    fn stereo_wav_bytes_round_trip_through_hound() {
+        let left = decaying_noise(512, 1, 100.0);
+        let right = decaying_noise(512, 2, 100.0);
+        let bytes = to_stereo_wav_bytes(&left, &right, 48_000);
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(&bytes)).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 2);
+        assert_eq!(spec.sample_rate, 48_000);
+        assert_eq!(spec.bits_per_sample, 16);
+        assert_eq!(reader.duration(), left.len() as u32);
+        let samples: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples.len(), left.len() * 2, "interleaved L/R samples");
+    }
+
+    #[test]
+    #[should_panic(expected = "equal length")]
+    fn stereo_wav_bytes_rejects_mismatched_channel_lengths() {
+        to_stereo_wav_bytes(&[0.0, 0.0], &[0.0], 48_000);
     }
 
     #[test]
