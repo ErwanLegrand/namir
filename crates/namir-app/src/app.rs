@@ -1,7 +1,7 @@
 //! Top-level wiring: [`run`] is `main`'s actual body, factored out so `main.rs` stays a one-line
 //! entry point. This module is deliberately thin glue over already-tested pieces
 //! ([`crate::device_state`]'s selection logic, [`crate::settings`]'s persistence,
-//! [`crate::engine_live`]'s live engine, [`crate::worker`]'s background thread,
+//! [`crate::instance::SharedInstance`], [`crate::worker`]'s background thread,
 //! [`crate::host::AppHost`]'s `UiHost` bridge, [`crate::stream`]'s duplex path) — real device I/O
 //! and window creation cannot be meaningfully unit-tested (this crate's own final report explains
 //! why, and `docs/manual-tests/` records what to check by hand instead), so this module's job is
@@ -16,12 +16,12 @@ use std::time::Duration;
 use namir_core::{ChannelConfig, SampleRate};
 use namir_engine::{PrepareContext, build_default_engine};
 use namir_state::State;
-use namir_worker::ResourceCache;
 use namir_worker::pool::ThreadPool;
+use namir_worker::{EngineConfig, Instance, ResourceCache};
 
 use crate::audio_io::{AudioBackend, CpalBackend, DeviceInfo, HostInfo, StreamParams};
-use crate::engine_live::LiveEngine;
 use crate::host::AppHost;
+use crate::instance::SharedInstance;
 use crate::settings::{self, AppSettings};
 use crate::stream::{self, StreamSetup};
 use crate::worker::{AppEvent, WorkerContext, WorkerHandle};
@@ -167,7 +167,11 @@ pub fn run() {
     };
 
     let cache = ResourceCache::shared();
-    let (live, submitter, telemetry) = LiveEngine::new(ctx, endpoint, cache);
+    // `TelemetryReader` is `Clone` (D-7.3), cloned before `Instance::new` consumes the rest of
+    // `endpoint` -- see `crate::instance`'s module doc comment, matching `namir-clap::audio`'s
+    // `activate` (`crates/namir-clap/src/audio.rs`).
+    let telemetry = endpoint.telemetry.clone();
+    let instance = SharedInstance::new(Instance::new(EngineConfig { ctx }, endpoint));
 
     let library_dir = config_dir
         .clone()
@@ -178,7 +182,8 @@ pub fn run() {
 
     let state = Arc::new(Mutex::new(State::defaults()));
     let worker_ctx = WorkerContext {
-        live,
+        instance: instance.clone(),
+        cache: Arc::clone(&cache),
         library: Arc::clone(&library),
         pool: ThreadPool::new(),
         library_roots,
@@ -187,7 +192,7 @@ pub fn run() {
     let worker = WorkerHandle::spawn(worker_ctx);
     let stream_event_sender = worker.event_sender();
 
-    let mut host = AppHost::new(submitter, worker, telemetry, library, state);
+    let mut host = AppHost::new(instance, worker, telemetry, library, state);
     if let Some(w) = settings_warning {
         host.report(w.code, w.detail);
     }
@@ -310,7 +315,8 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     .expect("a fixed, always-valid fallback context");
     let (_engine, endpoint) = build_default_engine(&c).expect("the default chain always prepares");
     let cache = ResourceCache::shared();
-    let (live, submitter, telemetry) = LiveEngine::new(c, endpoint, cache);
+    let telemetry = endpoint.telemetry.clone();
+    let instance = SharedInstance::new(Instance::new(EngineConfig { ctx: c }, endpoint));
 
     let library_dir = config_dir.unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
     let (library, _warnings) = crate::library_service::open(&library_dir);
@@ -319,14 +325,15 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
 
     let state = Arc::new(Mutex::new(State::defaults()));
     let worker_ctx = WorkerContext {
-        live,
+        instance: instance.clone(),
+        cache: Arc::clone(&cache),
         library: Arc::clone(&library),
         pool: ThreadPool::new(),
         library_roots,
         state: Arc::clone(&state),
     };
     let worker = WorkerHandle::spawn(worker_ctx);
-    let mut host = AppHost::new(submitter, worker, telemetry, library, state);
+    let mut host = AppHost::new(instance, worker, telemetry, library, state);
     host.report(
         crate::error_codes::NO_SUPPORTED_CONFIG,
         "no audio device could be opened; parameters can still be edited but nothing will be \

@@ -1,5 +1,5 @@
 //! [`AppHost`]: this crate's [`namir_ui::UiHost`] implementation — the bridge between
-//! `namir-ui`'s pure view layer and this crate's real [`crate::engine_live::LiveEngine`],
+//! `namir-ui`'s pure view layer and this crate's real [`crate::instance::SharedInstance`],
 //! [`crate::worker::WorkerHandle`] and [`namir_worker::library::LibraryService`].
 //!
 //! # The bridge's shape, one frame at a time
@@ -22,27 +22,24 @@
 //! 4. Reads the shared `LibraryService` for the current index/scan-progress snapshot.
 //!
 //! [`AppHost::dispatch`] turns each [`namir_ui::UiIntent`] into either an immediate, non-blocking
-//! submission through [`crate::engine_live::LiveEngine::submitter`] (`SetParam`/
-//! `ResetParamToDefault`) or an [`crate::worker::AppCommand`] handed to the worker thread
-//! (`LoadLibraryEntry`/`RescanLibraryRequested`/`CancelScanRequested`) — see
-//! [`crate::engine_live`]'s module doc comment for why plain parameter submission has to bypass
-//! `namir_worker::Instance` entirely, and [`crate::worker`]'s for why load/scan do not.
+//! submission through [`crate::instance::SharedInstance`] (`SetParam`/`ResetParamToDefault`, via
+//! `namir_worker::Instance::try_submit_param`) or an [`crate::worker::AppCommand`] handed to the
+//! worker thread (`LoadLibraryEntry`/`RescanLibraryRequested`/`CancelScanRequested`) — see
+//! [`crate::worker`]'s module doc comment for why load/scan don't also go through the direct path.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use namir_core::ErrorCode;
-use namir_engine::{
-    Command, ParamChange, ParamId as EngineParamId, TelemetryEntry, TelemetryReader,
-};
+use namir_engine::{ParamChange, ParamId as EngineParamId, TelemetryEntry, TelemetryReader};
 use namir_params::REGISTRY;
 use namir_state::State;
 use namir_ui::{LibrarySnapshot, MeterReading, UiHost, UiIntent, UiNotice, UiSnapshot};
-use namir_worker::CommandSubmitter;
+use namir_worker::Target;
 use namir_worker::library::LibraryService;
 
-use crate::engine_live::Target;
+use crate::instance::SharedInstance;
 use crate::worker::{AppCommand, AppEvent, LoadOutcomeSummary, WorkerHandle};
 
 /// This crate's own catalogue entries for the notices [`AppHost`] itself synthesises (as opposed
@@ -122,7 +119,7 @@ fn basename(path_or_desc: &str) -> String {
 /// This crate's [`UiHost`] implementation. See this module's doc comment for the full bridge
 /// design.
 pub struct AppHost {
-    submitter: Arc<CommandSubmitter>,
+    instance: SharedInstance,
     worker: WorkerHandle,
     telemetry: TelemetryReader,
     library: Arc<LibraryService>,
@@ -143,7 +140,7 @@ impl AppHost {
     /// thread, library service etc. is [`crate::app`]'s job — this constructor just assembles
     /// what it is handed.
     pub fn new(
-        submitter: Arc<CommandSubmitter>,
+        instance: SharedInstance,
         worker: WorkerHandle,
         telemetry: TelemetryReader,
         library: Arc<LibraryService>,
@@ -151,7 +148,7 @@ impl AppHost {
     ) -> Self {
         let last_saved = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Self {
-            submitter,
+            instance,
             worker,
             telemetry,
             library,
@@ -376,10 +373,15 @@ impl UiHost for AppHost {
                     let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = state.params.set(key, value);
                 }
-                let _ = self.submitter.try_submit(Command::Param(ParamChange {
-                    id: EngineParamId(descriptor.id.0),
-                    value,
-                }));
+                self.instance.with(|i| {
+                    // "What the UI thread uses" -- see `Instance::try_submit_param`'s own doc
+                    // comment. One attempt, never blocks; D-15.3 doesn't think a knob turn is worth
+                    // stalling a GUI frame for.
+                    let _ = i.try_submit_param(ParamChange {
+                        id: EngineParamId(descriptor.id.0),
+                        value,
+                    });
+                });
             }
             UiIntent::ResetParamToDefault { key } => {
                 let Some(descriptor) = REGISTRY.iter().find(|d| d.key == key) else {
@@ -390,10 +392,12 @@ impl UiHost for AppHost {
                     let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = state.params.set(key, default);
                 }
-                let _ = self.submitter.try_submit(Command::Param(ParamChange {
-                    id: EngineParamId(descriptor.id.0),
-                    value: default,
-                }));
+                self.instance.with(|i| {
+                    let _ = i.try_submit_param(ParamChange {
+                        id: EngineParamId(descriptor.id.0),
+                        value: default,
+                    });
+                });
             }
             UiIntent::LibraryQueryChanged(_) => {
                 // Pure view-side filtering state (`namir_ui::library_view::LibraryViewState`);
@@ -443,8 +447,8 @@ mod tests {
     use super::*;
     use namir_core::{ChannelConfig, SampleRate};
     use namir_engine::{PrepareContext, RingCapacities, build_default_chain, split};
-    use namir_worker::ResourceCache;
     use namir_worker::pool::ThreadPool;
+    use namir_worker::{EngineConfig, Instance, ResourceCache};
 
     const SR: u32 = 48_000;
     const BLOCK: usize = 64;
@@ -469,8 +473,12 @@ mod tests {
         let c = ctx();
         let chain = build_default_chain(&c).unwrap();
         let (engine, endpoint) = split(chain, RingCapacities::default());
-        let (live, submitter, telemetry) =
-            crate::engine_live::LiveEngine::new(c, endpoint, Arc::new(ResourceCache::new()));
+        // `TelemetryReader` is `Clone` (D-7.3), cloned before `endpoint` is consumed by
+        // `Instance::new` -- see `crate::instance`'s module doc comment.
+        let telemetry = endpoint.telemetry.clone();
+        let instance =
+            crate::instance::SharedInstance::new(Instance::new(EngineConfig { ctx: c }, endpoint));
+        let cache = Arc::new(ResourceCache::new());
 
         let (library, _warnings) = crate::library_service::open(dir);
         let library = Arc::new(library);
@@ -479,7 +487,8 @@ mod tests {
 
         let state = Arc::new(Mutex::new(State::defaults()));
         let worker_ctx = crate::worker::WorkerContext {
-            live,
+            instance: instance.clone(),
+            cache,
             library: Arc::clone(&library),
             pool,
             library_roots: roots,
@@ -487,7 +496,7 @@ mod tests {
         };
         let worker = WorkerHandle::spawn(worker_ctx);
 
-        let host = AppHost::new(submitter, worker, telemetry, library, state);
+        let host = AppHost::new(instance, worker, telemetry, library, state);
         (host, engine)
     }
 
@@ -505,8 +514,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The end-to-end proof of `engine_live`'s whole reason for existing:** a `SetParam` intent
-    /// dispatched through `AppHost` reaches the real audio thread.
+    /// **The end-to-end proof of `crate::instance::SharedInstance`'s whole reason for existing:** a
+    /// `SetParam` intent dispatched through `AppHost` -- via `Instance::try_submit_param`, not a
+    /// bespoke submitter -- reaches the real audio thread.
     #[test]
     fn set_param_intent_reaches_the_audio_thread() {
         let dir = temp_dir("set_param");
@@ -517,9 +527,10 @@ mod tests {
         // clamps to the descriptor's range and this test also checks the exact stored value.
         host.dispatch(UiIntent::SetParam { key, value: -24.0 });
 
-        // The gain ramp needs several blocks to settle -- see `engine_live`'s identical test for
-        // why one block is not enough, and why `left`/`right`/`channels` are rebuilt fresh each
-        // iteration rather than reused across the loop.
+        // The gain ramp needs several blocks to settle -- see `namir-worker`'s own
+        // `try_submit_param_delivers_a_plain_parameter_change` test for why one block is not
+        // enough, and why `left`/`right`/`channels` are rebuilt fresh each iteration rather than
+        // reused across the loop.
         let mut left = [0.0f32; BLOCK];
         let mut right = [0.0f32; BLOCK];
         for _ in 0..100 {

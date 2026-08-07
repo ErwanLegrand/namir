@@ -428,6 +428,22 @@ smallest closing change would be additive: `Instance::submitter(&self) -> Arc<Co
 (or an equivalent that lets a caller share the ring producer `Instance` already owns), with no
 existing signature changed.
 
+*Consequence (closed M6):* the smallest closing change was built, not the one first sketched above
+— `Instance::try_submit_param(&mut self, ParamChange) -> Result<(), SubmitError>`
+(`crates/namir-worker/src/lib.rs`), a single non-blocking `try_submit` call behind `&mut self`
+rather than an accessor onto the whole producer. Smaller than exposing `Arc<CommandSubmitter>`
+itself: it does not let a caller reach `submit`'s *blocking* form (only `Instance::load`/`unload`/
+`recall` should ever block a worker thread on a handover), and it needs no new field on `Instance`,
+only a two-line method forwarding to the submitter it already owns privately. `namir-app`'s
+substitute (`crates/namir-app/src/engine_live.rs`'s `LiveEngine`, ~575 lines re-deriving R-7's
+serialisation window, a file-size-checked read, and FR-STATE-070's locate loop — all three already
+real, tested code inside `Instance`/`namir_worker::recall`) is deleted in the same pass that adds
+this method: `namir-app` now builds a real `Instance`, shared behind a `Mutex` between its GUI
+thread and worker thread (`crates/namir-app/src/instance.rs`'s `SharedInstance`) the same way
+`namir-clap`'s `SharedInner` already shared one behind `Mutex<Option<Instance>>` — the two crates'
+independent M6 solutions to "share one `&mut Instance`-shaped thing across threads" converge once
+both can actually hold an `Instance` at all.
+
 **Decision D-7.3** — Audio thread outbound communication (meters, gate reduction, fault flags,
 xrun counts) uses **atomics and a lock-free telemetry ring**, read at UI frame rate. Loss is
 acceptable outbound and the buffer overwrites oldest.
