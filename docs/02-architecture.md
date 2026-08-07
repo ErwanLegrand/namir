@@ -1001,6 +1001,21 @@ with a device that can be made to fail, not a happy-path test.
 **Decision D-13.2** — Filesystem locations, config directories, log sinks and thread priority
 elevation live in `namir-platform` and nowhere else (P5, NFR-PORT-020).
 
+*Consequence (added M6, from building it):* `namir-platform` reaches this decision's full scope.
+`paths.rs` computes Namir's own config directory (`%APPDATA%\Namir` / `~/Library/Application
+Support/Namir` / `$XDG_CONFIG_HOME/namir` else `~/.config/namir` — not specified anywhere in the
+FRS or `docs/04-state-and-preset-format.md`, so this follows each OS's own documented convention)
+and a log-sink path beneath it; `thread_priority.rs` adds
+`elevate_current_thread_priority`. Both are pure path/outcome computation with no I/O and no
+audio-callback wiring — that wiring is out of this crate's own scope by construction (D-5.1 does
+not let `namir-engine` depend on `namir-platform` at all) and is explicitly `namir-app`'s/
+`namir-clap`'s job, the same split D-7.4's own M3 consequence note already states for
+`DenormalGuard`. `thread_priority.rs` is therefore built, unit-tested, and **not yet called from
+any audio thread** — recorded so it is not mistaken for wired-in, the same distinction that note
+draws for the denormal guard. See that module's own doc comment for exactly when and how a future
+caller should invoke it, and §17's dependency register for the one new dependency it takes
+(`libc`, Linux/macOS only) and why.
+
 **Decision D-13.3** — The CLAP plugin installs to the **CLAP-specified search paths only**, and the
 per-user path is the default.
 
@@ -1022,6 +1037,14 @@ to search for.
 
 *Consequence:* FR-ERR-050's diagnostic bundle should record which CLAP paths exist and what they
 contain, since that single fact resolves this class of report immediately.
+
+*Consequence (added M6, from building it):* `namir-platform`'s `clap_paths.rs` implements exactly
+this table as `clap_install_dir(ClapInstallScope::{PerUser, SystemWide})`, computing a path only —
+no directory creation, no install, no privilege escalation, per this milestone's own scoping ("just
+return the path, don't attempt privileged install logic"). A regression test
+(`per_user_is_not_appdata_the_path_s4_found_reaper_ignores`) pins the specific failure mode S-4
+found: a lookup keyed on `%APPDATA%` instead of `%LOCALAPPDATA%` must resolve to `None`, not
+silently fall back to the path Reaper is known to ignore.
 
 ---
 
@@ -1143,6 +1166,7 @@ All facts verified 2026-08-04 against crates.io and GitHub, except `assert_no_al
 | `symphonia` | 0.6.0 | **MPL-2.0** | 2026-05-15, ~3.3 M | *Candidate* for FR-IR-020 (AIFF/FLAC, a **Should**) | **Licence caveat — see below** |
 | `assert_no_alloc` | 1.1.2 | BSD-1-Clause | 2021-08-03, ~1.6 M recent downloads | D-7.5's RT-allocation test harness in `namir-engine`. **Dev-dependency only — never linked into a release build.** | Low — stale (no release since 2021) but small, single-purpose, and off the shipped binary entirely |
 | `rtrb` | 0.3.4 | MIT OR Apache-2.0 | published 2026-04-26; verified 2026-08-06 | D-7.2's SPSC command ring and D-8.1's return ring, in `namir-engine`. **A normal dependency — this one ships.** | Low — **zero** transitive dependencies, no build script, `no_std`-capable pure Rust, `rust-version = "1.38"` |
+| `libc` | 0.2.189 | MIT OR Apache-2.0 | published 2026-07-21; verified 2026-08-07; ~317.6 M recent (90-day) downloads, maintained by the Rust language team | D-13.2's thread-priority elevation (`namir-platform/src/thread_priority.rs`), Linux/macOS `pthread_setschedparam` bindings only. **A normal dependency, `cfg`-scoped to `target_os = "linux"`/`"macos"` — ships on those two platforms, absent from the Windows and mobile dependency graphs entirely.** | Low — one of the most widely used and actively maintained crates in the ecosystem; carries a build script (see note below for why that did not block adoption here) but no C-compiler invocation from it (`cargo tree -e normal,build` shows no `cc`/`cc-rs` under it, unlike `blake3`) |
 
 **Decision D-17.1** — `symphonia` is **not** adopted for 1.0. FR-IR-010 (WAV) is a **Must** and is
 served by `hound` (Apache-2.0). FR-IR-020 (AIFF/FLAC) is a **Should**.
@@ -1214,6 +1238,39 @@ build script, `no_std`-capable, MSRV far below this workspace's own) and built w
 `default-features = false, features = ["alloc"]` specifically to exclude the default
 `simd-unsafe` feature, so the dependency carries no unsafe SIMD code path at all rather than merely
 one this crate never calls into.
+
+**Note on `libc` (added M6):** the one new dependency `namir-platform` takes to reach D-13.2/D-13.3's
+full scope, and the first case in this project where the usual adoption bar (`rtrb`'s criteria,
+restated at D-12.3: "zero transitive dependencies, no build script, `no_std`-capable pure Rust")
+is knowingly **not** met, rather than met or the dependency rejected. `libc` does carry a build
+script — exactly what counted against `libc` itself when D-12.3 rejected `redb` for depending on
+it. The difference this time is what the dependency is *for*: `thread_priority.rs`'s
+`pthread_setschedparam` call needs a `libc::sched_param` whose memory layout matches each target's
+real C ABI exactly, and Darwin's definition carries a private padding field this crate cannot see
+or reproduce correctly by hand — passing a mismatched struct layout across that FFI boundary by
+pointer is a genuine out-of-bounds read, not a style nit, which is exactly the class of risk D-5.3's
+"written safety argument" requirement exists to force a reviewer to reason through explicitly
+rather than paper over. A vetted, ecosystem-standard binding removes that risk; hand-rolling it to
+avoid one dependency would trade a real soundness risk for a cosmetic saving. (D-12.3's own
+`redb` rejection was a different trade entirely — a build-script/cross-compilation risk taken on
+for a 5 MB rebuildable cache that a dependency-free JSON document already served just as well; there
+was no ABI-correctness question forcing the issue the way there is here.)
+
+Checked before adoption despite the build-script exception: MIT OR Apache-2.0 (already on
+`deny.toml`'s allow-list), maintained by the Rust language team itself with ~317.6 M 90-day
+downloads (2026-08-07) — about as low-risk as a maintainer/adoption profile gets — and, concretely,
+its build script does **not** itself need a C compiler (`cargo tree -p namir-platform --target
+x86_64-unknown-linux-gnu -e normal,build` shows no `cc`/`cc-rs` node under `libc`, unlike `blake3`'s
+NEON backend), so NFR-PORT-040's no-C++-toolchain build is unaffected. `Cargo.toml` scopes it to
+`[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]` — it is absent from
+the dependency graph entirely on Windows and, confirmed with `cargo tree --target
+aarch64-linux-android`/`aarch64-apple-ios`, on both mobile targets too, so NFR-PORT-030's
+cross-builds carry no new risk from it either. Windows's equivalent three functions
+(`GetCurrentThread`/`SetThreadPriority`/`GetLastError`) are hand-rolled `extern` declarations
+instead of a `windows`/`windows-sys` dependency, precisely because none of the three carries an
+analogous struct-layout risk — the usual adoption bar applies unmodified there and is met more
+cheaply by three `extern` declarations. See `namir-platform/Cargo.toml` and `thread_priority.rs`'s
+own module doc comment for the full safety argument.
 
 ---
 
