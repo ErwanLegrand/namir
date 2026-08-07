@@ -65,3 +65,15 @@ agent session has no way to interact with a real window — see
 and processing throughout, the GUI extension never invoked — direct evidence of step 4's
 GUI-declined functional requirement. The embedding half (steps 2–3) is ready to run by a person
 with Reaper installed.
+
+## Step 1 executed (M6 coordinating session, this machine, 2026-08-07)
+
+Reaper is installed on this machine (`C:\Program Files\REAPER (x64)`), and the per-user CLAP path
+S-4 validated (`%LOCALAPPDATA%\Programs\Common\CLAP`) already held S-4's own `s4-clack-clap.clap`
+from that earlier spike run — direct, still-standing evidence this exact path is the one Reaper
+scans on this machine. Built `namir_clap.dll` in release mode and installed it alongside the spike
+as `Namir.clap` at that same path. This session still has no way to launch Reaper's GUI, click
+through its FX browser, or observe a rendered window (no desktop-automation tool available, only
+web-browser automation) — so steps 2–3 remain genuinely unexecuted, not merely unautomated. The
+plugin is now sitting in the one place a human at this keyboard needs to open Reaper and drag it
+onto a track to finish this test; nothing further is needed to make that possible.
