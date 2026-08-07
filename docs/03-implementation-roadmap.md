@@ -1103,6 +1103,115 @@ despite D-7.2's own module doc comment describing exactly that shared-submitter 
 see `docs/02-architecture.md`'s D-7.2 consequence note for the full finding and the additive fix
 it proposes; `namir-clap` needs the identical workaround or fix.
 
+### M6 close-out (coordinating session, 2026-08-07)
+
+The gap the paragraph above flagged closed the same session it was found: `namir_worker::Instance`
+gained `try_submit_param` (a two-line forward to the submitter it already owned privately), and
+`namir-app`'s 575-line `LiveEngine` substitute was deleted in favour of it — `namir-app` now shares
+a real `Instance` behind a `Mutex`, the same shape `namir-clap`'s `SharedInner` already used for
+the identical concurrent-access problem. Net -455 lines; no other gap was found in `Instance`'s
+public surface.
+
+**`namir-platform` reached its full M6 scope.** D-13.2's config/log-sink paths and thread-priority
+elevation, D-13.3's CLAP install-path table (Windows/macOS/Linux, per-user and system-wide) — all
+three new, all documented with the same "built but not yet called" honesty D-7.4's own `DenormalGuard`
+used from M1 through M5, since nothing in this round calls the thread-priority primitive except
+`namir-app`/`namir-clap` themselves, below.
+
+**`namir-ui` was built, ported from `spikes/s3-egui-baseview`'s validated wiring.** The key design
+decision — not spelled out in this section's original Deliverables text — is the `UiHost` trait
+(`crates/namir-ui/src/host.rs`): `namir-ui` may depend only on `core`/`params`/`library`/`state`
+(D-5.1), so it cannot own a live `Chain` or `Instance` itself; it is a pure view+intent layer,
+driven each frame by a caller-supplied `UiSnapshot` and emitting `UiIntent`s, which `namir-app` and
+`namir-clap` each implement independently against their own real engine/worker. FR-UI-010/020/040/
+050/060/070 all close, the last with a real 10,000-entry stress test (via `namir-fixtures`' M5
+generator) proving no frame exceeds the FR-UI-060 budget. **FR-UI-030 stays Partial**: `egui-baseview`
+0.6 does not forward `egui`'s accesskit tree to a real screen reader, so "every control has an
+accessible name" is true in the widget tree but not yet observable by assistive technology —
+recorded in `docs/manual-tests/fr-ui-030-accessibility-script.md` rather than silently claimed.
+
+**`namir-clap` was built, wired to the real `Chain`/`Instance`/`REGISTRY`/`State`, and validated
+against `clap-validator` for real** (installed from git, run both in-process and out-of-process):
+**32 of 32 applicable tests passed, 0 failed, 0 warnings**, catching one real bug along the way
+(state loads never called `HostParams::rescan(VALUES)`, fixed this session). FR-CLAP-060's host
+bypass is wired directly to D-10.4's new `global.bypass` descriptor via CLAP's own `IS_BYPASS` flag
+— the concrete reason D-10.4 was done this session rather than left open. FR-CLAP-090's cache
+sharing (`ResourceCache::shared()`, a process-global `OnceLock`) is verified at the unit level
+(`Arc::ptr_eq` across independently-constructed instances) but **not exercised inside a real host
+with two simultaneous instances** — recorded as Partial, alongside FR-CLAP-100's embedded GUI,
+which this session confirmed builds, passes the validator with the GUI extension never invoked, and
+is installed at the real per-user CLAP path (`%LOCALAPPDATA%\Programs\Common\CLAP`, confirmed
+already holding S-4's own spike plugin on this machine) — but whose actual rendering inside Reaper's
+window frame has not been observed by any agent session, none of which has had a way to drive a
+real desktop GUI. **This crate's `set_parent` — the workspace's first new `unsafe` code since
+M1 — was adversarially reviewed by an independent agent before merging**, per D-5.3's "written
+safety argument" requirement: no soundness/UB hole was found, but the review did find (and this
+session fixed) two real gaps the original argument missed — a recognised-but-wrong host window-API
+tag reaching `baseview`'s Windows backend as a panic instead of this crate's own diagnostic notice,
+and a double-`set_parent` (a host contract violation, but real hosts do have bugs) silently
+orphaning the previous native window rather than closing it. Both are closed in `gui.rs`, with the
+review's own reasoning folded into that module's safety-argument doc comment.
+
+**`namir-app` was built and verified against real hardware this session** (WASAPI, a PreSonus
+AudioBox 22VSL, and this machine's own default devices): device enumeration, sample-rate/buffer
+negotiation, and a genuine opened-and-playing duplex stream (48 kHz, 480-frame buffer, ~20 ms
+estimated round-trip) all confirmed working, not merely unit-tested. **One Must-requirement gap
+was found and is recorded honestly rather than worked around: FR-IO-020's WASAPI exclusive mode is
+architecturally absent from `cpal` 0.18.1**, D-13.1's pinned dependency — verified directly against
+that exact version's vendored source (`host/wasapi/device.rs` hardcodes
+`AUDCLNT_SHAREMODE_SHARED`), not inferred. `namir-app` cannot work around this itself: D-5.3 confines
+`unsafe` to `namir-platform`/`namir-clap`, and a raw `IAudioClient::Initialize(...,
+AUDCLNT_SHAREMODE_EXCLUSIVE, ...)` call needs exactly that. Per this session's own decision (see
+`docs/02-architecture.md` D-13.1's consequence note and
+`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`), this is recorded as an open gap rather than
+built around under time pressure — a follow-up needs either a `namir-platform`-owned unsafe
+WASAPI-exclusive helper (mirroring `DenormalGuard`'s existing pattern) or an upstream `cpal` fix.
+**R-5's own literal ask — a real failable device — was also not available this session**, so
+FR-IO-070's device-removal handling stays built-and-tested against everything except that one
+condition (`docs/manual-tests/fr-io-070-device-removal.md`), and physically unplugging a device
+mid-stream is beyond what any agent session (this one included, lacking hands) can perform. ALSA/
+CoreAudio (FR-IO-030), measured loopback latency (FR-IO-050's other half), real-hardware xrun
+induction (FR-IO-060), and independent-stereo-input channel mapping (FR-IO-090) are each recorded
+Partial in the same honest style, in their own `docs/manual-tests/fr-io-0*.md` files.
+
+**NFR-RT-030 (D-7.4's `DenormalGuard`, unused since M1) closes, with a certified benchmark that
+never existed before this session.** `crates/namir-engine/benches/denormal_guard.rs` (a
+`namir-platform` dev-dependency of `namir-engine`, exempt from D-5.1's normal-edge layering check,
+the same exemption `namir-nam`'s dev-dependency on `namir-fixtures` already relies on) drives the
+real six-stage chain with a signal decaying into the denormal range, guard-engaged vs. guard-absent
+vs. a nominal (non-denormal) control, interleaved within one process. **Certified on the §2
+reference machine, five repetitions, `NAMIR_PIN_CORE` defaulted to core 4 (D-2.4's clean core):**
+guard-engaged-denormal p50 stayed within **-1.81% to +1.56%** of nominal across all five runs — far
+inside NFR-RT-030's 10% budget — while guard-*absent* consistently cost **1.33-1.38x** the
+guard-engaged figure, direct, repeatable evidence the guard suppresses a real, measurable spike
+rather than merely existing. `DenormalGuard` is now acquired for real, once per callback, in both
+`namir-app`'s `cpal` stream callback and `namir-clap`'s `process()` — D-7.4's own wording, finally
+exercised by a real audio path.
+
+**R-7's ~0.4-point margin was re-checked against M6's new thread-priority-elevation code path in
+the audio callback, per this row's own standing "re-run whenever the audio callback changes"
+reason for existing** (`docs/02-architecture.md` §22). Five repetitions on the §2 reference
+machine: raw p99.9 was contaminated by this session's own concurrent tooling load (multiple
+`claude` agent processes running in parallel, plus ordinary desktop applications) — confirmed, not
+assumed, since even arm A (steady state, no handover at all) swung 18.5-28.9% raw p99.9 across the
+five runs despite having no handover activity to vary. The contamination-immune estimator, which
+does not depend on a quiet machine the same way, stayed tight and stable at **14.0-14.5%** across
+every gating period (32/64/128 blocks) and every repetition — comfortably under the 25% budget,
+consistent with the certified quiet-machine range this risk retired against, and showing **no
+evidence of regression** from M6's thread-priority/`DenormalGuard` wiring. Per D-2.4's own
+methodology, the raw figures are discarded as contaminated rather than trusted; the estimator is
+the reading of record.
+
+**Acceptance, restated honestly rather than left as this section's original "close" claim:** the
+large majority of FRS §5.11/5.12/5.13's Musts close in full (see §14's updated snapshot for the
+per-requirement count), but none of the three sections closes wholesale. Two residuals are
+Must-requirement gaps proper (FR-IO-020's exclusive mode, architecturally blocked by the pinned
+dependency; R-5's failable-device test, blocked by hardware availability); the rest are real
+functionality this session verified as built and tested but could not observe running inside a
+real host or against real assistive technology, for want of a way to drive either from an agent
+session. Every gap is named in its own `docs/manual-tests/*.md` file or a `*Consequence (added
+M6)*` note, not silently folded into a claim of completion.
+
 ---
 
 ## 11. M7 — Compliance and hardening closure
@@ -1196,11 +1305,11 @@ stage/product) / **Not started**.
 | 5.8 PARAM | 5 | 0 | 1 | 4 |
 | 5.9 STATE | 7 | 0 | 0 | 7 |
 | 5.10 LIB | 5 | 0 | 0 | 5 |
-| 5.11 IO | 8 | 0 | 0 | 8 |
-| 5.12 CLAP | 10 | 0 | 0 | 10 |
-| 5.13 UI | 7 | 0 | 0 | 7 |
+| 5.11 IO | 8 | 2 | 6 | 0 |
+| 5.12 CLAP | 10 | 8 | 2 | 0 |
+| 5.13 UI | 7 | 6 | 1 | 0 |
 | 5.14 ERR | 6 | 0 | 4 | 2 |
-| 6.1 RT | 4 | 1 | 2 | 1 |
+| 6.1 RT | 4 | 3 | 1 | 0 |
 | 6.2 PERF | 6 | 1 | 0 | 5 |
 | 6.3 PORT | 5 | 0 | 4 | 1 |
 | 6.4 QUAL | 6 | 0 | 4 | 2 |
@@ -1287,6 +1396,43 @@ recorded here.
   `docs/04-state-and-preset-format.md`, with both its own manual test and FR-STATE-040's executed
   and recorded in `docs/manual-tests/` rather than left as an unrun script.
 
+**Nine further live updates, made in the M6 session** — see this section's own §10 M6-close-out
+addendum above for the full per-requirement accounting; only the cell movements are recorded here.
+Two of the three headline rows (5.11, 5.12) are corrected **from** this table's own stale
+`0 | 0 | N` cells, since the M0-era rows had never been touched despite M4/M5 already noting
+FR-CLAP-090's mechanism was "built and tested at the worker level" — this session's audit found the
+physical table had simply never been live-updated for that, and fixes it alongside M6's own new
+evidence rather than leaving the drift for a future session to rediscover:
+
+- **5.11 IO: 0/0/8 -> 2/6/0.** FR-IO-040 (rate/buffer negotiation) and FR-IO-080 (settings
+  persistence) close in full, both verified against real WASAPI hardware this session. The other
+  six close only partially or stay open — FR-IO-020's exclusive-mode half is architecturally
+  blocked by the pinned `cpal` dependency, not merely unverified; the rest (010, 030, 050, 060,
+  070) are built and tested but missing either an interactive control, real hardware this session
+  didn't have (Linux/macOS, loopback, a failable device), or both.
+- **5.12 CLAP: 0/0/10 -> 8/2/0.** Eight of ten Musts close in full, each verified by
+  `clap-validator`'s own real run against the built plugin (32/32 applicable tests, 0 failed).
+  FR-CLAP-090 (cache sharing) and FR-CLAP-100 (embedded GUI) stay Partial: both are built, and the
+  first is verified at the unit level, but neither has been observed running inside a real host
+  process this session had a way to drive interactively.
+- **5.13 UI: 0/0/7 -> 6/1/0.** Six of seven Musts close in full. FR-UI-030 stays Partial:
+  `egui-baseview` 0.6 doesn't forward `egui`'s accesskit tree to assistive technology yet, so
+  "every control has an accessible name" holds in the widget tree but isn't independently
+  observable.
+- **6.1 RT: corrected 1/2/1 -> 3/1/0 (also fixing a stale cell, see below).** NFR-RT-030
+  (`DenormalGuard`, unused since M1) closes: a certified benchmark now exists
+  (`namir-engine/benches/denormal_guard.rs`) and measures the guard keeping denormal-input
+  processing within 1.6% of nominal across five reference-machine repetitions, against a 10%
+  budget, while confirming a real 1.33-1.38x cost when the guard is absent. **This row's own
+  starting cell was itself wrong before this session touched it**: M5's own prose claimed "6.1 RT
+  Done 1 -> 2" (NFR-RT-010 closing), but the physical table cell was never actually edited to
+  match — a documentation drift bug, not a new regression, caught and fixed in the same pass as
+  M6's own NFR-RT-030 update rather than left for a future session to trip over. The corrected
+  count is NFR-RT-010 (M5), NFR-RT-020 (M4) and NFR-RT-030 (M6) all Done; NFR-RT-040
+  (content-independent worst-case timing) stays Partial — substantial supporting evidence exists
+  (R-4/R-8's benchmark infrastructure, `tail_structure.rs`'s estimator) but nothing has formally
+  verified it against its own *Verify: B* method's "varied material over a long run" wording.
+
 ---
 
 ## 15. Appendix: open decisions to make, not build
@@ -1338,3 +1484,12 @@ that happens to depend on them first.
    literal and achievable. **Due before M8**, since 6.2 PERF cannot be marked Done without it, and
    worth deciding early because M6's `namir-platform` thread-affinity work is the product-side
    half of the same problem.
+6. **FR-IO-020's WASAPI exclusive mode has no path forward yet.** Found during M6: `cpal` 0.18.1,
+   D-13.1's pinned dependency, hardcodes `AUDCLNT_SHAREMODE_SHARED` with no way to request exclusive
+   mode — verified against that exact version's vendored source, not inferred
+   (`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`). Two paths exist and neither is built:
+   a `namir-platform`-owned unsafe WASAPI-exclusive helper (D-5.3 already permits that crate
+   `unsafe`, mirroring `DenormalGuard`'s pattern), or an upstream `cpal` change/fork. **Due before
+   M8**, since 5.11 IO cannot be marked Done without it, and cheap to decide now while the shape of
+   `namir-app`'s `AudioBackend` trait (`crates/namir-app/src/audio_io.rs`) is still fresh — a
+   later decision risks needing that trait's boundary redrawn instead of just extended.
