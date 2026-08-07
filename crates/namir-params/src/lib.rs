@@ -36,9 +36,15 @@
 //! see the [`stages`] module, one submodule per stage per D-10.1's "declared in one place per
 //! stage". `namir-engine`'s stage implementations reference these same `const`s (by id) rather
 //! than re-declaring ranges/defaults, so there is exactly one source of truth per parameter.
+//!
+//! - D-10.4 (added M6) — the [`global`] module: two descriptors, `global.bypass` and
+//!   `global.output_ceiling_db`, for chain-level state (FR-CHAIN-030/090) that isn't owned by any
+//!   one of the six stages. See that module's doc comment for why these were missing from
+//!   [`REGISTRY`] until now.
 
 mod descriptor;
 mod error_codes;
+pub mod global;
 mod id;
 mod manifest;
 pub mod stages;
@@ -79,6 +85,11 @@ pub const REGISTRY: &[ParamDescriptor] = &[
     stages::eq::LOW_PASS_ENABLED,
     stages::eq::LOW_PASS_FREQ_HZ,
     stages::out::GAIN_DB,
+    // D-10.4: chain-level, not owned by any one of the six stages -- see `global`'s module doc
+    // comment for why these live outside `stages` and why they were missing from REGISTRY until
+    // now.
+    global::GLOBAL_BYPASS,
+    global::OUTPUT_CEILING_DB,
 ];
 
 #[cfg(test)]

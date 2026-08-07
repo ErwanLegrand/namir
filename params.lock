@@ -23,6 +23,8 @@ gate.enabled 834452757 stepped live
 gate.hold_ms 3834628618 continuous live
 gate.release_ms 4133041258 continuous live
 gate.threshold_db 746066514 continuous live
+global.bypass 2600577824 stepped live
+global.output_ceiling_db 2553390476 continuous live
 ir.enabled 4045421189 stepped live
 ir.high_cut_enabled 1597249221 stepped live
 ir.high_cut_freq_hz 3178613153 continuous live

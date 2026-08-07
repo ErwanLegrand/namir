@@ -291,9 +291,11 @@ impl AudioEngine {
 
     fn apply_command(&mut self, command: Command) {
         match command {
+            // D-10.4: `global.bypass`/`global.output_ceiling_db` changes arrive as an ordinary
+            // `Command::Param` now -- `Chain::apply` recognises those two ids itself (see its own
+            // doc comment) before falling back to broadcasting to every stage. There is no longer
+            // a dedicated `Command::SetGlobalBypass`/`SetOutputCeilingDb` variant to match here.
             Command::Param(change) => self.chain.apply(change),
-            Command::SetGlobalBypass(on) => self.chain.set_global_bypass(on),
-            Command::SetOutputCeilingDb(db) => self.chain.set_output_ceiling_db(db),
             Command::Reset => self.chain.reset(),
             Command::Unload(kind) => self.chain.unload(kind),
             Command::Load(resource) => {
@@ -808,5 +810,86 @@ mod tests {
                 .any(|e| e.id == TELEMETRY_DEFERRED_BLOCKS),
             "the engine's own readings should be present alongside the stages'"
         );
+    }
+
+    // --- D-10.4: `global.bypass`/`global.output_ceiling_db` now travel the real command ring as
+    // ordinary `Command::Param`s, exactly like a stage's own parameters -- there is no longer a
+    // dedicated `Command::SetGlobalBypass`/`SetOutputCeilingDb` to submit instead. `chain.rs`'s
+    // own tests cover `Chain::apply`'s routing directly; these two prove the same change also
+    // survives the full worker -> ring -> `AudioEngine::process` path end to end. ---
+
+    /// A large trim cut makes "did bypass actually engage" observable: if the `global.bypass`
+    /// param change reached `Chain::apply` but were merely broadcast to stages (ignored, since no
+    /// stage owns that id) instead of intercepted, the -24 dB trim would still apply and this
+    /// test would fail.
+    #[test]
+    fn command_param_toggles_global_bypass_end_to_end() {
+        let c = ctx();
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        let gain_id = ParamId(namir_params::stages::trim::GAIN_DB.id.0);
+        let bypass_id = ParamId(namir_params::global::GLOBAL_BYPASS.id.0);
+
+        submit(
+            &mut worker,
+            Command::Param(ParamChange {
+                id: gain_id,
+                value: -24.0,
+            }),
+        );
+        submit(
+            &mut worker,
+            Command::Param(ParamChange {
+                id: bypass_id,
+                value: 1.0, // Stepped index 1 == "On", per GLOBAL_BYPASS's descriptor.
+            }),
+        );
+
+        // build_default_chain reports zero latency with nothing loaded (see that module's own
+        // test), so the bypass ring's delay never touches the buffer -- no settling window
+        // needed, and the -24 dB trim ramp starting from its own default has nothing to settle
+        // either, since bypass must keep it from ever being applied at all.
+        let mut buf = [0.5f32; BLOCK];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, BLOCK);
+        audio_section(|| engine.process(&mut io));
+
+        for s in io.channel(0) {
+            assert!(
+                (*s - 0.5).abs() < 1e-4,
+                "expected unity-gain bypass passthrough, got {s} (the -24 dB trim must not have \
+                 applied)"
+            );
+        }
+    }
+
+    /// The output-ceiling half of the pair above: a -20 dB ceiling submitted via `Command::Param`
+    /// must clamp a comfortably-over-ceiling input, exactly as it would through
+    /// `Chain::set_output_ceiling_db` called directly.
+    #[test]
+    fn command_param_sets_output_ceiling_end_to_end() {
+        let c = ctx();
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        let ceiling_id = ParamId(namir_params::global::OUTPUT_CEILING_DB.id.0);
+
+        submit(
+            &mut worker,
+            Command::Param(ParamChange {
+                id: ceiling_id,
+                value: -20.0,
+            }),
+        );
+
+        let mut buf = [0.8f32; BLOCK];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, BLOCK);
+        audio_section(|| engine.process(&mut io));
+
+        let ceiling = namir_core::db_to_linear(-20.0);
+        for s in io.channel(0) {
+            assert!(
+                s.abs() <= ceiling + 1e-4,
+                "sample {s} exceeded the -20 dB output ceiling set via Command::Param"
+            );
+        }
     }
 }
