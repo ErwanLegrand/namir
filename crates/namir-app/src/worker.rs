@@ -9,11 +9,10 @@
 //! `mpsc::Sender` never blocks and polling `try_recv` never blocks either.
 //!
 //! Ordinary parameter changes (`UiIntent::SetParam`/`ResetParamToDefault`) do **not** go through
-//! this thread — they use [`crate::engine_live::LiveEngine::submitter`]'s shared
-//! `Arc<CommandSubmitter>` directly from the GUI thread, per D-7.2's own "this is what the UI
-//! thread uses" (`try_submit`, non-blocking). Routing them through this thread instead would add a
-//! full channel round trip to the single highest-frequency interaction in the whole application
-//! for no benefit.
+//! this thread — they reach [`crate::instance::SharedInstance`] directly from the GUI thread via
+//! `namir_worker::Instance::try_submit_param`, per that method's own "this is what the UI thread
+//! uses" (non-blocking). Routing them through this thread instead would add a full channel round
+//! trip to the single highest-frequency interaction in the whole application for no benefit.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -23,8 +22,10 @@ use namir_library::LibraryResolver;
 use namir_state::State;
 use namir_worker::library::{LibraryService, ScanHandle, ScanOutcome};
 use namir_worker::pool::ThreadPool;
+use namir_worker::recall::{RecallOutcome, ResourceRecall};
+use namir_worker::{JobResult, LoadSource, ResourceCache, Target};
 
-use crate::engine_live::{LiveEngine, LoadOutcome, RecallOutcome, Target};
+use crate::instance::SharedInstance;
 
 /// One request from the UI thread.
 pub enum AppCommand {
@@ -88,10 +89,10 @@ pub enum AppEvent {
     },
 }
 
-/// A UI-facing, `Clone`-friendly summary of [`LoadOutcome`] — `LoadOutcome` itself carries a
+/// A UI-facing, `Clone`-friendly summary of [`JobResult`] — `JobResult` itself carries a
 /// `namir_worker::WorkerError`, which is already `Clone`, but summarising here keeps
 /// [`AppEvent`]'s shape stable even if that changes, and keeps [`crate::host`] from needing to
-/// match on `engine_live` internals directly.
+/// match on `namir_worker` internals directly.
 #[derive(Debug, Clone)]
 pub enum LoadOutcomeSummary {
     /// Loaded successfully.
@@ -107,15 +108,15 @@ pub enum LoadOutcomeSummary {
     Unloaded,
 }
 
-impl From<LoadOutcome> for LoadOutcomeSummary {
-    fn from(outcome: LoadOutcome) -> Self {
-        match outcome {
-            LoadOutcome::Loaded { warning, .. } => Self::Loaded {
+impl From<JobResult> for LoadOutcomeSummary {
+    fn from(result: JobResult) -> Self {
+        match result {
+            JobResult::Loaded { warning, .. } => Self::Loaded {
                 warning: warning.map(|w| w.to_string()),
             },
-            LoadOutcome::Failed(e) => Self::Failed(e.to_string()),
-            LoadOutcome::NotDelivered(_) => Self::NotDelivered,
-            LoadOutcome::Unloaded { .. } => Self::Unloaded,
+            JobResult::Failed(e) => Self::Failed(e.to_string()),
+            JobResult::NotDelivered(_) => Self::NotDelivered,
+            JobResult::Unloaded { .. } => Self::Unloaded,
         }
     }
 }
@@ -160,14 +161,12 @@ pub struct RecallOutcomeSummary {
     pub ir_missing: Option<String>,
 }
 
-fn summarise_resource(
-    recall: crate::engine_live::ResourceRecall,
-) -> (LoadOutcomeSummary, Option<String>) {
+fn summarise_resource(recall: ResourceRecall) -> (LoadOutcomeSummary, Option<String>) {
     match recall {
-        crate::engine_live::ResourceRecall::Unloaded(o) => (o.into(), None),
-        crate::engine_live::ResourceRecall::Loaded(o) => (o.into(), None),
-        crate::engine_live::ResourceRecall::Missing { unload, missing } => {
-            (unload.into(), Some(missing.display_name))
+        ResourceRecall::Unloaded(o) => (o.result.into(), None),
+        ResourceRecall::Loaded(o) => (o.result.into(), None),
+        ResourceRecall::Missing { unload, missing } => {
+            (unload.result.into(), Some(missing.display_name))
         }
     }
 }
@@ -185,12 +184,19 @@ impl From<RecallOutcome> for RecallOutcomeSummary {
     }
 }
 
-/// Everything the worker thread needs at start-up: the live engine, the library service and the
-/// pool it scans on, and the current in-memory state (kept here so `SaveState` has something to
-/// serialise, and `LoadState` has somewhere to recall into).
+/// Everything the worker thread needs at start-up: the shared engine instance, the resource cache,
+/// the library service and the pool it scans on, and the current in-memory state (kept here so
+/// `SaveState` has something to serialise, and `LoadState` has somewhere to recall into).
 pub struct WorkerContext {
-    /// The live engine (load/unload/recall).
-    pub live: LiveEngine,
+    /// The shared engine instance (load/unload/recall) — see [`crate::instance`]'s module doc
+    /// comment for why this thread and [`crate::host::AppHost`] each hold their own clone of one
+    /// `Mutex`-guarded `namir_worker::Instance` rather than this thread owning it outright the way
+    /// the old `LiveEngine` substitute did.
+    pub instance: SharedInstance,
+    /// D-8.2's process-global resource cache (`namir_worker::ResourceCache::shared()`, wired by
+    /// [`crate::app::run`]) — `Instance::load`/`Instance::recall` both take this explicitly on
+    /// every call rather than owning a copy the way `LiveEngine` used to.
+    pub cache: Arc<ResourceCache>,
     /// FR-LIB-020's service. `Arc`-shared with [`crate::host::AppHost`], which also needs
     /// `snapshot()`/`is_scanning()` every UI frame -- `LibraryService`'s own methods all take
     /// `&self` and are internally synchronised (an `Arc<Mutex<Arc<Index>>>` plus an atomic scan
@@ -266,11 +272,7 @@ impl Drop for WorkerHandle {
     }
 }
 
-fn run(
-    mut ctx: WorkerContext,
-    commands: mpsc::Receiver<AppCommand>,
-    events: mpsc::Sender<AppEvent>,
-) {
+fn run(ctx: WorkerContext, commands: mpsc::Receiver<AppCommand>, events: mpsc::Sender<AppEvent>) {
     let mut scan_handle: Option<ScanHandle> = None;
     for command in commands {
         match command {
@@ -292,12 +294,12 @@ fn run(
                 };
                 let source_desc = path.display().to_string();
                 let outcome = ctx
-                    .live
-                    .load(target, crate::engine_live::LoadSource::File(path));
+                    .instance
+                    .with(|instance| instance.load(&ctx.cache, target, LoadSource::File(path)));
                 let _ = events.send(AppEvent::LoadFinished {
                     target,
                     source: source_desc,
-                    outcome: outcome.into(),
+                    outcome: outcome.result.into(),
                 });
             }
             AppCommand::RescanLibrary => {
@@ -349,7 +351,9 @@ fn run(
                 };
                 let snapshot = ctx.library.snapshot();
                 let resolver = LibraryResolver::new(&snapshot, &ctx.library_roots);
-                let outcome = ctx.live.recall(&state, &resolver);
+                let outcome = ctx
+                    .instance
+                    .with(|instance| instance.recall(&ctx.cache, &state, &resolver));
                 *ctx.state.lock().unwrap_or_else(|e| e.into_inner()) = state;
                 let _ = events.send(AppEvent::StateLoaded {
                     path,
