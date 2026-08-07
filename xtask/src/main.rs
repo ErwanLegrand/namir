@@ -5,6 +5,7 @@
 //! consuming a product crate's public API, not a product edge, so `xtask` itself sits outside
 //! D-5.1's layering table (see `layering.rs`'s module doc).
 
+mod attribution;
 mod cargo_meta;
 mod layering;
 mod params_lock;
@@ -110,9 +111,22 @@ fn run_params_lock(root: &Path, write: bool) -> bool {
     }
 }
 
+fn run_attribution(root: &Path, write: bool) -> bool {
+    match attribution::check_or_write(root, write) {
+        Ok((ok, message)) => {
+            println!("attribution: {message}");
+            ok
+        }
+        Err(e) => {
+            println!("attribution: could not run check: {e}");
+            false
+        }
+    }
+}
+
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|params-lock [--write]|preset [output-path]|preset --verify <path>>"
+        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|preset [output-path]|preset --verify <path>>"
     );
 }
 
@@ -125,6 +139,10 @@ fn main() {
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
+        }
+        Some("attribution") => {
+            let write = args.iter().skip(1).any(|a| a == "--write");
+            run_attribution(&root, write)
         }
         Some("preset") => preset::run(&args[1..]),
         _ => {
