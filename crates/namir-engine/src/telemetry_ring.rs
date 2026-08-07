@@ -284,7 +284,16 @@ mod tests {
         let reader = std::thread::spawn(move || {
             let mut out = [TelemetryEntry { id: 0, value: 0.0 }; 16];
             let mut seen = 0u64;
-            while !done_reader.load(O::Acquire) {
+            // Check-then-drain, not drain-then-check: if the writer thread finishes all 200,000
+            // pushes and sets `done` before this reader thread is ever scheduled (real, observed
+            // on a loaded CI runner -- not hypothetical), a drain-then-check loop exits on its
+            // first iteration having drained nothing, and `seen` stays 0 through no fault of the
+            // ring itself. Reading `stop` *before* draining, but draining unconditionally every
+            // iteration including the one where `stop` is true, guarantees at least one drain
+            // happens after every push is visible -- and since the ring's capacity is nonzero,
+            // that drain is guaranteed to find something.
+            loop {
+                let stop = done_reader.load(O::Acquire);
                 let drain = rx.drain(&mut out);
                 for entry in out.iter().take(drain.read) {
                     assert_eq!(
@@ -293,6 +302,9 @@ mod tests {
                         entry.id, entry.value
                     );
                     seen += 1;
+                }
+                if stop {
+                    break;
                 }
             }
             seen
