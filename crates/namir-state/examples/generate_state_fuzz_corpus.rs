@@ -1,10 +1,16 @@
 //! Reproducible source of the seed corpus checked in at `fuzz/corpus/read_state/` (D-19.1: every
 //! automated fixture is *generated*, never captured or hand-crafted — this corpus is no
 //! exception, mirroring `namir-nam/examples/generate_fuzz_corpus.rs`'s identical structure and
-//! rationale). Re-running this example regenerates byte-identical output: `MUTATION_SEED` below
-//! is the only input, `State::defaults`/`write` and `namir_fixtures::mutate::seeded_corpus` are
-//! themselves deterministic (see their own doc comments), and `State::defaults` reaches for no OS
-//! randomness at all. Verified by hand: run, capture the output, run again, `diff` — identical.
+//! rationale). Named `generate_state_fuzz_corpus` rather than reusing that file's own name
+//! (`generate_fuzz_corpus`) because two example binaries with the same name across different
+//! crates in one workspace collide on their output filename — a warning on Linux/macOS, but a
+//! hard `LNK1104` link failure on Windows (caught by this milestone's own CI run, not locally: this
+//! session's `cargo build --workspace --all-targets` never happened to build both in the same
+//! invocation before this fix landed). Re-running this example regenerates byte-identical output:
+//! `MUTATION_SEED` below is the only input, `State::defaults`/`write` and
+//! `namir_fixtures::mutate::seeded_corpus` are themselves deterministic (see their own doc
+//! comments), and `State::defaults` reaches for no OS randomness at all. Verified by hand: run,
+//! capture the output, run again, `diff` — identical.
 //!
 //! One valid document — `State::defaults()` with a couple of non-default fields set (a parameter,
 //! `global.bypass`, and a `FileRef` with an embedded copy) so the `references` and `global`
@@ -15,7 +21,7 @@
 //! reason for choosing one format across every consumer (P6) — this file is that reason paying
 //! off in code, not just prose.
 //!
-//! Usage: `cargo run -p namir-state --example generate_fuzz_corpus`
+//! Usage: `cargo run -p namir-state --example generate_state_fuzz_corpus`
 
 use std::path::{Path, PathBuf};
 
