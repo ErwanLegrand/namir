@@ -38,18 +38,25 @@
 //! - `doc: Mutex<Document>` — the last state document this instance loaded from (or
 //!   `Document::empty()` if none yet), so a save can go through `State::write_onto` and preserve
 //!   whatever a host-specific or future-version section this build doesn't understand (D-11.2).
-//! - `library: Mutex<Option<LibraryService>>` — `None` only if `namir_platform::config_dir()`
-//!   returned `None` (an environment this crate has no per-user directory convention for; see
-//!   that function's own doc comment). No library roots are configured today because nothing in
-//!   `namir-ui`'s `UiIntent` set yet lets a user add one — a real, honestly-recorded gap in the
-//!   *UI*, not something this crate should invent a bespoke settings surface to work around. The
-//!   plumbing is genuinely wired regardless: a future `namir-ui` release that adds a
-//!   "configure library roots" intent needs no change here.
+//! - `library: Mutex<Option<LibraryService>>` — opened via
+//!   [`namir_worker::library::LibraryService::open_default`], `None` only under the same
+//!   conditions that itself degrades to `None` for (no per-user config directory on this system).
+//!   **An earlier version of this crate opened with an empty root list instead**, on the theory
+//!   that "no UI to configure one yet" meant "leave it empty until there is one." That reasoning
+//!   was wrong in a way that isn't merely inert: `namir_library::scan`'s own rule is that a
+//!   *complete* walk concludes every path it didn't see is removed, and a walk over zero roots
+//!   completes trivially — so clicking "Rescan library" inside the plugin didn't just fail to
+//!   find new files, it wiped every entry `namir-app` had already indexed, since both products
+//!   read and write the identical `library-index.json` under the same config directory.
+//!   `open_default` is now the one function both product shells call, specifically so this
+//!   default can't drift between them a second time. No `namir-ui::UiIntent` yet lets a user add
+//!   a *second* root — that gap is real and still open — but a single, correct default needed no
+//!   new UI to fix, only for this crate to stop assuming "unconfigured" was a harmless state to
+//!   leave a destructive scan operation pointed at.
 //! - `latency_samples`/`latency_dirty` — see `crate::audio`'s module doc comment for the full
 //!   FR-CLAP-040 story; these are the audio-thread-writable, main-thread-readable channel between
 //!   the two halves of it.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -64,11 +71,6 @@ use namir_worker::pool::ThreadPool;
 use namir_worker::{Instance, ResourceCache};
 
 use crate::param_mirror::ParamMirror;
-
-/// The index file this instance's library view reads/writes, under `namir_platform::config_dir()`
-/// — a fixed, documented name (mirroring `namir-worker`'s own test fixtures' convention), not
-/// user-configurable today (see this module's doc comment on `library`).
-const LIBRARY_INDEX_FILE_NAME: &str = "library-index.json";
 
 /// Everything this instance needs that has no reason to be tied to the plugin's `'a` lifetime.
 /// See this module's doc comment.
@@ -104,8 +106,7 @@ pub(crate) struct SharedInner {
 
 impl SharedInner {
     pub(crate) fn new() -> Self {
-        let library = config_library_index_path().map(|index_path| {
-            let (service, warnings) = LibraryService::open(index_path, Vec::new());
+        let library = LibraryService::open_default().map(|(service, warnings)| {
             for w in warnings {
                 log_worker_warning(&w);
             }
@@ -328,15 +329,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // P8, matching `namir-worker::cache::lock`'s identical recovery: a panic elsewhere in this
     // instance must not permanently disable its own state.
     m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Where this process's library index file lives, or `None` under exactly the conditions
-/// `namir_platform::config_dir()` itself degrades to `None` for (see this module's doc comment on
-/// `library`). The one call site is `SharedInner::new` above; kept as a separate named function
-/// so a future settings screen that needs to *display* this path (mirroring D-13.3's own
-/// `clap_install_dir`'s "must be stated explicitly" consequence) has one place to call.
-fn config_library_index_path() -> Option<PathBuf> {
-    namir_platform::config_dir().map(|dir| dir.join(LIBRARY_INDEX_FILE_NAME))
 }
 
 #[cfg(test)]

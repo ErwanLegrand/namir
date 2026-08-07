@@ -176,9 +176,9 @@ pub fn run() {
     let library_dir = config_dir
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
-    let (library, library_warnings) = crate::library_service::open(&library_dir);
+    let (library, library_warnings) = namir_worker::library::LibraryService::open_at(&library_dir);
+    let library_roots = library.roots().to_vec();
     let library = Arc::new(library);
-    let (_, library_roots) = crate::library_service::bootstrap_paths(&library_dir);
 
     let state = Arc::new(Mutex::new(State::defaults()));
     let worker_ctx = WorkerContext {
@@ -319,9 +319,9 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     let instance = SharedInstance::new(Instance::new(EngineConfig { ctx: c }, endpoint));
 
     let library_dir = config_dir.unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
-    let (library, _warnings) = crate::library_service::open(&library_dir);
+    let (library, _warnings) = namir_worker::library::LibraryService::open_at(&library_dir);
+    let library_roots = library.roots().to_vec();
     let library = Arc::new(library);
-    let (_, library_roots) = crate::library_service::bootstrap_paths(&library_dir);
 
     let state = Arc::new(Mutex::new(State::defaults()));
     let worker_ctx = WorkerContext {

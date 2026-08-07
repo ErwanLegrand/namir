@@ -961,6 +961,22 @@ depending on volume; treated conservatively as 2 s) — i.e. a file that could p
 its mtime reads. This costs nothing in the common case (an unchanged library's files have mtimes far
 older than any recent scan) and closes the window D-12.1's literal wording left open.
 
+*Consequence (added post-M6 close, found while answering a user's report that the CLAP plugin
+couldn't see files scanned via the standalone app)* — D-12.1's own incremental rule assumes every
+caller scans against the *same* root(s) session to session; nothing enforces that assumption. M6's
+`namir-clap` had opened its `LibraryService` with an empty root list, on the theory that "no UI to
+configure one yet" made that harmless. It wasn't: a scan against zero roots still completes (there
+is nothing to walk), and a complete scan concludes every path it didn't see is removed — so
+clicking "Rescan library" inside the plugin didn't just fail to find new files, it actively erased
+every entry `namir-app`'s own correctly-rooted scan had already committed to the identical
+`library-index.json` both products read and write. Fixed by moving the default-root computation out
+of each product shell and into `namir_worker::library::LibraryService::open_default`/`open_at`
+(`crates/namir-worker/src/library.rs`), the one function both `namir-app` and `namir-clap` now call
+— see that function's own doc comment, and
+`crates/namir-worker/src/library.rs`'s
+`two_opens_of_the_same_config_dir_share_a_root_and_a_second_scan_does_not_erase_the_first` test,
+which exists specifically to keep this from recurring a third way.
+
 **Decision D-12.2** — Scanning is a cancellable worker job reporting progress; the UI never waits
 on it (FR-LIB-020, FR-UI-060).
 

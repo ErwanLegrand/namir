@@ -1263,6 +1263,7 @@ dependencies = [
  "namir-ir",
  "namir-library",
  "namir-nam",
+ "namir-platform",
  "namir-state",
 ]
 
