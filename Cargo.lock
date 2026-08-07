@@ -292,6 +292,7 @@ dependencies = [
 name = "namir-worker"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "hound",
  "namir-core",
  "namir-engine",
