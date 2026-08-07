@@ -82,6 +82,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -287,8 +288,17 @@ fn leaf_dir_name(bank: usize, folder: usize) -> (String, String) {
 /// into the final cache path. A reader only ever observes the final path after the rename makes
 /// it appear, so it never sees a partially-written corpus. If two callers both finish building at
 /// nearly the same time, the loser's `rename` fails (the destination already exists), and it
-/// simply discards its own copy and reads the winner's — both built byte-identical content from
-/// the same seed, so which one "wins" is immaterial.
+/// reads the winner's instead — both built byte-identical content from the same seed, so which
+/// one "wins" is immaterial.
+///
+/// **The publish step retries, rather than assuming a single failed `rename` definitively means
+/// "someone else already published it".** Found by real CI (this crate's own dev sandbox never
+/// exercised it, since its cache was already warm by the time this milestone ran `cargo test
+/// --workspace` there): with several processes each generating a different seed's corpus
+/// concurrently on a shared, possibly I/O-contended runner, a `rename` can fail for reasons other
+/// than a genuine race loss, and a caller that discards its own fully-built corpus on that
+/// assumption and finds nothing at the destination either has nowhere left to go. See
+/// [`build_and_publish_corpus`]'s own doc comment for the retry shape.
 ///
 /// # Errors
 ///
@@ -416,8 +426,30 @@ fn manifest_entries_to_library_entries(
         .collect()
 }
 
+/// Bounded retries around the publish step's rename-then-verify sequence — see
+/// [`build_and_publish_corpus`]'s doc comment for why a single attempt is not enough.
+const MAX_PUBLISH_ATTEMPTS: u32 = 20;
+
+/// Backoff between publish attempts. 20 attempts costs at most ~2 s of sleeping in the worst case
+/// (this constant times [`MAX_PUBLISH_ATTEMPTS`]) — negligible next to the ~5 s a full 10,000-file
+/// build already costs, and ample for a genuine winner's rename to become visible or for
+/// transient contention on the shared cache directory to clear.
+const PUBLISH_RETRY_BACKOFF: Duration = Duration::from_millis(100);
+
 /// Cold-cache path: builds a full corpus into a private temp directory, writes its manifest, then
 /// atomically publishes it to `dir` (see [`generate_shared_corpus`]'s doc comment on the race).
+///
+/// **The publish step retries the rename-then-verify sequence, not just the verify half.** A
+/// single failed `rename` does not necessarily mean "another caller already published `dir`
+/// first" — it can also fail for a transient reason (observed on CI: several processes each
+/// building a *different* seed's corpus at once, all writing heavily under the same
+/// `cache_root()` parent directory, occasionally makes an unrelated `rename` fail under I/O
+/// pressure). Treating every failure as "I lost, read theirs" and discarding a perfectly good,
+/// fully-built corpus on that assumption is only safe if the assumption is actually true; when it
+/// isn't, nothing is ever found at `dir` either, and the original single-shot version failed
+/// outright right there. Retrying both the rename (in case nobody has actually published yet) and
+/// the readback (in case a genuine winner's publish needs a moment to become visible) recovers
+/// from both without needing to tell the two cases apart.
 fn build_and_publish_corpus(dir: &Path, seed: u64, key: &str) -> io::Result<LibraryCorpus> {
     record_build_attempt(seed);
     let nonce = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -440,17 +472,28 @@ fn build_and_publish_corpus(dir: &Path, seed: u64, key: &str) -> io::Result<Libr
         return Err(e);
     }
 
-    match fs::rename(&tmp_dir, dir) {
-        Ok(()) => {}
-        Err(_) => {
-            // Another caller published `dir` first. Our content is byte-identical (same seed,
-            // same generator), so discard our copy and read theirs.
+    for attempt in 0..MAX_PUBLISH_ATTEMPTS {
+        // Harmless if `tmp_dir` no longer exists (an earlier attempt already moved it): this
+        // just fails with `NotFound`, and the `try_load_cached` check below still runs.
+        let _ = fs::rename(&tmp_dir, dir);
+
+        if let Some(corpus) = try_load_cached(dir, seed, key)? {
+            // Whether we won or another caller did, `dir` now holds a valid corpus. If our own
+            // `tmp_dir` is still around (we lost, or our rename hasn't taken effect for some
+            // other reason), it is now redundant.
             let _ = fs::remove_dir_all(&tmp_dir);
+            return Ok(corpus);
+        }
+
+        if attempt + 1 < MAX_PUBLISH_ATTEMPTS {
+            std::thread::sleep(PUBLISH_RETRY_BACKOFF);
         }
     }
 
-    try_load_cached(dir, seed, key)?
-        .ok_or_else(|| io::Error::other("corpus directory missing immediately after publish"))
+    let _ = fs::remove_dir_all(&tmp_dir);
+    Err(io::Error::other(
+        "corpus directory missing immediately after publish",
+    ))
 }
 
 /// Actually writes [`TOTAL_COUNT`] fixture files (plus the manifest) into `root`, which must
