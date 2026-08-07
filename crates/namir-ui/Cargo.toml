@@ -1,0 +1,43 @@
+[package]
+name = "namir-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+namir-core = { path = "../namir-core" }
+namir-params = { path = "../namir-params" }
+namir-library = { path = "../namir-library" }
+namir-state = { path = "../namir-state" }
+# D-5.1's table (docs/02-architecture.md §5, mirrored in xtask/src/layering.rs's LAYERING_TABLE)
+# permits exactly these four `namir-*` crates. In particular:
+#  - no namir-engine: this crate never touches a live Chain -- see this crate's top doc comment.
+#  - no namir-worker: this crate never owns a thread, a scan, or a load operation itself; every
+#    such action is a UiIntent the host (namir-app/namir-clap, both M6 crates built on top of this
+#    one) turns into a real worker call.
+#  - no namir-platform: this crate never learns a filesystem location or touches OS-specific APIs
+#    directly -- spikes/s3-egui-baseview already proved egui-baseview needs none of that to open a
+#    window.
+#
+# spikes/s3-egui-baseview validated D-15.1 (egui) and D-15.2 (baseview) render a window on this
+# platform; spikes/s4-clack-clap validated the same stack embeds via `open_parented`. Versions
+# below are pinned to exactly what those spikes' own Cargo.lock files resolved to, not to whatever
+# is newest on crates.io today.
+egui = "0.35"
+egui-baseview = "0.6"
+baseview = "0.2"
+# `EguiWindow::open_parented`'s `parent: &P` bound is `P: raw_window_handle::HasWindowHandle`
+# (egui-baseview re-exports neither the trait nor the crate), so `open_parented`'s own signature
+# in this crate needs to name it directly. Pinned to the same 0.6 line spikes/s4-clack-clap's own
+# Cargo.lock resolved to.
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+# NFR-PERF-060-scale library-list stress fixture for FR-UI-060's "stays responsive during a
+# 10,000-file scan" test (library_view.rs) -- the same generator namir-library's own benchmark
+# uses, not a hand-rolled guess at what 10,000 rows looks like.
+namir-fixtures = { path = "../namir-fixtures" }
