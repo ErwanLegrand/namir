@@ -4,11 +4,16 @@ members = ["crates/*", "xtask"]
 # Spikes are throwaway (§19: "not carried forward") and each pins its own Cargo.lock as a
 # measurement record — they must not be swept into this workspace by Cargo's upward workspace
 # discovery.
-# crates/namir-nam/fuzz and crates/namir-state/fuzz are cargo-fuzz projects: each carries its own
-# empty [workspace] table (the standard cargo-fuzz convention) so it's already its own workspace
-# root, but this exclude is belt-and-suspenders against upward discovery, matching the spikes/
-# convention above.
-exclude = ["spikes", "crates/namir-nam/fuzz", "crates/namir-state/fuzz"]
+# crates/namir-nam/fuzz, crates/namir-state/fuzz and crates/namir-ir/fuzz are cargo-fuzz projects:
+# each carries its own empty [workspace] table (the standard cargo-fuzz convention) so it's already
+# its own workspace root, but this exclude is belt-and-suspenders against upward discovery, matching
+# the spikes/ convention above.
+exclude = [
+    "spikes",
+    "crates/namir-nam/fuzz",
+    "crates/namir-state/fuzz",
+    "crates/namir-ir/fuzz",
+]
 
 [workspace.package]
 edition = "2024"
