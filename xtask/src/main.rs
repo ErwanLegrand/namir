@@ -10,7 +10,9 @@ mod cargo_meta;
 mod layering;
 mod params_lock;
 mod preset;
+mod traceability;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
@@ -124,9 +126,142 @@ fn run_attribution(root: &Path, write: bool) -> bool {
     }
 }
 
+/// Real data for NFR-QUAL-010's traceability check: every `.rs` file under `dir` (skipping
+/// `target/` directories entirely, not just filtering their contents afterward -- a shipped
+/// `cargo build`'s `target/` can hold tens of thousands of files, and descending into it here
+/// would make this check needlessly slow). `dir`'s own top-level child directory name is
+/// hard-coded per caller as the "crate name" for every file beneath it, since that's the
+/// granularity `docs/02-architecture.md` §23's M7 Consequence note commits to.
+fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != "target")
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
+        .map(|e| e.path().to_path_buf())
+        .collect()
+}
+
+fn run_traceability(root: &Path, write: bool) -> bool {
+    let frs_path = root.join("docs/01-functional-requirements.md");
+    let frs_text = match std::fs::read_to_string(&frs_path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("traceability: could not read {}: {e}", frs_path.display());
+            return false;
+        }
+    };
+    let requirements = match traceability::parse_must_requirements(&frs_text) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("traceability: could not parse FRS: {e}");
+            return false;
+        }
+    };
+
+    let manual_tests_dir = root.join("docs/manual-tests");
+    let manual_test_filenames: Vec<String> = std::fs::read_dir(&manual_tests_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // (crate_root, crate_name-per-first-path-component) -- xtask has no further nesting, so its
+    // own directory name is used directly rather than derived per file.
+    let mut files_with_crate: Vec<(PathBuf, String)> = Vec::new();
+    let crates_dir = root.join("crates");
+    for file in walk_rs_files(&crates_dir) {
+        if let Ok(rel) = file.strip_prefix(&crates_dir)
+            && let Some(crate_name) = rel.components().next()
+        {
+            files_with_crate.push((
+                file.clone(),
+                crate_name.as_os_str().to_string_lossy().into_owned(),
+            ));
+        }
+    }
+    for file in walk_rs_files(&root.join("xtask")) {
+        files_with_crate.push((file, "xtask".to_string()));
+    }
+
+    let mut source_hits: HashMap<String, Vec<String>> = HashMap::new();
+    for (file, crate_name) in &files_with_crate {
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        for id in traceability::trace_annotations(&source) {
+            source_hits.entry(id).or_default().push(crate_name.clone());
+        }
+        for req in &requirements {
+            if req.verify == 'M' || source_hits.contains_key(&req.id) {
+                continue;
+            }
+            if traceability::fn_name_embeds_id(&source, &req.id) {
+                source_hits
+                    .entry(req.id.clone())
+                    .or_default()
+                    .push(crate_name.clone());
+            }
+        }
+    }
+
+    let report = traceability::build_report(&requirements, &manual_test_filenames, &source_hits);
+    let test_plan_path = root.join("docs/03-test-plan.md");
+    let expected = traceability::render_test_plan(&requirements, &report);
+
+    let plan_up_to_date = if write {
+        if let Err(e) = std::fs::write(&test_plan_path, &expected) {
+            println!(
+                "traceability: failed to write {}: {e}",
+                test_plan_path.display()
+            );
+            return false;
+        }
+        println!("traceability: wrote {}", test_plan_path.display());
+        true
+    } else {
+        match std::fs::read_to_string(&test_plan_path) {
+            Ok(actual) if actual == expected => {
+                println!("traceability: {} is up to date", test_plan_path.display());
+                true
+            }
+            _ => {
+                println!(
+                    "traceability: {} is stale or missing -- run `cargo run -p xtask -- \
+                     traceability --write` to regenerate it",
+                    test_plan_path.display()
+                );
+                false
+            }
+        }
+    };
+
+    let coverage_clean = if report.missing.is_empty() {
+        println!(
+            "traceability: clean -- all {} Must requirements are covered",
+            requirements.len()
+        );
+        true
+    } else {
+        println!(
+            "traceability: {} Must requirement(s) with no coverage found (NFR-QUAL-010):",
+            report.missing.len()
+        );
+        for req in &report.missing {
+            println!("  - {} (Verify: {})", req.id, req.verify);
+        }
+        false
+    };
+
+    plan_up_to_date && coverage_clean
+}
+
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|preset [output-path]|preset --verify <path>>"
+        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|traceability [--write]|preset [output-path]|preset --verify <path>>"
     );
 }
 
@@ -143,6 +278,10 @@ fn main() {
         Some("attribution") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_attribution(&root, write)
+        }
+        Some("traceability") => {
+            let write = args.iter().skip(1).any(|a| a == "--write");
+            run_traceability(&root, write)
         }
         Some("preset") => preset::run(&args[1..]),
         _ => {

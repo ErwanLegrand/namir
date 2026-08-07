@@ -64,7 +64,10 @@ The keywords *shall*, *shall not*, *should* and *may* are used per RFC 2119.
 *Verify* names the intended verification method: **U** unit test, **I** integration test,
 **G** golden-reference comparison against recorded audio, **B** benchmark with a numeric
 threshold, **S** static analysis or build-time check, **M** manual test against a written
-script.
+script, **Process** enforced by review and evidenced by commit order rather than by any
+artifact a build can inspect (found missing from this legend at M7, while building
+NFR-QUAL-010's mechanical traceability check against every code actually used below --
+NFR-QUAL-020 is this document's one user of it).
 
 ---
 
@@ -1057,6 +1060,24 @@ Each requirement identifier in this document shall appear in:
 CI shall verify this mapping and fail on any **Must** requirement that is unmapped at any of the
 three levels (NFR-QUAL-010). A requirement that cannot be traced is either not implemented or not
 tested, and both are defects.
+
+*Consequence (added M7)* — `03-test-plan.md` never existed as a separate file: the implementation
+roadmap took the "03" slot in `docs/` first, and this gap went unnoticed until M7 built the
+mechanical check this section calls for. Rather than hand-author and maintain a document that
+would drift the moment a test moved (the exact failure mode this project's own methodology
+distrusts elsewhere -- see `02-architecture.md`'s own reasoning for generating `params.lock`),
+`docs/03-test-plan.md` is now itself **generated** by `cargo run -p xtask -- traceability --write`
+and diffed in CI, collapsing this section's points 2 and 3 into one mechanism: a
+`// trace: FR-XXX-NNN` comment (or, for the handful of tests already following it, an
+`fr_xxx_nnn_...`-named test function) in the covering test source is both the "machine-readable
+annotation" point 3 asks for and the sole input `xtask traceability` uses to populate the
+generated point-2 document. Point 1 ("mapped to the component that satisfies it") is produced at
+**crate granularity** -- the crate containing a requirement's covering `// trace:` annotation --
+not module/function granularity; see `02-architecture.md` §23's matching note for why that scope
+was chosen. A `Verify: M` requirement's "test identifier" is the `docs/manual-tests/*.md` file
+matching its id, unchanged from what already existed. `Verify: Process` (NFR-QUAL-020, the FRS's
+one user of a code missing from §1.5's own legend until this same M7 pass added it) has nothing a
+build can inspect by definition and is exempted from source/manual lookup entirely.
 
 ---
 

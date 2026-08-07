@@ -1791,6 +1791,17 @@ Every decision above cites the requirement it serves. The reverse mapping — ev
 requirement to the component that satisfies it — is generated and checked in CI per
 FRS §10 and NFR-QUAL-010, and is not maintained by hand in this document.
 
+*Consequence (added M7)* — Built as `cargo run -p xtask -- traceability [--write]`. The
+"ID → component" mapping this section promises is produced at **crate granularity**: for each
+Must requirement, the crate(s) containing a `// trace: FR-XXX-NNN` comment (or an
+`fr_xxx_nnn_...`-named test function, the pre-existing convention) next to the covering test are
+that requirement's recorded component(s). This is a deliberate, named scope reduction, not a
+silent gap — resolving to the exact module or function would need either a heavier annotation
+convention repeated at every call site or a source-level static analysis this project has no other
+use for, and crate granularity already matches D-5.1's own level of description for what each
+crate is responsible for. See FRS §10's matching `*Consequence (added M7)*` note for the full
+mechanism, including why `docs/03-test-plan.md` is generated rather than hand-authored.
+
 ---
 
 ## 24. Change log
