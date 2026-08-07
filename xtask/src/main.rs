@@ -160,11 +160,15 @@ fn run_traceability(root: &Path, write: bool) -> bool {
     };
 
     let manual_tests_dir = root.join("docs/manual-tests");
-    let manual_test_filenames: Vec<String> = std::fs::read_dir(&manual_tests_dir)
+    let manual_test_docs: Vec<(String, String)> = std::fs::read_dir(&manual_tests_dir)
         .map(|entries| {
             entries
                 .flatten()
-                .filter_map(|e| e.file_name().into_string().ok())
+                .filter_map(|e| {
+                    let name = e.file_name().into_string().ok()?;
+                    let content = std::fs::read_to_string(e.path()).ok()?;
+                    Some((name, content))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -208,7 +212,7 @@ fn run_traceability(root: &Path, write: bool) -> bool {
         }
     }
 
-    let report = traceability::build_report(&requirements, &manual_test_filenames, &source_hits);
+    let report = traceability::build_report(&requirements, &manual_test_docs, &source_hits);
     let test_plan_path = root.join("docs/03-test-plan.md");
     let expected = traceability::render_test_plan(&requirements, &report);
 
