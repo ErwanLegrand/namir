@@ -43,6 +43,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # M6: `namir-app` takes `cpal` (D-13.1), and `cpal`'s ALSA backend (`alsa-sys`) needs real
+      # ALSA development headers at build time -- its own `build.rs` shells out to `pkg-config
+      # --probe alsa` and panics with an explicit "install libasound2-dev" message if that fails.
+      # `windows-latest`/`macos-latest` use `cpal`'s WASAPI/CoreAudio backends instead, which link
+      # against OS frameworks already present on those images, so this step is Linux-only. Not
+      # verified against a real GitHub-hosted runner (no CI execution available while authoring
+      # this crate) -- verified only against `alsa-sys-0.4.0`'s own `build.rs` source, which names
+      # this exact package for exactly this failure.
+      - name: Install ALSA development headers (Linux only, for cpal's alsa-sys)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -110,6 +122,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # See `build-test`'s identical step for why this is needed as of M6 (`namir-app`'s `cpal`
+      # dependency, ALSA backend).
+      - name: Install ALSA development headers (for cpal's alsa-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Read rust-version from root Cargo.toml
         id: msrv
         run: |
@@ -141,6 +158,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # See `build-test`'s identical step for why this is needed as of M6. Installed *before* the
+      # g++/clang++ removal below on the theory that apt itself should run against an ordinary,
+      # unmodified toolchain rather than one this job has already started deleting pieces of.
+      - name: Install ALSA development headers (for cpal's alsa-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -185,6 +208,25 @@ jobs:
         # serde/serde_json, already covered above. Both new crates are ordinary `--workspace`
         # members, so this job's existing invocation already covers them -- no change needed
         # beyond this note.
+        #
+        # M6 note: namir-platform's full scope (`thread_priority.rs`) adds `libc`, scoped in its
+        # Cargo.toml to `cfg(any(target_os = "linux", target_os = "macos"))` only -- absent on
+        # this job's Windows/native-x86_64-Linux build only in the sense that it's a real
+        # dependency edge on this job's own OS (ubuntu-latest is `target_os = "linux"`). Checked:
+        # `cargo tree -p namir-platform --target x86_64-unknown-linux-gnu -e normal,build` shows
+        # `libc` carries no `[build-dependencies]` of its own -- unlike blake3 above, its build
+        # script (which exists, and is exactly what counted against it at D-12.3, see
+        # `namir-platform/Cargo.toml`'s own comment) only probes the rustc/target version to set
+        # `--cfg` flags; it does not shell out to `cc` and so cannot need a C++ compiler either.
+        # No Windows-side dependency was added -- `thread_priority.rs`'s Windows implementation is
+        # three hand-rolled `extern` declarations against `kernel32.dll`, already always present.
+        #
+        # M6 note (`namir-app`): `cpal`'s Linux backend (`alsa-sys`) needs `libasound2-dev`, added
+        # as this job's own step above -- but its `build.rs` only calls `pkg-config` to link
+        # against the already-compiled system `libasound.so`; it does not shell out to `cc`/`c++`
+        # to compile anything itself (checked against `alsa-sys-0.4.0`'s own `build.rs`), so it
+        # cannot need a C++ compiler either. `rtrb` (`namir-app`'s own bridge ring) and
+        # `serde`/`serde_json` (`namir-app`'s settings persistence) are already covered above.
         run: cargo build --workspace --all-targets
 
   # Covers D-18.1's "cross-build of the mobile-capable crates for aarch64-linux-android and
@@ -205,6 +247,18 @@ jobs:
   # false, features = ["alloc"]`) is no_std-capable and carries no build script; namir-library adds
   # no third-party dependency of its own beyond serde/serde_json, both already proven mobile-safe
   # by every crate above it in this list.
+  #
+  # namir-platform reached D-13.2/D-13.3's full scope at M6 (this list's own entry for it already
+  # existed since M2, when it carried only D-7.4's DenormalGuard). Its one new dependency, `libc`
+  # (`thread_priority.rs`'s Linux/macOS pthread bindings), is `cfg`-scoped in its Cargo.toml to
+  # exactly `target_os = "linux"` / `target_os = "macos"` -- neither matches `aarch64-linux-android`
+  # or `aarch64-apple-ios`, so it is absent from this crate's dependency tree on both mobile
+  # targets entirely (confirmed: `cargo tree -p namir-platform --target aarch64-linux-android -e
+  # normal,build` and the `aarch64-apple-ios` equivalent both show no `libc` node at all, unlike
+  # the native-Linux tree this job's sibling job builds against). `thread_priority.rs`'s Windows
+  # implementation is hand-rolled `extern` declarations, not a dependency, so it adds nothing to
+  # either mobile target either. `paths.rs`/`clap_paths.rs` (D-13.2's config/log paths, D-13.3's
+  # CLAP install paths) use only `std::env`/`std::path` and add no dependency at all.
   #
   # These are library-only builds (no bins), so in principle they don't need a working final
   # linker for the target platform -- an rlib build has no link step. That reasoning holds for
@@ -289,6 +343,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # See `build-test`'s identical step for why this is needed as of M6.
+      - name: Install ALSA development headers (for cpal's alsa-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:

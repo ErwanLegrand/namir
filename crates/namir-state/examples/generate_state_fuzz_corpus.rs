@@ -13,8 +13,9 @@
 //! capture the output, run again, `diff` — identical.
 //!
 //! One valid document — `State::defaults()` with a couple of non-default fields set (a parameter,
-//! `global.bypass`, and a `FileRef` with an embedded copy) so the `references` and `global`
-//! sections are actually present for the mutator to target, not merely `parameters` — plus its
+//! `global.bypass` (D-10.4: a `parameters` entry, not its own section, as of this decision), and
+//! a `FileRef` with an embedded copy) so the `references` section is actually present for the
+//! mutator to target, not merely `parameters` — plus its
 //! [`namir_fixtures::mutate::seeded_corpus`] variants (one per
 //! [`namir_fixtures::mutate::Mutation`] kind). The mutator is format-agnostic (it walks generic
 //! JSON), so it needs no changes to seed a *second* JSON reader's corpus, which is D-11.1's whole
@@ -42,8 +43,8 @@ fn valid_state() -> State {
         .params
         .set("trim.gain_db", 3.0)
         .expect("trim.gain_db is a real REGISTRY key");
-    state.global.bypass = true;
-    state.global.output_ceiling_db = -1.0;
+    state.set_global_bypass(true);
+    state.set_output_ceiling_db(-1.0);
     let embedded_bytes = b"{\"fake\": \"minimal nam-shaped json for corpus seeding\"}".to_vec();
     state.nam = Some(FileRef {
         hash: ContentHash::of(&embedded_bytes),

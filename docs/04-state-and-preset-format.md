@@ -3,11 +3,16 @@
 NFR-DOC-010: "the state and preset format shall be documented to a level that lets a third party
 write a compatible reader without reading this project's source." This document is that reference.
 Everything here is checked against `crates/namir-state`'s actual implementation as it stands after
-M5, not against an aspirational schema — where an earlier design sketch (the M5 plan) differs from
+M6, not against an aspirational schema — where an earlier design sketch (the M5 plan) differs from
 what was actually built, what follows describes the real reader/writer.
 
-See `docs/02-architecture.md` §11 (D-11.1/D-11.2/D-11.3) for the design rationale behind the
-choices recorded here as fact.
+See `docs/02-architecture.md` §10/§11 (D-10.4, D-11.1/D-11.2/D-11.3) for the design rationale
+behind the choices recorded here as fact.
+
+**M6 (D-10.4) changed this format:** `global.bypass`/`global.output_ceiling_db` moved out of their
+own `global` section and into `parameters`, alongside every other parameter. §5 below now
+documents that move, including the backward-compatible reading of an older document's `global`
+section a writer built before M6 may have produced.
 
 ## 1. Scope: presets and plugin state are the same document type
 
@@ -42,8 +47,7 @@ additional data this document doesn't describe.
 ```json
 {
   "format_version": 1,
-  "global": { "bypass": false, "output_ceiling_db": 0.0 },
-  "parameters": { "eq.mid_q": 0.7, "ir.level_db": -3.0, "...": 0.0 },
+  "parameters": { "eq.mid_q": 0.7, "global.bypass": 0.0, "global.output_ceiling_db": 0.0, "ir.level_db": -3.0, "...": 0.0 },
   "references": {
     "nam": { "hash": "...", "library_relative": "marshall/plexi.nam", "absolute": "C:\\Users\\erwan\\Models\\plexi.nam", "display_name": "plexi.nam" },
     "ir":  { "hash": "...", "library_relative": "cabs/1960a.wav", "absolute": "/home/erwan/irs/1960a.wav", "display_name": "1960a.wav" }
@@ -51,9 +55,14 @@ additional data this document doesn't describe.
 }
 ```
 
-Four keys this build reads and writes: `format_version` (§4), `global` (§5), `parameters` (§6),
-`references` (§7). `references.nam` and `references.ir` are each individually optional — a document
-with no model loaded and no IR loaded omits both, or the whole `references` object.
+Three keys this build writes, and reads as the current shape: `format_version` (§4), `parameters`
+(§6, which — since M6's D-10.4 — includes `global.bypass`/`global.output_ceiling_db` alongside
+every other parameter; see §5), `references` (§7). `references.nam` and `references.ir` are each
+individually optional — a document with no model loaded and no IR loaded omits both, or the whole
+`references` object.
+
+A document written by a build **before** M6 also carries a fourth key, `global` — see §5 for that
+legacy shape and how a current reader still accepts it.
 
 A document may carry other top-level keys (a `host` block, a `meta` block, anything a future
 version or a hand-editor adds). This build preserves them byte-identically across a load-modify-save
@@ -70,20 +79,40 @@ An unsigned integer, required.
 | Greater than this build's version | Loaded **tolerantly**, with a warning. A newer-format document is expected to carry fields an older reader doesn't recognise; §8's unknown-field preservation is what makes this safe rather than merely permissive. |
 | Less than this build's version | Passed through a migration chain keyed on the version number, then loaded. No migrations exist yet — version `1` is the floor — but the seam exists in the reader for when one is needed. |
 
-## 5. `global`
+## 5. `global.bypass` / `global.output_ceiling_db` (D-10.4)
 
-Two fields, both optional (each missing or wrongly-typed field falls back to its default rather
-than failing the document):
+**Current shape (M6 onward):** these are two ordinary entries under `parameters` (§6) — a
+`namir_params::REGISTRY` descriptor exists for each — not a section of their own:
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `bypass` | boolean | `false` | The chain-wide bypass (FR-CHAIN-030). |
-| `output_ceiling_db` | number | `0.0` | The output ceiling in dB (FR-CHAIN-090). |
+| Key | `parameters` value | Meaning |
+|---|---|---|
+| `global.bypass` | `0.0` (Off, default) or `1.0` (On) — a `Stepped` parameter's selected index, per §6's own convention | The chain-wide bypass (FR-CHAIN-030). |
+| `global.output_ceiling_db` | number, default `0.0` | The output ceiling in dB (FR-CHAIN-090). |
 
-These two values have no entry in the parameter registry described in §6 — they are chain-level
-state, not an automatable control — which is why they get a section of their own rather than two
-more keys under `parameters`. See `docs/02-architecture.md` §10's M5 consequence note for why this
-is flagged as an open question for a future host-parameter mapping, not a closed design.
+Before D-10.4 (M5), both values had no `ParamDescriptor` and instead lived in a separate top-level
+`global` section:
+
+```json
+"global": { "bypass": false, "output_ceiling_db": 0.0 }
+```
+
+**Backward compatibility.** A reader built at or after M6 still accepts that legacy `global`
+section, per D-11.2's tolerant/versioned deserialisation: if `parameters` doesn't itself carry
+`global.bypass` and/or `global.output_ceiling_db`, the corresponding value is read from the legacy
+section's own `bypass`/`output_ceiling_db` fields instead (each still falling back to its own
+default — `false`/`0.0` — if even the legacy section is absent or the field is missing or
+wrongly-typed). If a document somehow carries both shapes, the `parameters` entries win. **A
+current writer never emits a `global` section** — every save writes `global.bypass`/
+`global.output_ceiling_db` into `parameters` only. A legacy `global` section found on a
+load-modify-save cycle is preserved byte-for-byte (§8's general unrecognised-section rule) rather
+than deleted, but it is inert from that point on: a subsequent load always prefers the
+`parameters` entries, which the save just wrote.
+
+A third-party reader that only needs to support documents this build itself produces can ignore
+the legacy shape entirely and treat `global.bypass`/`global.output_ceiling_db` as two more
+`parameters` keys, exactly as §6 describes every other key. A reader that also needs to open
+pre-M6 documents should additionally check for a top-level `global` object and apply its two
+fields as a fallback, per the rule above.
 
 ## 6. `parameters`
 
@@ -234,11 +263,9 @@ parameter changed from its default:
 ```json
 {
   "format_version": 1,
-  "global": {
-    "bypass": false,
-    "output_ceiling_db": 0.0
-  },
   "parameters": {
+    "global.bypass": 0.0,
+    "global.output_ceiling_db": 0.0,
     "trim.gain_db": 3.0
   },
   "references": {
@@ -268,10 +295,16 @@ file references without reading any Rust source:
 1. Parse the file as JSON (any conformant parser).
 2. Read `format_version` as an integer. Reject if absent or not an integer. If greater than the
    version you support, proceed anyway (§4) rather than rejecting.
-3. Read `global.bypass` (boolean, default `false`) and `global.output_ceiling_db` (number, default
-   `0.0`), tolerating a missing or wrongly-typed `global` object entirely (treat as both defaults).
-4. Iterate `parameters` as a flat string-to-number map. Every key not in your own list of known
-   parameters is data you should still retain (for a round-trip writer) but not act on.
+3. Iterate `parameters` as a flat string-to-number map, which includes `global.bypass` (`0.0`/
+   `1.0`) and `global.output_ceiling_db` (number) alongside every other parameter (§5). Every key
+   not in your own list of known parameters is data you should still retain (for a round-trip
+   writer) but not act on.
+4. If you also need to open documents written before M6 (D-10.4): check for a top-level `global`
+   object and, for whichever of `global.bypass`/`global.output_ceiling_db` step 3 didn't find in
+   `parameters`, read it from there instead — `bypass` (boolean, default `false`) and
+   `output_ceiling_db` (number, default `0.0`), tolerating a missing or wrongly-typed `global`
+   object entirely (treat as both defaults). A reader that only needs to open documents this
+   build's own current writer produces can skip this step.
 5. For each of `references.nam` and `references.ir`, if present: read `hash` (required — treat the
    whole reference as absent if missing or malformed), and optionally `library_relative`,
    `absolute`, `display_name`, `embedded.data` (base64-decode it if you need the bytes directly).

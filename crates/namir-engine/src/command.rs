@@ -35,10 +35,6 @@ pub enum CommandKind {
     UnloadNam,
     /// M5: unload the Ir stage's impulse response, crossfading to dry. See [`Command::Unload`].
     UnloadIr,
-    /// A global-bypass change (FR-CHAIN-030).
-    SetGlobalBypass,
-    /// An output-ceiling change in dB (FR-CHAIN-090).
-    SetOutputCeilingDb,
     /// Clear every stage's internal state.
     Reset,
 }
@@ -50,10 +46,19 @@ pub enum CommandKind {
 /// inlining it.
 ///
 /// Deliberately not padded out speculatively: these are the operations that exist today, mirroring
-/// the methods [`crate::Chain`] already exposes. M5's preset recall and M6's host-driven bypass add
-/// variants when they exist, not before.
+/// the methods [`crate::Chain`] already exposes. M5's preset recall added `Unload`; **D-10.4
+/// deliberately removed** the `SetGlobalBypass`/`SetOutputCeilingDb` variants this comment used to
+/// say M6 would add to — FR-CHAIN-030's global bypass and FR-CHAIN-090's output ceiling turned out
+/// to belong on the *other* side of this decision: real `namir_params::global` descriptors,
+/// carried by [`Self::Param`] like every other parameter, not a dedicated variant each. M6's
+/// `namir-clap` is the reason this needed deciding now rather than later — a CLAP host expects
+/// bypass to arrive as a normal automatable parameter, not through a side channel only Rust code
+/// could reach.
 pub enum Command {
-    /// A parameter update, routed exactly as [`crate::Chain::apply`] routes it.
+    /// A parameter update, routed exactly as [`crate::Chain::apply`] routes it. Since D-10.4 this
+    /// also carries `global.bypass` (FR-CHAIN-030) and `global.output_ceiling_db` (FR-CHAIN-090)
+    /// changes — `Chain::apply` recognises those two ids itself before falling back to
+    /// broadcasting to every stage; see that method's own doc comment.
     Param(crate::param::ParamChange),
     /// D-8.1 step 2: install a prepared resource, beginning a crossfade.
     Load(Resource),
@@ -66,10 +71,6 @@ pub enum Command {
     /// D-8.1 (`docs/02-architecture.md`): an unload is a handover to nothing, and is therefore
     /// also subject to R-7's serialisation rule.
     Unload(ResourceKind),
-    /// FR-CHAIN-030's global bypass.
-    SetGlobalBypass(bool),
-    /// FR-CHAIN-090's output ceiling, in dB.
-    SetOutputCeilingDb(f32),
     /// Clear every stage's internal state, e.g. on transport stop/reposition.
     Reset,
 }
@@ -110,8 +111,6 @@ impl Command {
                 ResourceKind::Nam => CommandKind::UnloadNam,
                 ResourceKind::Ir => CommandKind::UnloadIr,
             },
-            Self::SetGlobalBypass(_) => CommandKind::SetGlobalBypass,
-            Self::SetOutputCeilingDb(_) => CommandKind::SetOutputCeilingDb,
             Self::Reset => CommandKind::Reset,
         }
     }

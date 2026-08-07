@@ -19,6 +19,13 @@ namir-ir = { path = "../namir-ir" }
 namir-engine = { path = "../namir-engine" }
 namir-library = { path = "../namir-library" }
 namir-state = { path = "../namir-state" }
+# namir-platform, taken for a genuine reason (M6), not speculatively: `library.rs`'s
+# `LibraryService::open_default` is the one place both `namir-app` and `namir-clap` bootstrap
+# their default library location, and that location is `namir_platform::config_dir()`-relative.
+# Before this it had a real, concrete use case; D-5.1 permitting it was not by itself a reason to
+# take it, matching the reasoning the note below still gives for namir-params/namir-dsp staying
+# absent.
+namir-platform = { path = "../namir-platform" }
 # Deliberately absent, each a decision rather than an oversight:
 #  - no async runtime: D-7.1 rejects tokio et al. explicitly ("it brings a scheduler, a large
 #    dependency surface and no benefit for a workload that is a handful of long CPU/IO tasks");
@@ -26,8 +33,8 @@ namir-state = { path = "../namir-state" }
 #    std Mutex/Condvar, which is less code than the dependency's own feature flags;
 #  - no `rtrb`: namir-engine owns the ring types and hands out its own endpoints, so the
 #    dependency stays confined to the one crate that needs it;
-#  - no namir-params/namir-dsp/namir-platform: D-5.1 permits all three, which is not a reason to
-#    take them. `recall.rs` reads a `namir_params::ParamDescriptor`'s `.id` field through
+#  - no namir-params/namir-dsp: D-5.1 permits both, which is not a reason to take them.
+#    `recall.rs` reads a `namir_params::ParamDescriptor`'s `.id` field through
 #    `namir_state::ParamValues::iter()`'s own return type without ever naming `namir_params`
 #    itself, the same way `library.rs` reaches `namir-state` indirectly through `namir-library`.
 

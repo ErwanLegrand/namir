@@ -28,6 +28,7 @@ const MANIFEST: &[&str] = &[
     "unreleased-v1/minimal.namirpreset",
     "unreleased-v1/unknown-fields.namirpreset",
     "unreleased-v1/future-version.namirpreset",
+    "unreleased-v1/legacy-global-section.namirpreset",
 ];
 
 fn corpus_dir() -> PathBuf {
@@ -129,6 +130,22 @@ fn unknown_fields_document_loads_with_warnings_not_failure() {
     let (state, warnings) = namir_state::State::read(&bytes).unwrap();
     assert_eq!(warnings.len(), 1, "{warnings:?}"); // comp.ratio, the unrecognised parameter key
     assert_eq!(state.params.get("trim.gain_db"), Some(1.5));
+}
+
+/// D-10.4's backward-compatibility case: a document written before that decision carries
+/// `global.bypass`/`global.output_ceiling_db` in the separate, now-retired `global` section
+/// rather than as `parameters` entries. This build must still read the values correctly rather
+/// than silently reverting an existing preset's bypass/ceiling to its default -- D-11.2's
+/// tolerant-loading promise applied to this crate's own past format, not just a hypothetical
+/// future one.
+#[test]
+fn legacy_global_section_restores_bypass_and_ceiling() {
+    let bytes = read_corpus_file("unreleased-v1/legacy-global-section.namirpreset");
+    let (state, warnings) = namir_state::State::read(&bytes).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(state.global_bypass());
+    assert_eq!(state.output_ceiling_db(), -6.0);
+    assert_eq!(state.params.get("trim.gain_db"), Some(2.0));
 }
 
 /// A document from a build newer than this one (`format_version: 2`, greater than

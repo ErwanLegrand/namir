@@ -30,8 +30,8 @@ fn sample_state() -> State {
         .params
         .set("ir.level_db", -3.0)
         .expect("ir.level_db is a real parameter key");
-    state.global.bypass = false;
-    state.global.output_ceiling_db = 0.0;
+    state.set_global_bypass(false);
+    state.set_output_ceiling_db(0.0);
     state.nam = Some(FileRef {
         hash: ContentHash::of(b"xtask preset sample -- not a real model file"),
         library_relative: Some(RelPath::parse("marshall/plexi.nam").expect("well-formed")),
@@ -98,11 +98,8 @@ fn verify(path: &Path) -> bool {
     match State::read(&bytes) {
         Ok((state, warnings)) => {
             println!("preset --verify: {} loaded successfully", path.display());
-            println!("  global.bypass = {}", state.global.bypass);
-            println!(
-                "  global.output_ceiling_db = {}",
-                state.global.output_ceiling_db
-            );
+            println!("  global.bypass = {}", state.global_bypass());
+            println!("  global.output_ceiling_db = {}", state.output_ceiling_db());
             println!("  trim.gain_db = {:?}", state.params.get("trim.gain_db"));
             println!("  eq.mid_q = {:?}", state.params.get("eq.mid_q"));
             println!("  ir.level_db = {:?}", state.params.get("ir.level_db"));

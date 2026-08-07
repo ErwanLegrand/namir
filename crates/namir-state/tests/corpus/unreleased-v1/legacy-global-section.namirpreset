@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "global": { "bypass": true, "output_ceiling_db": -6.0 },
+  "parameters": {
+    "trim.gain_db": 2.0
+  }
+}

@@ -14,7 +14,9 @@
 //!
 //! In scope, and closed by this crate (`docs/03-implementation-roadmap.md` §9 — M5):
 //! - FR-STATE-010 — [`State`]'s round trip through [`Document`], covering every section this
-//!   crate owns: `parameters`, `global`, and `references.nam`/`references.ir`.
+//!   crate owns: `parameters` (which, since D-10.4, carries `global.bypass`/
+//!   `global.output_ceiling_db` alongside every stage's own parameters — see `state.rs`'s module
+//!   doc comment) and `references.nam`/`references.ir`.
 //! - FR-STATE-020 — [`ParamValues`]'s complete-array-over-`REGISTRY` shape, so an absent
 //!   parameter's default cannot fail to apply.
 //! - FR-STATE-040 — the JSON format itself: pretty-printed, sorted, and, via [`reference::RelPath`],
@@ -39,7 +41,6 @@
 mod document;
 mod error;
 mod error_codes;
-mod global;
 mod migrate;
 mod params;
 mod reference;
@@ -48,7 +49,6 @@ mod state;
 
 pub use document::{Document, FORMAT_VERSION, MAX_DOCUMENT_BYTES};
 pub use error::{StateError, StateWarning};
-pub use global::Global;
 pub use params::{ParamValues, UnknownParameter};
 pub use reference::{EmbeddedRef, FileRef, MAX_EMBEDDED_BYTES, RelPath, RelPathError};
 pub use resolve::{

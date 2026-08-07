@@ -403,6 +403,47 @@ changes queued behind it — which is acceptable because the only way to reach t
 that submits without draining, and the worker drains before it submits. The state is published as
 `telemetry.engine.deferred_blocks` rather than being invisible.
 
+*Consequence (added M6, an API gap found building `namir-app`, not yet fixed anywhere):* this
+decision's own wording — "a mutex on the producer side... serialises UI and worker submissions" —
+and `namir_worker::submit::CommandSubmitter::try_submit`'s own doc comment ("this is what the UI
+thread uses") both describe an architecture where the UI thread and a worker thread share *one*
+`CommandSubmitter` for one engine instance. `namir_worker::Instance` (M4) does not actually let
+that happen: `Instance::new` takes ownership of the whole `WorkerEndpoint`, including its one
+`RingProducer<Command>`, and wraps it in a **private** `CommandSubmitter` field. `Instance`'s
+public surface is exactly `new`/`drain_retired`/`load`/`unload`/`recall` — nothing submits a bare
+`Command::Param` or `Command::Reset`, and nothing exposes the submitter for a caller to do so
+itself. A product shell therefore cannot use `Instance` for ordinary per-knob-turn parameter
+changes at all — the single highest-frequency interaction the whole system has. `namir-app`
+works around this without modifying `namir-worker` (two agents were building product shells
+against it concurrently this round, so a structural change was deliberately left for a coordinated
+follow-up rather than made unilaterally): it does not construct an `Instance`, and instead builds
+its own `Arc<CommandSubmitter>` directly from `namir_engine::split`'s `WorkerEndpoint`, shared
+between the UI thread (`try_submit`) and its own re-derived load/unload/recall orchestration
+(`crates/namir-app/src/engine_live.rs`, which reuses every substantial piece —
+`ResourceCache`, `Command::load_nam`/`load_ir`, `namir_state::candidates`/`FileResolver` — and
+only re-derives the thin ordering glue `Instance` would otherwise have provided: R-7's
+serialisation wait and the drain-before-submit sequence). `namir-clap` needs the identical fix and
+should not have to rediscover this independently — flagged here for both crates' sake. The
+smallest closing change would be additive: `Instance::submitter(&self) -> Arc<CommandSubmitter>`
+(or an equivalent that lets a caller share the ring producer `Instance` already owns), with no
+existing signature changed.
+
+*Consequence (closed M6):* the smallest closing change was built, not the one first sketched above
+— `Instance::try_submit_param(&mut self, ParamChange) -> Result<(), SubmitError>`
+(`crates/namir-worker/src/lib.rs`), a single non-blocking `try_submit` call behind `&mut self`
+rather than an accessor onto the whole producer. Smaller than exposing `Arc<CommandSubmitter>`
+itself: it does not let a caller reach `submit`'s *blocking* form (only `Instance::load`/`unload`/
+`recall` should ever block a worker thread on a handover), and it needs no new field on `Instance`,
+only a two-line method forwarding to the submitter it already owns privately. `namir-app`'s
+substitute (`crates/namir-app/src/engine_live.rs`'s `LiveEngine`, ~575 lines re-deriving R-7's
+serialisation window, a file-size-checked read, and FR-STATE-070's locate loop — all three already
+real, tested code inside `Instance`/`namir_worker::recall`) is deleted in the same pass that adds
+this method: `namir-app` now builds a real `Instance`, shared behind a `Mutex` between its GUI
+thread and worker thread (`crates/namir-app/src/instance.rs`'s `SharedInstance`) the same way
+`namir-clap`'s `SharedInner` already shared one behind `Mutex<Option<Instance>>` — the two crates'
+independent M6 solutions to "share one `&mut Instance`-shaped thing across threads" converge once
+both can actually hold an `Instance` at all.
+
 **Decision D-7.3** — Audio thread outbound communication (meters, gate reduction, fault flags,
 xrun counts) uses **atomics and a lock-free telemetry ring**, read at UI frame rate. Loss is
 acceptable outbound and the buffer overwrites oldest.
@@ -784,9 +825,40 @@ usually transport-level in a host, not an ordinary automatable control), but it 
 **two** mechanisms for user-settable values in one format, and M6's CLAP adapter will want bypass
 exposed as a **host** parameter, which this shape does not provide for on its own. Evidence the gap
 was noticed once already and left unclosed: `namir_params::descriptor`'s own test module carries a
-fully-formed `out.channel_mode` descriptor that was never moved into `REGISTRY`. Flagged here as a
-decision M6 needs to make (a new `D-10.4`, once taken), not solved by this milestone pre-emptively
-guessing at CLAP's own shape for host-exposed bypass.
+fully-formed `out.channel_mode` descriptor that was never moved into `REGISTRY`. ~~Flagged here as
+a decision M6 needs to make (a new `D-10.4`, once taken), not solved by this milestone pre-emptively
+guessing at CLAP's own shape for host-exposed bypass.~~ **Resolved by D-10.4** (added M6): both
+values are now real `ParamDescriptor`s and the `global` document section is retired. See D-10.4
+below.
+
+**Decision D-10.4 (added M6)** — `global.bypass` (FR-CHAIN-030) and `global.output_ceiling_db`
+(FR-CHAIN-090) are declared as ordinary `ParamDescriptor`s (`namir_params::global::GLOBAL_BYPASS`/
+`OUTPUT_CEILING_DB`) and added to `REGISTRY`, exactly like every stage's own parameters.
+
+*Rationale:* D-10.3's own consequence note above records the gap this closes. Both values are real,
+user-settable, host-automatable state (FR-STATE-010) that had no `ParamDescriptor` home: routed
+instead through dedicated `Chain::set_global_bypass`/`set_output_ceiling_db` methods, dedicated
+`Command::SetGlobalBypass`/`SetOutputCeilingDb` variants, and a parallel `global` section in
+`namir-state`'s document format — a second, special-cased mechanism alongside the
+`parameters`/`REGISTRY` path every other control already used. M6's `namir-clap` is the concrete
+reason this needed deciding now rather than later: a CLAP host expects to control bypass through
+its own automation surface like any other parameter, not through a side channel only Rust code
+could reach. Giving both values a real descriptor removes exactly the special case FR-PARAM-030
+("parameter changes shall be accepted from the UI, CLAP automation, and preset loading, and
+converge to the same engine state regardless of source") already requires every other control to
+satisfy.
+
+*Consequence:* `namir_engine::Chain::apply`/`Command::Param` now carry `global.bypass`/
+`global.output_ceiling_db` changes the same way they carry every stage's own parameters —
+`Chain::apply` recognises the two ids itself before falling back to broadcasting to every stage.
+The dedicated `Command::SetGlobalBypass`/`SetOutputCeilingDb` variants are retired; `Chain`'s own
+`set_global_bypass`/`set_output_ceiling_db` methods remain as the low-level setters `Chain::apply`
+and this crate's tests call directly. `namir-state`'s document format drops the separate `global`
+section in favour of two more `parameters` entries (`global.bypass`, `global.output_ceiling_db`);
+D-11.2's tolerant/versioned deserialisation reads an existing document's old `global` section as a
+fallback for whichever of the two keys `parameters` doesn't itself carry, so an already-saved
+`.namirpreset` file still loads correctly, but every save now writes the new shape.
+`docs/04-state-and-preset-format.md` §5/§9 are updated accordingly.
 
 ---
 
@@ -889,6 +961,22 @@ depending on volume; treated conservatively as 2 s) — i.e. a file that could p
 its mtime reads. This costs nothing in the common case (an unchanged library's files have mtimes far
 older than any recent scan) and closes the window D-12.1's literal wording left open.
 
+*Consequence (added post-M6 close, found while answering a user's report that the CLAP plugin
+couldn't see files scanned via the standalone app)* — D-12.1's own incremental rule assumes every
+caller scans against the *same* root(s) session to session; nothing enforces that assumption. M6's
+`namir-clap` had opened its `LibraryService` with an empty root list, on the theory that "no UI to
+configure one yet" made that harmless. It wasn't: a scan against zero roots still completes (there
+is nothing to walk), and a complete scan concludes every path it didn't see is removed — so
+clicking "Rescan library" inside the plugin didn't just fail to find new files, it actively erased
+every entry `namir-app`'s own correctly-rooted scan had already committed to the identical
+`library-index.json` both products read and write. Fixed by moving the default-root computation out
+of each product shell and into `namir_worker::library::LibraryService::open_default`/`open_at`
+(`crates/namir-worker/src/library.rs`), the one function both `namir-app` and `namir-clap` now call
+— see that function's own doc comment, and
+`crates/namir-worker/src/library.rs`'s
+`two_opens_of_the_same_config_dir_share_a_root_and_a_second_scan_does_not_erase_the_first` test,
+which exists specifically to keep this from recurring a third way.
+
 **Decision D-12.2** — Scanning is a cancellable worker job reporting progress; the UI never waits
 on it (FR-LIB-020, FR-UI-060).
 
@@ -967,8 +1055,57 @@ build dependency.
 gaps in any cross-platform audio library. It is called out as a risk in §22 and needs a real test
 with a device that can be made to fail, not a happy-path test.
 
+*Consequence (added M6, from building `namir-app` — corrects the claim two paragraphs above):*
+**"cpal covers these" was wrong for WASAPI exclusive mode specifically.** Reading `cpal` 0.18.1's
+own WASAPI backend source (`host/wasapi/device.rs`, both `build_input_stream_raw_inner` and
+`build_output_stream_raw_inner`) shows the share mode is a hardcoded `AUDCLNT_SHAREMODE_SHARED`
+local with no parameter, feature, or extension trait anywhere in the crate to request
+`AUDCLNT_SHAREMODE_EXCLUSIVE` instead — checked against the vendored source directly, not inferred.
+Shared mode, ALSA, and CoreAudio are all covered as this decision originally said; exclusive mode
+is not, on any platform, through this dependency as pinned. `namir-app` cannot work around this
+itself: D-5.3 confines `unsafe` to `namir-platform`/`namir-clap` (plus a future SIMD kernel
+module), and a raw WASAPI `IAudioClient::Initialize(..., AUDCLNT_SHAREMODE_EXCLUSIVE, ...)` call
+needs exactly that. Closing this gap needs either a `namir-platform`-owned unsafe WASAPI-exclusive
+helper (mirroring `DenormalGuard`/`elevate_current_thread_priority`'s existing pattern) or an
+upstream `cpal` change; neither is built as of M6. `AppSettings::exclusive_mode` exists as a
+forward-compatible persisted field so a future fix needs no settings migration, but nothing reads
+it yet. See `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` for the full record.
+
+*Consequence (added M6, from building it):* `namir-app` implements this decision: `AudioBackend`/
+`AudioStream` (`crates/namir-app/src/audio_io.rs`) are the Namir-owned trait, with a real `cpal`
+implementation confined to that one module — verified against real WASAPI hardware in this
+session (a PreSonus AudioBox 22VSL interface): device enumeration, sample-rate/buffer negotiation,
+and a real opened, playing stream, all recorded in
+`docs/manual-tests/fr-io-010-device-enumeration.md`'s executed run. FR-IO-080 (settings
+persistence, including the degrade-gracefully-on-a-missing-remembered-device case) was also
+verified against the real filesystem and a real fallback in the same session — see
+`docs/manual-tests/fr-io-080-settings-persistence.md`. FR-IO-050 (latency) and FR-IO-060 (xruns)
+are built and unit-tested for the parts that do not require real hardware to observe (buffer-based
+latency estimate, dropout counting) but not for their real-hardware-only halves (a true measured
+loopback figure; inducing a genuine backend xrun) — see those two manual-test docs. FR-IO-070
+(device removal) has its report/stop-cleanly machinery built and tested against every piece not
+requiring a device that can be told to fail on command, but R-5's own literal ask (such a device)
+remains unmet, as §22 already anticipated it might. FR-IO-090 (channel mapping) is implemented for
+a single physical input channel (optionally remapped) but not for `ChannelConfig::Stereo`'s
+genuinely independent two-channel input.
+
 **Decision D-13.2** — Filesystem locations, config directories, log sinks and thread priority
 elevation live in `namir-platform` and nowhere else (P5, NFR-PORT-020).
+
+*Consequence (added M6, from building it):* `namir-platform` reaches this decision's full scope.
+`paths.rs` computes Namir's own config directory (`%APPDATA%\Namir` / `~/Library/Application
+Support/Namir` / `$XDG_CONFIG_HOME/namir` else `~/.config/namir` — not specified anywhere in the
+FRS or `docs/04-state-and-preset-format.md`, so this follows each OS's own documented convention)
+and a log-sink path beneath it; `thread_priority.rs` adds
+`elevate_current_thread_priority`. Both are pure path/outcome computation with no I/O and no
+audio-callback wiring — that wiring is out of this crate's own scope by construction (D-5.1 does
+not let `namir-engine` depend on `namir-platform` at all) and is explicitly `namir-app`'s/
+`namir-clap`'s job, the same split D-7.4's own M3 consequence note already states for
+`DenormalGuard`. `thread_priority.rs` is therefore built, unit-tested, and **not yet called from
+any audio thread** — recorded so it is not mistaken for wired-in, the same distinction that note
+draws for the denormal guard. See that module's own doc comment for exactly when and how a future
+caller should invoke it, and §17's dependency register for the one new dependency it takes
+(`libc`, Linux/macOS only) and why.
 
 **Decision D-13.3** — The CLAP plugin installs to the **CLAP-specified search paths only**, and the
 per-user path is the default.
@@ -991,6 +1128,14 @@ to search for.
 
 *Consequence:* FR-ERR-050's diagnostic bundle should record which CLAP paths exist and what they
 contain, since that single fact resolves this class of report immediately.
+
+*Consequence (added M6, from building it):* `namir-platform`'s `clap_paths.rs` implements exactly
+this table as `clap_install_dir(ClapInstallScope::{PerUser, SystemWide})`, computing a path only —
+no directory creation, no install, no privilege escalation, per this milestone's own scoping ("just
+return the path, don't attempt privileged install logic"). A regression test
+(`per_user_is_not_appdata_the_path_s4_found_reaper_ignores`) pins the specific failure mode S-4
+found: a lookup keyed on `%APPDATA%` instead of `%LOCALAPPDATA%` must resolve to `None`, not
+silently fall back to the path Reaper is known to ignore.
 
 ---
 
@@ -1112,6 +1257,7 @@ All facts verified 2026-08-04 against crates.io and GitHub, except `assert_no_al
 | `symphonia` | 0.6.0 | **MPL-2.0** | 2026-05-15, ~3.3 M | *Candidate* for FR-IR-020 (AIFF/FLAC, a **Should**) | **Licence caveat — see below** |
 | `assert_no_alloc` | 1.1.2 | BSD-1-Clause | 2021-08-03, ~1.6 M recent downloads | D-7.5's RT-allocation test harness in `namir-engine`. **Dev-dependency only — never linked into a release build.** | Low — stale (no release since 2021) but small, single-purpose, and off the shipped binary entirely |
 | `rtrb` | 0.3.4 | MIT OR Apache-2.0 | published 2026-04-26; verified 2026-08-06 | D-7.2's SPSC command ring and D-8.1's return ring, in `namir-engine`. **A normal dependency — this one ships.** | Low — **zero** transitive dependencies, no build script, `no_std`-capable pure Rust, `rust-version = "1.38"` |
+| `libc` | 0.2.189 | MIT OR Apache-2.0 | published 2026-07-21; verified 2026-08-07; ~317.6 M recent (90-day) downloads, maintained by the Rust language team | D-13.2's thread-priority elevation (`namir-platform/src/thread_priority.rs`), Linux/macOS `pthread_setschedparam` bindings only. **A normal dependency, `cfg`-scoped to `target_os = "linux"`/`"macos"` — ships on those two platforms, absent from the Windows and mobile dependency graphs entirely.** | Low — one of the most widely used and actively maintained crates in the ecosystem; carries a build script (see note below for why that did not block adoption here) but no C-compiler invocation from it (`cargo tree -e normal,build` shows no `cc`/`cc-rs` under it, unlike `blake3`) |
 
 **Decision D-17.1** — `symphonia` is **not** adopted for 1.0. FR-IR-010 (WAV) is a **Must** and is
 served by `hound` (Apache-2.0). FR-IR-020 (AIFF/FLAC) is a **Should**.
@@ -1183,6 +1329,39 @@ build script, `no_std`-capable, MSRV far below this workspace's own) and built w
 `default-features = false, features = ["alloc"]` specifically to exclude the default
 `simd-unsafe` feature, so the dependency carries no unsafe SIMD code path at all rather than merely
 one this crate never calls into.
+
+**Note on `libc` (added M6):** the one new dependency `namir-platform` takes to reach D-13.2/D-13.3's
+full scope, and the first case in this project where the usual adoption bar (`rtrb`'s criteria,
+restated at D-12.3: "zero transitive dependencies, no build script, `no_std`-capable pure Rust")
+is knowingly **not** met, rather than met or the dependency rejected. `libc` does carry a build
+script — exactly what counted against `libc` itself when D-12.3 rejected `redb` for depending on
+it. The difference this time is what the dependency is *for*: `thread_priority.rs`'s
+`pthread_setschedparam` call needs a `libc::sched_param` whose memory layout matches each target's
+real C ABI exactly, and Darwin's definition carries a private padding field this crate cannot see
+or reproduce correctly by hand — passing a mismatched struct layout across that FFI boundary by
+pointer is a genuine out-of-bounds read, not a style nit, which is exactly the class of risk D-5.3's
+"written safety argument" requirement exists to force a reviewer to reason through explicitly
+rather than paper over. A vetted, ecosystem-standard binding removes that risk; hand-rolling it to
+avoid one dependency would trade a real soundness risk for a cosmetic saving. (D-12.3's own
+`redb` rejection was a different trade entirely — a build-script/cross-compilation risk taken on
+for a 5 MB rebuildable cache that a dependency-free JSON document already served just as well; there
+was no ABI-correctness question forcing the issue the way there is here.)
+
+Checked before adoption despite the build-script exception: MIT OR Apache-2.0 (already on
+`deny.toml`'s allow-list), maintained by the Rust language team itself with ~317.6 M 90-day
+downloads (2026-08-07) — about as low-risk as a maintainer/adoption profile gets — and, concretely,
+its build script does **not** itself need a C compiler (`cargo tree -p namir-platform --target
+x86_64-unknown-linux-gnu -e normal,build` shows no `cc`/`cc-rs` node under `libc`, unlike `blake3`'s
+NEON backend), so NFR-PORT-040's no-C++-toolchain build is unaffected. `Cargo.toml` scopes it to
+`[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]` — it is absent from
+the dependency graph entirely on Windows and, confirmed with `cargo tree --target
+aarch64-linux-android`/`aarch64-apple-ios`, on both mobile targets too, so NFR-PORT-030's
+cross-builds carry no new risk from it either. Windows's equivalent three functions
+(`GetCurrentThread`/`SetThreadPriority`/`GetLastError`) are hand-rolled `extern` declarations
+instead of a `windows`/`windows-sys` dependency, precisely because none of the three carries an
+analogous struct-layout risk — the usual adoption bar applies unmodified there and is met more
+cheaply by three `extern` declarations. See `namir-platform/Cargo.toml` and `thread_priority.rs`'s
+own module doc comment for the full safety argument.
 
 ---
 
@@ -1567,7 +1746,7 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 | R-4 | ~~NAM inference in Rust misses the accuracy or performance bar.~~ **Downgraded High-relevant-question → Low-Medium by S-1, 2026-08-05.** Accuracy: PASS with wide margin (-131 dB vs. a 90 dB floor). Performance: the reference implementation misses the NFR-PERF-010 99.9th-percentile gate (41 % vs. 25 %) at median-comparable cost to Eigen-vectorized C++ — the residual risk is narrowly "does a SIMD pass close this gap," not "is Rust inference viable at all." **Vectorized and re-measured by M3, 2026-08-06 — measured, but not a confidently-distinguishable improvement on this sandbox, NOT retired.** `wavenet.rs`'s `axpy` now vectorizes every dilated/1×1-convolution AXPY-shaped inner loop with `wide::f32x8`. `namir-nam/benches/wavenet_inner_loops.rs`, measured on this M3 session's sandbox (4-core Intel Xeon @ 2.10 GHz, **not** this section's reference machine), re-measured a second time during this session's close-out pass via an interleaved scalar-vs-vector A/B under a load average confirmed quiet throughout (9-11 runs each): p50 essentially identical between scalar (mean 26.58%) and vectorized (mean 26.80%) — no reproducible win; p99.9 overlapping but vectorized modestly lower on average (scalar mean 49.53%, range 44.3–54.8%; vectorized mean 45.15%, range 43.7–48.6%) — see `wavenet.rs`'s own Decision-note for the full run-by-run numbers and why this reading supersedes an intermediate re-measurement that reported unreproducible 330–345% p99.9 spikes (most likely itself a sandbox-contention artifact, per the same phenomenon R-8's own re-verification documented). **Even at the more favourable ~45% p99.9 reading, this already exceeds the 25% budget on this sandbox in isolation**, and the real six-stage-chain benchmark (`namir-engine/benches/six_stage_chain.rs`, new this session) measured the assembled chain, gate+EQ active, at 61–76% p99.9 on the same sandbox — a clear FAIL. Whether vectorization closes a measurable part of the gap S-1 found is itself not confidently established on this non-AVX sandbox build. **RETIRED at M3's close-out, 2026-08-06 — this row's own "confirm on the reference machine before retiring" condition is now met, and the answer differs from everything above it.** The sandbox figures were measuring two confounds rather than the code. First, no `target-cpu` was set anywhere in the repository, so the workspace compiled to bare x86-64 (SSE2, no AVX, no FMA) and every `wide::f32x8` became two 4-lane SSE ops; setting `x86-64-v3` (now **D-2.3**) took the NAM stage from p99.9 30.3% to **~10.5%** on the §2 reference machine, with numeric parity re-verified under FMA at -130.8 dB. Second, every benchmark pinned to CPU 0, which absorbs the GPU driver's ISRs (see D-2.4). The assembled chain now measures p99.9 **16.45-17.08%** against the 25% budget on the §2 machine across five repetitions under D-2.4's conditions. Vectorization's benefit is directly measured rather than inferred, and NFR-PERF-010 closes. | Retired 2026-08-06 | Retired: D-2.3's AVX2/FMA baseline plus D-2.4's measurement conditions; NFR-PERF-010 certified on the §2 reference machine. |
 | R-5 | FR-IO-070 device-removal handling is weak in any cross-platform audio library. | Medium | Test with a failable virtual device, not the happy path. |
 | R-6 | `hound` unmaintained since 2023. | Low | WAV is frozen; we own any bug. Vendoring is a viable last resort. |
-| R-7 | ~~Crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget.~~ **RETIRED at M4, 2026-08-06 — measured, and then mitigated and re-measured.** Measured first (`namir-engine/benches/handover_crossfade.rs`, §2 reference machine, D-2.4 conditions, six retained repetitions of ten): this risk's wording is half right with the wrong half named. A NAM handover alone stays inside the 25% budget at every swap rate tested (worst **24.31%**), including a duty faster than any human audition, and an IR handover alone likewise (worst **24.63%**). What exceeded the budget was **both stages crossfading at once**: 25.06–31.49%. Mitigated by a worker-side rule (`namir-worker`'s `Instance::serialise_against_other_target`): a NAM and an IR handover are never offered simultaneously, the second waiting out the first's crossfade on a worker thread, which D-7.1 permits workers to do. Re-measured with arms D and E **interleaved in the same runs** (six retained repetitions of nine, the only comparison form this machine supports reliably): unserialised **28.77–31.26%** against serialised **22.20–24.63%** at every rate where the rule applies, with the measured both-fades-active overlap going from 10.9–43.8% to **exactly 0%**. Steady state read 16.04–16.84% in the same runs. **Every condition the system can actually produce is now within budget.** | Retired 2026-08-06 | Retired: the over-budget condition is removed by construction, not by hoping users avoid it. **Two residuals recorded rather than glossed.** (a) The margin at the worst achievable condition is about **0.4 points** (24.63% against 25%), so this is the path any future per-stage cost increase will breach first — a reason to re-run this benchmark whenever NAM or IR per-block cost changes, and the reason it exists as a permanent target rather than a one-off. (b) The benchmark's arm E at `period 16` still reads 26.99–31.89% with 75% overlap, and that is **not** a failure of the mitigation: half a period is 8 blocks against a 15-block fade, so the bench's fixed-offset *simulation* of the rule cannot serialise there. The real rule does not offset, it waits — at least 25 ms, or ~19 blocks, which exceeds the fade — so the condition arm E period 16 depicts is one the worker cannot produce. **Re-run at M5's close, 2026-08-07, per this row's own "reason it exists as a permanent target rather than a one-off"** — preset recall (this milestone) is a new, more frequent way to reach the both-stages-changing condition than a human clicking two controls. Five repetitions, this session's own sandbox (**not** the §2 reference machine, which this session has no access to). Two of five were contaminated by the benchmark's own stated check — not just arm A's raw/estimator gap, which one run passed while still showing a 23-point gap on arm C, a stronger signal arm A alone cannot catch — and are discarded. Across the three clean runs, arm E at periods 32/64/128 (period 16 excluded per residual (b) above) read **22.16-24.35%**, matching the original 22.20-24.63% range closely; period 16 read 26.43-32.36%, matching the already-documented 26.99-31.89% benchmark-simulation artifact. **No evidence of regression; the risk remains retired.** M5 added no code to `namir-engine`'s crossfade/chain path this benchmark exercises (`Command::Unload` is the only M5 addition here, and this benchmark never issues one), so a regression was never mechanically plausible — this re-run is a check against the *system* (preset recall's new access pattern), not against a suspected code change. |
+| R-7 | ~~Crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget.~~ **RETIRED at M4, 2026-08-06 — measured, and then mitigated and re-measured.** Measured first (`namir-engine/benches/handover_crossfade.rs`, §2 reference machine, D-2.4 conditions, six retained repetitions of ten): this risk's wording is half right with the wrong half named. A NAM handover alone stays inside the 25% budget at every swap rate tested (worst **24.31%**), including a duty faster than any human audition, and an IR handover alone likewise (worst **24.63%**). What exceeded the budget was **both stages crossfading at once**: 25.06–31.49%. Mitigated by a worker-side rule (`namir-worker`'s `Instance::serialise_against_other_target`): a NAM and an IR handover are never offered simultaneously, the second waiting out the first's crossfade on a worker thread, which D-7.1 permits workers to do. Re-measured with arms D and E **interleaved in the same runs** (six retained repetitions of nine, the only comparison form this machine supports reliably): unserialised **28.77–31.26%** against serialised **22.20–24.63%** at every rate where the rule applies, with the measured both-fades-active overlap going from 10.9–43.8% to **exactly 0%**. Steady state read 16.04–16.84% in the same runs. **Every condition the system can actually produce is now within budget.** | Retired 2026-08-06 | Retired: the over-budget condition is removed by construction, not by hoping users avoid it. **Two residuals recorded rather than glossed.** (a) The margin at the worst achievable condition is about **0.4 points** (24.63% against 25%), so this is the path any future per-stage cost increase will breach first — a reason to re-run this benchmark whenever NAM or IR per-block cost changes, and the reason it exists as a permanent target rather than a one-off. (b) The benchmark's arm E at `period 16` still reads 26.99–31.89% with 75% overlap, and that is **not** a failure of the mitigation: half a period is 8 blocks against a 15-block fade, so the bench's fixed-offset *simulation* of the rule cannot serialise there. The real rule does not offset, it waits — at least 25 ms, or ~19 blocks, which exceeds the fade — so the condition arm E period 16 depicts is one the worker cannot produce. **Re-run at M5's close, 2026-08-07, per this row's own "reason it exists as a permanent target rather than a one-off"** — preset recall (this milestone) is a new, more frequent way to reach the both-stages-changing condition than a human clicking two controls. Five repetitions, this session's own sandbox (**not** the §2 reference machine, which this session has no access to). Two of five were contaminated by the benchmark's own stated check — not just arm A's raw/estimator gap, which one run passed while still showing a 23-point gap on arm C, a stronger signal arm A alone cannot catch — and are discarded. Across the three clean runs, arm E at periods 32/64/128 (period 16 excluded per residual (b) above) read **22.16-24.35%**, matching the original 22.20-24.63% range closely; period 16 read 26.43-32.36%, matching the already-documented 26.99-31.89% benchmark-simulation artifact. **No evidence of regression; the risk remains retired.** M5 added no code to `namir-engine`'s crossfade/chain path this benchmark exercises (`Command::Unload` is the only M5 addition here, and this benchmark never issues one), so a regression was never mechanically plausible — this re-run is a check against the *system* (preset recall's new access pattern), not against a suspected code change. **Re-run again at M6's close, 2026-08-07** — the first M6 session to actually add code to the audio callback path this benchmark exercises (`DenormalGuard` acquisition, thread-priority elevation, both in `namir-app`'s `cpal` callback and `namir-clap`'s `process()`), so unlike M5's re-run this one *could* plausibly regress. Five repetitions on the §2 reference machine; raw p99.9 was contaminated by this session's own concurrent tooling load (confirmed, not assumed — even arm A, steady state with no handover activity at all to vary, swung 18.5-28.9% raw p99.9 across the five runs). The contamination-immune estimator, unaffected by that load, stayed tight and stable at **14.0-14.5%** across every gating period and every repetition, comfortably under budget and consistent with the certified quiet-machine range this risk originally retired against. **No evidence of regression; the risk remains retired.** |
 | R-8 | **New, from S-2, 2026-08-05.** Same-size IR partitions all start accumulating input at stream time zero, so every partition at a given size — including every partition at `max_partition`, of which a multi-second IR can have dozens — triggers its FFT on the *same* block, forever. Measured directly: at a 32-sample block against a 2 s IR (48 kHz — FR-IR-050's own Must minimum, paired with the smallest Must block size), this alone costs 90–400 % of that block's entire period, tested across `max_partition` 256–32,768 with no material improvement at any value. Schedule tuning (D-9.6) cannot fix this; it is a gap in the synchronous, non-staggered scheme itself. **Verified and tuned by M3, 2026-08-06 — the scheduling defect itself is closed; the risk to NFR-PERF-010's acceptance is not.** M2's per-*group* stagger is replaced with a per-*size*, block-aligned stagger (`convolver.rs`'s own Decision/Rationale note). Re-measured on this M3 session's sandbox (4-core Intel Xeon @ 2.10 GHz, **not** this section's reference machine) via the ported `perf_sweep.rs`/`perf_bench.rs`: at this risk's own named condition (48 kHz, 32-sample block, 2 s IR), p99.9/max fell from 616.0%/1290.7% to **30.7%/70.4%** — comfortably under budget; at NFR-PERF-010's own literal condition (64-sample block), 337.7%/602.5% → **16.8%/41.3%**. Two gaps remain, not glossed over: 2048-sample blocks at 192 kHz/10 s IRs stay just over budget (117.8% p99.9, the head partition's own `O(block_size^2)` cost, not a staggering gap); a 32-sample-block/192 kHz `max` outlier is plausibly sandbox jitter, not confirmed. IR-stage-alone is no longer this risk's binding constraint. **RETIRED at M3's close-out, 2026-08-06.** `build_schedule`'s cross-size phase alignment is fixed with a permanent quantitative regression test (worst-block modelled FFT load 11.893x -> 6.793x the mean, against a 6.507x floor), and the residual tail this row was suspected of causing turned out not to be Namir's at all: an elevated `xperf` trace attributed it to `dxgkrnl.sys` issuing ~165 interrupts/second of 128-512 us, landing on CPU 0 exclusively — the core every benchmark here used to pin to. On a clean core the IR stage's p99 and p99.9 converge (51.6 / 55.0 us), which is the tight schedule-bounded distribution the cost model predicted throughout: the model was right, the measurement was contaminated. See D-2.4. | Retired 2026-08-06 | Retired: the scheduling defect is fixed with a permanent regression test; the residual tail was the GPU driver, addressed by D-2.4's core-selection rule. |
 
 ---
@@ -1599,3 +1778,4 @@ FRS §10 and NFR-QUAL-010, and is not maintained by hand in this document.
 | 0.13 | 2026-08-06 | **M4: resource handover, worker, and cross-instance sharing.** `namir-engine` gains D-7.2's SPSC command ring and D-8.1's return ring (`ring.rs`, on the new `rtrb` dependency — §17), D-7.3's lock-free telemetry ring (`telemetry_ring.rs`, plain `AtomicU64`s, no dependency: a `TelemetryEntry` is exactly 64 bits, so tearing within an entry is impossible by construction while the across-entry tearing D-7.3 permits stays possible), and `AudioEngine`, which owns the rings so `Chain` stays the pure DSP object `six_stage_chain.rs` measures. New crate **`namir-worker`** (D-5.1's row, finally built): D-7.1's pool, D-8.2's cache, and the worker halves of D-8.1 — with **no** third-party dependency of its own. **The one known P1 violation in the codebase is closed**: a completing crossfade used to drop the outgoing slot on the audio thread, and a second, previously-undocumented site did the same to a slot displaced mid-fade; both are now moves into a retire pen that the return ring drains. Evidence: both stages' handover tests now run a full real-to-real handover *inside* the D-7.5 harness, which they could not before. FR-NAM-070 and FR-IR-060 close, each verified by its own literal *Verify: I* method. Five decisions gained M4 consequence notes recording things they did not anticipate: D-7.1 (the pool formula yields zero on one core), D-7.2 (bounded retry; the two rings' full-ring policies compose), D-8.1 (the worker must prepare the whole *slot*, not just the `Arc`; the second drop site; deferred finalization), D-8.2 (**the IR cache key must include engine rate and block size**, or a hit can hand back an IR whose `process_block` asserts — a panic on the audio thread, not a wrong sound). R-7's benchmark exists for the first time (`benches/handover_crossfade.rs`); see §22 for its disposition. |
 | 0.14 | 2026-08-06 | **M4 follow-up: R-7's mitigation built and measured; the risk retires.** M4's first pass measured the crossfade and found the over-budget condition was not the one R-7 names — a NAM handover alone fits, and so does an IR handover alone; what does not fit is both at once. `namir-worker` now serialises them: before offering a handover for one target, an instance waits out any handover it recently offered for the other. A timer rather than telemetry feedback, and for a real reason rather than simplicity — the *first* load into an empty stage retires nothing and reports no fade in flight between submission and the audio thread's next block, so a purely feedback-driven rule races; a timer needs no feedback, cannot deadlock, and expires anyway if the audio thread stalls, which is the right failure mode. D-8.1 gains a `*Consequence (added M4)*` note recording the rule and its one user-visible effect: changing model and IR in a single action starts the second changeover ~20 ms after the first rather than simultaneously, which neither FR-NAM-070 nor FR-IR-060 forbids (each requires *its own* changeover to be glitch-free). `HANDOVER_CROSSFADE_MS` is promoted to a single public constant in `namir-engine`, having been privately duplicated in `nam.rs` and `ir.rs` — two copies of a figure the two stages must agree on, with the worker now needing a third. Measured with arms D and E interleaved in the same runs: **28.77–31.26% unserialised against 22.20–24.63% serialised**, overlap 10.9–43.8% → **0%**. §22's R-7 row retires with two residuals recorded, including that the remaining margin is only ~0.4 points. |
 | 0.15 | 2026-08-07 | **M5: state, presets, and library.** Two new crates land: `namir-state` (D-11.1's JSON preset/state format, D-11.2's tolerant/versioned deserialisation via a never-discarded `Document` carrier rather than `#[serde(flatten)]`, D-11.3's three-way file reference and FR-STATE-070's resolution order behind a `FileResolver` port `namir-library` implements against the opposite dependency edge) and `namir-library` (D-12.1's incremental index — corrected mid-milestone, see below — D-12.2's caller-pumped scan step machine, **AQ-3 resolved**: a single pretty-printed JSON document, atomic replace, no new dependency). `namir-engine` gains `Command::Unload` (FR-STATE-070's "load with that stage empty" reuses the existing crossfade-to-`None` machinery, no new DSP). `namir-worker` gains `library::LibraryService` (driving the scan step machine on its pool, D-12.2's split finally whole) and `Instance::recall` (FR-STATE-030/050, sequential through the existing `load`/`unload` primitives specifically so R-7's cross-target serialisation rule cannot be bypassed by construction). **Six corrections to the governing documents**, each its own `*Consequence (added M5)*` note at the relevant section rather than collected in one place: D-5.1's self-contradictory `namir-library` platform-code cell; FR-LIB-070 vs. D-12.1's literal wording (a same-length edit inside one mtime tick was invisible — closed by a settling-window rule); new **D-2.5** scoping D-2.1's wall-clock rule to audio-thread budgets specifically, since four M5 requirements are wall-clock by their own FRS wording; `.gitattributes` marking `*.namirpreset binary` before Git's line-ending normalisation could silently repair a serialiser regression in the checked-in portability corpus; FR-STATE-070's silence on which library root and on a hash-mismatched path hit (resolved: no stored root identity, a mismatch falls through rather than substituting); and global bypass/output ceiling's missing `ParamDescriptor` home, flagged for an M6 decision. NFR-RT-010 moves Partial → Done (`crates/namir-worker/tests/rt_stress.rs`, all three axes concurrent, zero audio-thread allocation). NFR-PERF-050 and NFR-PERF-060 both close with margin (`benches/resource_load.rs`, `benches/library_scan.rs`). NFR-QUAL-040's second fuzz target (`crates/namir-state/fuzz`) lands in M5 rather than M7. NFR-DOC-010 closes: `docs/04-state-and-preset-format.md`, with its own and FR-STATE-040's manual tests actually executed rather than left as unrun scripts. `handover_crossfade.rs` re-run at close (preset recall is a new, more frequent path to R-7's worst condition): five repetitions on this session's own sandbox, two discarded as contaminated, the three clean runs matching M4's original figures closely — **no evidence of regression; R-7 remains retired.** §14's snapshot gains six live-updated cells (5.9, 5.10, 6.1, 6.2, 6.4, 6.6, 6.8) and §15 strikes AQ-3. The FRS §5.9/§5.10 "close in full" acceptance line in roadmap §9 is restated honestly: seven of twelve Musts close in full, five close only their M5-resolvable half (the rest is M6 UI or, for FR-STATE-020, the first release itself). |
+| 0.16 | 2026-08-07 | **M6: product shells — platform, app, UI, CLAP.** Four new/completed crates: `namir-platform` reaches full scope (D-13.2 config/log/thread-priority, D-13.3's CLAP install-path table); `namir-ui` (new) is a pure view+intent layer behind a `UiHost` trait, since D-5.1 forbids it depending on `namir-engine`/`namir-worker`/`namir-platform` — `namir-app` and `namir-clap` each implement that trait against their own real engine; `namir-app` (new) wires real `cpal` WASAPI I/O, verified against real hardware this session (a PreSonus AudioBox 22VSL: device enumeration, rate/buffer negotiation, a genuine opened-and-playing duplex stream); `namir-clap` (new) wires the real `Chain`/`Instance`/`REGISTRY`/`State` behind `clack-plugin`, validated for real against `clap-validator` (32/32 applicable tests passed, 0 failed, one real state-rescan bug found and fixed). **D-10.4 added**: `global.bypass`/`global.output_ceiling_db` become real `ParamDescriptor`s (`namir_params::global`), migrated off `namir-engine`'s dedicated `Command::SetGlobalBypass`/`SetOutputCeilingDb` side channel and `namir-state`'s parallel `global` JSON section — the concrete trigger was `namir-clap` needing bypass exposed as a normal CLAP host parameter (`IS_BYPASS`), which the side channel couldn't provide. `namir-worker` gains `Instance::try_submit_param` and `namir-engine` gains `AudioEngine::apply_param_direct`/`reset_direct` (host-automation events applied directly from `process()`, sound because the audio thread already holds `&mut AudioEngine` exclusively) — closing a real gap D-7.2's own module doc comment had promised but `Instance` never actually exposed; `namir-app`'s independently-built 575-line `LiveEngine` workaround for the same gap is deleted once `try_submit_param` existed, in favour of the identical `Mutex<Instance>` pattern `namir-clap` already used. **This crate's `set_parent` is the workspace's first new `unsafe` code since M1** (`namir-platform`'s `denormal.rs`); its D-5.3 safety argument was adversarially reviewed by an independent agent before merging, which found and this session fixed two real gaps (a recognised-but-wrong host window-API tag reaching a panic instead of this crate's own diagnostic; a double-`set_parent` orphaning the previous native window) — no soundness/UB hole was found. **NFR-RT-030 closes**: `namir-engine/benches/denormal_guard.rs` (new, a `namir-platform` dev-dependency exempt from D-5.1's layering check) certifies `DenormalGuard` — unused since M1 — keeps denormal-input processing within 1.6% of nominal across five §2-reference-machine repetitions against a 10% budget, while confirming guard-absent processing costs 1.33-1.38x more, real evidence the guard does something. §22's R-7 row gains a third re-check (its own standing "re-run whenever the audio callback changes" reason, and M6 is the first session since R-7 retired to actually touch that callback): raw p99.9 was contaminated by this session's own concurrent tooling load, but the contamination-immune estimator stayed at 14.0-14.5% across five repetitions — no evidence of regression. **Two Must-requirement gaps recorded honestly, not worked around**: FR-IO-020's WASAPI exclusive mode is architecturally absent from `cpal` 0.18.1 (verified against its vendored source), and R-5's failable-device test had no real hardware available this session — both flagged in `docs/03-implementation-roadmap.md` §15 as open decisions due before M8. §14's snapshot gains four live-updated rows (5.11, 5.12, 5.13, 6.1) plus a correction to 6.1's own stale cell (M5's prose had claimed a Done-count move the physical table was never edited to match). |
