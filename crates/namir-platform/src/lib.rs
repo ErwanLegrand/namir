@@ -1,15 +1,16 @@
 //! D-5.1's role for this crate: "Filesystem locations, config dirs, logging sink, thread
-//! priority. The only crate with `#[cfg(target_os)]`." This crate is currently only the minimal
-//! slice `03-implementation-roadmap.md` §5 (M1) asks for — D-7.4's denormal-suppression guard.
-//! Everything else D-5.1 assigns here (filesystem paths, CLAP install paths, thread priority)
-//! waits for M6, when something actually consumes it; adding it speculatively now would be
-//! untested, unconsumed surface area.
+//! priority. The only crate with `#[cfg(target_os)]`." M1 built only the minimal slice
+//! `03-implementation-roadmap.md` §5 asked for at that point — D-7.4's denormal-suppression guard,
+//! which needs `#[cfg(target_arch)]` rather than `#[cfg(target_os)]` (MXCSR/FPCR access differs by
+//! CPU architecture, not by operating system, so it never exercised the `target_os` carve-out
+//! D-5.1's table names this crate for).
 //!
-//! This guard needs `#[cfg(target_arch)]`, not `#[cfg(target_os)]` — MXCSR/FPCR access differs by
-//! CPU architecture, not by operating system, so it doesn't exercise the `target_os` carve-out
-//! D-5.1's table names this crate for. That carve-out is still reserved for this crate alone; it
-//! simply has no user yet.
+//! **M6 brings this crate to D-13.2/D-13.3's full scope** (`03-implementation-roadmap.md` §10):
+//! [`paths`] (config directory, log sink) is the first piece landing; D-13.3's CLAP search-path
+//! table and thread-priority elevation follow in the same module doc-comment style.
 
 mod denormal;
+mod paths;
 
 pub use denormal::DenormalGuard;
+pub use paths::{config_dir, log_file_path};
