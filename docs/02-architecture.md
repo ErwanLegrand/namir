@@ -1396,6 +1396,20 @@ targets; formatting and lints as errors.
 **Decision D-18.2** — A **network-free build configuration is a permanent CI target**, per
 FR-ERR-070.5, so that RD-1's future Tone3000 support can never quietly become mandatory.
 
+*Consequence (added M7)* — Built at M7, as the roadmap's own M7 section predicted ("there's no
+network feature yet for a feature flag to gate; building that infrastructure now, once, is cheaper
+than guessing at its shape earlier"). Mechanism chosen: rather than a bespoke build-time scanner,
+`deny.toml`'s existing `[bans]` section (already CI-gated for D-18.1's licence audit) now also
+carries a `deny` list naming the well-known HTTP/TLS/DNS/async-networking crates most likely to
+arrive as an unnoticed transitive dependency (`reqwest`, `hyper`, `tokio`, `rustls`, etc. — see that
+file's own comment for the full list and rationale), enforced by a new `network-free` CI job running
+`cargo deny check bans`. This is a named-crate denylist, not a semantic "detect any networking"
+check — cargo-deny has no such classification — so it is necessarily incomplete against a
+sufficiently obscure or renamed networking crate; it is deliberately scoped to catch the realistic
+failure mode (something else's dependency tree quietly growing an HTTP client) rather than to be
+adversarially unbeatable. Extend the list, don't replace the mechanism, if/when RD-1 adds a real
+network client behind its own feature flag.
+
 ---
 
 ## 19. Spike specifications

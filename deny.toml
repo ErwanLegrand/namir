@@ -7,9 +7,10 @@
 # docs/02-architecture.md §17's dependency register for the hand-verified facts this mirrors;
 # unlike that table, this file is re-checked on every CI run rather than maintained by hand.
 #
-# `[bans]`/`[sources]` are left close to `cargo deny init`'s own defaults — this project has no
-# unusual source or duplicate-version requirements yet (see NFR-LIC-050 for the *separate*,
-# not-yet-built check over test-asset licences, which this file does not cover).
+# `[sources]` is left close to `cargo deny init`'s own defaults — this project has no unusual
+# source requirement yet (see NFR-LIC-050 for the *separate*, not-yet-built check over test-asset
+# licences, which this file does not cover). `[bans]` carries M7's network-free deny-list — see
+# its own comment below.
 
 [graph]
 all-features = true
@@ -62,10 +63,41 @@ multiple-versions = "warn"
 # external dependency. "deny" here would fail on every intra-workspace edge, which is not what
 # NFR-LIC-020 or D-5.2 are trying to catch (that's the layering lint's job, in `xtask`).
 wildcards = "allow"
-# No specific crates banned today -- NFR-LIC-020's copyleft rejection is enforced by the
-# `[licenses]` section above (nothing GPL/AGPL/LGPL-licensed is in `allow`, and cargo-deny denies
-# any licence not on that list by default), not by naming crates here.
-deny = []
+# M7 (D-18.2/FR-ERR-070.5): "a network-free build configuration is a permanent CI target" and
+# FR-ERR-070's own *Verify* method is S -- "a build-time check that no network-capable dependency
+# is linked into the 1.0 binaries." No network client of any kind exists in this workspace today
+# (RD-1/Tone3000 is explicitly post-1.0), so this list is a standing assertion that stays true
+# rather than a fix for a real violation. `cargo deny check bans` (wired into
+# .github/workflows/ci.yml's `network-free` job) fails the build the moment any of these -- or a
+# transitive dependency pulling one of them in -- enters Cargo.lock. Named by crate, not by
+# category, because cargo-deny has no built-in "networking" classification to key off of; this
+# list is deliberately not exhaustive of every crate that could conceivably open a socket, just of
+# the well-known, commonly-pulled-in HTTP/TLS/DNS/async-runtime-networking crates most likely to
+# arrive as a transitive dependency of something else added later without anyone specifically
+# choosing to add networking. Extend, don't replace, if/when RD-1 adds a real network client behind
+# its own feature flag (FR-ERR-070's own remaining sub-clauses govern how that must be gated).
+deny = [
+    { name = "reqwest" },
+    { name = "hyper" },
+    { name = "hyper-util" },
+    { name = "ureq" },
+    { name = "curl" },
+    { name = "curl-sys" },
+    { name = "native-tls" },
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "rustls" },
+    { name = "tokio" },
+    { name = "async-std" },
+    { name = "mio" },
+    { name = "socket2" },
+    { name = "trust-dns-resolver" },
+    { name = "hickory-resolver" },
+    { name = "h2" },
+    { name = "tonic" },
+    { name = "tungstenite" },
+    { name = "quinn" },
+]
 
 [sources]
 unknown-registry = "deny"

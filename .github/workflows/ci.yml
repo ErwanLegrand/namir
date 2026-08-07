@@ -2,12 +2,9 @@
 # docs/03-implementation-roadmap.md §5 (M1). Every job here is scoped to what M1 can gate today;
 # see each job's own comments for exactly which slice of D-18.1 it covers.
 #
-# Deliberately NOT here: a network-free build configuration (D-18.2). D-18.2 itself frames that
-# as a permanent target "once RD-1 exists" (§18) and the roadmap's M7 section says building that
-# infrastructure now, before there is a network feature for a flag to gate, is premature --
-# "there's no network feature yet for a feature flag to gate; building that infrastructure now,
-# once, is cheaper than guessing at its shape earlier." This is a decision, not an oversight;
-# revisit at M7.
+# D-18.2's network-free build gate (the `network-free` job below) landed at M7, exactly as
+# predicted here: there was no network feature for a flag to gate before M7, so this waited rather
+# than being built speculatively against a guessed-at shape.
 #
 # `cargo-fuzz` needs a nightly toolchain and a bounded-time run, which reads more cleanly as its
 # own file than as one more job squeezed into a stable-toolchain matrix -- see fuzz.yml.
@@ -111,6 +108,25 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses
+
+  # M7: D-18.2/FR-ERR-070.5's network-free build gate, deferred here by design since M1 (see this
+  # file's own header comment above) until there was a whole product to check against. FR-ERR-070's
+  # own *Verify* method is S -- "a build-time check that no network-capable dependency is linked
+  # into the 1.0 binaries." Reuses the `cargo-deny` wiring `license-audit` already established
+  # rather than a bespoke tool: deny.toml's `[bans] deny` list now names the well-known HTTP/TLS/
+  # DNS/async-networking crates that would most plausibly arrive as an unnoticed transitive
+  # dependency; this job fails the moment any of them enter Cargo.lock. A separate job from
+  # `license-audit` because it gates a distinct requirement (NFR-LIC-020 vs. FR-ERR-070.5), not a
+  # licensing concern.
+  network-free:
+    name: cargo-deny network-free build (D-18.2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
 
   # Covers D-18.1's "an MSRV pin ... enforced" (NFR-PORT-010). The pinned version is read out of
   # root Cargo.toml's [workspace.package].rust-version at run time rather than hardcoded here, so
