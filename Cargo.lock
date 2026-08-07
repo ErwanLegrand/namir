@@ -1145,6 +1145,7 @@ dependencies = [
  "namir-ir",
  "namir-nam",
  "namir-params",
+ "namir-platform",
  "rtrb",
  "rubato",
 ]
