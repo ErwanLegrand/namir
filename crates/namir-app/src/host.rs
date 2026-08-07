@@ -480,10 +480,10 @@ mod tests {
             crate::instance::SharedInstance::new(Instance::new(EngineConfig { ctx: c }, endpoint));
         let cache = Arc::new(ResourceCache::new());
 
-        let (library, _warnings) = crate::library_service::open(dir);
+        let (library, _warnings) = namir_worker::library::LibraryService::open_at(dir);
+        let roots = library.roots().to_vec();
         let library = Arc::new(library);
         let pool = ThreadPool::with_threads(1);
-        let (_index_path, roots) = crate::library_service::bootstrap_paths(dir);
 
         let state = Arc::new(Mutex::new(State::defaults()));
         let worker_ctx = crate::worker::WorkerContext {

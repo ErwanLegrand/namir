@@ -39,7 +39,13 @@
 //! - [`bridge`] — the input->output ring buffer and its own xrun detection.
 //! - [`instance`] — [`instance::SharedInstance`], the `Mutex`-guarded `namir_worker::Instance`
 //!   shared between [`host`] and [`worker`] (see that module's doc comment).
-//! - [`library_service`] — thin bootstrap over `namir_worker::library::LibraryService`.
+//! - The default library location is `namir_worker::library::LibraryService::open_at`/
+//!   `open_default` directly — this crate no longer has its own bootstrap module for it. It used
+//!   to (`library_service.rs`); that logic moved to `namir-worker` in the same M6 session that
+//!   found `namir-clap` had independently duplicated (and gotten wrong) the exact same
+//!   computation, so both product shells now call one function instead of two that could drift
+//!   apart. See `namir_worker::library::LibraryService::open_default`'s own doc comment for the
+//!   full story.
 //! - [`host`] — [`host::AppUiHost`], the [`namir_ui::UiHost`] bridge.
 //! - [`worker`] — the dedicated background thread every blocking operation (load, scan, save) runs
 //!   on, so the UI thread and the audio thread are never blocked by one.
@@ -55,7 +61,6 @@ pub mod error_codes;
 pub mod host;
 pub mod instance;
 pub mod latency;
-pub mod library_service;
 pub mod settings;
 pub mod stream;
 pub mod worker;
