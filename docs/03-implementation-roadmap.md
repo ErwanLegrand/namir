@@ -1243,6 +1243,109 @@ there's a whole product to check).
 **Acceptance:** every remaining **S**-verified NFR that held "by omission" per the M0 gap analysis
 now holds by mechanical enforcement instead.
 
+### M7 status (this session, 2026-08-08)
+
+**Investigation first, before any code**: most of this milestone's own bullet list turned out to
+already exist. The Windows/Linux/macOS build+test matrix, `cargo-deny` licence audit, MSRV pin,
+no-C++-toolchain build, and Android/iOS mobile cross-compile jobs were all already live in
+`.github/workflows/ci.yml`, built incrementally at M1–M6, not started fresh here — this milestone
+was genuinely a *closure* pass over specific, identifiable gaps, confirmed by reading the actual
+files rather than assumed from this section's own prose.
+
+**Concrete gaps found and closed:**
+
+- **`namir-ui` excluded from the mobile cross-build, correctly, not by oversight.** D-5.1's table
+  predicted it would join once M6 built it. Checked instead of assumed: `namir-ui` depends
+  directly on `baseview` 0.2, whose `platform.rs` compiles a backend only for `macos`/`linux`/
+  `windows` — neither `android` nor `ios` matches, verified by a real cross-check build on this
+  session's machine. D-5.1's table corrected from "Yes" to "No" for this crate, with a
+  `*Consequence (added M7)*` note; `namir-app`/`namir-clap` stay correctly excluded per their
+  existing "Not for 1.0"/"No" cells.
+- **`namir-ir` fuzz target** (`probe_wav`), the one parser missing cargo-fuzz coverage — `namir-nam`
+  and `namir-state` already had theirs since M1/M5. Seeded from a generated (D-19.1) corpus via a
+  new `namir-ir` example, mirroring the other two fuzz crates exactly.
+- **D-18.2/FR-ERR-070.5's network-free build gate**, deliberately deferred since M1 until there was
+  a whole product to check. Reuses the existing `cargo-deny` wiring: `deny.toml`'s `[bans]` now
+  denies the well-known HTTP/TLS/DNS/async-networking crates by name, gated by a new `network-free`
+  CI job. A standing assertion — no network client exists in this workspace — not a fix for a real
+  violation.
+- **NFR-LIC-030's attribution file** — `cargo run -p xtask -- attribution [--write]`, same
+  generate-and-diff shape `params.lock` established: walks `cargo metadata`'s real resolve graph
+  from `namir-app`/`namir-clap` (the two shipped products) via `Normal`-kind edges only, so
+  dev/build-only subtrees are correctly excluded. 243 real third-party dependencies discovered,
+  zero `UNKNOWN` licences. Closes *production* of the artifact and its CI freshness gate; physical
+  bundling into a release installer stays open — no packaging pipeline exists yet (M8).
+- **NFR-QUAL-010's traceability check** — the substantial piece. FRS §10 names a
+  `docs/03-test-plan.md` this project never actually had (the roadmap document took the "03" slot
+  instead — a real, previously unrecorded inconsistency). `cargo run -p xtask -- traceability
+  [--write]` now generates it: every `**FR-*/NFR-* (Must)**` + `*Verify:*` pair parsed from the
+  FRS, reconciled against `docs/manual-tests/*.md` (`Verify: M`) or a `// trace: ID` comment /
+  `fr_xxx_nnn_...`-named test function anywhere under `crates/**`/`xtask/**` (everything else, plus
+  `# trace:` in CI/build config for the Musts verified entirely by tooling, not test code). FRS
+  §10 and architecture.md §23 both gained `*Consequence (added M7)*` notes recording the mechanism
+  honestly — crate-granularity component mapping, a generated (not hand-authored) test plan.
+  Building the check also found a second, smaller FRS defect: §1.5's own *Verify*-code legend
+  listed only six codes (U/I/G/B/S/M), missing the seventh, "Process", that NFR-QUAL-020 actually
+  uses — added to the legend.
+- **Retroactive sweep**: nine parallel agents, one per product crate, found and tagged the
+  already-existing test/bench that covers each of their crate's Must requirements — no test logic
+  changed anywhere, only `// trace:` comments added. Each correctly identified and reported the
+  requirements genuinely outside its own crate's scope rather than forcing a tag; those were
+  reconciled directly afterward (`namir-dsp`'s primitive-level tests for FR-IN-020/GATE-020/
+  GATE-030/EQ-020/PARAM-040; `namir-engine`'s stage tests for FR-NAM-050/130, FR-PARAM-030,
+  FR-IR-070/100; `namir-worker`'s recall/pool tests for FR-STATE-030 and FR-ERR-040; NFR-QUAL-030
+  and NFR-SEC-020 at their real, already-existing locations). Two manual-test docs written for
+  FR-UI-040/050 (`Verify: M` requirements whose automated coverage exists but, per NFR-QUAL-010's
+  own text, still need a written script — both honestly recorded as not executed this session, no
+  way to drive a real GUI, matching FR-UI-030's own precedent).
+- **NFR-DOC-030's user guide** (`docs/user-guide.md`, Should) — installation, audio setup, the
+  six-stage signal chain in its real D-9.8 order, troubleshooting. Every claim traced to a specific
+  file read, not invented; the two known FR-IO gaps (WASAPI exclusive mode, device-removal
+  mid-session) stated as plainly as their own manual-test docs already do.
+- **AQ-4 resolved** (research, not code): no explicit licence exists for NAM's standardised
+  reamp/capture signal — distributed off the MIT-licensed upstream source trees via a personal
+  file-sharing link, no terms found anywhere reachable. Recorded as all-rights-reserved pending
+  upstream clarification, in the same dated-note style AQ-3/AQ-5 already used. Blocks nothing but
+  shipping factory presets, exactly as originally scoped.
+
+**Net result: the uncovered-Must count went from 107 (the honest "red" state the traceability tool
+found on its first real run) to 18, then 16 once the two manual-test docs landed.** Every workspace
+build, `clippy -D warnings`, and `cargo test --workspace` run stayed green throughout — the entire
+sweep is comment-only, zero test behavior changed.
+
+**Two further, unplanned findings, recorded honestly rather than smoothed over:**
+
+- **A second stale-cell bug in this section's own §14 snapshot**, the same species M6 found and
+  fixed for 6.1 RT: M5's own prose claimed "6.6 SEC Done 0 -> 1" (NFR-SEC-020 closing), but the
+  physical table row was never edited to match, and stayed at the M0-frozen `3 | 0 | 3 | 0`. Found
+  and corrected in the table below, alongside this session's own two genuine new closures in that
+  row (FR-ERR-060/070's mirror, NFR-SEC-030, and NFR-SEC-020's own "See NFR-QUAL-040" text — now
+  that all three of `namir-nam`/`namir-ir`/`namir-state`'s fuzz targets exist and are tagged
+  `NFR-SEC-010` too) — all three Musts in 6.6 SEC now close.
+- **5.12 CLAP's "8 Done" cell rests, for several Musts, on a one-time manual `clap-validator` run
+  (M6, 32/32) rather than the CI-gated, repeatable verification those requirements' own literal
+  *Verify* text calls for** — FR-CLAP-020 says outright "pass clap-validator... gate in CI", and
+  `clap-validator` is not wired into `.github/workflows/ci.yml`. This session's more rigorous check
+  found seven of the ten CLAP Musts (020, 030, 040, 070, 080, 100, 130) have **zero** `#[cfg(test)]`
+  coverage in the crate — only manual-test docs for the ones that have them. The underlying
+  functionality was real and was demonstrated once; it is not mechanically re-verified today. This
+  is left as a flagged finding rather than a guessed-at table correction: 5.12's own Must-ID
+  membership needs a careful re-audit (this session counted 11 `FR-CLAP-*` ids against the row's
+  stated count of 10, an unresolved discrepancy) before its Done/Partial split can be corrected
+  with confidence, so the table below is left as M6 recorded it for this one row, with this
+  paragraph standing in as the honest record until that re-audit happens.
+
+**Acceptance — partially met, stated honestly rather than claimed in full.** The CI-gate deliverables
+(mobile-list correction, `namir-ir` fuzz, network-free gate, attribution file) are built, verified
+locally, and will get their first real CI run once this branch is pushed — recorded as such, not
+assumed green, per this project's own standard of not claiming untested behavior works. NFR-QUAL-010's
+traceability check is real and running, but does not yet report zero uncovered Musts: 16 remain,
+each individually investigated and confirmed as a genuine gap (not a tagging miss) by name above and
+in `docs/03-test-plan.md`'s own generated output. AQ-4 and the user guide close in full. The milestone
+is far more complete than it started, closes real infrastructure gaps M1 never had a target for, and
+converts several previously-invisible gaps (the CLAP CI-gating finding, the WASAPI/resampling-quality
+gaps already known) into named, tracked ones — which is what NFR-QUAL-010 existing at all is for.
+
 ---
 
 ## 12. M8 — 1.0 exit
@@ -1308,13 +1411,13 @@ stage/product) / **Not started**.
 | 5.11 IO | 8 | 2 | 6 | 0 |
 | 5.12 CLAP | 10 | 8 | 2 | 0 |
 | 5.13 UI | 7 | 6 | 1 | 0 |
-| 5.14 ERR | 6 | 0 | 4 | 2 |
+| 5.14 ERR | 6 | 2 | 4 | 0 |
 | 6.1 RT | 4 | 3 | 1 | 0 |
 | 6.2 PERF | 6 | 1 | 0 | 5 |
-| 6.3 PORT | 5 | 0 | 4 | 1 |
-| 6.4 QUAL | 6 | 0 | 4 | 2 |
-| 6.5 LIC | 5 | 3 | 0 | 2 |
-| 6.6 SEC | 3 | 0 | 3 | 0 |
+| 6.3 PORT | 5 | 5 | 0 | 0 |
+| 6.4 QUAL | 6 | 1 | 4 | 1 |
+| 6.5 LIC | 5 | 4 | 0 | 1 |
+| 6.6 SEC | 3 | 3 | 0 | 0 |
 | 6.7 BUILD | 2 | 1 | 0 | 1 |
 | 6.8 DOC | 2 | 0 | 2 | 0 |
 
@@ -1432,6 +1535,39 @@ evidence rather than leaving the drift for a future session to rediscover:
   (content-independent worst-case timing) stays Partial — substantial supporting evidence exists
   (R-4/R-8's benchmark infrastructure, `tail_structure.rs`'s estimator) but nothing has formally
   verified it against its own *Verify: B* method's "varied material over a long run" wording.
+
+**Five further live updates, made in the M7 session** — see this section's own §11 M7-status
+addendum above for the full accounting; only the cell movements are recorded here.
+
+- **5.14 ERR Done 0 -> 2, Not-started 2 -> 0.** FR-ERR-060 and FR-ERR-070 close: both requirements'
+  own *Verify: S* text ("a build-time check that no network-capable dependency is linked") is met
+  by the new `network-free` CI gate (D-18.2), the first mechanical enforcement either has had.
+- **6.3 PORT: corrected 0/4/1 -> 5/0/0.** Another stale-cell case, same species as 6.1 RT's own M6
+  fix: `NFR-PORT-010/020/030/040`'s CI enforcement (MSRV pin, layering lint, mobile cross-build,
+  no-C++-toolchain build) all predate this session by several milestones and were simply never
+  reflected in this row; `NFR-PORT-050`'s cross-platform round-trip coverage (four byte-level
+  invariant tests in `namir-state`) likewise already existed. This session's traceability sweep is
+  what surfaced the discrepancy, not new implementation work — all five Musts in this row were
+  already true, just untraced.
+- **6.4 QUAL Done 0 -> 1, Not-started 2 -> 1.** NFR-QUAL-010 closes: the traceability check this
+  row itself describes now exists and runs in CI (`cargo run -p xtask -- traceability`).
+- **6.5 LIC Done 3 -> 4, Not-started 2 -> 1.** NFR-LIC-030 closes: the attribution file
+  (`THIRD-PARTY-NOTICES.md`, `xtask attribution`) didn't exist before this session.
+- **6.6 SEC: corrected 0/3/0 -> 3/0/0 (also fixing a stale cell, see below).** NFR-SEC-030 closes
+  alongside FR-ERR-060/070 above (the identical network-free mechanism); NFR-SEC-010 closes per its
+  own text ("See NFR-QUAL-040") now that all three untrusted-input parsers have a tagged fuzz
+  target. **This row's own starting cell was also wrong before this session**: M5's own prose
+  claimed "6.6 SEC Done 0 -> 1" (NFR-SEC-020 closing), but the physical table cell was never edited
+  to match — the same documentation-drift bug M6 already found and fixed once for 6.1 RT, recurring
+  in a different row and going uncaught until this session's own audit.
+
+**One finding recorded in prose only, not as a table move**: 5.12 CLAP's existing "8 Done" cell
+rests, for several Musts, on a one-time manual `clap-validator` run (M6) rather than the CI-gated,
+repeatable verification several of those requirements' own literal *Verify* text calls for —
+`clap-validator` is not wired into CI, and seven of the ten `FR-CLAP-*` Musts have zero automated
+test coverage in the crate today. Left as a flagged finding rather than a guessed-at correction
+because this session counted 11 `FR-CLAP-*` ids against the row's own stated count of 10, an
+unresolved discrepancy a future session should resolve before touching this row's numbers.
 
 ---
 
