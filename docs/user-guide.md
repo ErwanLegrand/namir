@@ -46,8 +46,8 @@ cargo build --release -p namir-clap
 ```
 
 This produces a shared library — `namir_clap.dll` on Windows, `libnamir_clap.so` on Linux,
-`libnamir_clap.dylib` on macOS. A CLAP host expects a file with a `.clap` extension, so rename (or
-copy) the built library and place it at your platform's CLAP search path:
+`libnamir_clap.dylib` on macOS. What you do with it differs by platform, and **macOS is not like
+the other two**:
 
 | Platform | Per-user path (default, no admin rights needed) | System-wide path (opt-in, needs elevation) |
 |---|---|---|
@@ -55,8 +55,29 @@ copy) the built library and place it at your platform's CLAP search path:
 | macOS | `~/Library/Audio/Plug-Ins/CLAP` | `/Library/Audio/Plug-Ins/CLAP` |
 | Linux | `~/.clap` | `/usr/lib/clap` |
 
-For example, on Windows: build `namir_clap.dll`, copy it to
-`%LOCALAPPDATA%\Programs\Common\CLAP\Namir.clap`, then open your host and rescan its plugin paths.
+**Windows and Linux — rename the library.** A host looks for a file with a `.clap` extension, and
+on these two platforms that file *is* the shared library. For example, on Windows: build
+`namir_clap.dll`, copy it to `%LOCALAPPDATA%\Programs\Common\CLAP\Namir.clap`, then open your host
+and rescan its plugin paths.
+
+**macOS — build a bundle, not a renamed file.** On macOS a `.clap` is a *bundle directory*, not a
+renamed dylib: the CLAP specification defines a plugin's path as the shared library on Windows and
+Linux but as the **bundle** on macOS. Simply renaming `libnamir_clap.dylib` to `Namir.clap`
+produces something no host will load. The required layout is:
+
+```
+Namir.clap/
+└── Contents/
+    ├── Info.plist
+    ├── PkgInfo
+    └── MacOS/
+        └── libnamir_clap.dylib
+```
+
+`Info.plist` needs at minimum `CFBundleExecutable` (`libnamir_clap.dylib`), `CFBundleIdentifier`,
+`CFBundlePackageType` (`BNDL`), and `CFBundleName`; `PkgInfo` contains the eight bytes `BNDL????`.
+Assembling this by hand is fiddly and easy to get subtly wrong, so treat building on macOS as a
+developer activity for now — see [Known limitations](#known-limitations).
 
 **Use these paths exactly, not others that look plausible.** On Windows in particular, a
 plausible-looking location such as `%APPDATA%\REAPER\UserPlugins\CLAP` is **not** scanned by
@@ -66,7 +87,8 @@ development and is the single most likely reason a build "doesn't show up" in a 
 plugin isn't appearing:
 
 1. Confirm the file is at the per-user path above (Windows: `%LOCALAPPDATA%`, not `%APPDATA%`).
-2. Confirm the file extension is `.clap`, not `.dll`/`.so`/`.dylib`.
+2. Confirm the file extension is `.clap`, not `.dll`/`.so`/`.dylib` — and on macOS, confirm it is a
+   bundle *directory* with the layout shown above, not a renamed `.dylib`.
 3. Rescan/refresh your host's plugin list (most hosts have an explicit "rescan" action; a restart
    also works).
 4. If you need a system-wide install instead, use the system-wide path in the table above — this
@@ -223,3 +245,10 @@ Recorded here plainly rather than glossed over, since these are genuine, current
 - **Linux (ALSA) and macOS (CoreAudio) support** builds and passes the automated test suite in CI
   on both platforms, but has not yet been verified against real hardware to the same extent as the
   Windows/WASAPI path, which has been.
+- **There is no installer or packaged release yet**, on any platform — building from source is
+  currently the only way to run Namir. On macOS this is a sharper limitation than elsewhere,
+  because the `.clap` bundle described above has to be assembled by hand; a build step that
+  produces it automatically is planned but not yet written.
+
+An earlier revision of this guide told macOS users to rename `libnamir_clap.dylib` to `Namir.clap`,
+which does not work — that instruction was wrong and has been corrected above.

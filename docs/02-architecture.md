@@ -808,6 +808,76 @@ disagree, the FRS wins and this document is the defect. The correct fix for an a
 is to show the FRS's intent is already met, not to rewrite the FRS to match this document's
 implementation choice.
 
+### 9.5 NAM Architecture 2 (A2) — added M8-planning
+
+This subsection belongs to §9.1's NAM stage; it is appended here rather than inserted there so the
+decision numbering stays monotonic and no existing text moves.
+
+**Decision D-9.12** — A2 support **extends the existing WaveNet parser and inference path** rather
+than adding a second architecture beside it. An A2 file declares `architecture: "WaveNet"` exactly
+as an A1 file does; what differs is the `config` object's schema, not the network family. The
+private `enum Architecture` seam in `namir-nam`'s `model.rs` therefore stays private and stays as
+it is — A2 is a wider `config` grammar behind that seam, not a new public trait, not a parallel
+`PreparedNam` variant, and not a second inference module. Scope is **core A2 only**: enough to load
+and run the **A2-Full** and **A2-Lite** configurations (FR-NAM-150), no more.
+
+*Rationale:* The architecture tag is the only thing a parser can dispatch on cheaply, and A2 does
+not change it. Introducing a public architecture trait to accommodate a config-schema change would
+export an extension point the FRS does not ask for and that D-6.1's `Stage`/`StagePrep` split
+already covers at the level that matters (the engine sees `PreparedNam`, never a network kind).
+Keeping the seam private also keeps the blast radius of a future A3 inside one crate.
+
+*Consequence — FR-NAM-140 is a prerequisite, not a by-product.* Today an A2 file fails with
+`nam.load.malformed_json` ("not valid JSON"), because A2 layers dropped the scalar `kernel_size`,
+dropped the `gated` bool, and turned `activation` from a string into an object — a shape the A1
+schema rejects at the deserialiser, before any architecture check runs. That message is actively
+misleading: the file is well-formed JSON. FR-NAM-140's distinct "unsupported feature" error is
+therefore worth shipping *ahead* of A2 inference, so that a user with an A2 model gets a true
+statement about why it did not load even while the answer is still "not yet supported."
+
+*Consequence — the `config` grammar widens in specific, enumerated ways.* `kernel_sizes[]` (an
+array, replacing the scalar `kernel_size`); `activation` as an object or an array of objects;
+`gating_mode` replacing the `gated` bool; plus `bottleneck`, `groups_input`,
+`groups_input_mixin`, `layer1x1`, `head1x1`, `in_channels`, and a nested `head` object — which
+`namir-nam` currently *rejects* outright whenever `config.head` is non-null. Each of these is a
+parser change; none of them is an architecture change.
+
+*Consequence — new DSP primitives in `namir-nam`, not in `namir-dsp`.* Grouped dilated
+convolution, bottleneck expand/contract, per-layer variable kernel size (namir's `Conv1D` assumes
+one kernel size for a whole layer array), the 1×1 residual/skip projections, a convolutional head,
+and the activations LeakyReLU, SiLU, PReLU, Softsign, Hardswish and LeakyHardtanh. These are
+WaveNet-internal shapes, not primitives another stage would reuse, so they stay behind the NAM
+crate's own boundary per D-5.1.
+
+*Consequence — weight-layout order must be re-derived, not assumed.* A1's flat weight-vector
+ordering was established by reading `NeuralAmpModelerCore` directly and proven to −131 dB (S-1,
+§19). A2's ordering must be re-derived the same way, from `NAM/wavenet/detail.h` and
+`NAM/wavenet/params.h`, and then **proven** by a new `namir-fixtures` A2 generator acting as a
+parity oracle — an independent from-scratch A2 reference compared numerically, per D-19.1 and the
+pattern D-9.11 makes general. This is not optional diligence: a silently-wrong weight order
+produces a model that loads cleanly, runs at the right cost, and sounds plausible while being
+wrong, which is precisely the failure mode NFR-QUAL-030 exists to forbid and no amount of listening
+will catch. Recorded as **R-9** (§22), the highest-severity item this work carries.
+
+*Consequence — FR-NAM-090/100 stop being blocked.* `namir-nam` currently declares loudness
+normalisation and calibration out of scope *because* they need metadata fields the `.nam` schema
+this crate reads does not carry. A2-era files carry `loudness`, `input_level_dbu` and
+`output_level_dbu`, which removes exactly that blocker. The requirements are then a matter of
+deciding how to apply the figures, not of the data being absent.
+
+*Consequence — the performance budget should get easier, but not for free.* A2 is claimed to cost
+30–40 % *less* CPU than A1, which would give NFR-PERF-010 headroom rather than take it. Namir's
+`wide::f32x8` kernels (D-2.3, R-4) assume dense convolutions, though; grouped and bottleneck
+convolutions need their own vectorized variants before any of that claimed saving shows up in a
+measured p99.9 on the §2 reference machine. Until it is measured there under D-2.4's conditions,
+the saving is a claim, not a number this project may cite.
+
+*Explicitly deferred, by decision rather than by omission:* `SlimmableContainer`, `condition_dsp`,
+FiLM conditioning, and the `.namb` container. None of the four is needed for A2-Full or A2-Lite,
+each is a distinct piece of work with its own verification burden, and bundling them into the same
+milestone would put the R-9 parity work behind three unrelated features. They are revisited as
+their own decision when a requirement asks for them.
+
 ---
 
 ## 10. Parameter system
@@ -1109,6 +1179,13 @@ remains unmet, as §22 already anticipated it might. FR-IO-090 (channel mapping)
 a single physical input channel (optionally remapped) but not for `ChannelConfig::Stereo`'s
 genuinely independent two-channel input.
 
+*Consequence (added M8-planning, 2026-08-08):* the choice the M6 note above left open — a
+`namir-platform`-owned unsafe WASAPI-exclusive helper *or* an upstream `cpal` change — is now
+decided, as **D-13.4** below: a Namir-maintained **fork of `cpal`**, pinned by commit. This
+decision's own text stands; what changes is only which of the two routes it named gets built.
+FR-IO-020's exclusive-mode half is closed through D-13.4, not through this decision's original
+"cpal covers these" claim, which the M6 note already corrected.
+
 **Decision D-13.2** — Filesystem locations, config directories, log sinks and thread priority
 elevation live in `namir-platform` and nowhere else (P5, NFR-PORT-020).
 
@@ -1156,6 +1233,66 @@ return the path, don't attempt privileged install logic"). A regression test
 (`per_user_is_not_appdata_the_path_s4_found_reaper_ignores`) pins the specific failure mode S-4
 found: a lookup keyed on `%APPDATA%` instead of `%LOCALAPPDATA%` must resolve to `None`, not
 silently fall back to the path Reaper is known to ignore.
+
+*Consequence (added M8-planning, 2026-08-08) — this table says **where**, and had been read as
+also implying **what**; it does not.* On Windows and Linux the artifact placed at these paths is
+the built shared library, renamed to `Namir.clap`. On macOS it is **not**: a `.clap` there is a
+**bundle directory**, `Namir.clap/Contents/{Info.plist, PkgInfo, MacOS/<dylib>}`, and a
+`libnamir_clap.dylib` simply renamed to `Namir.clap` is something no host will load. This is
+CLAP's own definition, not a macOS convention layered on top of it — `entry.h` defines a plugin's
+`plugin_path` as the DSO on Linux and Windows but as the *bundle* on macOS. `docs/user-guide.md`
+stated the renamed-library rule uniformly across all three platforms and was therefore wrong for
+macOS; it has been corrected in this planning pass, and the requirement itself is now carried
+explicitly by **FR-PKG-020** rather than left as an unstated implication of this table. D-18.3's
+`xtask bundle` is the mechanism that produces the bundle; without it there is no macOS artifact to
+put at either path in this row.
+
+**Decision D-13.4 (added M8-planning; resolves the choice D-13.1's M6 note left open)** —
+FR-IO-020's WASAPI **exclusive** mode is closed by a **Namir-maintained fork of `cpal`** that adds
+`AUDCLNT_SHAREMODE_EXCLUSIVE` as a requestable share mode, consumed as a git dependency **pinned by
+commit**. The alternative D-13.1 named — a `namir-platform`-owned unsafe WASAPI helper — is
+rejected.
+
+*Rationale:* The share mode is not a parameter cpal exposes and forgot to plumb; it is a hardcoded
+local inside `build_input_stream_raw_inner`/`build_output_stream_raw_inner`, chosen at the
+`IAudioClient::Initialize` call in the middle of cpal's own stream-construction sequence (verified
+against the vendored 0.18.1 source at M6 — see D-13.1's note). A `namir-platform`-owned helper
+cannot reach into that sequence; it would have to own the whole Windows stream lifecycle in
+parallel — device enumeration, format negotiation, event-driven buffer servicing, error and
+device-removal reporting — meaning Namir would ship two independent Windows audio paths, one per
+share mode, with FR-IO-050/060/070/080 needing to hold on both. Changing one line's worth of share
+mode in the library that already owns that lifecycle is a far smaller, far better-tested surface
+than reimplementing it, even counting the cost of maintaining a fork.
+
+*Consequence — this is a real dependency change, not a patch.* A git dependency touches three
+things at once. (a) §17's register gains a row for the fork, distinct from the upstream `cpal` row,
+marked prospective until it is actually built. (b) `cargo-deny`'s `[sources]` policy must be
+extended to allow that specific git URL — the default posture is to reject non-registry sources,
+and that rejection is doing its job, so the allowance is narrow and named rather than a blanket
+`allow-git = []` relaxation. (c) NFR-SEC-040's reproducible-build ambition is weakened by a git
+dependency in a way a crates.io dependency does not weaken it; pinning by commit hash rather than
+by branch is the minimum mitigation, and vendoring the fork into the tree is the fallback if the
+pin proves insufficient. Recorded as **R-10** (§22).
+
+*Consequence — no settings migration is needed.* `AppSettings::exclusive_mode` already exists as a
+persisted field, added forward-compatibly at M6 precisely so a later fix would not require one. It
+is currently written and never read; this decision's implementation is what finally reads it, wiring
+it through `namir-app`'s `AudioBackend`/`AudioStream` trait (`crates/namir-app/src/audio_io.rs`) —
+the Namir-owned seam D-13.1 requires, so nothing outside that module learns that a share mode
+exists.
+
+*Consequence — the fork is a liability with a stated exit.* The change should be offered upstream;
+if it is accepted, this decision reverts to a plain version bump on the existing §17 `cpal` row and
+the git-source allowance is removed. If it is not, the fork must be rebased as upstream moves, and
+that ongoing cost is the substance of R-10 rather than an afterthought. The fork's diff is
+deliberately kept minimal — a share-mode parameter and the format-negotiation consequences of it,
+nothing else — so that rebasing stays mechanical.
+
+*Consequence — exclusive mode is a mode, not a default.* It takes exclusive control of the device
+and will fail to open where shared mode succeeds. FR-ERR-020's catalogue therefore needs an entry
+for "exclusive mode unavailable on this device/format," and the settings path must degrade to
+shared rather than leave the app with no audio — the same graceful-degradation behaviour FR-IO-080
+already requires for a missing remembered device.
 
 ---
 
@@ -1256,6 +1393,66 @@ enforced by review plus by the absence of indexing/unwrapping in RT code.
 here. It is an engineering discipline backed by lints and review, not a guarantee. Recorded as
 such rather than overclaimed.
 
+**Decision D-16.4 (added M8-planning, 2026-08-08)** — FR-ERR-010's diagnostic log is implemented as
+a **small, Namir-owned, bounded rotating writer in `namir-platform`**, with no logging dependency
+adopted. Verbosity is configurable (off / errors / info / verbose) from settings and overridable by
+an environment variable for a support session. Rotation is bounded by size with a fixed small
+number of generations, so the log can never grow without limit — NFR-SEC-020's bounded-allocation
+posture applied to disk. The sink path is `namir-platform`'s existing `log_file_path()`, which
+D-13.2 already computes and which nothing has yet written to.
+
+*Numbering note:* the shared M9–M13 planning index calls this decision "D-16.3". That identifier
+was already taken, above, by the worker-panic-isolation decision, and this document does not reuse
+or renumber identifiers, so the logging decision is **D-16.4**. A citation to "D-16.3" from a
+planning document written against that index means this decision.
+
+*Why this is a decision at all, and not a detail:* the workspace today has **no logging dependency
+of any kind** — not `log`, not `tracing`, nothing. §17's record of what M4, M5 and M6 each
+deliberately did *not* add shows the bar this project applies (zero transitive dependencies, no
+build script, `no_std`-capable, MSRV below this workspace's own), and shows that `libc` is the one
+knowing exception to it, taken for an ABI-soundness reason. Adding a logging stack would be the
+first dependency taken purely for developer convenience, so the alternatives are recorded rather
+than one being assumed.
+
+*Option A — adopt the `log` facade plus a hand-written sink.* `log` is a zero-dependency,
+MIT OR Apache-2.0 facade; the sink would still be ours, so the writer work is unchanged. Its one
+real benefit is that a dependency which already logs through `log` would have its diagnostics
+captured in Namir's log for free. Its cost is that the facade is *global and reachable from
+anywhere*: once `log` is in the tree, `namir-engine` can take it as a dependency and a `log!` call
+can appear inside `process()`, which allocates and takes a lock. Nothing mechanical stops that.
+
+*Option B (chosen) — hand-roll the writer in `namir-platform`, no dependency.* The writer is on the
+order of a hundred lines: open-append, a level filter, a size check, a rename-and-reopen. The
+decisive property is structural, not the line count: **D-5.1 already forbids `namir-engine` from
+depending on `namir-platform` at all**, and `cargo run -p xtask -- layering` enforces that on every
+merge. Putting the logger there makes it *unreachable from the audio thread by the same lint that
+already runs*, rather than by a review convention. That is the strongest available enforcement of
+NFR-RT-010 for this feature, and it is free.
+
+*Consequence — the audio thread never touches the logger, and now cannot.* D-16.2's existing route
+stands unchanged: the audio thread emits numeric fault codes through the telemetry ring, and the UI
+or worker side formats, allocates and writes. Logging is a non-RT-side activity in this design, and
+Option B makes that a compile-time fact on the engine crate rather than a rule someone must
+remember.
+
+*Consequence — what Option B gives up, stated rather than glossed.* A dependency that logs through
+the `log` facade writes into a facade Namir has not installed, so its output is silently dropped
+rather than appearing in the user's log. That is a real loss for diagnosing a fault inside `cpal`
+or `clack`. If that loss ever bites, the fix is additive — install a `log` facade adapter in front
+of the same writer — and this decision is revisited then, on evidence, rather than pre-emptively.
+`log` is recorded in §17 as a prospective, not-adopted candidate so the option stays visible.
+
+*Rejected — `tracing`:* it is the better library for the problem it solves, and that problem is not
+this one. Structured spans across async task boundaries are worth their dependency tree in a
+service; Namir is a single-process audio application whose FR-ERR-010 need is "a file a user can
+attach to a bug report." Adopting `tracing` means adopting `tracing-core`, a subscriber stack and
+its own transitive tree, all for a feature the chosen option delivers in one module — and it would
+carry Option A's reachability problem as well.
+
+*Consequence — FR-ERR-050's diagnostic bundle includes the current log and its retained
+generations.* Combined with D-13.3's note that the bundle should record which CLAP paths exist and
+what they contain, that makes the bundle self-sufficient for the two most likely support reports.
+
 ---
 
 ## 17. Dependency register
@@ -1278,6 +1475,8 @@ All facts verified 2026-08-04 against crates.io and GitHub, except `assert_no_al
 | `assert_no_alloc` | 1.1.2 | BSD-1-Clause | 2021-08-03, ~1.6 M recent downloads | D-7.5's RT-allocation test harness in `namir-engine`. **Dev-dependency only — never linked into a release build.** | Low — stale (no release since 2021) but small, single-purpose, and off the shipped binary entirely |
 | `rtrb` | 0.3.4 | MIT OR Apache-2.0 | published 2026-04-26; verified 2026-08-06 | D-7.2's SPSC command ring and D-8.1's return ring, in `namir-engine`. **A normal dependency — this one ships.** | Low — **zero** transitive dependencies, no build script, `no_std`-capable pure Rust, `rust-version = "1.38"` |
 | `libc` | 0.2.189 | MIT OR Apache-2.0 | published 2026-07-21; verified 2026-08-07; ~317.6 M recent (90-day) downloads, maintained by the Rust language team | D-13.2's thread-priority elevation (`namir-platform/src/thread_priority.rs`), Linux/macOS `pthread_setschedparam` bindings only. **A normal dependency, `cfg`-scoped to `target_os = "linux"`/`"macos"` — ships on those two platforms, absent from the Windows and mobile dependency graphs entirely.** | Low — one of the most widely used and actively maintained crates in the ecosystem; carries a build script (see note below for why that did not block adoption here) but no C-compiler invocation from it (`cargo tree -e normal,build` shows no `cc`/`cc-rs` under it, unlike `blake3`) |
+| `cpal` (Namir fork) | **Prospective — not yet adopted.** A fork of 0.18.1, to be pinned by commit hash, consumed as a git dependency | Apache-2.0, inherited from upstream | n/a — a Namir-maintained branch, not an upstream release; "activity" here is our own rebase cadence, which is the point of R-10 | D-13.4's WASAPI exclusive-mode support (FR-IO-020). Replaces, rather than supplements, the upstream `cpal` row above once adopted | **High — a maintained fork is an ongoing cost, and divergence from upstream is the risk.** Also the first non-registry source in the tree, requiring a named `cargo-deny` `[sources]` allowance. See D-13.4 and R-10 |
+| `log` | **Prospective — not adopted.** — (unpinned; version and activity **not** re-verified for this entry — verify before any adoption) | MIT OR Apache-2.0 | ubiquitous facade, Rust-language-team maintained | *Candidate* for FR-ERR-010's logging, evaluated as Option A of D-16.4 | **Deliberately not adopted — see D-16.4.** Zero-dependency and licence-clean; rejected on reachability (a global facade `namir-engine` could call from `process()`), not on quality. Listed so the option stays visible if a dependency's own diagnostics ever need capturing |
 
 **Decision D-17.1** — `symphonia` is **not** adopted for 1.0. FR-IR-010 (WAV) is a **Must** and is
 served by `hound` (Apache-2.0). FR-IR-020 (AIFF/FLAC) is a **Should**.
@@ -1383,6 +1582,29 @@ analogous struct-layout risk — the usual adoption bar applies unmodified there
 cheaply by three `extern` declarations. See `namir-platform/Cargo.toml` and `thread_priority.rs`'s
 own module doc comment for the full safety argument.
 
+**Note on the two prospective rows (added M8-planning, 2026-08-08):** the `cpal` fork and `log`
+rows are the first entries in this register that describe something **not in the tree**. They are
+recorded here rather than left to their own decisions because both are dependency questions this
+register is the place to answer, and because a reviewer reading the table should see the whole
+intended dependency surface, including the parts deliberately left out. Every fact in both rows is
+provisional until the dependency is actually taken: the fork does not exist yet, and `log`'s
+version and activity are stated from general knowledge rather than checked on the date at the head
+of this section. **Re-verify against crates.io and GitHub at adoption time, as every other row in
+this table was**, and update the row in place with the verification date.
+
+**Note on build tooling, and why it is absent from this register (added M8-planning):** D-18.3
+names **Inno Setup** (Windows installer), **`pkgbuild`/`productbuild`** (macOS package
+construction) and **`notarytool`/`stapler`** (Apple notarization). None of the three appears in
+this register, deliberately. This register exists for NFR-LIC-020 and NFR-LIC-030: it tracks what
+is **linked into the shipped binary** and therefore what Namir redistributes and must attribute.
+Installer generators and Apple's own CLI tools run on a CI machine, produce an artifact, and put
+nothing of their own into it — no code, no runtime, no licence obligation travelling with what the
+user installs. Listing them here would blur the one distinction the register is for and would
+imply a licence-audit obligation (`cargo deny check`) that cannot mechanically apply to a tool
+that is not a cargo dependency. Their availability, versions and licences are D-18.3's and the CI
+configuration's business, recorded there. The same reasoning already covers `clap-validator` and
+`cargo-deny` themselves, which have likewise never appeared in this table.
+
 ---
 
 ## 18. Build, CI and target matrix
@@ -1409,6 +1631,132 @@ sufficiently obscure or renamed networking crate; it is deliberately scoped to c
 failure mode (something else's dependency tree quietly growing an HTTP client) rather than to be
 adversarially unbeatable. Extend the list, don't replace the mechanism, if/when RD-1 adds a real
 network client behind its own feature flag.
+
+**Decision D-18.3 (added M8-planning, 2026-08-08)** — Release artifacts (FR-PKG-010 through
+FR-PKG-050) are produced by a tag-triggered `release.yml` running on all three runners, in a fixed
+order: **build → `xtask bundle` → per-OS package → GitHub Release**. `xtask bundle` is the
+new primitive and everything else depends on it; per-OS packaging is **Inno Setup** on Windows, a
+`.pkg` inside a `.dmg` on macOS, and a tarball plus `install.sh` on Linux.
+
+*Rationale for `xtask bundle` existing at all:* nothing in the Rust ecosystem will build a macOS
+`.clap` bundle. `cargo` produces a `.dylib`; the bundle directory D-13.3's M8-planning note
+describes (`Contents/Info.plist`, `Contents/PkgInfo`, `Contents/MacOS/<dylib>`) has to be
+assembled by something, and on Windows and Linux the same step is the cdylib rename. Putting it in
+`xtask` — which already exists and is already exempt from D-5.1's layering table — means the same
+command runs locally and in CI, so a developer can reproduce a release artifact without reading
+the workflow file. `nih_plug_xtask` is the model: it solves exactly this problem for a different
+plugin framework, and its shape (a bundler subcommand driven by a manifest of what to build) is
+worth copying rather than rediscovering.
+
+*Windows — Inno Setup, and specifically for `{autocf}`.* FR-PKG-030 requires both per-user and
+system-wide scope, per-user by default, installing to "the CLAP directory corresponding to the
+chosen scope, as recorded in `02-architecture.md`" — the FRS deliberately does not cite `D-x.y`
+identifiers (its own §1.1), so **the binding it defers to is D-13.3's table, and this decision is
+where that is stated**: per-user is D-13.3's per-user cell for the platform, system-wide is its
+system-wide cell, on all three platforms, with no third location. Inno's `{autocf}` constant
+resolves to `%COMMONPROGRAMFILES%` when the installer is running elevated and to
+`%LOCALAPPDATA%\Programs\Common` when it is not — which is D-13.3's Windows row, both cells, from
+one line in the `.iss`. Paired with `PrivilegesRequired=lowest`, the installer defaults to
+non-elevated per-user and escalates only if the user asks, which is the behaviour D-13.3's
+rationale argues for ("installation needs no administrator rights, which matters for users without
+them"). Inno is preinstalled on GitHub's `windows-latest` image, so this adds no toolchain
+provisioning step. A plain ZIP ships alongside it for FR-PKG-050.
+
+*macOS — a `.pkg` inside a `.dmg`, not a `.dmg` alone.* Two reasons, both concrete. (a) A release
+places multiple payloads at multiple absolute paths — the `.clap` bundle under
+`~/Library/Audio/Plug-Ins/CLAP` or `/Library/...`, the standalone app under `/Applications`, the
+attribution file with them — and only `pkgbuild`/`productbuild` can express that; a `.dmg` is a
+mountable folder the user drags from, which handles one destination well and several badly.
+(b) Files placed by `installer` from a `.pkg` do not carry `com.apple.quarantine`, whereas files a
+user extracts from a downloaded zip do — and a quarantined plugin is exactly the case R-11
+describes. `notarytool` and `stapler` complete the chain when signing is available. Surge's
+`make_installer.sh` is the working reference for the whole sequence.
+
+*Signing is conditional on a secret being present, not on a build flag.* Following Surge's pattern:
+the workflow's signing steps are skipped when the signing identity secret is absent, and the
+unsigned build takes the **identical** code path otherwise. This means notarization can be turned
+on later by adding a secret, with no restructuring, and that the unsigned path is the one exercised
+on every run rather than an untested fallback.
+
+*Honest caveat, recorded because it determines who may use a macOS release:* an unsigned,
+quarantined **plugin** does not fail the way an unsigned application does. An application gets
+Gatekeeper's "Open Anyway" path; a plugin loaded by a DAW gets no user-visible override at all —
+it simply fails to load — and macOS 15 removed the Control-click bypass that used to work. Until a
+signing identity exists, macOS releases are **developer-only in practice**, and this should be
+stated in the release notes rather than discovered by users. Recorded as **R-11** (§22).
+
+*Linux — tarball plus `install.sh`, defaulting to `~/.clap`.* Per D-13.3's Linux row. Two facts the
+script must not paper over: Fedora and other multilib distributions use `/usr/lib64/clap` rather
+than `/usr/lib/clap` for the system-wide path, so the script detects rather than assumes; and
+CLAP's own issue #46 — whether `~/.clap` or an XDG-conformant path is correct — is **still open**
+upstream, so `~/.clap` is chosen because it is what the specification says today and hosts scan
+today, with the awareness that it may need to become "both" later.
+
+*Consequence — FR-PKG-030's default must be empirically verified before it ships, not assumed.*
+D-13.3's own doc comment already warns that a plugin at an unscanned path fails silently, with no
+diagnostic anywhere, and that this will be the most common support question. Defaulting to the
+per-user path is therefore only safe if hosts actually scan it: **verify Reaper genuinely scans
+`%LOCALAPPDATA%\Programs\Common\CLAP`** on a clean machine before the default ships. The precedent
+demanding this is specific — Dexed ships its per-user install mode *commented out*, with a note
+that DAW-side issues were never resolved. If verification fails, the default changes; the
+requirement is per-user-by-default because it is better for users, not because it is known-good.
+
+*Consequence — FR-PKG-040 is a packaging step, not a documentation step.* `THIRD-PARTY-NOTICES.md`
+and the licence texts must be physically placed inside every artifact by the packaging job. M7
+generated the attribution file but explicitly deferred bundling it; this is where that closes, and
+it applies to the plain archives (FR-PKG-050) as much as to the installers.
+
+*Rejected — `cargo-dist`:* the obvious candidate, and it cannot do the two things that matter.
+It has no `lib-aliases` mechanism, so it **cannot rename a cdylib** — which is the entire Windows
+and Linux CLAP artifact — and it cannot build a macOS bundle. Its MSI installs only `bin/`, so
+even the Windows installer it does produce would ship the wrong thing to the wrong place. This is
+a capability gap, not a configuration gap; there is no way to hold it right.
+
+*Rejected — `cargo-wix`:* it has **no per-user install token**, so FR-PKG-030's per-user default —
+the whole point of D-13.3's table — cannot be expressed at all, and its WiX v4+ support is
+unreleased. Rejected on the requirement, not on the tool's quality.
+
+*Rejected — hand-written NSIS or raw WiX:* both are capable enough, and both would mean being the
+only CLAP project doing it that way. Every installer-shipping open-source CLAP project surveyed —
+Surge, Dexed, Odin2, Cardinal — arrived at Inno Setup independently, which is the strongest
+available evidence about which path has its edge cases already found. Choosing differently buys
+nothing and forfeits that.
+
+**Decision D-18.4 (added M8-planning, 2026-08-08)** — Namir publishes **nothing** to crates.io.
+`publish = false` is set workspace-wide. Path dependencies nonetheless gain a `version` field, as
+hygiene.
+
+*Rationale:* Namir is one product, in the shape Zed and uv are — a workspace whose crates are the
+internal seams of a single application — not a library ecosystem. Twelve of the workspace's
+fourteen crates (excluding `xtask`) are implementation details of that product, with no meaning
+outside it; `namir-clap` is a cdylib, which nothing can depend on as a library even in principle;
+and `namir-fixtures` is test tooling whose whole purpose is generating this project's own fixtures.
+There is no consumer for any of it. Publishing would create fourteen public maintenance
+obligations to serve zero users.
+
+*Rationale — name reservation is no longer an argument either.* The historical reason to publish
+an unused crate was to hold the name. RFC 3463 now prohibits placeholder and name-reservation
+crates outright, and RFC 3646 removed crates.io team mediation for name disputes, so publishing
+empty shells to reserve `namir-*` is both against policy and no longer a reliable protection. The
+option this decision forgoes is smaller than it looks.
+
+*Consequence — `cargo publish` already fails today, so this changes the failure from accidental to
+intentional.* Every path dependency in this workspace lacks a `version` field, which `cargo
+publish` rejects. Setting `publish = false` replaces an incidental blocker with a stated policy,
+and the difference matters: the incidental blocker would silently disappear the moment someone
+added versions for an unrelated reason.
+
+*Consequence — the `version` fields go in anyway.* Adding `version = "0.1.0"` alongside each
+`path = "..."` is hygiene worth having regardless: it documents the intended compatibility
+relationship between crates, it keeps `cargo` able to reason about the workspace the same way it
+would about a published one, and it means reversing this decision later is a one-line change per
+manifest rather than an audit. Keeping the reversal cheap is deliberate — this is a policy
+decision, and policy decisions should stay revisitable.
+
+*Accepted costs, stated:* no docs.rs-hosted API documentation (`cargo doc` locally, or a CI-built
+static site, is the substitute), and no `cargo install namir` (D-18.3's installers and archives are
+the distribution channel instead — which is the right channel for an audio application with a GUI
+and a plugin artifact anyway).
 
 ---
 
@@ -1789,6 +2137,9 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 | R-6 | `hound` unmaintained since 2023. | Low | WAV is frozen; we own any bug. Vendoring is a viable last resort. |
 | R-7 | ~~Crossfade doubles NAM cost transiently, eating the NFR-PERF-010 budget.~~ **RETIRED at M4, 2026-08-06 — measured, and then mitigated and re-measured.** Measured first (`namir-engine/benches/handover_crossfade.rs`, §2 reference machine, D-2.4 conditions, six retained repetitions of ten): this risk's wording is half right with the wrong half named. A NAM handover alone stays inside the 25% budget at every swap rate tested (worst **24.31%**), including a duty faster than any human audition, and an IR handover alone likewise (worst **24.63%**). What exceeded the budget was **both stages crossfading at once**: 25.06–31.49%. Mitigated by a worker-side rule (`namir-worker`'s `Instance::serialise_against_other_target`): a NAM and an IR handover are never offered simultaneously, the second waiting out the first's crossfade on a worker thread, which D-7.1 permits workers to do. Re-measured with arms D and E **interleaved in the same runs** (six retained repetitions of nine, the only comparison form this machine supports reliably): unserialised **28.77–31.26%** against serialised **22.20–24.63%** at every rate where the rule applies, with the measured both-fades-active overlap going from 10.9–43.8% to **exactly 0%**. Steady state read 16.04–16.84% in the same runs. **Every condition the system can actually produce is now within budget.** | Retired 2026-08-06 | Retired: the over-budget condition is removed by construction, not by hoping users avoid it. **Two residuals recorded rather than glossed.** (a) The margin at the worst achievable condition is about **0.4 points** (24.63% against 25%), so this is the path any future per-stage cost increase will breach first — a reason to re-run this benchmark whenever NAM or IR per-block cost changes, and the reason it exists as a permanent target rather than a one-off. (b) The benchmark's arm E at `period 16` still reads 26.99–31.89% with 75% overlap, and that is **not** a failure of the mitigation: half a period is 8 blocks against a 15-block fade, so the bench's fixed-offset *simulation* of the rule cannot serialise there. The real rule does not offset, it waits — at least 25 ms, or ~19 blocks, which exceeds the fade — so the condition arm E period 16 depicts is one the worker cannot produce. **Re-run at M5's close, 2026-08-07, per this row's own "reason it exists as a permanent target rather than a one-off"** — preset recall (this milestone) is a new, more frequent way to reach the both-stages-changing condition than a human clicking two controls. Five repetitions, this session's own sandbox (**not** the §2 reference machine, which this session has no access to). Two of five were contaminated by the benchmark's own stated check — not just arm A's raw/estimator gap, which one run passed while still showing a 23-point gap on arm C, a stronger signal arm A alone cannot catch — and are discarded. Across the three clean runs, arm E at periods 32/64/128 (period 16 excluded per residual (b) above) read **22.16-24.35%**, matching the original 22.20-24.63% range closely; period 16 read 26.43-32.36%, matching the already-documented 26.99-31.89% benchmark-simulation artifact. **No evidence of regression; the risk remains retired.** M5 added no code to `namir-engine`'s crossfade/chain path this benchmark exercises (`Command::Unload` is the only M5 addition here, and this benchmark never issues one), so a regression was never mechanically plausible — this re-run is a check against the *system* (preset recall's new access pattern), not against a suspected code change. **Re-run again at M6's close, 2026-08-07** — the first M6 session to actually add code to the audio callback path this benchmark exercises (`DenormalGuard` acquisition, thread-priority elevation, both in `namir-app`'s `cpal` callback and `namir-clap`'s `process()`), so unlike M5's re-run this one *could* plausibly regress. Five repetitions on the §2 reference machine; raw p99.9 was contaminated by this session's own concurrent tooling load (confirmed, not assumed — even arm A, steady state with no handover activity at all to vary, swung 18.5-28.9% raw p99.9 across the five runs). The contamination-immune estimator, unaffected by that load, stayed tight and stable at **14.0-14.5%** across every gating period and every repetition, comfortably under budget and consistent with the certified quiet-machine range this risk originally retired against. **No evidence of regression; the risk remains retired.** |
 | R-8 | **New, from S-2, 2026-08-05.** Same-size IR partitions all start accumulating input at stream time zero, so every partition at a given size — including every partition at `max_partition`, of which a multi-second IR can have dozens — triggers its FFT on the *same* block, forever. Measured directly: at a 32-sample block against a 2 s IR (48 kHz — FR-IR-050's own Must minimum, paired with the smallest Must block size), this alone costs 90–400 % of that block's entire period, tested across `max_partition` 256–32,768 with no material improvement at any value. Schedule tuning (D-9.6) cannot fix this; it is a gap in the synchronous, non-staggered scheme itself. **Verified and tuned by M3, 2026-08-06 — the scheduling defect itself is closed; the risk to NFR-PERF-010's acceptance is not.** M2's per-*group* stagger is replaced with a per-*size*, block-aligned stagger (`convolver.rs`'s own Decision/Rationale note). Re-measured on this M3 session's sandbox (4-core Intel Xeon @ 2.10 GHz, **not** this section's reference machine) via the ported `perf_sweep.rs`/`perf_bench.rs`: at this risk's own named condition (48 kHz, 32-sample block, 2 s IR), p99.9/max fell from 616.0%/1290.7% to **30.7%/70.4%** — comfortably under budget; at NFR-PERF-010's own literal condition (64-sample block), 337.7%/602.5% → **16.8%/41.3%**. Two gaps remain, not glossed over: 2048-sample blocks at 192 kHz/10 s IRs stay just over budget (117.8% p99.9, the head partition's own `O(block_size^2)` cost, not a staggering gap); a 32-sample-block/192 kHz `max` outlier is plausibly sandbox jitter, not confirmed. IR-stage-alone is no longer this risk's binding constraint. **RETIRED at M3's close-out, 2026-08-06.** `build_schedule`'s cross-size phase alignment is fixed with a permanent quantitative regression test (worst-block modelled FFT load 11.893x -> 6.793x the mean, against a 6.507x floor), and the residual tail this row was suspected of causing turned out not to be Namir's at all: an elevated `xperf` trace attributed it to `dxgkrnl.sys` issuing ~165 interrupts/second of 128-512 us, landing on CPU 0 exclusively — the core every benchmark here used to pin to. On a clean core the IR stage's p99 and p99.9 converge (51.6 / 55.0 us), which is the tight schedule-bounded distribution the cost model predicted throughout: the model was right, the measurement was contaminated. See D-2.4. | Retired 2026-08-06 | Retired: the scheduling defect is fixed with a permanent regression test; the residual tail was the GPU driver, addressed by D-2.4's core-selection rule. |
+| R-9 | **New, from M8-planning, 2026-08-08.** A2's flat weight-layout order must be re-derived from `NeuralAmpModelerCore` (`NAM/wavenet/detail.h`, `NAM/wavenet/params.h`) the same way A1's was, and A1's was then proven correct to −131 dB by S-1's cross-implementation parity. A silently-wrong order is the dangerous outcome, not a loud one: the model loads without error, runs at the expected cost, and produces plausible-sounding output that is wrong — and no amount of listening will detect it, which is exactly the failure mode NFR-QUAL-030 exists to forbid. Grouped and bottleneck convolutions, per-layer variable kernel sizes and the 1×1 projections all multiply the number of ways the order can be subtly wrong relative to A1. | High | D-9.12's parity oracle: a `namir-fixtures` A2 generator providing an independent from-scratch reference, compared numerically to a stated tolerance, **before any A2 model ships** — not after. Per D-19.1 and the pattern D-9.11 generalises. |
+| R-10 | **New, from M8-planning, 2026-08-08.** D-13.4's forked `cpal` is a maintained fork: it must be rebased as upstream moves, and every rebase is work that produces no user-visible benefit and can silently regress the Windows audio path. It is also the first non-registry dependency in the tree, which weakens the reproducibility NFR-SEC-040 (Should) wants and needs a named `cargo-deny` `[sources]` allowance that the default policy would otherwise reject. | Medium | Pin by commit hash, never by branch. Keep the fork's diff minimal — a share-mode parameter and its format-negotiation consequences, nothing else — so rebasing stays mechanical. Offer the change upstream; if accepted, the fork disappears and D-13.4 reverts to a version bump. Vendoring into the tree is the fallback if the pin proves insufficient for NFR-SEC-040. |
+| R-11 | **New, from M8-planning, 2026-08-08.** Release binaries are unsigned on both signing-relevant platforms, and the two platforms fail differently. Windows: SmartScreen warns on every release until reputation accrues, which it never does for a low-volume unsigned publisher, and Smart App Control blocks unsigned binaries outright rather than warning. macOS is worse in kind, not degree: a quarantined **plugin** loaded by a DAW has **no user-visible "Open Anyway" path at all** — it simply fails to load — and macOS 15 removed the Control-click bypass that previously worked. macOS releases are therefore developer-only in practice until a signing identity exists. | Medium | D-18.3's signing-conditional structure: signing steps are skipped when the identity secret is absent and the unsigned build takes the identical code path, so enabling signing later is adding a secret, not restructuring. State the caveat in the release notes rather than letting users discover it. Revisit before any release aimed at non-developers. |
 
 ---
 
@@ -1832,3 +2183,4 @@ mechanism, including why `docs/03-test-plan.md` is generated rather than hand-au
 | 0.15 | 2026-08-07 | **M5: state, presets, and library.** Two new crates land: `namir-state` (D-11.1's JSON preset/state format, D-11.2's tolerant/versioned deserialisation via a never-discarded `Document` carrier rather than `#[serde(flatten)]`, D-11.3's three-way file reference and FR-STATE-070's resolution order behind a `FileResolver` port `namir-library` implements against the opposite dependency edge) and `namir-library` (D-12.1's incremental index — corrected mid-milestone, see below — D-12.2's caller-pumped scan step machine, **AQ-3 resolved**: a single pretty-printed JSON document, atomic replace, no new dependency). `namir-engine` gains `Command::Unload` (FR-STATE-070's "load with that stage empty" reuses the existing crossfade-to-`None` machinery, no new DSP). `namir-worker` gains `library::LibraryService` (driving the scan step machine on its pool, D-12.2's split finally whole) and `Instance::recall` (FR-STATE-030/050, sequential through the existing `load`/`unload` primitives specifically so R-7's cross-target serialisation rule cannot be bypassed by construction). **Six corrections to the governing documents**, each its own `*Consequence (added M5)*` note at the relevant section rather than collected in one place: D-5.1's self-contradictory `namir-library` platform-code cell; FR-LIB-070 vs. D-12.1's literal wording (a same-length edit inside one mtime tick was invisible — closed by a settling-window rule); new **D-2.5** scoping D-2.1's wall-clock rule to audio-thread budgets specifically, since four M5 requirements are wall-clock by their own FRS wording; `.gitattributes` marking `*.namirpreset binary` before Git's line-ending normalisation could silently repair a serialiser regression in the checked-in portability corpus; FR-STATE-070's silence on which library root and on a hash-mismatched path hit (resolved: no stored root identity, a mismatch falls through rather than substituting); and global bypass/output ceiling's missing `ParamDescriptor` home, flagged for an M6 decision. NFR-RT-010 moves Partial → Done (`crates/namir-worker/tests/rt_stress.rs`, all three axes concurrent, zero audio-thread allocation). NFR-PERF-050 and NFR-PERF-060 both close with margin (`benches/resource_load.rs`, `benches/library_scan.rs`). NFR-QUAL-040's second fuzz target (`crates/namir-state/fuzz`) lands in M5 rather than M7. NFR-DOC-010 closes: `docs/04-state-and-preset-format.md`, with its own and FR-STATE-040's manual tests actually executed rather than left as unrun scripts. `handover_crossfade.rs` re-run at close (preset recall is a new, more frequent path to R-7's worst condition): five repetitions on this session's own sandbox, two discarded as contaminated, the three clean runs matching M4's original figures closely — **no evidence of regression; R-7 remains retired.** §14's snapshot gains six live-updated cells (5.9, 5.10, 6.1, 6.2, 6.4, 6.6, 6.8) and §15 strikes AQ-3. The FRS §5.9/§5.10 "close in full" acceptance line in roadmap §9 is restated honestly: seven of twelve Musts close in full, five close only their M5-resolvable half (the rest is M6 UI or, for FR-STATE-020, the first release itself). |
 | 0.16 | 2026-08-07 | **M6: product shells — platform, app, UI, CLAP.** Four new/completed crates: `namir-platform` reaches full scope (D-13.2 config/log/thread-priority, D-13.3's CLAP install-path table); `namir-ui` (new) is a pure view+intent layer behind a `UiHost` trait, since D-5.1 forbids it depending on `namir-engine`/`namir-worker`/`namir-platform` — `namir-app` and `namir-clap` each implement that trait against their own real engine; `namir-app` (new) wires real `cpal` WASAPI I/O, verified against real hardware this session (a PreSonus AudioBox 22VSL: device enumeration, rate/buffer negotiation, a genuine opened-and-playing duplex stream); `namir-clap` (new) wires the real `Chain`/`Instance`/`REGISTRY`/`State` behind `clack-plugin`, validated for real against `clap-validator` (32/32 applicable tests passed, 0 failed, one real state-rescan bug found and fixed). **D-10.4 added**: `global.bypass`/`global.output_ceiling_db` become real `ParamDescriptor`s (`namir_params::global`), migrated off `namir-engine`'s dedicated `Command::SetGlobalBypass`/`SetOutputCeilingDb` side channel and `namir-state`'s parallel `global` JSON section — the concrete trigger was `namir-clap` needing bypass exposed as a normal CLAP host parameter (`IS_BYPASS`), which the side channel couldn't provide. `namir-worker` gains `Instance::try_submit_param` and `namir-engine` gains `AudioEngine::apply_param_direct`/`reset_direct` (host-automation events applied directly from `process()`, sound because the audio thread already holds `&mut AudioEngine` exclusively) — closing a real gap D-7.2's own module doc comment had promised but `Instance` never actually exposed; `namir-app`'s independently-built 575-line `LiveEngine` workaround for the same gap is deleted once `try_submit_param` existed, in favour of the identical `Mutex<Instance>` pattern `namir-clap` already used. **This crate's `set_parent` is the workspace's first new `unsafe` code since M1** (`namir-platform`'s `denormal.rs`); its D-5.3 safety argument was adversarially reviewed by an independent agent before merging, which found and this session fixed two real gaps (a recognised-but-wrong host window-API tag reaching a panic instead of this crate's own diagnostic; a double-`set_parent` orphaning the previous native window) — no soundness/UB hole was found. **NFR-RT-030 closes**: `namir-engine/benches/denormal_guard.rs` (new, a `namir-platform` dev-dependency exempt from D-5.1's layering check) certifies `DenormalGuard` — unused since M1 — keeps denormal-input processing within 1.6% of nominal across five §2-reference-machine repetitions against a 10% budget, while confirming guard-absent processing costs 1.33-1.38x more, real evidence the guard does something. §22's R-7 row gains a third re-check (its own standing "re-run whenever the audio callback changes" reason, and M6 is the first session since R-7 retired to actually touch that callback): raw p99.9 was contaminated by this session's own concurrent tooling load, but the contamination-immune estimator stayed at 14.0-14.5% across five repetitions — no evidence of regression. **Two Must-requirement gaps recorded honestly, not worked around**: FR-IO-020's WASAPI exclusive mode is architecturally absent from `cpal` 0.18.1 (verified against its vendored source), and R-5's failable-device test had no real hardware available this session — both flagged in `docs/03-implementation-roadmap.md` §15 as open decisions due before M8. §14's snapshot gains four live-updated rows (5.11, 5.12, 5.13, 6.1) plus a correction to 6.1's own stale cell (M5's prose had claimed a Done-count move the physical table was never edited to match). |
 | 0.17 | 2026-08-08 | **AQ-4 researched (post-M6, not tied to a milestone).** No explicit licence found for NAM's standardised reamp/capture signal (`input.wav` and predecessors): it is distributed off the MIT-licensed `neural-amp-modeler`/`NeuralAmpModelerCore` source trees, from Steven Atkinson's personal Google Drive, with no licence or redistribution terms found in the repos, docs, Colab notebook, or project site. Treated as all-rights-reserved pending upstream clarification; §21's open-questions table and the S-0 "Open" note both updated with the finding and sources. Does not block anything currently scoped — only shipping factory presets, per AQ-4's own text. |
+| 0.18 | 2026-08-08 | **M9–M13 planning: five decisions added ahead of the work, none of it built.** This row records *plans*, not results — every decision below is written before its milestone runs, which is the opposite of this log's usual direction, and each will need its own status note when the work actually happens. **D-9.12** (new §9.5, appended so §9's numbering stays monotonic rather than inserted into §9.1) decides NAM Architecture 2 support: extend the existing WaveNet parser rather than add a parallel architecture, because an A2 file declares `architecture: "WaveNet"` exactly as A1 does and differs only in its `config` schema — so `model.rs`'s private `enum Architecture` seam stays private and no public trait appears. Scope is core A2 only (A2-Full and A2-Lite, FR-NAM-150); `SlimmableContainer`, `condition_dsp`, FiLM and `.namb` are deferred by decision rather than overlooked. Two things fall out of it that were not obvious: FR-NAM-140's distinct unsupported-feature error is a *prerequisite*, because an A2 file today fails with `nam.load.malformed_json` — a false statement, the file is valid JSON, the A1 schema simply rejects `kernel_sizes[]`/object-`activation`/`gating_mode` at the deserialiser; and FR-NAM-090/100 stop being blocked, since `namir-nam` declared loudness normalisation out of scope precisely because the schema it reads carries no loudness metadata, which A2-era files (`loudness`, `input_level_dbu`, `output_level_dbu`) do. **D-13.4** closes the choice D-13.1's own M6 note left open — a `namir-platform`-owned unsafe WASAPI helper *or* an upstream `cpal` change — in favour of a Namir-maintained **fork of `cpal`** pinned by commit, on the reasoning that the share mode is chosen at an `IAudioClient::Initialize` call in the middle of cpal's stream construction, so the helper route means owning a second complete Windows audio path (enumeration, negotiation, buffer servicing, device-removal reporting) with FR-IO-050/060/070/080 holding on both. `AppSettings::exclusive_mode` was already added forward-compatibly at M6, so nothing migrates. **D-16.4** — *numbered 16.4, not the 16.3 the planning index called it, because D-16.3 was already taken by the worker-panic-isolation decision and this document does not reuse identifiers* — decides FR-ERR-010's logging as a hand-written bounded rotating writer in `namir-platform` with **no logging dependency**, over the `log` facade (Option A, recorded and rejected) and `tracing`. The deciding argument is structural rather than dependency-count: D-5.1 already forbids `namir-engine` from depending on `namir-platform`, and `xtask layering` already enforces it on every merge, so siting the logger there makes it unreachable from the audio thread by a lint that already runs — the strongest available NFR-RT-010 enforcement for this feature, and free. What that gives up is stated: a dependency logging through the `log` facade writes into a facade Namir has not installed, and its output is silently dropped. **D-18.3** decides the release pipeline. `xtask bundle` is the missing primitive — nothing in the ecosystem builds a macOS `.clap` bundle, and D-13.3 gains a `*Consequence*` note recording why that matters: a `.clap` on macOS is a **bundle directory**, not a renamed dylib (CLAP's `entry.h` defines `plugin_path` as the DSO on Linux/Windows but as the bundle on macOS), `docs/user-guide.md` had stated the renamed-library rule uniformly and was wrong for macOS, and FR-PKG-020 now carries the requirement explicitly instead of leaving it an unstated implication of D-13.3's table. Windows uses **Inno Setup** specifically for `{autocf}`, which resolves to `%COMMONPROGRAMFILES%` elevated and `%LOCALAPPDATA%\Programs\Common` not — D-13.3's two Windows cells from one line — with `PrivilegesRequired=lowest`; `cargo-dist` is rejected because it has no `lib-aliases` and therefore **cannot rename a cdylib**, which is the entire Windows/Linux CLAP artifact, and cannot build a macOS bundle either; `cargo-wix` because it has no per-user token, so FR-PKG-030's per-user default cannot be expressed at all; NSIS/raw WiX because Surge, Dexed, Odin2 and Cardinal each arrived at Inno independently and that convergence is the best evidence available about which path has its edge cases already found. macOS ships `.pkg`-in-`.dmg` rather than `.dmg` alone for two concrete reasons — only `pkgbuild`/`productbuild` can place multiple payloads at multiple absolute paths, and files placed by `installer` never carry `com.apple.quarantine` where zip-delivered ones do — with signing conditional on a secret being present (Surge's pattern) so the unsigned build takes the identical code path. Linux is a tarball plus `install.sh` defaulting to `~/.clap`, detecting Fedora's `/usr/lib64/clap` for the system path, and noting CLAP issue #46 (`~/.clap` vs. XDG) is still open upstream. One verification obligation is recorded rather than assumed: **Reaper must be confirmed to actually scan `%LOCALAPPDATA%\Programs\Common\CLAP`** before per-user-by-default ships, the precedent being that Dexed ships its per-user mode commented out over unresolved DAW issues, and D-13.3's own doc comment already warns this failure is silent. FR-PKG-040 also closes M7's explicitly-deferred item: the attribution file is *physically placed* in every artifact by the packaging job. **D-18.4** sets `publish = false` workspace-wide — twelve of fourteen crates are implementation details of one product (the Zed/uv shape, not a library ecosystem), `namir-clap` is a cdylib nothing can depend on, `namir-fixtures` is test tooling, and name reservation is no longer an argument since RFC 3463 prohibits placeholder crates and RFC 3646 removed crates.io team mediation for name disputes; `cargo publish` already hard-fails today because every path dep lacks a `version`, and those `version` fields go in anyway as hygiene, specifically to keep reversing this policy a one-line-per-manifest change. §17 gains its first two **prospective** rows (the `cpal` fork, High; `log`, recorded as evaluated-and-not-adopted, in the same shape as `symphonia`'s standing rejection at D-17.1) plus an explicit note that Inno Setup, `pkgbuild`/`productbuild` and `notarytool` are **build tooling, not linked dependencies**, and are absent from that register deliberately — it exists for NFR-LIC-020/030, i.e. for what is redistributed inside the binary, and a tool that runs on a CI machine and puts nothing of its own into the artifact would blur exactly that distinction. §22 gains **R-9** (A2 weight-layout re-derivation, **High** — the failure mode is a model that loads, costs what it should, and sounds plausible while being wrong; mitigated only by D-9.12's parity oracle running before any A2 model ships), **R-10** (forked-`cpal` maintenance, Medium — rebase cost plus the first non-registry source weakening NFR-SEC-040) and **R-11** (unsigned binaries, Medium — SmartScreen and Smart App Control on Windows; on macOS a quarantined *plugin* fails to load with no "Open Anyway" path at all, and macOS 15 removed the Control-click bypass, making macOS releases developer-only in practice until a signing identity exists). |

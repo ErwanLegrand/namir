@@ -127,6 +127,14 @@ acceptance criteria list — these three, non-negotiably:**
   restated here so all three read as one standing bar rather than three concerns of different
   weight).
 
+*Consequence (added 2026-08-08, when M9–M13 were planned)* — the enumeration above says "M1 through
+M8" because M8 was the last milestone when it was written. It binds **M9 through M13 too**; the
+range was a list of the milestones that existed, never a statement that some milestones are exempt.
+Recorded as a note rather than by editing the sentence, per this document's own convention, but read
+it as "every milestone's exit, without exception." Two of the new milestones also tighten what that
+exit means: M9 makes `xtask traceability` a required check rather than the informational one M7
+left it as, and M13 adds the release pipeline's own artifacts to what must be green.
+
 **Local enforcement, complementing CI, not replacing it:** a checked-in pre-commit hook
 (`.githooks/pre-commit`, enabled per clone via `git config core.hooksPath .githooks`) runs
 `cargo fmt --all -- --check` and `cargo check --workspace --all-targets` before every commit —
@@ -1373,6 +1381,40 @@ is far more complete than it started, closes real infrastructure gaps M1 never h
 converts several previously-invisible gaps (the CLAP CI-gating finding, the WASAPI/resampling-quality
 gaps already known) into named, tracked ones — which is what NFR-QUAL-010 existing at all is for.
 
+### M7 status — correction appended 2026-08-08
+
+The Acceptance paragraph immediately above states that the 16 remaining uncovered Musts were "each
+individually investigated and confirmed as a genuine gap (not a tagging miss)". **That claim is
+wrong for at least three of the sixteen.** The original sentence stands unedited, per this project's
+convention that a corrected finding stays on the record with the correction appended after it rather
+than being quietly repaired; what follows is the correction. Each of the three was established by
+re-reading the actual source this session, not by re-reading the earlier session's summary of it.
+
+Three of the sixteen are **tagging misses** — the covering test or benchmark already exists and is
+simply untagged, which is precisely the category the original sentence claimed to have ruled out:
+
+- **NFR-PERF-050** — `crates/namir-worker/benches/resource_load.rs` measures this requirement
+  directly. It is the same benchmark whose figures §9's own M5 status section quotes against
+  NFR-PERF-050's 500 ms ceiling, and it is the only benchmark in the repository carrying no
+  `// trace:` tag at all. Nothing needs building here; a tag needs adding.
+- **FR-STATE-050** — `crates/namir-worker/src/recall.rs` carries eight tests for recall behaviour,
+  including `recalling_both_a_model_and_an_ir_never_offers_them_simultaneously`, which is exactly
+  the property the requirement states.
+- **FR-LIB-020** — covered by `cancelling_a_large_scan_stops_it_before_completion`
+  (`crates/namir-worker/src/library.rs:437`).
+
+The remaining thirteen have **not** been individually re-checked this session, so the honest
+statement is "at least three", not "exactly three". The full re-audit is M9's first deliverable and
+it, not this note, produces the real split.
+
+**One finding in the opposite direction, which the original claim understated rather than
+overstated:** **NFR-PERF-030** (standalone startup to an audible state) and **NFR-PERF-040** (plugin
+instantiation within 200 ms) are not untagged coverage — neither identifier appears **anywhere in
+the codebase at all**. There is no benchmark, no test, no harness, and no measurement scaffolding
+for either. These two are genuine gaps of a harder kind than a sixteen-item "missing tag" list
+conveys, because closing them means building measurement infrastructure that does not exist rather
+than labelling work that does. M9 carries both, sized accordingly.
+
 ---
 
 ## 12. M8 — 1.0 exit
@@ -1391,6 +1433,37 @@ gaps already known) into named, tracked ones — which is what NFR-QUAL-010 exis
 - FR-CFG-020's bit-identical-output check passes across both product configurations on the same
   golden vectors — this is a good final integration test precisely because it only passes if
   everything upstream was actually shared correctly, not merely built twice.
+
+### Execution order — M8 runs last, and the numbers are not the order (added 2026-08-08)
+
+**Read this before §16 through §20.** Five further milestones — **M9 through M13** — were added to
+this roadmap on 2026-08-08 and are specified in §16–§20 below. They are numbered by **when they
+joined the plan, not by when they run.** The execution order is:
+
+> **M9 → M10 → M11 → M12 → M13 → M8.**
+
+**M8 keeps its number, its text and its meaning, and runs last.** Its entire content is the 1.0 exit
+gate: every Must row reads Done, NFR-QUAL-010's traceability check is green, cross-platform release
+binaries exist, factory presets and the user guide ship, FR-CFG-020 passes. Four of those six
+assertions are the *output* of M9, M12 and M13 rather than things that could be true before them —
+M9 is what makes the §14 table and the traceability gate mean anything, and M13 is what produces a
+release binary at all. A gate that runs before the work it gates is not a gate, so M8 moves to the
+end of the order and nothing about it is rewritten.
+
+Renumbering M8 to "M14" was the obvious alternative and was rejected: every reference to M8 across
+the FRS, `02-architecture.md`, this document's own earlier sections and several `docs/manual-tests/`
+files would then have to be rewritten, which this project's documentation convention forbids and
+which would destroy the audit trail those references form.
+
+The same convention explains why §16–§20 sit **after** this document's two appendices rather than
+immediately after this section. §13, §14 and §15 were already taken by non-milestone sections, and
+both `AGENTS.md` and several passages in this document address them by number ("§14 below",
+"§15 below"). Section numbers in this file are addresses, not an ordering.
+
+**So: neither the milestone numbers nor the section numbers encode execution order.** Only the
+arrow line above does. §3's dependency diagram stops at M8 and is deliberately left as written —
+it records the M0–M8 dependency reasoning as it stood; each new section below states its own
+depends-on and blocks relationships in its header line instead.
 
 ---
 
@@ -1596,6 +1669,53 @@ test coverage in the crate today. Left as a flagged finding rather than a guesse
 because this session counted 11 `FR-CLAP-*` ids against the row's own stated count of 10, an
 unresolved discrepancy a future session should resolve before touching this row's numbers.
 
+**This whole table needs a full re-audit, and that audit is M9's work (noted 2026-08-08, §16
+below).** Every session above followed the same rule — move only the cells that session's own
+evidence directly justifies — which was correct for each session taken alone, but the cumulative
+result is a stack of six local edits over an M0 baseline that nobody has re-derived from evidence
+since M0. Three specific defect classes were identified while planning M9 and are named here so the
+audit starts from them rather than rediscovering them:
+
+- **Six rows have never been touched since M0, despite the prose directly beneath the table
+  predicting they would move.** 5.1 CHAIN, 5.2 IN, 5.3 GATE, 5.6 EQ, 5.7 OUT and 5.8 PARAM all
+  still read exactly as audited at M0 — yet that paragraph states "M2 alone converts most of
+  5.1/5.2/5.3/5.6/5.7's Partial rows to Done" and "M1+M7 between them convert nearly all of 5.8".
+  M2 shipped the six stages; M1 shipped the parameter system. Either the prediction was wrong or
+  the rows are stale, and no session has yet said which. On the balance of evidence they are stale,
+  but that is an inference, not an audit, and it is not recorded as a table move here on that basis.
+- **Five further rows are contradicted by prose written beneath them in this same section.**
+  5.9 STATE and 5.10 LIB still carry their M0 `0 / 0 / N` cells while the M5 bullets above describe
+  3/4/0 and 4/1/0 respectively; 6.2 PERF reads 1 Done against an M5 bullet stating "Done 1 -> 3";
+  6.8 DOC reads 0 Done against an M5 bullet stating "Done 0 -> 1"; 6.4 QUAL reads 1 Done against
+  two separate bullets (M5's NFR-QUAL-040, M7's NFR-QUAL-010) each claiming a closure. This is the
+  identical documentation-drift species already caught and fixed one row at a time twice — 6.1 RT
+  at M6, 6.6 SEC at M7 — and five more instances of it are outstanding.
+- **5.12 CLAP's Must *count* is wrong, not merely its Done/Partial split.** The row states 10
+  Musts; the FRS contains 11 `FR-CLAP-*` Must requirements (010, 020, 030, 040, 050, 060, 070, 080,
+  090, 100, 130 — 110 and 120 are Shoulds). The denominator every other figure in that row is
+  measured against has never been reconciled against the FRS. M7's flagged finding above spotted
+  this and correctly declined to guess at a correction; M9 resolves it.
+
+- **The row *set* itself is now out of date, not just the cells.** The eight Must requirements added
+  on 2026-08-08 change three denominators and require one new row, none of which is reflected above:
+  5.4 NAM goes from 11 Musts to 13 (FR-NAM-140, FR-NAM-150); 6.5 LIC from 5 to 6 (NFR-LIC-070); 6.8
+  DOC from 2 to 3 (NFR-DOC-040); and FRS §5.15 PKG is an **entirely new section** needing its own
+  row at 4 Musts (FR-PKG-010/020/030/040 — FR-PKG-050 is a Should). Two further requirements landed
+  the same day but are **Shoulds and so do not appear in this table at all**: FR-PKG-050 and
+  FR-UI-110. Every one of the eight is Not-started by construction, since they are requirements
+  *for* M9–M13's work. M9's audit must therefore re-derive the row set, not only re-verify the
+  existing rows' contents.
+
+Until that audit lands, **treat every cell in this table as a claim of unknown age rather than as
+current status.** `cargo run -p xtask -- traceability` and its generated `docs/03-test-plan.md` are
+the mechanically regenerated view of the same question and are the more trustworthy of the two
+today — with the caveat that §11's own appended correction records that at least three of the
+sixteen Musts that tool reports as uncovered are tagging misses rather than gaps, so it currently
+over-reports in one direction while this table over-reports in the other. Expect that tool's
+uncovered count *rise* from sixteen to twenty-four as the eight new Musts land — measured, not
+estimated, by running the tool after this session's edits. That is the requirements arriving ahead
+of the work, not a regression.
+
 ---
 
 ## 15. Appendix: open decisions to make, not build
@@ -1614,14 +1734,23 @@ that happens to depend on them first.
    pretty-printed JSON document, written whole and replaced atomically. No new dependency.
 3. **AQ-4** (licence of NAM's standardized capture input signal) — due before M8, blocks factory
    presets only.
-4. **Whether `namir-nam`'s FR-NAM-030 parity claim should be re-anchored against
+4. ~~**Whether `namir-nam`'s FR-NAM-030 parity claim should be re-anchored against
    `NeuralAmpModelerCore` from inside the product workspace**, rather than relying on the
    already-excluded `spikes/s1-nam-inference`'s one-time -131 dB measurement. The cross-implementation
    parity test added to `namir-nam` in this session is strong evidence on its own, but it validates
    internal consistency between two from-scratch Rust ports, not agreement with the external
    reference implementation FR-NAM-030 actually names. Worth a decision at M3 (when LSTM parity
    needs the same treatment anyway): commit a small, licence-clean reference-output fixture into
-   the repo, or accept the spike's result as sufficient historical evidence and say so explicitly.
+   the repo, or accept the spike's result as sufficient historical evidence and say so explicitly.~~
+   **Folded into M10, 2026-08-08 (§17 below).** It stopped being a standalone decision the moment
+   A2 support was planned: D-9.12 requires A2's weight-layout order to be re-derived from
+   `NeuralAmpModelerCore`'s own `NAM/wavenet/detail.h`/`params.h` and proven by a new
+   `namir-fixtures` A2 generator acting as a parity oracle (R-9 is the risk row for getting that
+   wrong). That work re-reads the external reference implementation from inside the product
+   workspace and produces exactly the anchoring artifact this item asked for, as a **side effect**
+   of a deliverable that has to happen anyway — so the decision is now "do it as part of M10 Phase
+   3", not a separate choice between two options. The A1 layout is re-anchored on the same pass,
+   since the A2 derivation cannot be trusted without confirming the A1 one it extends.
 5. ~~**What NFR-PERF-010 actually gates on (D-2.2).** Raised by M3's close-out, which measured both
    candidate quantities on the §2 reference machine and found they disagree about whether the
    requirement passes:~~ **Resolved: `02-architecture.md` D-2.4.** The disagreement was an artifact
@@ -1647,7 +1776,7 @@ that happens to depend on them first.
    literal and achievable. **Due before M8**, since 6.2 PERF cannot be marked Done without it, and
    worth deciding early because M6's `namir-platform` thread-affinity work is the product-side
    half of the same problem.
-6. **FR-IO-020's WASAPI exclusive mode has no path forward yet.** Found during M6: `cpal` 0.18.1,
+6. ~~**FR-IO-020's WASAPI exclusive mode has no path forward yet.** Found during M6: `cpal` 0.18.1,
    D-13.1's pinned dependency, hardcodes `AUDCLNT_SHAREMODE_SHARED` with no way to request exclusive
    mode — verified against that exact version's vendored source, not inferred
    (`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`). Two paths exist and neither is built:
@@ -1655,4 +1784,369 @@ that happens to depend on them first.
    `unsafe`, mirroring `DenormalGuard`'s pattern), or an upstream `cpal` change/fork. **Due before
    M8**, since 5.11 IO cannot be marked Done without it, and cheap to decide now while the shape of
    `namir-app`'s `AudioBackend` trait (`crates/namir-app/src/audio_io.rs`) is still fresh — a
-   later decision risks needing that trait's boundary redrawn instead of just extended.
+   later decision risks needing that trait's boundary redrawn instead of just extended.~~
+   **Resolved 2026-08-08: `02-architecture.md` D-13.4** — the second of the two paths, a **forked
+   `cpal`** adding `AUDCLNT_SHAREMODE_EXCLUSIVE`, rather than a `namir-platform`-owned unsafe WASAPI
+   helper. The decision's own text records what the choice costs: the fork is a git dependency, so
+   it touches §17's dependency register, `cargo-deny`'s `[sources]` policy and the vendoring
+   question, and it carries an ongoing rebase obligation (risk row **R-10**). It also records what
+   it does *not* cost — `AppSettings::exclusive_mode` already exists as a persisted field, so no
+   settings migration is needed and the trait boundary this item worried about is extended rather
+   than redrawn, exactly as hoped. **Built in M11 (§18 below).**
+7. **Whether Namir accepts a build script in a shipped crate, in order to embed the Windows `.exe`
+   icon.** Raised 2026-08-08 while planning M12. Embedding an icon resource into a Windows
+   executable needs a build script, and this project's dependency-adoption bar treats build scripts
+   as a real cost rather than a neutral convenience — `02-architecture.md` §17 records `libc` as
+   **the one knowing exception to that bar in the whole workspace**, and justifies it by ABI-layout
+   correctness for `pthread_setschedparam`. An icon is cosmetic, so it cannot borrow that
+   justification; the question is whether the bar bends for presentation or holds. Three answers are
+   available and none is obviously right: accept a build script (e.g. `winresource`) and record it
+   as the second knowing exception; ship without an executable icon, taking the default; or set the
+   icon outside the build, as a post-build step in M13's packaging pipeline, which keeps the crate
+   build-script-free but means a `cargo build` and a released binary differ in a user-visible way.
+   **Due before M12 (§19 below)**, and worth deciding deliberately rather than discovering
+   mid-implementation, since the third option silently moves work from M12 into M13.
+
+---
+
+## Milestones added 2026-08-08 — M9 through M13
+
+**Execution order is `M9 → M10 → M11 → M12 → M13 → M8`, and §12's execution-order note explains
+why.** The short version, repeated here because a reader arriving at this point may have skipped
+it: these milestone numbers record when each milestone joined the plan, not when it runs, and these
+section numbers are addresses, not an ordering. M8 keeps its number and its text and runs after all
+five, because its entire content is the 1.0 exit gate and several of its checklist items are what
+the milestones below produce. Nothing above this line has been rewritten.
+
+---
+
+## 16. M9 — Verification truth-up
+
+**Size: M.** **Depends on:** M7 — this milestone acts on the traceability tool and the generated
+test plan M7 built, and there is nothing to truth-up before they exist. **Blocks:** M8 directly, as
+M8's first two checklist items are literally this milestone's acceptance criteria; and less
+obviously everything after it, since M10–M13 each add claims to a ledger nobody currently trusts.
+
+**This runs first of the five, deliberately.** M7 ended with a traceability gate marked
+`continue-on-error: true` and a §14 snapshot table that contradicts its own prose in five rows and
+has six more rows untouched since M0. Layering A2 support, exclusive mode, a brand and a release
+pipeline on top of that would mean four further milestones' worth of claims landing in a ledger of
+unknown age. The cheapest moment to repair a verification story is before more things depend on it.
+
+**Deliverables:**
+
+- **A re-audit of all 16 uncovered Musts `xtask traceability` reports**, separating tagging misses
+  (the coverage exists, the tag doesn't) from genuine gaps (nothing covers it). **Three are already
+  confirmed as tagging misses** — NFR-PERF-050, FR-STATE-050 and FR-LIB-020, each with its covering
+  benchmark or test named in §11's appended correction above. That correction also retracts M7's
+  claim that all sixteen had been individually investigated, so the other thirteen are genuinely
+  unexamined and this is the first pass over them, not a second opinion.
+- **The verification infrastructure that is genuinely absent and has to be built rather than
+  tagged:**
+  - **NFR-PERF-030** — a standalone-application startup benchmark, measuring time to an audible
+    state. The identifier appears nowhere in the codebase at all.
+  - **NFR-PERF-040** — a plugin-instantiation benchmark against the requirement's 200 ms ceiling.
+    Likewise absent entirely. Both are wall-clock measurements and fall under D-2.5's scoping of
+    D-2.1's "never wall-clock" rule to audio-thread per-block budgets, so neither needs a new
+    decision — but both need a harness, and per D-2.4 a *certified* figure means the §2 reference
+    machine and at least five repetitions, not one run on whatever machine is to hand.
+  - **FR-CFG-020** — the golden-vector bit-identity check across both product configurations. M8's
+    exit checklist already nominates this as its final integration test; it cannot be a final check
+    if nothing has ever executed it once, so the harness lands here and M8 re-runs it.
+  - **FR-NAM-060** — a resampler frequency-response measurement against the requirement's own
+    stopband figure. FR-NAM-050's resampling exists and is tested for correctness; its *quality*
+    has never been measured.
+- **FR-ERR-010's logging, which is genuinely unbuilt.** Only `namir-platform`'s `log_file_path()`
+  exists — a path, with nothing writing to it. There is **no `log`, no `tracing`, and no logging
+  crate of any kind anywhere in this workspace**, so this is a real dependency-adoption question
+  against a deliberately strict bar, not an afternoon's wiring. **Decided in `02-architecture.md`
+  D-16.4** — numbered 16.4, not 16.3, because D-16.3 has meant worker-job panic isolation since the
+  original draft. That decision weighed adopting `log`/`tracing` against hand-rolling a small
+  bounded-rotation writer in `namir-platform`, and **chose to adopt nothing**: siting the writer in
+  `namir-platform` makes it unreachable from the audio thread by a lint that already exists, since
+  D-5.1 forbids `namir-engine → namir-platform` and `xtask layering` enforces that edge. So this is
+  implementation against a settled decision, not an open dependency question — but the constraint
+  it turns on still binds: the audio thread must never touch the logger directly (NFR-RT-010).
+- **`clap-validator` wired into CI.** FR-CLAP-020's own text says "as a gate in CI"; today it is
+  not, and the row's entire evidence is M6's single manual 32/32 run. One practical wrinkle,
+  already recorded in `02-architecture.md` §19 and worth restating rather than rediscovering:
+  `clap-validator` is not published on crates.io and must be installed from git, which gives the
+  CI step a supply-chain shape worth stating explicitly.
+- **Real `namir-clap` test coverage for FR-CLAP-030, -040, -070, -080, -100 and -130.** The crate
+  today has **zero** `#[cfg(test)]` coverage for any of them. The functionality is real and was
+  demonstrated once; nothing re-verifies it when something changes. FR-CLAP-020 is covered by the
+  validator gate above rather than by hand-written tests.
+- **A full, evidence-derived re-audit of §14's snapshot table**, starting from the three defect
+  classes named in that section's own 2026-08-08 note: six rows untouched since M0, five rows
+  contradicted by prose written beneath them, and 5.12 CLAP's stated Must count of 10 against the
+  FRS's actual 11 `FR-CLAP-*` Musts. Every cell re-derived from evidence rather than inherited from
+  the cell before it; where evidence is genuinely absent, the cell should say so rather than guess.
+- **`xtask traceability` flipped from `continue-on-error: true` to a required check.** Last, not
+  first — flipping it before the count reaches zero recreates exactly the red-check-nobody-can-act-on
+  problem M7's own reasoning gave for marking it informational in the first place.
+
+**Acceptance:** `cargo run -p xtask -- traceability` exits 0 with zero uncovered Musts, as a
+required check on every supported CI runner. §14's table is re-derived from evidence rather than
+inherited, with 5.12 CLAP's Must count reconciled against the FRS. NFR-QUAL-010 means what it
+claims, for the first time since it was written.
+
+---
+
+## 17. M10 — NAM Architecture 2 (A2) support
+
+**Size: L.** **Depends on:** M9, in the sense that a hard-won parity claim is worth less landing in
+a ledger nobody trusts; materially, on nothing else, since `namir-nam`'s A1 support and
+`namir-fixtures`' generator are both mature. **Blocks:** M8's Must-row check, via the two new
+requirements below. **Governed by:** `02-architecture.md` **D-9.12**, and **risk R-9**.
+
+**New requirements this milestone closes:** **FR-NAM-150** (load and run A2 models in the A2-Full
+and A2-Lite configurations) and **FR-NAM-140** (a model whose architecture or configuration is
+unsupported is rejected with an error naming the unsupported feature, distinct from the
+malformed-file error). Note the id ordering: A2 support is **FR-NAM-150**, not FR-NAM-130 — that
+number was already taken by "the NAM stage shall be usable with no model loaded", and FRS §1.5
+makes identifiers permanent and never reused.
+
+**Scope decided up front: core A2 only.** The extended WaveNet config schema, the new activations,
+grouped and bottleneck convolutions, the convolutional head, and the parity oracle — enough to run
+A2-Full and A2-Lite, and no further. **`SlimmableContainer`, `condition_dsp`, FiLM conditioning and
+the `.namb` container are explicitly deferred** to a later milestone, not forgotten. D-9.12 records
+the same boundary, and the reason for drawing it here is that each of those four is a separable
+feature with its own risk, none of which A2-Full or A2-Lite needs.
+
+**Deliverables, in four phases; the phase order is a dependency order, not a preference:**
+
+- **Phase 0 — fix the misleading rejection (FR-NAM-140).** An A2 file today fails with
+  `nam.load.malformed_json` — "not valid JSON" — which is simply untrue and sends anyone
+  investigating it in entirely the wrong direction. The cause is that A2 layers dropped the scalar
+  `kernel_size`, dropped the `gated` bool, and turned `activation` into an object, so the existing
+  deserializer fails at field level and the failure surfaces as malformed input. An
+  `unsupported_architecture`-class error naming the offending feature is a small change, is
+  independently useful to anyone holding an A2 file *today*, and is **worth shipping ahead of A2
+  support itself** rather than bundled with it.
+- **Phase 1 — the extended WaveNet `config` schema.** `kernel_sizes[]` (an array, replacing the
+  scalar), `activation` as an object or an array of objects, `gating_mode` replacing the `gated`
+  bool, plus `bottleneck`, `groups_input`, `groups_input_mixin`, `layer1x1`, `head1x1`,
+  `in_channels`, and a nested `head` object — the last of which `namir-nam` currently *rejects*
+  outright for any non-null value. Parsing and validation only. NFR-SEC-020's dimension-ceiling
+  checks apply to every new field before any arithmetic touches it, exactly as they already do to
+  the existing ones; a new schema is a new attack surface, not an exception to that rule.
+- **Phase 2 — DSP primitives and activations.** Grouped dilated convolution, bottleneck
+  expand/contract, per-layer variable kernel size (`namir-nam`'s `Conv1D` assumes a single kernel
+  size across a whole array), the 1x1 residual and skip projections, a convolutional head, and the
+  activations A2 uses: LeakyReLU, SiLU, PReLU, Softsign, Hardswish and LeakyHardtanh.
+- **Phase 3 — weight-layout re-derivation plus the parity oracle. The highest-risk item in this
+  milestone, and the reason R-9 is severity High.** A2's weight ordering must be re-derived by
+  reading `NeuralAmpModelerCore`'s `NAM/wavenet/detail.h` and `params.h`, the same way A1's was and
+  for the same reason: **a silently-wrong order produces a model that loads without error and
+  sounds entirely plausible while being wrong.** There is no failure mode that announces itself.
+  The proof is a new A2 generator in `namir-fixtures` acting as an independent parity oracle, per
+  D-19.1's generated-never-captured rule and NFR-QUAL-030's cross-implementation standard. **No A2
+  model ships before the oracle agrees.** This phase re-anchors §15 item 4 as a side effect, since
+  re-reading the upstream reference from inside the product workspace is precisely what that item
+  asked for; the A1 layout is re-confirmed on the same pass, because an A2 derivation that extends
+  A1's cannot be trusted further than the A1 one it extends.
+
+**Also closes FR-NAM-090 and FR-NAM-100** (loudness normalisation, dBu calibration), which
+`namir-nam` currently declares out of scope for a reason A2 removes. The crate's own boundary note
+says they need "metadata fields the current `.nam` schema this crate reads doesn't carry" — and
+A2-era files carry `loudness`, `input_level_dbu` and `output_level_dbu`. The blocker was the file
+format, not the DSP, so these come nearly free once Phase 1 lands. Worth taking here rather than
+leaving them to be rediscovered later as an unexplained pair of open Musts.
+
+**A performance note that should not be taken on trust.** A2 is claimed to need 30–40% *less* CPU
+than A1 at comparable quality, which would make NFR-PERF-010 easier rather than harder. That claim
+is about the architecture, not about this implementation of it: `namir-nam`'s `wide::f32x8` kernels
+assume dense convolutions, and grouped and bottleneck convolutions need their own kernel variants
+before any of that saving is realised. **Expect the first working A2 path to be slower than A1**
+until those variants exist, and measure it under D-2.4's conditions before recording any figure
+either way.
+
+**Acceptance:** an A2-Full model and an A2-Lite model both load, run, and agree with the
+`namir-fixtures` parity oracle to the tolerance NFR-QUAL-030's cross-implementation standard sets;
+an unsupported-configuration file is rejected with an error naming the unsupported feature and
+distinguishable from the malformed-file error; FR-NAM-090 and FR-NAM-100 close; NFR-PERF-010 is
+re-measured on the §2 reference machine with an A2 model in the chain and the figure recorded,
+whichever direction it moves.
+
+---
+
+## 18. M11 — WASAPI exclusive mode
+
+**Size: M.** **Depends on:** the author's own `cpal` fork existing — the one prerequisite in this
+group that is not itself Namir code. **Blocks:** M8's Must-row check via FR-IO-020, and §14's 5.11
+IO row, which cannot reach all-Done without it. **Governed by:** `02-architecture.md` **D-13.4**,
+and **risk R-10**.
+
+**The blocker, restated because it is architectural rather than a matter of effort:** `cpal` 0.18.1
+— D-13.1's pinned dependency — hardcodes `AUDCLNT_SHAREMODE_SHARED`. There is no parameter, no
+cargo feature, and no extension trait through which a caller can ask for
+`AUDCLNT_SHAREMODE_EXCLUSIVE`. That was verified at M6 against that exact version's vendored source
+rather than inferred from documentation, and is written up in
+`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`. **D-13.4 resolves the two-way choice M6
+left open in favour of a forked `cpal`**, over the alternative of a `namir-platform`-owned unsafe
+WASAPI helper.
+
+**Deliverables:**
+
+- **The `cpal` fork** adding exclusive-mode support, consumed as a git dependency **pinned by
+  commit**. Nothing else in this milestone can start without it.
+- **D-13.4 recorded in `02-architecture.md`**, with its §17 dependency-register row (severity
+  **High** — a maintained fork is an ongoing cost, and divergence from upstream is the real risk,
+  not the patch itself) and its §22 risk row **R-10**. The git dependency interacts with
+  `cargo-deny`'s `[sources]` policy and weakens the build reproducibility NFR-SEC-040 asks for; say
+  so in the register rather than discovering it when `cargo deny check` turns red. Upstream the
+  change if upstream will take it — that is the only mitigation that actually retires R-10.
+- **`AppSettings::exclusive_mode` wired through.** The field already exists and is already
+  persisted; it is simply never read. It reaches the device through `namir-app`'s `AudioBackend`
+  trait (`crates/namir-app/src/audio_io.rs`), which is **extended rather than needing its boundary
+  redrawn** — exactly the outcome §15 item 6 argued for when it made the case for deciding early.
+  **No settings migration is needed**, which is the whole return on that field having been added
+  speculatively at M6.
+- **Failure behaviour, which matters more here than it does in shared mode.** An exclusive-mode
+  open fails for reasons shared mode never encounters — another application already holds the
+  device, or the requested format is not natively supported by it. Both need a catalogued error and
+  a defined fallback (shared mode, with the user told which mode they actually got), not a silent
+  failure to start audio and not a mode indicator that lies.
+
+**Opportunistic, if the hardware allows:** **R-5 / FR-IO-070** (device removal mid-session) has
+stayed open across M6 and M7 for want of a device that can be made to fail on demand. If one
+becomes available while this milestone's audio-path work is open, take it then — the code is in
+hand and the setup cost is already paid. If not, it stays open and is **not** back-filled with an
+inspection claim.
+
+**Acceptance:** FR-IO-020 closes, verified against real WASAPI hardware on the §2 reference machine,
+with its manual-test document updated from "no path forward" to an executed result; §14's 5.11 IO
+row is unblocked; D-13.4, the §17 register row and R-10 are all on the record.
+
+---
+
+## 19. M12 — Brand, README and product identity
+
+**Size: S.** **Depends on:** nothing technical. Sequenced here only because it is the cheapest item
+in the group and there is no reason for it to displace substantive work. **Blocks:** M13, weakly
+but genuinely — an installer needs a product name, an icon and a licence statement for its own
+metadata, and settling those *inside* a packaging milestone means settling them in a hurry.
+
+**New requirements this milestone closes:** **NFR-DOC-040** (the repository carries a README
+identifying the product, what it does, its licence, and how to build, run and test it),
+**FR-UI-110** (the interface displays the brand mark; the standalone window and executable carry
+the application icon) and **NFR-LIC-070** (brand assets are not covered by the code licence, and
+their terms are stated explicitly in the repository). Note the id choices, for the same FRS §1.5
+reason as M10's: FR-UI-060 and NFR-LIC-060 were already taken, by the load-time responsiveness
+requirement and by REUSE compliance respectively.
+
+**Deliverables:**
+
+- **Track `images/` in git.** It is currently **untracked** — the brand assets exist on disk and in
+  nobody's clone but the author's. Do this first; every other item here depends on it.
+- **`README.md` at the repository root** (NFR-DOC-040): the logo, what Namir is, the licence, and
+  build/run/test instructions. It also serves NFR-BUILD-020's "documented and CI-exercised" clause,
+  which today holds only on the CI-exercised half.
+- **The in-app brand mark.** `crates/namir-ui/src/app.rs:40` renders `ui.heading("Namir")` today —
+  a text heading standing in for a mark. One thing to know before starting: this UI is
+  **egui-on-baseview, not eframe**, so the usual `eframe` window-icon recipe does not apply and the
+  window icon has to be set through baseview's own window options instead.
+- **The Windows `.exe` icon**, which needs a build script to embed the resource. Flagged rather
+  than waved through: build scripts sit awkwardly with this project's dependency-adoption bar, and
+  `libc` is already on record as the one knowing exception to it. Decide this one deliberately,
+  the same way.
+- **The brand assets themselves** — `#ff6600`, a single fill, transparent background, a roughly
+  3.73:1 wordmark plus a leopard-head mark — and **NFR-LIC-070's explicit statement that
+  `MIT OR Apache-2.0` covers the code, not the name and not the mark.** A permissive code licence
+  alongside an unstated trademark position is the combination that produces awkward conversations
+  later; stating it now costs a paragraph.
+
+**Acceptance:** `images/` is tracked; a README exists at the repository root and its build/run/test
+instructions have actually been followed on a clean clone rather than assumed correct; the brand
+mark renders in both product shells; the standalone window and executable carry the icon on
+Windows; the brand-asset licensing statement is in the repository.
+
+---
+
+## 20. M13 — Distribution and packaging
+
+**Size: L.** **Depends on:** M12 (name, icon, licence statement) and, for anything a user is meant
+to install, M9's verification work. **Blocks:** M8 directly — "cross-platform release binaries" is
+an M8 checklist item and this milestone is what produces them. **Governed by:**
+`02-architecture.md` **D-18.3** (release and packaging pipeline) and **D-18.4** (`publish = false`);
+**risk R-11** (unsigned release binaries).
+
+**New requirements this milestone closes:** FRS §5.15 (PKG) in full — **FR-PKG-010** (installable
+distributions per platform, built by CI from a tagged source tree), **FR-PKG-020** (the CLAP
+artifact in the form each platform's loader requires), **FR-PKG-030** (per-user and system-wide
+install scope on Windows, defaulting to per-user), **FR-PKG-040** (attribution file and licence
+texts in every distribution) and **FR-PKG-050** (Should — a plain archive alongside each installer).
+
+**Deliverables:**
+
+- **`xtask bundle`, first — nothing else in this milestone works without it.** Nothing in the Rust
+  ecosystem will build a macOS `.clap` bundle for you; `nih_plug_xtask` is the model to follow. On
+  Windows and Linux the CLAP artifact is a renamed shared library, but **on macOS it is a bundle
+  directory** — `Namir.clap/Contents/{Info.plist, PkgInfo, MacOS/<dylib>}` — because CLAP's own
+  `entry.h` defines `plugin_path` as the DSO on Linux and Windows and as the *bundle* on macOS.
+  `docs/user-guide.md` stated this incorrectly and is corrected; FR-PKG-020 now carries the
+  requirement, and D-13.3 gains a note recording both facts.
+- **`release.yml` across the three runners**: build → bundle → per-OS package → GitHub Release,
+  triggered from a tag, so that FR-PKG-010's "built by CI from a tagged source tree" is literally
+  true rather than a description of what someone once did on a laptop.
+- **The traceability tags and the manual-test document, planned in rather than discovered late.**
+  `xtask traceability` reads `// trace:` annotations in repository source and `# trace:`
+  annotations in CI/build configuration — **not** the output of a release run. A green release
+  pipeline therefore closes **none** of FR-PKG-010, FR-PKG-020 or FR-PKG-040 by itself: each needs
+  an annotated test or an `xtask` subcommand that asserts the property (the bundle's structure is
+  checkable offline; so is the presence of `THIRD-PARTY-NOTICES.md` and the licence texts inside a
+  built distribution). FR-PKG-030 is *Verify: M* and needs a
+  `docs/manual-tests/fr-pkg-030-windows-install-scope.md` recording exactly what was and wasn't
+  executed, per this project's standing rule for requirements no automated test can reach. Budget
+  for this alongside the pipeline itself; M9 makes the traceability check a **required** gate, so
+  a packaging milestone that ships without its tags turns CI red rather than merely leaving a hole.
+- **Windows — an Inno Setup `.iss` plus a plain ZIP**, unsigned initially. Inno's `{autocf}` token
+  resolves to `%COMMONPROGRAMFILES%` when elevated and `%LOCALAPPDATA%\Programs\Common` when not,
+  which is exactly D-13.3's two paths out of a single line, with `PrivilegesRequired=lowest` giving
+  the per-user default; it is preinstalled on `windows-latest`. **Before committing to the per-user
+  default, empirically verify that REAPER actually scans `%LOCALAPPDATA%\Programs\Common\CLAP`.**
+  This is not a theoretical caution: Dexed ships its per-user mode commented out with a note that
+  the DAW issues were never resolved, and D-13.3's own doc comment already warns that this
+  silent-failure mode — the plugin installs successfully and the host simply never lists it — is
+  the likeliest support ticket this product will ever generate.
+- **macOS — a `.pkg` inside a `.dmg`**, porting Surge's `make_installer.sh`, with signing
+  **conditional on a secret being present** so that unsigned builds take the identical code path
+  and notarisation can be added later without rework. Record why `.pkg` rather than a `.dmg` alone:
+  only `pkgbuild`/`productbuild` can place multiple payloads at multiple absolute paths, and files
+  placed by `installer` never carry `com.apple.quarantine`, whereas a zip-delivered plugin does.
+  **The honest caveat, recorded because it determines who can actually use a macOS build:** a
+  quarantined plugin fails to load in a DAW with **no user-visible "Open Anyway" path** — that
+  affordance exists for applications, not for plugins, and macOS 15 removed the Control-click
+  bypass. Until signing and notarisation are real, **macOS is effectively developer-only**, and
+  saying so plainly is better than shipping something that appears to install and then does nothing.
+- **Linux — a tarball plus an `install.sh`** defaulting to `~/.clap`. Two known wrinkles worth
+  recording now rather than hitting later: Fedora uses `/usr/lib64/clap`, and CLAP issue #46 on
+  `~/.clap` versus an XDG-conformant path is still open, so today's default may need revisiting.
+- **Physically bundle `THIRD-PARTY-NOTICES.md` and the licence texts into every distribution**
+  (FR-PKG-040). M7 produced the attribution file and its CI freshness gate but explicitly deferred
+  the bundling for want of a packaging pipeline. This is that pipeline, so the deferral closes here.
+- **Apply D-18.4: `publish = false` workspace-wide**, plus a `version` on every path dependency as
+  hygiene. Namir is one product, not a library ecosystem — 12 of 14 crates are implementation
+  details, `namir-clap` is a `cdylib` nobody can depend on, and `namir-fixtures` is test tooling.
+  Record that `cargo publish` hard-fails today regardless, since no path dependency carries a
+  `version`, and that adding those versions is worth doing anyway so that reversing the policy
+  later stays a cheap decision. Accepted cost, stated plainly: no docs.rs, and no
+  `cargo install namir`.
+- **NFR-SEC-040 (Should) — reproducible builds plus published hashes**, taken as far as it goes
+  given the git dependency M11 introduces. Publish the hashes regardless: a hash a user can check
+  is worth having even where bit-for-bit reproducibility is not achieved, and it is honest about
+  which of the two is on offer.
+
+**A standing caveat over this whole milestone (risk R-11): the binaries are unsigned.** On Windows
+that means a SmartScreen warning on every release and Smart App Control blocking outright; on macOS
+it means the quarantine behaviour described above. D-18.3's signing-conditional structure is what
+keeps the cost of fixing this low; it does not fix it. **Revisit before any release aimed at
+non-developers.**
+
+**Acceptance:** a tagged commit produces, from CI alone, an installer and a plain archive for each
+of the three platforms; the macOS CLAP artifact is a valid bundle directory and loads in a host on
+a machine where quarantine does not apply; the Windows installer offers both scopes, defaults to
+per-user, and that per-user path has been empirically confirmed as scanned by at least one real
+DAW; every distribution contains `THIRD-PARTY-NOTICES.md` and the licence texts; FR-PKG-010 through
+FR-PKG-040 each carry a traceability annotation or a manual-test document, so `xtask traceability`
+stays green; FRS §5.15 closes.

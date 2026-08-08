@@ -130,6 +130,11 @@ installed, and the CLAP plugin shall not require the standalone application to b
 by running a single executable from any directory, storing its settings under the platform's
 per-user configuration directory.
 *Verify:* M.
+*Consequence (added M8-planning, 2026-08-08)* — FR-PKG-010's installer does not conflict with this
+requirement. What is required here is that the standalone application **can** run without an
+installer, not that no installer exists. FR-PKG-050's plain archive is the artifact that keeps this
+requirement literally true once installers ship; if that archive were ever dropped, this
+requirement would fail with it.
 
 ---
 
@@ -320,6 +325,18 @@ tell before committing whether a model will run on their machine.
 **FR-NAM-130 (Must)** — The NAM stage shall be usable with no model loaded, behaving per
 FR-CHAIN-040.
 *Verify:* U.
+
+**FR-NAM-140 (Must)** — A model file whose declared architecture, or whose configuration within a
+supported architecture, Namir does not support shall be rejected with an error that names the
+unsupported feature. That error shall be a distinct catalogue entry (FR-ERR-020) from the one
+reported for a malformed or truncated file under FR-NAM-040.
+*Verify:* U — a file that is well-formed but unsupported and a file that is malformed shall yield
+different error identifiers.
+
+**FR-NAM-150 (Must)** — Namir shall load and run NAM Architecture 2 (A2) models in the A2-Full and
+A2-Lite configurations, to the accuracy of FR-NAM-030.
+*Verify:* U — cross-implementation parity against an independent reference implementation, per
+NFR-QUAL-030.
 
 ### 5.5 Impulse response stage (IR)
 
@@ -676,6 +693,10 @@ in anticipation of the mobile platforms of NFR-PORT-030.
 default.
 *Verify:* M.
 
+**FR-UI-110 (Should)** — The interface shall display the Namir brand mark, and the standalone
+application's window and executable shall carry the application icon.
+*Verify:* M.
+
 ### 5.14 Diagnostics and error handling (ERR)
 
 **FR-ERR-010 (Must)** — Namir shall write a log to a per-user location, with a configurable
@@ -721,6 +742,37 @@ following, and this requirement shall survive the relaxation of FR-ERR-060:
 *Rationale:* Recorded now, while the answer is uncontroversial, so that the first network feature is
 built against a standard rather than negotiating one under delivery pressure.
 *Verify:* S — the network-free build configuration is a permanent CI target; I per feature.
+
+### 5.15 Packaging and distribution (PKG)
+
+**FR-PKG-010 (Must)** — Namir shall produce an installable distribution for each supported platform,
+built by CI from a tagged source tree.
+*Verify:* S — the release workflow is triggered by a tag, runs on every tier-1 and tier-2 platform,
+and every published distribution is an artifact of that workflow rather than of a local build.
+
+**FR-PKG-020 (Must)** — The CLAP artifact shall be produced in the form the platform's plugin loader
+requires: a shared library renamed to the `.clap` extension on Windows and Linux, and a **bundle
+directory** on macOS containing `Namir.clap/Contents/Info.plist`, `Namir.clap/Contents/PkgInfo` and
+`Namir.clap/Contents/MacOS/<dylib>`.
+*Rationale:* CLAP's `entry.h` defines the plugin path as the shared object on Windows and Linux but
+as the bundle directory on macOS; a renamed dylib does not load there.
+*Verify:* S — the packaging step asserts the produced layout against the required form for the
+platform it targets, and fails the build on any deviation.
+
+**FR-PKG-030 (Must)** — The Windows installer shall offer both a per-user and a system-wide install
+scope, shall default to per-user, and shall place the CLAP artifact in the CLAP directory
+corresponding to the chosen scope, as recorded in `02-architecture.md`.
+*Verify:* M.
+
+**FR-PKG-040 (Must)** — Every distribution, installer and archive alike, shall contain the
+machine-generated attribution file of NFR-LIC-030 and the full text of both licences of
+NFR-LIC-010.
+*Verify:* S — the packaging step asserts the presence of all three files in every distribution it
+produces.
+
+**FR-PKG-050 (Should)** — A plain archive requiring no installer, containing the same artifacts,
+shall be published alongside each platform's installer.
+*Verify:* S.
 
 ---
 
@@ -891,6 +943,11 @@ recorded in a manifest.
 inheriting an SPDX identifier.
 *Verify:* S.
 
+**NFR-LIC-070 (Must)** — Brand assets — the name "Namir" and the logo — are not covered by the code
+licence of NFR-LIC-010. The terms on which they may be used shall be stated explicitly in the
+repository.
+*Verify:* S.
+
 ### 6.6 Security and privacy (SEC)
 
 **NFR-SEC-010 (Must)** — A malicious or corrupted `.nam`, IR, preset or state file shall not lead
@@ -940,6 +997,10 @@ enforced mechanically.
 **NFR-DOC-030 (Should)** — A user guide covering installation, audio setup, the signal chain and
 troubleshooting shall ship with 1.0.
 *Verify:* M.
+
+**NFR-DOC-040 (Must)** — The repository shall carry a README identifying the product, stating what
+it does, naming its licence, and giving the commands to build, run and test it.
+*Verify:* S.
 
 ---
 
@@ -1079,6 +1140,15 @@ matching its id, unchanged from what already existed. `Verify: Process` (NFR-QUA
 one user of a code missing from §1.5's own legend until this same M7 pass added it) has nothing a
 build can inspect by definition and is exempted from source/manual lookup entirely.
 
+*Consequence (added M8-planning, 2026-08-08)* — Section 5.15's packaging requirements take no
+exception to the mechanism above, and one point is worth stating before it is discovered the hard
+way: **being checked by CI is not itself traceability.** `xtask traceability` reads `// trace:`
+annotations in repository source, not workflow YAML, so a `Verify: S` packaging requirement is
+covered only when the assertion CI runs lives in the repository as an annotated test or `xtask`
+subcommand — FR-PKG-010, FR-PKG-020 and FR-PKG-040 are all of this kind. FR-PKG-030 is `Verify: M`
+and therefore needs a `docs/manual-tests/fr-pkg-030-*.md` file, on the same terms as every other
+manual-verified requirement; it cannot be closed by a green release workflow.
+
 ---
 
 ## 11. Change log
@@ -1087,3 +1157,4 @@ build can inspect by definition and is exempted from source/manual lookup entire
 |---|---|---|
 | 0.1 | 2026-08-03 | Initial draft. |
 | 0.2 | 2026-08-03 | Copyright holder set. Section 7 restructured into 7.1 (out of scope) and 7.2 (post-1.0 direction, RD-1..RD-4). FR-ERR-060 scoped to 1.0; FR-ERR-070 added to set standing terms for any future network feature; NFR-SEC-030 aligned. OQ-9 and OQ-10 added. |
+| 0.3 | 2026-08-08 | M8-planning intake. New Section 5.15 Packaging and distribution: FR-PKG-010..050. FR-NAM-140 (unsupported architecture/configuration rejected distinctly from malformed) and FR-NAM-150 (NAM Architecture 2, A2-Full and A2-Lite) added; FR-UI-110 (brand mark and application icon), NFR-LIC-070 (brand assets not covered by the code licence), NFR-DOC-040 (README) added. Note appended at FR-CFG-040 recording that FR-PKG-010's installer does not conflict with it and that FR-PKG-050's plain archive is what keeps it true. Note appended at Section 10 recording that a CI workflow is not itself a traceable artifact. Planning index proposed FR-NAM-130, FR-UI-060 and NFR-LIC-060 for three of these; all three identifiers were already in use, and per Section 1.5 identifiers are never reused, so the new requirements took the next free numbers instead. |
