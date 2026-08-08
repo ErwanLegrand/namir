@@ -11,6 +11,8 @@
 # source requirement yet (see NFR-LIC-050 for the *separate*, not-yet-built check over test-asset
 # licences, which this file does not cover). `[bans]` carries M7's network-free deny-list — see
 # its own comment below.
+#
+# trace: NFR-LIC-020, NFR-LIC-040
 
 [graph]
 all-features = true
@@ -76,6 +78,8 @@ wildcards = "allow"
 # arrive as a transitive dependency of something else added later without anyone specifically
 # choosing to add networking. Extend, don't replace, if/when RD-1 adds a real network client behind
 # its own feature flag (FR-ERR-070's own remaining sub-clauses govern how that must be gated).
+#
+# trace: FR-ERR-060, FR-ERR-070, NFR-SEC-030
 deny = [
     { name = "reqwest" },
     { name = "hyper" },

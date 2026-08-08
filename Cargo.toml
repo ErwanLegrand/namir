@@ -1,3 +1,4 @@
+# trace: FR-CFG-010, NFR-LIC-010, NFR-BUILD-010
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
@@ -33,4 +34,5 @@ unsafe_code = "forbid" # D-5.3 default; namir-platform, namir-clap and SIMD kern
 # unrelated PR that adds one `pub` item without knowing this lint now exists mid-milestone. Every
 # crate this pass touches is made warning-clean anyway (the `-D warnings` clippy gate makes that
 # true in practice today), so `warn` costs nothing now and just avoids being a landmine later.
+# trace: NFR-DOC-020
 missing_docs = "warn"

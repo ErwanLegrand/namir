@@ -191,6 +191,24 @@ fn run_traceability(root: &Path, write: bool) -> bool {
         files_with_crate.push((file, "xtask".to_string()));
     }
 
+    // A real, non-trivial slice of Must requirements are verified entirely by CI workflow or
+    // build configuration (MSRV, clippy-as-error, cargo-deny, mobile/no-C++ builds, network-free)
+    // rather than by any Rust test function -- `# trace:` in these files is how they become
+    // discoverable at all. Crate name "ci" for workflow files, "workspace" for root-level build
+    // configuration, since neither is owned by any one product crate's test suite.
+    for name in ["ci.yml", "fuzz.yml"] {
+        let path = root.join(".github/workflows").join(name);
+        if path.is_file() {
+            files_with_crate.push((path, "ci".to_string()));
+        }
+    }
+    for name in ["Cargo.toml", "deny.toml"] {
+        let path = root.join(name);
+        if path.is_file() {
+            files_with_crate.push((path, "workspace".to_string()));
+        }
+    }
+
     let mut source_hits: HashMap<String, Vec<String>> = HashMap::new();
     for (file, crate_name) in &files_with_crate {
         let Ok(source) = std::fs::read_to_string(file) else {
