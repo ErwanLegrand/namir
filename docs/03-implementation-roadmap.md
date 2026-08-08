@@ -2044,6 +2044,62 @@ that happens to depend on them first.
     decides whether this requirement closes with a repeatable benchmark, a one-time recorded figure,
     or both; D-2.4's "certified means the §2 reference machine and at least five repetitions" binds
     either way. **Due at M9b's start.**
+15. **How a `Verify: M` Must is matched to its manual-test document.** Raised 2026-08-09 by M9a's
+    set-quantification sweep. `build_report` credits a manual document to a `Verify: M` requirement
+    if **either** the filename starts with the id's lowercase prefix **or** the file's text contains
+    the id anywhere, taking the first match in directory order
+    (`xtask/src/traceability.rs:689-699`). Both arms admit a document that does not verify the
+    requirement it is credited to, and the second one is doing so today: **FR-UI-020 resolves to
+    `docs/manual-tests/fr-clap-030-audio-ports-negotiation.md`**, a CLAP audio-port negotiation
+    script that names FR-UI-020 once, in a parenthesis about watching a meter, and wins only by
+    sorting first among the six files that mention it. FR-UI-020 has **no document of its own**, and
+    the nearest thing to one — `fr-ui-010-standalone-window-renders.md`, which does direct the tester
+    to confirm FR-UI-020's screen elements (`:18`, `:29`) — loses on alphabetical order. The prefix
+    arm has the complementary weakness: it reads no content at all, so a correctly-named document
+    recording "not executed, no hardware available" credits its requirement in full and identically
+    to one recording a clean pass. Neither is catchable downstream — D-23.1 refuses a
+    `trace-partial:` on a `Verify: M` Must (`xtask/src/traceability.rs:616-633`, and §16's
+    2026-08-09 status), so for the thirteen there is no disposition between "covered" and
+    "UNRESOLVED" at all. Three answers, and the cheapest is not obviously the right one: match on the
+    document's own `**Requirement (literal):**` line, which makes the credit an assertion its author
+    wrote deliberately, at the cost of backfilling that line into the seven of twenty-one documents
+    lacking it and of FR-UI-020 going honestly UNRESOLVED until it gets a script; keep both arms but
+    require the match to be unique and error on ambiguity, which surfaces FR-UI-020 immediately and
+    costs one check; or leave it and rely on review, which is the answer this project has rejected
+    everywhere else it has been offered. **Due before M13's close-out** — that is when D-18.5's
+    zero-uncovered half becomes required, and a wrongly-credited document would let that gate certify
+    a Must nothing verifies, on the one milestone whose flip is meant to make the ledger mean
+    something.
+16. **Whether 1.0 ships an audio-device panel in `namir-ui`, and if not, what FR-IO-010/-040/-050
+    mean.** Raised 2026-08-09 by M9a's sweep, which found the surface absent rather than untested —
+    `UiSnapshot` carries no host, device, sample-rate, buffer-size, latency or xrun field and
+    `UiIntent` no device variant (`crates/namir-ui/src/host.rs:100-123`, `:148-176`), device
+    selection happening once at start-up from remembered settings
+    (`crates/namir-app/src/app.rs:95-133`). Five Musts lean on a panel existing; the table in §16's
+    2026-08-09 status names them and the clause each one loses. This is a scope decision with no
+    current owner: **FR-IO-060's and FR-IO-070's partials book their UI halves to M9b**, which is a
+    verification-infrastructure phase and a poor home for building a settings surface, and no
+    milestone's deliverables name the panel at all. Three answers: build it, and site it where the
+    audio-path work already is (**M11**, whose §18 scope is WASAPI exclusive mode and which has to
+    tell the user which mode they actually got, so a mode indicator and a device panel are the same
+    surface); ship without it and record an FRS-level scope reduction with a `*Consequence*` note at
+    each of the five, the shape §15 item 9 already proposes for FR-CLAP-030; or keep the current
+    silence, in which three Musts read covered on manual documents describing a panel that does not
+    exist. **Due before M9b's start**, and worth taking before M11 rather than after, since the
+    second answer changes what M11 builds and the first changes where.
+17. **Which milestone closes FR-CFG-030, NFR-LIC-030 and FR-IO-070.** Raised 2026-08-09 by M9a's
+    sweep, whose `// uncovered:` fields had to declare a closing milestone for each and, for these
+    three alone of the 54, could not take one this document assigns. FR-CFG-030 and NFR-LIC-030 both
+    name **M13**, which §20 does not claim either in — and NFR-LIC-030 additionally contradicts
+    §14's own M7-session bullet booking it closed (`:1690`). FR-IO-070 names **M9b** while §18 already
+    names it as M11's opportunistic item, gated on hardware and explicitly not to be back-filled
+    (`:3025-3029`); M11 runs before M9b, so the two readings are not merely different owners but
+    different orders. §16's 2026-08-09 status sets out each case. The annotations were left as
+    written rather than edited to fit, because picking a milestone to make a field parse is the
+    defaulting this appendix exists to prevent. **Due before M10's start** — M9a is the phase that
+    wrote the three fields, and leaving them unreconciled means the tool's printed owner attribution
+    and its printed closing milestone disagree from the very next milestone onward, which is a
+    disagreement no exit status will ever surface.
 
 ---
 
@@ -2619,6 +2675,184 @@ superseded on that cell. FR-LIB-020 likewise.
 **What M9a still owes**, none of it started: the re-audit of the remaining uncovered Musts, the
 set-quantification sweep, and §14's per-requirement adjudication. The tooling those depend on now
 exists, which was this phase's purpose.
+
+### M9a status — the set-quantification sweep, 2026-08-09
+
+Appended rather than rewriting anything above, per this document's own convention; where this
+section and anything above it disagree, this section is what happened. This is the second of the
+three things the subsection above records M9a as still owing — §16's deliverable "**a sweep for
+requirements the gate reports as covered but only partly is**". The re-audit of the remaining
+uncovered Musts and §14's per-requirement adjudication are still outstanding.
+
+**All 130 Musts were read against their artifacts, and 54 were demoted.** Each requirement's own
+text and its stated `Verify:` method were read beside whatever the tool had resolved for it, under
+D-23.1's two questions. The tally moves from **108 plain / 2 partial / 20 uncovered** to **54 plain
+/ 56 partial / 20 uncovered**, out of 130. **The uncovered count does not move at all**: no
+requirement lost its coverage, 54 lost the claim that their coverage was *complete*. Every one of
+the 54 carries the `// uncovered:` field D-23.1 makes mandatory, naming the specific unspanned
+member or unexecuted half and a closing milestone, and every field is rendered verbatim into
+checked-in `docs/03-test-plan.md`. **The diff is comment-only** — no test logic changed, no
+assertion was added, removed or loosened. What changed is what the ledger claims, not what the
+suite does.
+
+**The owner reviewed the 42% figure and kept every one of the 54.** Fifty-four of 130 is 42% of the
+Must set demoted in a single pass, and 56 partials against 54 plain tags means the modal disposition
+of a Namir Must is now "half-met". That is an uncomfortable number and it is recorded as the
+decision it was, not absorbed. Three reasons, in the order they were weighed:
+
+- **The only alternative on offer is choosing which true findings to suppress.** Nobody proposed
+  that a specific `uncovered:` field was factually wrong. The question was whether *this many* should
+  land at once — which is a question about the number, not about any finding. Reducing the count
+  means selecting true findings to not write down, and ending exactly that practice is what this
+  milestone exists for. §16's own text already anticipated the shape of this pressure: an acceptance
+  criterion satisfiable by **not looking** inverts the milestone's purpose, and so does a partial
+  count trimmed to look reasonable.
+- **The information is in the `uncovered:` field, not in the PARTIAL flag.** A row reading
+  `**PARTIAL**` conveys almost nothing on its own; what a reader acts on is "88.2 kHz and 176.4 kHz
+  are absent from the sweep's rate array" (FR-EQ-020) or "every arm loads `LoadSource::Bytes`, so
+  the `fs::metadata` + `fs::read` sits outside the measured window" (NFR-PERF-050). The 42% is a
+  count of flags. The value is 54 specific, individually actionable sentences that did not exist
+  yesterday, each naming a file, a line or a named member. Suppressing flags to lower a percentage
+  discards the sentences to improve the number, which is backwards.
+- **§22 R-13's mitigation is a *falling* count, and a falling count needs an honest starting
+  number.** R-13's own last clause is the test: "if the count is not falling by M12, the mechanism is
+  being used as a bypass and this row is not mitigated." That test is only meaningful against a
+  baseline nobody curated. Fifty-six is that baseline, dated today. A trimmed starting number would
+  make the mitigation unfalsifiable in exactly the direction R-13 is worried about, and would do it
+  on the first measurement.
+
+**A consequence for the two subsections above, stated so it is not read as a reversal.** The M9a
+status above records NFR-PERF-050 as this milestone's demonstration that "the commit that built the
+machinery for detecting half-met requirements was itself about to ship one", caught by adversarial
+review twice. The sweep is the same finding at scale and by construction rather than by luck: 54
+more instances of the identical species, found by reading rather than by review catching a specific
+overclaim. The right reading of both is that the machinery works and that the pre-M9a ledger was
+optimistic in one direction, uniformly.
+
+**FR-CHAIN-010's order conflict, unresolved since before M2, is resolved by amending the FRS.** The
+sweep read FR-CHAIN-010's text beside `build_default_chain` and found the two disagree about the
+product. The FRS mandated `input → input trim → noise gate → NAM → IR → EQ → output level → output`
+(`01-functional-requirements.md:163-166`); `build_default_chain`
+(`crates/namir-engine/src/stages/mod.rs:47-67`) ships `gate → trim → nam → ir → eq → out`, and has
+since M2. **The owner's decision is that the FRS is amended to describe the product, not that the
+code is a defect** — `02-architecture.md` **D-9.8** is the reason and it stands: a gate whose
+threshold references the interface's actual noise floor rather than moving when the user adjusts
+trim is the better product, and nothing in seven milestones has argued otherwise. The amendment
+lands as a `*Consequence (added M9a, 2026-08-09)*` note at FR-CHAIN-010 itself and a matching one at
+D-9.8, both in this pass; §6's M2 deliverable text, which already directed the chain be built "*gate
+before trim* … per D-9.8" (`:259-261`), needed no change and gets none.
+
+*How long it stood, and what that says about the gates.* D-9.8's Rationale flagged itself for
+review; `02-architecture.md` §21's **AQ-2** (`:2652`) records the author confirming it on
+2026-08-04 — against the usability argument alone, never against the FRS's own sentence. The contradiction is as old as the two
+documents, both texts having landed in `875068e`, so it predates every milestone, survived M2
+building the chain, and survived M9's own P0 decision pass. **It was never concealed**:
+`stages/mod.rs:31-36` has named the divergence in plain prose since M2's `7941577`. Nothing
+mechanical was ever going to catch it — `xtask traceability` asks whether an artifact *references*
+an identifier, never whether it *agrees* with the requirement's text, and FR-CHAIN-010 has carried a
+tag and read covered throughout, correct by the tool's own rules the entire time. It surfaced as a
+byproduct of reading requirement prose to answer D-23.1's two questions, which is an argument for
+that reading being periodic rather than once.
+
+**Correction to this section's own text: FR-NAM-030 is worse than §16 above describes it.** §16's
+sweep deliverable (`:2168-2173`) says "only WaveNet has ever been compared that way", citing S-1's
+scope note that "S-1 covered WaveNet only… LSTM is unaddressed", and D-23.1's Rationale, D-23.2 and
+`AGENTS.md` all carry the same half-met wording. The original text stands unedited, per this
+document's convention; **what follows is the correction.** Verified by reading both tests this
+session rather than by re-reading the summary: **no in-repo runnable artifact compares *either*
+architecture against `NeuralAmpModelerCore`.** `crates/namir-nam/tests/fixtures.rs:129` calls
+`nam::reference_infer` and `crates/namir-nam/tests/lstm_fixtures.rs:120` calls
+`nam::reference_infer_lstm` — both `namir-fixtures`' own from-scratch Rust ports, neither reaching
+C++. The WaveNet comparison the earlier text credits was real and is not retracted, but it lives in
+`spikes/s1-nam-inference/`, which the root manifest `exclude`s (`Cargo.toml:15-20`) and which pins
+its own lockfile, so nothing re-runs it under `cargo test`. The two `// trace-partial: FR-NAM-030`
+pairs the sweep wrote (`fixtures.rs:120-126`, `lstm_fixtures.rs:112-118`) therefore name the *same*
+gap rather than one naming LSTM, and add a second one neither text had noticed: the probe is 4 000
+samples of sine plus noise, not the 10-second signal containing clean, transient and saturated
+material the requirement specifies. **This does not change M10's ownership** — FR-NAM-030 still
+closes at M10 Phase 4 — but it doubles what that phase owes, from one architecture's parity run to
+two plus a conforming test signal, and §17 should be read with that in mind.
+
+**A product-scope discovery the sweep was not looking for: there is no audio-device panel, and five
+Musts lean on one existing.** `namir-ui` has seven modules (`app`, `controls`, `format`, `host`,
+`library_view`, `meter`, `notices`) and none of them is a device or settings surface. `UiSnapshot`
+(`crates/namir-ui/src/host.rs:100-123`) carries exactly eight fields — `params`, `input_meter`,
+`output_meter`, `loaded_model_name`, `loaded_ir_name`, `library`, `unsaved_changes`, `notices` — and
+**no host, device, sample-rate, buffer-size, latency or xrun field of any kind**. `UiIntent`
+(`:148-176`) has seven variants, all parameter, library or notice actions; none names a device.
+Device selection happens once at start-up from remembered settings, non-interactively
+(`crates/namir-app/src/app.rs:95-133`, through `device_state::select_device` and the three
+`negotiate_*` helpers), and the xrun count surfaces through an `eprintln!`. The five:
+
+| Requirement | Verify | The clause with no surface |
+|---|---|---|
+| **FR-IO-010** | M | "The user shall be able to select an audio input device and an audio output device" |
+| **FR-IO-040** | M | "select sample rate and buffer size … and the current values shall always be displayed" |
+| **FR-IO-050** | M | "shall display the measured round-trip latency … in both samples and milliseconds" |
+| **FR-IO-060** | I | "a running count for the session, **resettable by the user**" |
+| **FR-IO-070** | I | "**allow the user to select another device**" |
+
+The last two are among the 54 and say so in their own `uncovered:` fields. The first three are
+`Verify: M` and so cannot be — see the next paragraph, which is why this is recorded here in prose.
+It is a scope question, not a verification one: three of these five are not "untested", they are
+**unbuilt**, and no milestone in this roadmap owns building them. §15 item 16 below carries it.
+
+*And it was already written down twice, which is the part worth keeping on the record.*
+`docs/manual-tests/fr-io-010-device-enumeration.md:85-88`, under its "Not covered by this script,
+and why" heading, says in as many words that FR-IO-010's "the user shall be able to select" "implies
+an interactive control, and none exists in `namir-ui`'s shared FR-UI-020 screen", and that "FR-IO
+has no UI owner yet in this codebase"; `fr-io-090-channel-mapping.md:19-21` records the same gap
+independently. Both were written at M6. Neither escalated, and nothing was ever going to make them:
+a `Verify: M` Must resolves the moment its document exists, and no gate reads a word inside it. This
+is the second finding this sweep did not discover so much as *find already recorded and unread* —
+`stages/mod.rs:31-36`'s note on FR-CHAIN-010 being the first.
+
+**Fourteen findings cannot be a source annotation in any form, so §14's verdict columns are their
+only ledger — R-14 made concrete on its first real use.** D-23.1's `trace-partial` is refused
+outright for a `Verify: M` or `Verify: Process` Must (`xtask/src/traceability.rs:616-633`), and the
+tool's own doc comment states the scope exactly: false "for 14 of the FRS's 130 Musts (13 `M`, 1
+`Process`)" (`:590-591`). The refusal is right — a manual script is not a `.rs` file and review is
+not an artifact — but its consequence is that **for those fourteen requirements there is no
+mechanical place to write down a half-met finding at all.** The generated plan renders them as
+covered the moment a correctly-named document exists, with no PARTIAL disposition available; the
+gate cannot express what FR-IO-010's, -040's and -050's rows in the table above are about. The
+fourteen are the thirteen `Verify: M` Musts (FR-IO-010, -020, -030, -040, -050, FR-PKG-030,
+FR-STATE-040, FR-UI-020, -030, -040, -050, -070, NFR-DOC-010) and the one `Verify: Process` Must
+(NFR-QUAL-020). **This is the strongest argument yet for finishing §14's re-audit**, and it is R-14's
+risk stated as a fact rather than a hypothetical: for 14 of 130 Musts, a hand-adjudicated verdict
+cell naming its evidence by file path is not merely the *better* record, it is the **only** one this
+project has. Nothing about them is mechanically checkable in either direction.
+
+**Three partials declare a closing milestone this roadmap does not assign them.** D-23.1 requires
+every `uncovered:` field to end `; closes M<n>`, and the tool prints that declared milestone beside
+each partial (§22 R-13(d)) — but the declaration is the annotation author's, while the tool's *other*
+attribution is derived from this document's own `## <n>. M<k>` sections, and nothing reconciles the
+two. Forty-nine of the 54 name M9b — 51 of all 56 partials — whose scope is the open-ended "missing
+verification infrastructure" and which accommodates them. Three do not fit, and all three are
+flagged for owner confirmation rather than quietly left:
+
+- **FR-CFG-030 → M13.** The only mention of FR-CFG-030 anywhere in this document is `:2668`, a
+  parenthetical correcting its `Verify:` code. §20 does not claim it. The field's own reasoning is
+  sound — "each is installed alone into a clean environment and exercised" needs installers, which
+  M13 builds — but M13's deliverables and Acceptance do not name it, so nobody has agreed to it.
+- **NFR-LIC-030 → M13.** Also unnamed in §20, and it additionally **contradicts a prior closure
+  claim**: §14's M7-session bullet at `:1690` reads "NFR-LIC-030 closes: the attribution file …". The
+  partial's gap is the "shipped with the binaries" clause, which needs a release pipeline and so
+  points at M13 plausibly enough — but "already closed at M5" and "closes at M13" cannot both stand,
+  and this is precisely the drift §14's re-audit exists to end.
+- **FR-IO-070 → M9b.** This one is not an absence but a **conflict**: §18's M11 already names
+  FR-IO-070 explicitly, as "**Opportunistic, if the hardware allows**" (`:3025-3029`), gated on a
+  device that can be made to fail on demand and with an instruction that if none appears "it stays
+  open and is **not** back-filled with an inspection claim". The annotation books it to M9b instead.
+  M11 runs before M9b, so the two are not even in the same order; and the M9b booking reads as a
+  commitment to build the virtual failable device M11 declined to assume.
+
+None of the three is changed in this pass. Changing an `uncovered:` field to match a milestone
+nobody has agreed to would be the same defaulting-by-whoever-writes-it-first that §15 exists to
+prevent. §15 item 17 below carries the decision.
+
+**What M9a still owes after this pass**: the re-audit of the remaining uncovered Musts, and §14's
+per-requirement adjudication — which the fourteen above make the load-bearing half.
 
 ---
 

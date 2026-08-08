@@ -189,7 +189,13 @@ mod tests {
     /// **D-16.3 / FR-ERR-040:** a panicking job is contained at the job boundary and the pool keeps
     /// serving. The panic hook is silenced for the duration so the suite's output stays readable —
     /// noted because otherwise it looks like a test is failing.
-    // trace: FR-ERR-040
+    // trace-partial: FR-ERR-040
+    // uncovered: FR-ERR-040 — the method's "inject a fault into each non-audio subsystem" reaches
+    // uncovered: only the generic worker thread pool: no fault is injected into the library
+    // uncovered: scanner, the state save/load path, settings I/O, the resource cache or the GUI
+    // uncovered: thread, and the plugin-configuration clause "continue passing audio, degraded if
+    // uncovered: necessary" is asserted by nothing, the tagged test running no audio at all;
+    // uncovered: closes M9b
     #[test]
     fn a_panicking_job_is_contained_and_the_pool_keeps_serving() {
         let previous = std::panic::take_hook();

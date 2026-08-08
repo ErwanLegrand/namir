@@ -347,7 +347,12 @@ mod tests {
     }
 
     /// FR-LIB-010: a recursive scan finds `.nam` and IR files under nested directories.
-    // trace: FR-LIB-010
+    // trace-partial: FR-LIB-010
+    // uncovered: FR-LIB-010 — the "the user shall be able to nominate one or more directories as
+    // uncovered: library roots" clause has no mechanism to exercise: both shells open through
+    // uncovered: LibraryService::open_at/open_default, which hard-code the single root
+    // uncovered: <config_dir>/Library, AppSettings has no roots field and UiIntent has no add-root
+    // uncovered: or remove-root variant; closes M9b
     #[test]
     fn a_full_scan_finds_every_file_under_nested_directories() {
         let root = temp_dir("full_scan");
@@ -483,6 +488,7 @@ mod tests {
     /// happens) exceeds [`crate::MAX_INDEXED_FILE_BYTES`] is still indexed — browsable by path —
     /// but with no hash and no extracted metadata, and a warning is recorded. Uses [`FakeFs`] to
     /// claim an oversized size cheaply, without writing an actual multi-hundred-MB fixture.
+    // trace: NFR-SEC-020
     #[test]
     fn a_file_over_the_size_ceiling_is_indexed_without_a_hash() {
         use crate::fs::FakeFs;

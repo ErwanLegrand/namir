@@ -1160,7 +1160,12 @@ mod tests {
         audio_section(|| stage.process(&mut io));
     }
 
-    // trace: FR-NAM-050
+    // trace-partial: FR-NAM-050
+    // uncovered: FR-NAM-050 — the comparison the Verify method specifies, a 48 kHz model driven
+    // uncovered: at 44.1 kHz against the same model driven at 48 kHz with the input and output
+    // uncovered: resampled offline to the FR-NAM-030 tolerance, is computed nowhere; the tagged
+    // uncovered: test asserts only finiteness and non-allocation over 200 blocks of varying size;
+    // uncovered: closes M9b
     #[test]
     fn resampled_path_runs_many_varying_blocks_without_allocating_or_panicking() {
         // Best-effort coverage for the mismatched-rate path (this module's doc comment: not

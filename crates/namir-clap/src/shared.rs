@@ -340,7 +340,11 @@ mod tests {
     /// independently constructed `SharedInner`s (standing in for two plugin instances in one host
     /// process) resolve to the *same* `Arc<ResourceCache>` because both go through
     /// `ResourceCache::shared()`, not `ResourceCache::new()`.
-    // trace: FR-CLAP-090
+    // trace-partial: FR-CLAP-090
+    // uncovered: FR-CLAP-090 — the B half of "I plus B", that N instances of one model use
+    // uncovered: materially less memory than N separate copies, is measured by nothing: namir-clap
+    // uncovered: has no benches directory and no memory benchmark exists anywhere in the workspace;
+    // uncovered: closes M9b
     #[test]
     fn two_shared_inners_resolve_to_the_same_process_global_cache() {
         let a = SharedInner::new();

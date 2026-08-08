@@ -226,7 +226,12 @@ mod tests {
     }
 
     /// FR-STATE-070's *Verify*: "each resolution path... exercised individually." Path 1.
-    // trace: FR-STATE-070
+    // trace-partial: FR-STATE-070
+    // uncovered: FR-STATE-070 — the third member of the failure list, "with an option to locate
+    // uncovered: it manually", is spanned by nothing and exists nowhere in the product: UiIntent
+    // uncovered: carries no locate or browse variant and neither shell offers such a path, the
+    // uncovered: only mention in the tree being a doc comment paraphrasing the requirement;
+    // uncovered: closes M9b
     #[test]
     fn resolves_via_library_relative_when_that_candidate_exists() {
         let reference = reference_with(Some("marshall/plexi.nam"), None);

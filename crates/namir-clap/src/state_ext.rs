@@ -74,7 +74,12 @@ mod tests {
     /// to_pretty_bytes` and restores through `State::read`/`SharedInner::adopt_state` with the
     /// same values, without a live CLAP host or stream at all (the pure logic `save`/`load` call
     /// through, exercised directly).
-    // trace: FR-CLAP-050
+    // trace-partial: FR-CLAP-050
+    // uncovered: FR-CLAP-050 — the host-driven half is unspanned: PluginStateImpl::save and load
+    // uncovered: are called by no test, the tagged artifact bypassing them and the
+    // uncovered: clap_istream/clap_ostream adapters to exercise the pure logic directly, so load's
+    // uncovered: own sequel work — set_last_document, push_notice on parse warnings,
+    // uncovered: notify_params_changed and spawn_recall — runs nowhere; closes M9b
     #[test]
     fn a_snapshot_round_trips_through_bytes_and_adopt_state() {
         let a = crate::shared::SharedInner::new();

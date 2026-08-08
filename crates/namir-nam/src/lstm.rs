@@ -609,7 +609,13 @@ mod tests {
         assert_eq!(err.code.id, error_codes::WEIGHT_COUNT_MISMATCH.id);
     }
 
-    // trace: FR-NAM-110
+    // trace-partial: FR-NAM-110
+    // uncovered: FR-NAM-110 — the method's "cross-correlate an impulse through the stage" is
+    // uncovered: performed by nothing: both tagged tests read an accessor whose body is the
+    // uncovered: literal 0 and assert it equals 0, so they would pass unchanged if inference did
+    // uncovered: introduce delay, and the one path that reports a nonzero figure — NamStage's
+    // uncovered: resampler latency — is asserted only as > 0 and is documented as not
+    // uncovered: sample-exact; closes M9b
     #[test]
     fn latency_samples_is_zero() {
         let prepared = PreparedLstm::from_file(&minimal_valid_file()).unwrap();

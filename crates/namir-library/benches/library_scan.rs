@@ -151,7 +151,12 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-// trace: FR-LIB-030, NFR-PERF-060
+// trace-partial: FR-LIB-030
+// uncovered: FR-LIB-030 — the Verify: B condition this requirement states, that a second start-up
+// uncovered: with an unchanged 10 000-file library is measurably faster than the first, is printed
+// uncovered: as CONCLUSIVE or INCONCLUSIVE and asserted by nothing; the persistence half is
+// uncovered: unmeasured too, arms C and D reusing an in-memory prior index rather than one written
+// uncovered: to disk and reloaded; closes M9b
 fn main() {
     pin_to_measurement_core();
 
@@ -276,6 +281,7 @@ fn main() {
             "FAIL"
         }
     );
+    // trace: NFR-PERF-060
     assert!(
         c_max <= Duration::from_secs(2),
         "NFR-PERF-060: arm C's max ({c_max:?}) exceeds the 2 s ceiling"

@@ -467,7 +467,13 @@ mod tests {
     // --- DC/Nyquist gain algebra, driven through apply() (mirrors biquad.rs's own DC/Nyquist
     // test style, minus that crate's private test-only dc_gain/nyquist_gain helpers).
 
-    // trace: FR-EQ-010
+    // trace-partial: FR-EQ-010
+    // uncovered: FR-EQ-010 — the method's "magnitude response against the analytic target within
+    // uncovered: 0.1 dB" is executed at no band's own frequency: every EQ-stage test measures
+    // uncovered: gain at DC and at Nyquist only, against hand-written constants at 0.3 dB, so the
+    // uncovered: low-shelf corner (40-500 Hz), the mid peak (200 Hz-5 kHz), the high-shelf corner
+    // uncovered: (1-12 kHz) and the 0.2-5.0 Q range's effect on magnitude are unmeasured;
+    // uncovered: closes M9b
     #[test]
     fn low_shelf_gain_reflected_at_dc_and_flat_at_nyquist() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -628,7 +634,12 @@ mod tests {
 
     // --- ENABLED-toggle click-freedom (FR-CHAIN-020/FR-EQ-030).
 
-    // trace: FR-CHAIN-020, FR-EQ-030
+    // trace-partial: FR-CHAIN-020
+    // uncovered: FR-CHAIN-020 — of the four stages the "U per stage" method names, the NAM and
+    // uncovered: IR bypass toggles are never exercised mid-signal (nam.rs:1080 and ir.rs:1151
+    // uncovered: both apply ENABLED=0 before any processing, then assert steady-state
+    // uncovered: passthrough), and no test toggles one stage's bypass inside an assembled chain
+    // uncovered: to show the others undisturbed; closes M9b
     #[test]
     fn enabled_toggle_mid_signal_has_no_large_single_sample_jump() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -645,6 +656,11 @@ mod tests {
         let value = 0.3f32;
         let settled_disabled = process_constant_in_chunks(&mut stage, 48_000, value);
 
+        // trace-partial: FR-EQ-030
+        // uncovered: FR-EQ-030 — "changing any EQ parameter" spans one of EqStage's twelve: only
+        // uncovered: ENABLED is toggled, and no test changes a band gain, a band frequency, mid
+        // uncovered: Q, or either high-pass/low-pass defeat or corner frequency and measures
+        // uncovered: click-freedom; closes M9b
         stage.apply(ParamChange {
             id: ENABLED_ID,
             value: 1.0,

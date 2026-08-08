@@ -169,6 +169,58 @@ input → input trim → noise gate → NAM → IR → EQ → output level → o
 The order shall be fixed and not user-reorderable in 1.0.
 *Verify:* I — measure stage interaction against a specified probe signal.
 
+*Consequence (added M9a, 2026-08-09 — amending this requirement's order to the order the product
+ships)* — **The order in the block above is superseded.** The engine shall implement exactly this
+chain, in this order:
+
+```
+input → noise gate → input trim → NAM → IR → EQ → output level → output
+```
+
+The gate precedes the trim; nothing else moves. `02-architecture.md` **D-9.8** is the reason and
+gives it in one sentence: the gate detector runs on the signal *before* input trim so its threshold
+is referenced to the interface's actual noise floor and does not move when the user adjusts trim. A
+threshold that shifts every time the player touches a gain control is not a threshold, and the
+superseded order buys nothing else in this document in exchange. Both of this document's other
+statements of placement stay literally true as written — Section 1.2's "a noise gate ahead of the
+amp" and FR-GATE-010's "ahead of the NAM stage" — because the gate remains ahead of the NAM stage
+either way; the trim is the only thing that changes side.
+
+**This amendment changes the document, not the product.** `build_default_chain`
+(`crates/namir-engine/src/stages/mod.rs:47-67`) assembles `gate → trim → nam → ir → eq → out`, and
+has done since M2 (2026-08-06) — precisely, M2's first commit `7941577` declared the order in the
+function's doc comment while its body was still `todo!("wired once every one of the six stages
+exists")`, and the assembly itself landed later in the same milestone. It was directed there by
+`03-implementation-roadmap.md` §6's own deliverable text ("placed *before* Trim in the actual chain
+per D-9.8"), and the three modules concerned each say so in their doc comments
+(`crates/namir-engine/src/stages/mod.rs:31-36`, `stages/gate.rs:5-6`, `stages/trim.rs:5-7`). D-9.8's
+own `*Rationale:*` ends "flagged for review"; that review was never performed, so the divergence
+stood from M2 to M9a as a decision recorded against a requirement it contradicted, in a document
+hierarchy where this one wins. M9a's set-quantification sweep is what surfaced it, and surfaced it
+as a requirement-versus-code conflict rather than as a coverage gap. Which way to resolve it was
+genuinely open. It is resolved in favour of the shipped order: the product is right and this
+paragraph is the document catching up.
+
+**What this amendment does not do.** It does not touch the `*Verify:*` line above, which stands
+unchanged and unexecuted. No probe signal has ever been put through this chain to measure stage
+interaction: the one test annotated for this requirement fills every channel with 0.0 and asserts
+0.0 out with nothing loaded, which cannot distinguish any ordering of any stages from an empty
+chain. That is a separate and real gap, it is unaffected by which order this requirement mandates,
+and it is what this requirement's `// trace-partial:` names after this amendment.
+
+**One interaction, recorded rather than repaired.** Gate-before-trim has a consequence for
+FR-CHAIN-060's Stereo row that neither D-9.8 nor anything since states, found while checking this
+amendment against the code. Trim owns the chain's only cross-channel mixing, including that row's
+"2 ch summed" at −6 dB per term (`crates/namir-engine/src/stages/trim.rs:145-156`). Gate, now
+upstream of it, detects on channel 0 alone and copies its gated result over every other channel
+(`crates/namir-engine/src/stages/gate.rs:163-172`) to establish the identical-channel invariant
+FR-CHAIN-050 lets every later stage assume. The right channel is therefore discarded before Trim can
+sum it, and Trim's sum evaluates L·g + L·g at g = −6 dB — the left channel, at unity. Shipped
+behaviour in the Stereo configuration is thus FR-CHAIN-070's default (left channel), not
+FR-CHAIN-060's table default (both channels summed). Stated here as an observed fact of the product
+as of M9a, verified at the two sites cited and at no point decided by this amendment: FR-CHAIN-060
+and FR-CHAIN-070 are unchanged, and neither requirement's disposition follows from anything above.
+
 **FR-CHAIN-020 (Must)** — Each of the noise gate, NAM, IR and EQ stages shall be individually
 bypassable without disturbing the other stages and without an audible click or discontinuity.
 *Verify:* U per stage; I for click-freedom (see FR-PARAM-040).
@@ -1275,3 +1327,4 @@ of someone having looked at it rather than the check itself.
 | 0.2 | 2026-08-03 | Copyright holder set. Section 7 restructured into 7.1 (out of scope) and 7.2 (post-1.0 direction, RD-1..RD-4). FR-ERR-060 scoped to 1.0; FR-ERR-070 added to set standing terms for any future network feature; NFR-SEC-030 aligned. OQ-9 and OQ-10 added. |
 | 0.3 | 2026-08-08 | M8-planning intake. New Section 5.15 Packaging and distribution: FR-PKG-010..050. FR-NAM-140 (unsupported architecture/configuration rejected distinctly from malformed) and FR-NAM-150 (NAM Architecture 2, A2-Full and A2-Lite) added; FR-UI-110 (brand mark and application icon), NFR-LIC-070 (brand assets not covered by the code licence), NFR-DOC-040 (README) added. Note appended at FR-CFG-040 recording that FR-PKG-010's installer does not conflict with it and that FR-PKG-050's plain archive is what keeps it true. Note appended at Section 10 recording that a CI workflow is not itself a traceable artifact. Planning index proposed FR-NAM-130, FR-UI-060 and NFR-LIC-060 for three of these; all three identifiers were already in use, and per Section 1.5 identifiers are never reused, so the new requirements took the next free numbers instead. |
 | 0.4 | 2026-08-08 | M9 P0 decision pass. Section 10's 2026-08-08 note is corrected on a matter of fact by an appended `*Consequence (added M9)*` note: `xtask traceability` does read CI and build configuration — `xtask/src/traceability.rs:111`'s `# trace:` marker and `xtask/src/main.rs:205-216`'s four hard-coded paths — and fifteen Must requirements rest on that alone, so the original sentence would have taken the uncovered count from 24 to 39 rather than tightening anything, and would have left NFR-PORT-030 and NFR-QUAL-050 unclosable in principle. Replaced with a two-limb adequacy rule (configuration is admissible evidence when the requirement's own assertion is about the configuration, or when its own `*Verify:*` line elects it) and its one-sentence form: tag the configuration when the configuration is the artifact under test; tag a test when the product is. Nine of the fifteen fall under limb 1 and six under limb 2; eight of the nine limb-1 requirements have a bare `*Verify:* S.` and rest on limb 1 alone, FR-CFG-010 being the only one whose Verify line also elects the configuration and so satisfies both. FR-PKG-020's and FR-PKG-040's disposition under the original note is unchanged; FR-PKG-010's is reopened, since its `*Verify:*` line elects a release workflow that does not exist yet (roadmap §15 item 10); FR-CLAP-020 is confirmed taggable in CI as limb 1, its "as a gate in CI" clause being in its body and its `*Verify:*` line a bare `S.` that elects nothing. Two of the fifteen are recorded as failing the rule rather than repaired: FR-ERR-070 (its limb-2 election reaches sub-clause 5 alone; the other five sub-clauses are runtime assertions about a capability that does not exist — vacuously satisfied, re-opened by the first network feature) and NFR-QUAL-050 ("shall gate merges" is a branch-protection setting outside the repository). The same note records the tool's dispatch exclusivity — `Verify: M` resolves against `docs/manual-tests/` only, `Verify: Process` is exempt, every other code resolves against source only — which is why FR-CLAP-030, FR-CLAP-040 and FR-CLAP-100 read uncovered while FR-CLAP-060, FR-CLAP-090 and FR-IO-060/-070/-080 resolve; `02-architecture.md` D-18.6 holds the policy. Note appended at Section 1.5: the parenthetical after an identifier is the sole priority marker (`xtask/src/traceability.rs:81`), bold **Must**/**Should** inside a requirement body scopes a clause rather than retagging the requirement (FR-NAM-020, FR-IO-020, FR-IO-030), and this document declares 130 Musts, 31 Shoulds and 3 Coulds — 164 in all. |
+| 0.5 | 2026-08-09 | M9a set-quantification sweep. **FR-CHAIN-010's chain order is amended to the order the product ships**, by an appended `*Consequence (added M9a, 2026-08-09)*` note that supersedes the original block rather than rewriting it: `input → noise gate → input trim → NAM → IR → EQ → output level → output`. The gate precedes the trim per `02-architecture.md` D-9.8 — a gate threshold should reference the interface's real noise floor and not move when the user adjusts trim. `build_default_chain` (`crates/namir-engine/src/stages/mod.rs:47-67`) has assembled it that way since M2 (2026-08-06; `7941577` declared the order in the doc comment with a `todo!()` body, the assembly landed later in the milestone) on `03-implementation-roadmap.md` §6's own direction, so the amendment makes this document describe the product rather than changing the product; D-9.8's *Rationale* had flagged the point for review and it went unresolved from M2 until this sweep read the requirement against its code and surfaced a requirement-versus-code conflict. Section 1.2's "noise gate ahead of the amp" and FR-GATE-010's "ahead of the NAM stage" are unaffected and stand as written. FR-CHAIN-010's `*Verify:*` line is deliberately **not** touched: its probe-signal method has never been executed, that gap is independent of the order, and it is what the requirement's `// trace-partial:` names. The same note records, without deciding, one interaction the amendment exposes: with Gate upstream of Trim, Gate's channel-0-then-duplicate pattern (`stages/gate.rs:163-172`) discards the right channel before Trim's −6 dB-per-term sum (`stages/trim.rs:145-156`) can use it, so the shipped Stereo configuration realises FR-CHAIN-070's default (left channel) rather than FR-CHAIN-060's table default (both channels summed). FR-CHAIN-060 and FR-CHAIN-070 are unchanged. |

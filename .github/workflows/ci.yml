@@ -31,7 +31,11 @@ jobs:
   # `cargo test --workspace` below -- there is no separate RT-harness step because there is no
   # separate RT-harness binary; do not read its absence as a missing gate.
   #
-  # trace: NFR-QUAL-050, NFR-QUAL-060, NFR-BUILD-020
+  # NFR-BUILD-020's own partial sits beside the build/test steps below, which are the commands its
+  # gap is about; D-23.1's adjacency rule takes one anchor per tag, so the three ids this site
+  # carried until M9a are now annotated separately rather than stacked here.
+  #
+  # trace: NFR-QUAL-050, NFR-QUAL-060
   build-test:
     name: build + test (${{ matrix.os }})
     strategy:
@@ -74,6 +78,13 @@ jobs:
         # specifically, not a workaround, and not silence-by-ignoring-all-warnings.
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # trace-partial: NFR-BUILD-020
+      # uncovered: NFR-BUILD-020 — "exercised by CI so it cannot drift" has no artifact: nothing
+      # uncovered: extracts or runs the commands docs/user-guide.md documents, the tagged job
+      # uncovered: running cargo build --workspace --all-targets and cargo test --workspace with no
+      # uncovered: link to any document, so the guide can drift freely; the test limb is
+      # uncovered: undocumented for a user in any case, cargo test appearing in no user-facing
+      # uncovered: document; closes M12
       - name: cargo build --workspace --all-targets
         run: cargo build --workspace --all-targets
 

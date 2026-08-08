@@ -42,7 +42,11 @@
 //! tool's own test fixtures and this file's own header string parsed as tags); closing it fully
 //! would need a Rust parser this project has no other use for.
 
-// trace: NFR-QUAL-010
+// trace-partial: NFR-QUAL-010
+// uncovered: NFR-QUAL-010 — the method's "fails on any uncovered Must" is not executed: CI's
+// uncovered: required step passes --allow-uncovered and derives its exit status from plan freshness
+// uncovered: and §14's denominators alone, while the plain form runs continue-on-error, so 20
+// uncovered: uncovered Musts stand with CI green; closes M13
 
 use std::collections::HashMap;
 

@@ -277,10 +277,27 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   checked-in `docs/03-test-plan.md`, every run prints the partial count and each partial's declared
   closing milestone (§22 **R-13**), the zero-uncovered gate goes required at M13's close-out, and
   under D-23.2 a Partial is not **Done** for §14 or for M8's exit checklist. FR-NAM-030 ("for
-  **each** supported architecture… match the reference NAM implementation") is still the live
-  instance: only WaveNet was ever compared that way, and the tool has reported it covered since M3
-  regardless. Read D-23.1 (`docs/02-architecture.md` §23) for the full rule before tagging anything
-  non-obvious.
+  **each** supported architecture… match the reference NAM implementation") is the standing
+  illustration — **and this file described it wrongly until M9a**: the gap is not that only WaveNet
+  was ever compared that way. Both architectures have a parity test — WaveNet's in
+  `crates/namir-nam/tests/fixtures.rs`, LSTM's in `crates/namir-nam/tests/lstm_fixtures.rs`, each
+  named `numeric_parity_against_an_independent_reference_implementation` — and **neither** compares
+  against the reference implementation the requirement names. Both compare against
+  `namir-fixtures`' own from-scratch Rust port (`nam::reference_infer`, `nam::reference_infer_lstm`)
+  — the strongest evidence this crate has against a porting bug, and not the golden reference the
+  method asks for. The only `NeuralAmpModelerCore` comparison in the
+  tree is S-1's, under `spikes/`, excluded from the workspace and not runnable under `cargo test`.
+  The tool reported the requirement plainly covered from M3 until M9a's sweep demoted both sites to
+  `trace-partial:`. Read D-23.1 (`docs/02-architecture.md` §23) for the full rule before tagging
+  anything non-obvious.
+- **Expect `trace-partial:` to be the common case, not a rarity.** M9a swept every Must against
+  D-23.1's two questions and demoted 54 tags from plain `trace:` in one comment-only pass — no test
+  logic changed and nothing regressed; the tags stopped over-claiming. The tally that sweep leaves
+  is **130 Musts = 54 plain, 56 partial, 20 with no tag at all**, so a `**PARTIAL**` row in
+  `docs/03-test-plan.md` is the ordinary mid-project state of a requirement, not a defect someone
+  forgot to clean up. The way to retire one is to close the gap its `// uncovered:` field names and
+  then promote the tag; promoting the tag on its own deletes the ledger entry and is the failure
+  mode D-23.1 exists to prevent.
 - **What the tool actually enforces about a tag** (`scan_annotations`,
   `xtask/src/traceability.rs:219`), each of these a hard error that aborts the whole run rather than
   a silent drop — dropping a malformed tag would delete its author's intended coverage without

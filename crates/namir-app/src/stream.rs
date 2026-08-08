@@ -483,7 +483,11 @@ mod tests {
 
     /// FR-IO-060's bridge-underrun path: pulling with nothing pushed yet counts an xrun rather
     /// than panicking or silently producing garbage.
-    // trace: FR-IO-060
+    // trace-partial: FR-IO-060
+    // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
+    // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
+    // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
+    // uncovered: anywhere in the window; closes M9b
     #[test]
     fn an_output_pull_with_no_input_yet_counts_an_xrun() {
         let backend = FakeBackend {
