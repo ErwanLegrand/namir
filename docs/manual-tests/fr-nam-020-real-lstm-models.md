@@ -36,11 +36,40 @@ whether real LSTM exports parse, because no real LSTM export had ever been fed t
 Reference LSTM-based `.nam` models were downloaded, loaded into Namir's CLAP plugin under **Reaper**
 on Windows, and played through. Reported result: **they worked perfectly, as far as could be told.**
 
-**Details not captured at the time**, recorded as unknown rather than guessed: how many models, the
-source they were downloaded from, their declared sample rates, and their layer/hidden-size shapes.
-If those are recoverable, fill them in here — the model shapes in particular are the most valuable
-part, because they are the citation `namir-fixtures`' `LstmShape` doc comment asks for and does not
-have.
+### The model set, examined directly
+
+**Provenance:** downloaded by this repository's author from a link in a blog post by **Steven
+Atkinson**, NAM's author. The exact post URL was not recorded at the time and a later search did not
+recover it — noted as a real gap in the citation rather than papered over. The files themselves are
+the primary evidence and are the ones described below.
+
+**Location at the time of writing:** the default library root, `%APPDATA%\Namir\Library`, alongside
+248 `.nam` files in total. The 67 LSTM models are trivially identifiable by filename.
+
+**What they are:** a systematic architecture sweep, named `LSTM-<num_layers>-<hidden_size>.nam`.
+The filename-to-config mapping was **verified mechanically against all 67 files, with zero
+mismatches** — each file's `config.num_layers` and `config.hidden_size` match its own name.
+
+| Field | Value |
+|---|---|
+| `architecture` | `LSTM` (all 67) |
+| `num_layers` | 1, 2, 3, 4 |
+| `hidden_size` | 1–12, then 16, 20, 24, 28, 32 |
+| `input_size` | 1 (all 67) |
+| `version` | 0.5.2 |
+| `sample_rate` | 48000 |
+
+The set is complete across that grid except for `LSTM-1-001`, which is absent while `LSTM-2-001`,
+`LSTM-3-001` and `LSTM-4-001` are present.
+
+### Consequence for `namir-fixtures`
+
+`LstmShape`'s doc comment carried a standing disclaimer that its three shapes were "not verified
+against any real NAM LSTM preset", and invited replacement "if real preset numbers surface later
+with a citation". They have now surfaced — and **all three guessed shapes turn out to exist in this
+sweep**: `Standard` (2 layers, hidden 32) is `LSTM-2-032`, `Small` (1×16) is `LSTM-1-016`, `Tiny`
+(1×4) is `LSTM-1-004`. So the disclaimer is retired and the numbers are unchanged, which is the
+better of the two outcomes that comment anticipated.
 
 ## Result
 
