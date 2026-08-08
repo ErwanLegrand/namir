@@ -609,6 +609,7 @@ mod tests {
         assert_eq!(err.code.id, error_codes::WEIGHT_COUNT_MISMATCH.id);
     }
 
+    // trace: FR-NAM-110
     #[test]
     fn latency_samples_is_zero() {
         let prepared = PreparedLstm::from_file(&minimal_valid_file()).unwrap();

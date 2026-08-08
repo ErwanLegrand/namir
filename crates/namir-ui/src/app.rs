@@ -130,6 +130,7 @@ fn render_single(
 /// (embedded, via [`open_parented`]) construct -- FR-UI-010's "a single graphical user interface
 /// implementation". Owns nothing from `namir-engine`/`namir-worker`/`namir-platform`: only `H`
 /// (the host) and this crate's own transient view state.
+// trace: FR-UI-010
 pub struct NamirUi<H: UiHost> {
     host: H,
     view: ViewState,

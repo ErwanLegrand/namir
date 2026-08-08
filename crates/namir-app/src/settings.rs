@@ -164,6 +164,7 @@ mod tests {
     }
 
     /// FR-IO-080's literal round trip: every field survives a save/load cycle.
+    // trace: FR-IO-080
     #[test]
     fn settings_round_trip() {
         let dir = temp_dir("round_trip");

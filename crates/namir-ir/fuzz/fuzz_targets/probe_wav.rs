@@ -10,7 +10,7 @@
 //! this milestone closes, not a deferral by design the way M1's `.nam`-only start was (see
 //! `docs/03-implementation-roadmap.md` §11) -- `namir-nam`/`namir-state` already had this coverage
 //! since M1/M5.
-// trace: NFR-QUAL-040
+// trace: NFR-QUAL-040, NFR-SEC-010
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

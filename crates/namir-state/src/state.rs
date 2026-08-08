@@ -262,6 +262,7 @@ mod tests {
     /// FR-STATE-010's literal *Verify*, at the `State` level — the authoritative form of this
     /// property for this crate (see `document.rs`'s own version of this test for the
     /// component-level evidence). Exercises every section this crate owns, not just parameters.
+    // trace: FR-STATE-010
     #[test]
     fn round_trips_serialise_restore_serialise() {
         let mut state = State::defaults();

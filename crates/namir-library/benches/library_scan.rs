@@ -151,6 +151,7 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
+// trace: FR-LIB-030, NFR-PERF-060
 fn main() {
     pin_to_measurement_core();
 

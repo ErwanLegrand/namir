@@ -74,6 +74,7 @@ mod tests {
     /// to_pretty_bytes` and restores through `State::read`/`SharedInner::adopt_state` with the
     /// same values, without a live CLAP host or stream at all (the pure logic `save`/`load` call
     /// through, exercised directly).
+    // trace: FR-CLAP-050
     #[test]
     fn a_snapshot_round_trips_through_bytes_and_adopt_state() {
         let a = crate::shared::SharedInner::new();

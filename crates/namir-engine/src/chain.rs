@@ -559,6 +559,7 @@ mod tests {
         fn telemetry(&self, _out: &mut crate::telemetry::TelemetrySink<'_>) {}
     }
 
+    // trace: FR-CHAIN-030
     #[test]
     fn prepare_crosscutting_bypass_is_unity_gain_passthrough_at_zero_latency() {
         // +6 dB stage: if bypass were merely "skip clamping" rather than "skip the stages
@@ -605,6 +606,7 @@ mod tests {
         assert_eq!(io.channel(0), &[0.0, 0.0, 0.0, 0.1, 0.2]);
     }
 
+    // trace: FR-CHAIN-080
     #[test]
     fn fault_detection_zeroes_whole_block_then_processing_continues_next_call() {
         let mut chain = Chain::new(vec![Box::new(NanOnce { injected: false })]);
@@ -640,6 +642,7 @@ mod tests {
         );
     }
 
+    // trace: FR-CHAIN-090
     #[test]
     fn output_ceiling_clamps_magnitude_preserving_sign() {
         // x10 linear (+20 dB), comfortably over a -6 dB ceiling in both directions.

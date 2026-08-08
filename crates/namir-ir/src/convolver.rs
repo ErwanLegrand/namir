@@ -1221,6 +1221,7 @@ mod tests {
         );
     }
 
+    // trace: FR-IR-040, NFR-QUAL-030
     #[test]
     fn partitioned_matches_direct_across_fixtures_block_sizes_and_ir_lengths() {
         // IR lengths chosen so that, at growth_factor=2/max_partition=8192, at least one size
@@ -1404,6 +1405,7 @@ mod tests {
     // comment for the scope note: this is not a rigorous stopband/ripple measurement.
     // -------------------------------------------------------------------------------------
 
+    // trace: FR-IR-030
     #[test]
     fn resampling_a_pure_tone_preserves_its_frequency_and_energy_roughly() {
         // A 1 kHz tone at 44.1 kHz, resampled (via being loaded as an "IR") to 48 kHz. This is
@@ -1492,6 +1494,7 @@ mod tests {
     // Truncation reporting at the engine rate.
     // -------------------------------------------------------------------------------------
 
+    // trace: FR-IR-050
     #[test]
     fn engine_rate_ceiling_truncates_directly() {
         // Exercises truncate_to_engine_ceiling directly (bypassing wav::decode/resampling) --
@@ -1506,6 +1509,7 @@ mod tests {
         assert_eq!(taps[0].len(), engine_hz as usize * 10);
     }
 
+    // trace: FR-IR-050
     #[test]
     fn engine_rate_ceiling_does_not_truncate_at_or_under_ten_seconds() {
         let engine_hz = 16_000u32;
@@ -1515,6 +1519,7 @@ mod tests {
         assert_eq!(taps[0].len(), engine_hz as usize * 10);
     }
 
+    // trace: FR-IR-050
     #[test]
     fn from_wav_bytes_reports_truncation_from_the_file_rate_ceiling() {
         // The end-to-end path DOES surface truncation when wav.rs's own file-rate ceiling fires

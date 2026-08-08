@@ -94,6 +94,7 @@ mod tests {
         );
     }
 
+    // trace: FR-PARAM-040
     #[test]
     fn full_range_jump_is_no_worse_than_a_20ms_linear_ramp() {
         let sample_rate = 48_000u32;

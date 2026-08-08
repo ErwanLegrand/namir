@@ -41,6 +41,7 @@ fn read_corpus_file(relative: &str) -> Vec<u8> {
 }
 
 /// FR-STATE-020's core claim: every document in the corpus restores successfully.
+// trace: FR-STATE-020
 #[test]
 fn every_manifest_entry_loads_successfully() {
     for relative in MANIFEST {

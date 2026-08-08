@@ -239,6 +239,7 @@ fn pin_to_measurement_core() {
     core_affinity::set_for_current(ids[idx]);
 }
 
+// trace: NFR-PERF-010
 fn main() {
     // Pin to one core, per D-2.1: every figure is single-core, and cross-core migration would
     // pollute the tail with scheduler noise unrelated to the chain's own cost.

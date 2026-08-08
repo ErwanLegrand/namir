@@ -189,6 +189,7 @@ mod tests {
     /// **D-16.3 / FR-ERR-040:** a panicking job is contained at the job boundary and the pool keeps
     /// serving. The panic hook is silenced for the duration so the suite's output stays readable —
     /// noted because otherwise it looks like a test is failing.
+    // trace: FR-ERR-040
     #[test]
     fn a_panicking_job_is_contained_and_the_pool_keeps_serving() {
         let previous = std::panic::take_hook();
