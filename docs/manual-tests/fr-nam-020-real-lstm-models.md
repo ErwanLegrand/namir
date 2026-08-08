@@ -38,10 +38,18 @@ on Windows, and played through. Reported result: **they worked perfectly, as far
 
 ### The model set, examined directly
 
-**Provenance:** downloaded by this repository's author from a link in a blog post by **Steven
-Atkinson**, NAM's author. The exact post URL was not recorded at the time and a later search did not
-recover it — noted as a real gap in the citation rather than papered over. The files themselves are
-the primary evidence and are the ones described below.
+**Provenance:** downloaded by this repository's author from
+[*Towards a (good) CPU-efficient NAM*](https://www.neuralampmodeler.com/post/towards-a-good-cpu-efficient-nam),
+posted by Steve (Steven Atkinson, NAM's author) on **2024-03-29**. The post publishes the set to
+gather feedback on what compute budgets look like in the low-compute regime — in its own words, to
+"understand what typical compute constraints are in this 'low-compute' regime" — and describes them
+as supported by the then-current `NeuralAmpModelerCore`.
+
+**The post states no licence or terms for the model files**, and gives no training details (dataset,
+input signal, sample rate). The sample rate below is read from the files, not from the post. As with
+AQ-4's capture signal, absence of stated terms is not permission: these files are fine to test
+against locally and must not be committed to this repository or redistributed — which D-19.1 already
+forbids independently, since every fixture in the suite is generated rather than captured.
 
 **Location at the time of writing:** the default library root, `%APPDATA%\Namir\Library`, alongside
 248 `.nam` files in total. The 67 LSTM models are trivially identifiable by filename.
@@ -82,6 +90,15 @@ numerical-parity result. This project's standing position (NFR-QUAL-030, D-9.11)
 for numeric code is never "sounds right" — and the reasoning recorded at R-9 applies with full force
 here: a silently-wrong weight order produces a model that loads cleanly, runs at the right cost, and
 sounds plausible while being wrong. Listening cannot distinguish that case.
+
+**The source post makes the listening half weaker still, and that is worth stating plainly rather
+than leaving for someone to notice later.** It says outright that "some of the models will sound
+very different. The intent of this is to focus on compute usage, not sound quality," and separately
+that a nano LSTM "often just sounds bad." So this set has *no expectation of good sound to begin
+with*: across a sweep whose smallest members are meant to sound poor, "it sounded fine" cannot
+distinguish a correct render from an incorrect one, because there is no baseline of what correct is
+supposed to sound like here. The run's value is therefore entirely in the load-and-run half — which
+is real, and was genuinely untested — and essentially none of it is in the audible half.
 
 The two halves are complementary rather than redundant, and together they leave LSTM in reasonable
 shape: the automated test proves the arithmetic against an independent reference but only on shapes
