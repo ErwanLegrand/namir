@@ -223,6 +223,7 @@ mod tests {
 
     /// FR-IO-080's central case: the remembered device is gone, so this degrades to the system
     /// default rather than failing.
+    // trace: FR-IO-080
     #[test]
     fn falls_back_to_the_default_device_when_remembered_is_gone() {
         let devices = vec![device("A", true), device("B", false)];
@@ -240,6 +241,10 @@ mod tests {
         assert!(selection.fell_back_from.is_none());
     }
 
+    /// FR-IO-070's non-hardware-dependent half: a device that cannot be opened at all (here,
+    /// none present) is handled by returning `None` rather than panicking, which is what lets
+    /// `crate::app::run` fall back to `open_window_without_audio` instead of crashing or hanging.
+    // trace: FR-IO-070
     #[test]
     fn no_devices_at_all_yields_none() {
         assert!(select_device(&[], Some("Anything")).is_none());

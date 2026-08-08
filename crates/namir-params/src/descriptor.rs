@@ -198,12 +198,14 @@ mod tests {
         assert_eq!(CHANNEL_MODE.stage_instance, 0);
     }
 
+    // trace: FR-PARAM-010
     #[test]
     fn continuous_formats_with_fixed_decimals() {
         assert_eq!(TRIM.format_value(-6.0), "-6.0");
         assert_eq!(TRIM.format_value(0.049), "0.0");
     }
 
+    // trace: FR-PARAM-050
     #[test]
     fn stepped_formats_via_named_values() {
         assert_eq!(CHANNEL_MODE.format_value(0.0), "Mono");

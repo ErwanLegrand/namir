@@ -236,6 +236,7 @@ mod tests {
         assert_eq!(prepared.sample_rate().hz(), 48_000);
     }
 
+    // trace: FR-NAM-040
     #[test]
     fn load_rejects_unknown_architecture() {
         let json = serde_json::json!({"architecture": "RNN"});

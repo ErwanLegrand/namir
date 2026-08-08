@@ -435,6 +435,7 @@ mod tests {
 
     // --- Stability sweep (FR-EQ-020).
 
+    // trace: FR-EQ-020
     #[test]
     fn stable_across_a_wide_parameter_and_sample_rate_sweep() {
         let kinds = [

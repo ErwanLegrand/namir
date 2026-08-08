@@ -174,6 +174,7 @@ mod tests {
     /// NFR-RT-010/NFR-RT-020: neither end allocates. This is the property that makes the ring
     /// legal on the audio thread at all, so it is asserted by the D-7.5 harness rather than by
     /// reading the dependency's source.
+    // trace: NFR-RT-020
     #[test]
     fn neither_end_allocates() {
         let (mut tx, mut rx) = ring::<u64>(8);

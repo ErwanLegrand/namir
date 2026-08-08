@@ -68,6 +68,7 @@ mod tests {
         message_template: "Example: {detail}",
     };
 
+    // trace: FR-ERR-020
     #[test]
     fn unique_ids_pass() {
         assert_unique_ids(&[A, B]);

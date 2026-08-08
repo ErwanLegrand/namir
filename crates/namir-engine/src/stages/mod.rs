@@ -72,6 +72,7 @@ mod tests {
     /// The whole point of M2: this compiles and runs at all, for every channel configuration
     /// FR-CHAIN-060 requires, with nothing loaded (FR-CHAIN-040) and produces silence in, silence
     /// out without panicking, allocating on the audio thread, or emitting a non-finite sample.
+    // trace: FR-CHAIN-010, FR-CHAIN-040, FR-CHAIN-060
     #[test]
     fn builds_and_runs_silently_for_every_channel_config() {
         for channel_config in [
@@ -96,6 +97,7 @@ mod tests {
         }
     }
 
+    // trace: NFR-PERF-020
     #[test]
     fn reports_a_nonzero_latency_only_from_stages_that_declare_one() {
         let ctx = ctx(ChannelConfig::Mono);

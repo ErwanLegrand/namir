@@ -846,6 +846,7 @@ mod tests {
     /// effect on the very next `process` — it bypasses the ring, so there is no drain step for it
     /// to wait on — and must converge to the same state a ring-delivered [`Command::Param`] of the
     /// same change would (FR-PARAM-030).
+    // trace: FR-PARAM-030
     #[test]
     fn apply_param_direct_takes_effect_on_the_next_process_call_like_a_ring_delivered_change() {
         let c = ctx();

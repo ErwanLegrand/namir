@@ -410,6 +410,7 @@ mod tests {
 
     /// FR-STATE-030: parameters and globals from the state reach the audio thread as part of the
     /// same recall.
+    // trace: FR-STATE-030
     #[test]
     fn recall_applies_globals_and_parameters() {
         let c = ctx();

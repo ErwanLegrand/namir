@@ -31,6 +31,7 @@ fn deterministic_signal(seed: u64, n: usize) -> Vec<f32> {
         .collect()
 }
 
+// trace: FR-NAM-010, FR-NAM-020
 #[test]
 fn parses_all_generated_shapes() {
     for (shape, name) in SHAPES {
@@ -109,6 +110,7 @@ fn chunked_processing_matches_monolithic_processing() {
     }
 }
 
+// trace: FR-NAM-030, NFR-QUAL-030
 #[test]
 fn numeric_parity_against_an_independent_reference_implementation() {
     let model = nam::generate(WaveNetShape::Standard, 7).expect("standard fixture should generate");

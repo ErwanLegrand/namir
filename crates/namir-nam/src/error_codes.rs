@@ -162,6 +162,7 @@ mod tests {
         assert_unique_ids(ALL);
     }
 
+    // trace: FR-NAM-040
     #[test]
     fn display_includes_code_id_and_detail() {
         let err = NamLoadError {

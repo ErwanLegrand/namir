@@ -51,6 +51,7 @@ mod tests {
     }
 
     /// (a): a deliberately-allocating fake `Stage` trips the harness.
+    // trace: FR-ERR-030
     #[test]
     #[should_panic(expected = "allocation occurred inside an audio section")]
     fn harness_catches_a_real_allocation() {

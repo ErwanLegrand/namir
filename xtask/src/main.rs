@@ -5,11 +5,14 @@
 //! consuming a product crate's public API, not a product edge, so `xtask` itself sits outside
 //! D-5.1's layering table (see `layering.rs`'s module doc).
 
+mod attribution;
 mod cargo_meta;
 mod layering;
 mod params_lock;
 mod preset;
+mod traceability;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
@@ -110,9 +113,200 @@ fn run_params_lock(root: &Path, write: bool) -> bool {
     }
 }
 
+fn run_attribution(root: &Path, write: bool) -> bool {
+    match attribution::check_or_write(root, write) {
+        Ok((ok, message)) => {
+            println!("attribution: {message}");
+            ok
+        }
+        Err(e) => {
+            println!("attribution: could not run check: {e}");
+            false
+        }
+    }
+}
+
+/// Real data for NFR-QUAL-010's traceability check: every `.rs` file under `dir` (skipping
+/// `target/` directories entirely, not just filtering their contents afterward -- a shipped
+/// `cargo build`'s `target/` can hold tens of thousands of files, and descending into it here
+/// would make this check needlessly slow). `dir`'s own top-level child directory name is
+/// hard-coded per caller as the "crate name" for every file beneath it, since that's the
+/// granularity `docs/02-architecture.md` §23's M7 Consequence note commits to.
+fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != "target")
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
+        .map(|e| e.path().to_path_buf())
+        .collect()
+}
+
+fn run_traceability(root: &Path, write: bool) -> bool {
+    let frs_path = root.join("docs/01-functional-requirements.md");
+    let frs_text = match std::fs::read_to_string(&frs_path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("traceability: could not read {}: {e}", frs_path.display());
+            return false;
+        }
+    };
+    let requirements = match traceability::parse_must_requirements(&frs_text) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("traceability: could not parse FRS: {e}");
+            return false;
+        }
+    };
+
+    let manual_tests_dir = root.join("docs/manual-tests");
+    let mut manual_test_docs: Vec<(String, String)> = std::fs::read_dir(&manual_tests_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().into_string().ok()?;
+                    let content = std::fs::read_to_string(e.path()).ok()?;
+                    Some((name, content))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // `std::fs::read_dir`'s order is filesystem-dependent, not guaranteed stable across platforms
+    // -- sorted here so `build_report`'s `.find()` (for an id matched by more than one manual-test
+    // file's content) picks the same file on every OS. Without this, this function's own output
+    // could differ byte-for-byte between a local Windows run and Linux CI, which is exactly the
+    // "stale" false-positive this session found the hard way.
+    manual_test_docs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // (crate_root, crate_name-per-first-path-component) -- xtask has no further nesting, so its
+    // own directory name is used directly rather than derived per file.
+    let mut files_with_crate: Vec<(PathBuf, String)> = Vec::new();
+    let crates_dir = root.join("crates");
+    for file in walk_rs_files(&crates_dir) {
+        if let Ok(rel) = file.strip_prefix(&crates_dir)
+            && let Some(crate_name) = rel.components().next()
+        {
+            files_with_crate.push((
+                file.clone(),
+                crate_name.as_os_str().to_string_lossy().into_owned(),
+            ));
+        }
+    }
+    for file in walk_rs_files(&root.join("xtask")) {
+        files_with_crate.push((file, "xtask".to_string()));
+    }
+
+    // A real, non-trivial slice of Must requirements are verified entirely by CI workflow or
+    // build configuration (MSRV, clippy-as-error, cargo-deny, mobile/no-C++ builds, network-free)
+    // rather than by any Rust test function -- `# trace:` in these files is how they become
+    // discoverable at all. Crate name "ci" for workflow files, "workspace" for root-level build
+    // configuration, since neither is owned by any one product crate's test suite.
+    for name in ["ci.yml", "fuzz.yml"] {
+        let path = root.join(".github/workflows").join(name);
+        if path.is_file() {
+            files_with_crate.push((path, "ci".to_string()));
+        }
+    }
+    for name in ["Cargo.toml", "deny.toml"] {
+        let path = root.join(name);
+        if path.is_file() {
+            files_with_crate.push((path, "workspace".to_string()));
+        }
+    }
+
+    let mut source_hits: HashMap<String, Vec<String>> = HashMap::new();
+    for (file, crate_name) in &files_with_crate {
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        for id in traceability::trace_annotations(&source) {
+            source_hits.entry(id).or_default().push(crate_name.clone());
+        }
+        for req in &requirements {
+            if req.verify == 'M' || source_hits.contains_key(&req.id) {
+                continue;
+            }
+            if traceability::fn_name_embeds_id(&source, &req.id) {
+                source_hits
+                    .entry(req.id.clone())
+                    .or_default()
+                    .push(crate_name.clone());
+            }
+        }
+    }
+
+    let report = traceability::build_report(&requirements, &manual_test_docs, &source_hits);
+    let test_plan_path = root.join("docs/03-test-plan.md");
+    let expected = traceability::render_test_plan(&requirements, &report);
+
+    let plan_up_to_date = if write {
+        if let Err(e) = std::fs::write(&test_plan_path, &expected) {
+            println!(
+                "traceability: failed to write {}: {e}",
+                test_plan_path.display()
+            );
+            return false;
+        }
+        println!("traceability: wrote {}", test_plan_path.display());
+        true
+    } else {
+        // Compares with CRLF/LF normalized away on both sides: `.gitattributes`' `eol=lf` should
+        // already guarantee an LF checkout on every platform, but this check has no reason to be
+        // sensitive to line-ending representation specifically (NFR-PORT-050's own spirit) when
+        // the only thing that actually matters is the text content.
+        match std::fs::read_to_string(&test_plan_path) {
+            Ok(actual) if actual.replace("\r\n", "\n") == expected.replace("\r\n", "\n") => {
+                println!("traceability: {} is up to date", test_plan_path.display());
+                true
+            }
+            Ok(actual) => {
+                let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
+                let expected_lines: std::collections::HashSet<&str> = expected.lines().collect();
+                let extra = actual_lines.difference(&expected_lines).count();
+                let missing = expected_lines.difference(&actual_lines).count();
+                println!(
+                    "traceability: {} is stale -- {extra} line(s) present only in the checked-in \
+                     file, {missing} line(s) only in the freshly generated one. Run `cargo run -p \
+                     xtask -- traceability --write` to regenerate it",
+                    test_plan_path.display()
+                );
+                false
+            }
+            Err(e) => {
+                println!(
+                    "traceability: could not read {}: {e} -- run `cargo run -p xtask -- \
+                     traceability --write` to generate it",
+                    test_plan_path.display()
+                );
+                false
+            }
+        }
+    };
+
+    let coverage_clean = if report.missing.is_empty() {
+        println!(
+            "traceability: clean -- all {} Must requirements are covered",
+            requirements.len()
+        );
+        true
+    } else {
+        println!(
+            "traceability: {} Must requirement(s) with no coverage found (NFR-QUAL-010):",
+            report.missing.len()
+        );
+        for req in &report.missing {
+            println!("  - {} (Verify: {})", req.id, req.verify);
+        }
+        false
+    };
+
+    plan_up_to_date && coverage_clean
+}
+
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|params-lock [--write]|preset [output-path]|preset --verify <path>>"
+        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|traceability [--write]|preset [output-path]|preset --verify <path>>"
     );
 }
 
@@ -125,6 +319,14 @@ fn main() {
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
+        }
+        Some("attribution") => {
+            let write = args.iter().skip(1).any(|a| a == "--write");
+            run_attribution(&root, write)
+        }
+        Some("traceability") => {
+            let write = args.iter().skip(1).any(|a| a == "--write");
+            run_traceability(&root, write)
         }
         Some("preset") => preset::run(&args[1..]),
         _ => {

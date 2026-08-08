@@ -274,6 +274,7 @@ mod tests {
 
     /// FR-OUT-010: at or below -60 dB the output is *exact* silence, not merely a very quiet
     /// asymptotic approach (`db_to_linear(-60.0)` is a tiny nonzero `f32` on its own).
+    // trace: FR-OUT-010
     #[test]
     fn silence_floor_is_exact_not_asymptotic() {
         let mut at_floor = stage(ChannelConfig::Mono);
@@ -372,6 +373,7 @@ mod tests {
         );
     }
 
+    // trace: FR-OUT-020
     #[test]
     fn clip_latches_and_is_reported_via_telemetry() {
         let mut stage = stage(ChannelConfig::Mono);

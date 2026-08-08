@@ -1,0 +1,28 @@
+[package]
+name = "namir-ir-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standard cargo-fuzz convention: an empty [workspace] table makes this Cargo.toml its own
+# workspace root, so Cargo's upward workspace discovery does not pull it into the parent Namir
+# workspace's unified resolution/lockfile -- the same pattern `namir-nam/fuzz`'s identical comment
+# explains. Belt-and-suspenders: this directory is also listed in the root Cargo.toml's `exclude`
+# array.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.namir-ir]
+path = ".."
+
+[[bin]]
+name = "probe_wav"
+path = "fuzz_targets/probe_wav.rs"
+test = false
+doc = false
+bench = false

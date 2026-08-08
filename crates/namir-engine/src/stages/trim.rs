@@ -261,6 +261,7 @@ mod tests {
         buf[buf.len() - 1]
     }
 
+    // trace: FR-IN-010
     #[test]
     fn pure_gain_is_applied_once_settled() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -392,6 +393,7 @@ mod tests {
         }
     }
 
+    // trace: FR-IN-030
     #[test]
     fn clip_latches_and_is_reported_via_telemetry() {
         let mut stage = stage(ChannelConfig::Mono);

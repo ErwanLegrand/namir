@@ -913,6 +913,7 @@ mod tests {
         out
     }
 
+    // trace: FR-IR-100
     #[test]
     fn nothing_loaded_is_exact_passthrough() {
         // FR-CHAIN-040/FR-IR-100: usable with no IR loaded, behaving as bypassed.
@@ -1207,6 +1208,7 @@ mod tests {
         (buf[total - 1], last_input)
     }
 
+    // trace: FR-IR-070
     #[test]
     fn low_cut_enabled_blocks_dc_and_passes_near_nyquist() {
         let sample_rate = 48_000;

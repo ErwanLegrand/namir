@@ -12,6 +12,8 @@
 //!
 //! Prior art: `spikes/s1-nam-inference` (constrained-init WaveNet generation) and
 //! `spikes/s2-ir-convolution` (the `fixtures` module this crate's `ir` module ports).
+//!
+// trace: NFR-LIC-050
 
 pub mod ir;
 pub mod library;

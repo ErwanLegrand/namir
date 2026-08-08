@@ -283,6 +283,7 @@ mod tests {
     /// full library view (search box, virtualized list) headlessly via `egui::Context::run_ui`
     /// -- the same entry point `egui-baseview` calls every real frame -- and asserts the frame
     /// completed well under FR-UI-060's 100ms ceiling.
+    // trace: FR-UI-060
     #[test]
     fn rendering_ten_thousand_entries_stays_well_under_the_100ms_frame_budget() {
         let corpus = namir_fixtures::library::generate_shared_corpus(20_260_807)

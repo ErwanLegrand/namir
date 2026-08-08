@@ -5,6 +5,8 @@
 //! `namir-params`'s own `#[ignore] generate_params_lock` test performs, exposed here as a
 //! developer-facing command instead of a one-shot test).
 
+// trace: FR-PARAM-020
+
 use std::path::Path;
 
 /// Compares `params.lock` under `repo_root` against `render_manifest(REGISTRY)`. `Ok(true)`
