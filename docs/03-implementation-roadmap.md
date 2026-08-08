@@ -1867,6 +1867,21 @@ unknown age. The cheapest moment to repair a verification story is before more t
   D-5.1 forbids `namir-engine → namir-platform` and `xtask layering` enforces that edge. So this is
   implementation against a settled decision, not an open dependency question — but the constraint
   it turns on still binds: the audio thread must never touch the logger directly (NFR-RT-010).
+- **A sweep for requirements the gate reports as covered but only partly is — a blind spot in the
+  mechanism itself, not a tagging error.** `xtask traceability` answers "does a covering test
+  exist?", which is the wrong question for any requirement that **quantifies over a set**: one
+  matching test satisfies the tool no matter how much of the set it leaves untouched. One instance
+  is already confirmed. **FR-NAM-030 (Must)** reads "for **each** supported architecture… match the
+  reference NAM implementation", and only WaveNet has ever been compared that way — S-1's own scope
+  note in `02-architecture.md`'s changelog 0.6 states plainly that "S-1 covered WaveNet only… LSTM
+  is unaddressed." LSTM's parity is against `namir-fixtures`' from-scratch reference instead, which
+  is not what the requirement names. The tool reports FR-NAM-030 covered, and by its own rules it is
+  right; the requirement is nonetheless half-met, and has been since M3 with nobody recording it.
+  M10's Phase 4 closes this particular one. **What M9 owes is the sweep**: re-read every Must whose
+  text quantifies ("each", "every", "all", "any supported…") and check the covering test actually
+  spans the set, recording any others found. Doing this *before* the gate becomes required matters —
+  once it is green and mandatory, "the gate passes" starts being read as "the requirement is met,"
+  and this class of gap gets much harder to see.
 - **`clap-validator` wired into CI.** FR-CLAP-020's own text says "as a gate in CI"; today it is
   not, and the row's entire evidence is M6's single manual 32/32 run. One practical wrinkle,
   already recorded in `02-architecture.md` §19 and worth restating rather than rediscovering:
@@ -1946,6 +1961,45 @@ feature with its own risk, none of which A2-Full or A2-Lite needs.
   asked for; the A1 layout is re-confirmed on the same pass, because an A2 derivation that extends
   A1's cannot be trusted further than the A1 one it extends.
 
+- **Phase 4 — LSTM: close FR-NAM-030's other half, and measure a cost curve. Independent of A2, and
+  included here only because it runs off the same reference build Phase 3 stands up.** Two distinct
+  jobs, in this order:
+
+  **(a) Numerical parity for LSTM against the reference implementation.** FR-NAM-030 is a **Must**
+  and reads "for **each** supported architecture, the output of Namir's inference shall match the
+  reference NAM implementation to within an error whose RMS is at least 90 dB below the RMS of the
+  reference output." Only WaveNet has ever been checked that way — S-1's −131 dB result, whose own
+  scope note in `02-architecture.md`'s changelog 0.6 says outright that "S-1 covered WaveNet only…
+  **LSTM is unaddressed**." What LSTM has instead is parity against `namir-fixtures`' independent
+  from-scratch reference, which is genuinely strong evidence and is *not* what this requirement
+  asks for: two Rust ports agreeing rules out independent bugs, but both could share a
+  misreading of the upstream format. **So FR-NAM-030 is only half-met, and has been since M3
+  without anyone writing that down** — the traceability tool reports it as covered, correctly, since
+  a covering test exists; what the tool cannot see is that the requirement quantifies over
+  architectures and the test does not. Closing it needs a reference render of a real LSTM model, and
+  the 67 models recorded in `docs/manual-tests/fr-nam-020-real-lstm-models.md` are exactly that
+  input, at a known shape grid (layers 1–4 × hidden 1–12, 16, 20, 24, 28, 32, `input_size` 1,
+  48 kHz).
+
+  **A constraint that shapes how this is built, not merely a caveat.** Those files carry **no stated
+  licence** and cannot enter the repository — D-19.1's generated-never-captured rule forbids it
+  independently of the licence question. So this cannot be a committed test with committed inputs.
+  Build it as an `xtask` subcommand or an example that takes a path to a locally-held model, runs
+  the comparison, prints the dB figure, and **skips cleanly when the path is absent** — with the
+  executed result recorded in the manual-test doc above, per the same pattern every other
+  human-verified finding in this project uses. A CI job cannot close this; a recorded local run can.
+
+  **(b) An LSTM cost curve.** `namir-nam` has **no LSTM benchmark at all** — every performance
+  result this project holds (S-1, R-4, D-2.3's `x86-64-v3` finding, `wavenet_inner_loops.rs`,
+  NFR-PERF-010's certification) is WaveNet. The same 67-model set is a ready-made compute sweep,
+  which is what its source post published it for: it exists specifically to characterise the
+  low-compute regime. Measuring per-block cost across that grid under D-2.4's conditions yields a
+  real cost-versus-shape curve, which feeds **FR-NAM-120** (Should — "expose the model's
+  computational cost… **measured rather than estimated**", currently out of scope in `namir-nam`
+  for want of exactly this harness) and tells us where LSTM sits against NFR-PERF-010's budget,
+  which is today simply unknown rather than known-good. Same licence constraint, same
+  skip-if-absent shape.
+
 **Also closes FR-NAM-090 and FR-NAM-100** (loudness normalisation, dBu calibration), which
 `namir-nam` currently declares out of scope for a reason A2 removes. The crate's own boundary note
 says they need "metadata fields the current `.nam` schema this crate reads doesn't carry" — and
@@ -1967,6 +2021,17 @@ an unsupported-configuration file is rejected with an error naming the unsupport
 distinguishable from the malformed-file error; FR-NAM-090 and FR-NAM-100 close; NFR-PERF-010 is
 re-measured on the §2 reference machine with an A2 model in the chain and the figure recorded,
 whichever direction it moves.
+
+**Acceptance for Phase 4, stated separately because it closes a different requirement and can pass
+or fail independently of A2:** a real LSTM model's render is compared against the reference
+implementation built with `-DNAM_USE_INLINE_GEMM` (D-9.12's pinned-reference note explains why that
+flag and not the default GEMM path), the measured RMS error is recorded against FR-NAM-030's 90 dB
+floor, and the run is written up in `docs/manual-tests/fr-nam-020-real-lstm-models.md` naming the
+model and the reference build. **FR-NAM-030 is then met for both supported architectures rather than
+one**, and that fact — not merely the number — is what the milestone records. The cost curve is
+measured across the shape grid under D-2.4's conditions and reported as a curve, not a single
+figure; if it shows LSTM breaching NFR-PERF-010's budget at shapes users actually run, that is a
+finding to record and act on, not to average away.
 
 ---
 
