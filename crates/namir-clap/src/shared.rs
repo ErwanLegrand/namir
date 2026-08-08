@@ -340,6 +340,7 @@ mod tests {
     /// independently constructed `SharedInner`s (standing in for two plugin instances in one host
     /// process) resolve to the *same* `Arc<ResourceCache>` because both go through
     /// `ResourceCache::shared()`, not `ResourceCache::new()`.
+    // trace: FR-CLAP-090
     #[test]
     fn two_shared_inners_resolve_to_the_same_process_global_cache() {
         let a = SharedInner::new();

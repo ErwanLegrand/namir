@@ -207,6 +207,7 @@ mod tests {
     /// The same gesture, now asserted through the full [`param_control`] widget: a double-click
     /// on the label must be the only path to `ResetParamToDefault`, and it must not also emit a
     /// spurious `SetParam` for the same frame.
+    // trace: FR-UI-050
     #[test]
     fn double_clicking_param_controls_label_emits_exactly_a_reset_intent() {
         let ctx = egui::Context::default();

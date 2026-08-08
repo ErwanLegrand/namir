@@ -157,6 +157,7 @@ mod tests {
         assert!(!meter.clipped());
     }
 
+    // trace: FR-IN-020
     #[test]
     fn peak_hold_latches_for_at_least_one_second() {
         let sample_rate = 48_000u32;

@@ -1,0 +1,5 @@
+# Build output and crash artifacts are not checked in. `corpus/` IS checked in, deliberately --
+# NFR-QUAL-040 wants "a corpus retained in the repository" -- so it is *not* listed here.
+/target
+/artifacts
+/coverage

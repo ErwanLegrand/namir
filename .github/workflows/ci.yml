@@ -2,12 +2,9 @@
 # docs/03-implementation-roadmap.md §5 (M1). Every job here is scoped to what M1 can gate today;
 # see each job's own comments for exactly which slice of D-18.1 it covers.
 #
-# Deliberately NOT here: a network-free build configuration (D-18.2). D-18.2 itself frames that
-# as a permanent target "once RD-1 exists" (§18) and the roadmap's M7 section says building that
-# infrastructure now, before there is a network feature for a flag to gate, is premature --
-# "there's no network feature yet for a feature flag to gate; building that infrastructure now,
-# once, is cheaper than guessing at its shape earlier." This is a decision, not an oversight;
-# revisit at M7.
+# D-18.2's network-free build gate (the `network-free` job below) landed at M7, exactly as
+# predicted here: there was no network feature for a flag to gate before M7, so this waited rather
+# than being built speculatively against a guessed-at shape.
 #
 # `cargo-fuzz` needs a nightly toolchain and a bounded-time run, which reads more cleanly as its
 # own file than as one more job squeezed into a stable-toolchain matrix -- see fuzz.yml.
@@ -33,6 +30,8 @@ jobs:
   # #[cfg(test)] tests inside namir-engine (and the crates that exercise it) that run as part of
   # `cargo test --workspace` below -- there is no separate RT-harness step because there is no
   # separate RT-harness binary; do not read its absence as a missing gate.
+  #
+  # trace: NFR-QUAL-050, NFR-QUAL-060, NFR-BUILD-020
   build-test:
     name: build + test (${{ matrix.os }})
     strategy:
@@ -85,7 +84,7 @@ jobs:
   # Pure static checks over the dependency graph and a checked-in manifest -- not
   # platform-dependent, so one OS is enough.
   layering-and-params:
-    name: layering + params.lock
+    name: layering + params.lock + attribution
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,6 +99,26 @@ jobs:
       - name: xtask params-lock (FR-PARAM-020)
         run: cargo run -p xtask -- params-lock
 
+      # M7: NFR-LIC-030's attribution-file freshness gate. Pure static/text check over
+      # `cargo metadata`'s resolve graph, same reasoning as the two steps above for living in this
+      # job rather than its own -- no OS-specific behaviour to matrix over.
+      - name: xtask attribution (NFR-LIC-030)
+        run: cargo run -p xtask -- attribution
+
+      # M7: NFR-QUAL-010's traceability check -- reports every Must requirement with no
+      # `// trace:`/manual-test coverage found, and whether the generated docs/03-test-plan.md is
+      # stale. Deliberately `continue-on-error` (informational), same reasoning as the `coverage`
+      # and `nfr-perf-010-chain-bench` jobs further down this file: the tool is real and the number
+      # it reports is real, but as of M7's own close-out 16 Must requirements are genuine,
+      # individually-confirmed gaps (see docs/03-implementation-roadmap.md's M7 status section) --
+      # several needing real new benchmark/test infrastructure that is out of this milestone's own
+      # scope. Making this step hard-blocking today would leave a *required* check permanently red
+      # until every one of those 16 closes, training reviewers to ignore it -- the opposite of what
+      # NFR-QUAL-010 exists for. Flip this back to blocking once the count reaches zero.
+      - name: xtask traceability (NFR-QUAL-010, informational until the gap list is empty)
+        run: cargo run -p xtask -- traceability
+        continue-on-error: true
+
   # Covers D-18.1's "cargo-deny licence audit" (NFR-LIC-020). deny.toml already exists at the
   # repo root; this job just runs it in CI instead of by hand.
   license-audit:
@@ -112,10 +131,31 @@ jobs:
         with:
           command: check licenses
 
+  # M7: D-18.2/FR-ERR-070.5's network-free build gate, deferred here by design since M1 (see this
+  # file's own header comment above) until there was a whole product to check against. FR-ERR-070's
+  # own *Verify* method is S -- "a build-time check that no network-capable dependency is linked
+  # into the 1.0 binaries." Reuses the `cargo-deny` wiring `license-audit` already established
+  # rather than a bespoke tool: deny.toml's `[bans] deny` list now names the well-known HTTP/TLS/
+  # DNS/async-networking crates that would most plausibly arrive as an unnoticed transitive
+  # dependency; this job fails the moment any of them enter Cargo.lock. A separate job from
+  # `license-audit` because it gates a distinct requirement (NFR-LIC-020 vs. FR-ERR-070.5), not a
+  # licensing concern.
+  network-free:
+    name: cargo-deny network-free build (D-18.2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
+
   # Covers D-18.1's "an MSRV pin ... enforced" (NFR-PORT-010). The pinned version is read out of
   # root Cargo.toml's [workspace.package].rust-version at run time rather than hardcoded here, so
   # this job can't silently drift out of sync the way a copy-pasted version string could (the
   # exact failure mode §4 of the roadmap warns about for gate configuration in general).
+  #
+  # trace: NFR-PORT-010
   msrv:
     name: MSRV check
     runs-on: ubuntu-latest
@@ -153,6 +193,8 @@ jobs:
   # Linux linker driver is `cc` (a C compiler, gcc), which every build needs regardless of
   # language and which this job deliberately leaves in place. Only g++/clang++ are removed, then
   # asserted absent rather than just hoped absent.
+  #
+  # trace: NFR-PORT-040
   no-cxx-toolchain:
     name: build with no C++ compiler (NFR-PORT-040)
     runs-on: ubuntu-latest
@@ -260,10 +302,24 @@ jobs:
   # either mobile target either. `paths.rs`/`clap_paths.rs` (D-13.2's config/log paths, D-13.3's
   # CLAP install paths) use only `std::env`/`std::path` and add no dependency at all.
   #
+  # M7: checked, deliberately NOT adding namir-ui here despite D-5.1's original table having
+  # predicted it would land in this list once M6 built it. It doesn't build for mobile: it depends
+  # directly on `baseview` 0.2 (crates/namir-ui/Cargo.toml), whose platform.rs only compiles a
+  # backend under target_os "macos"/"linux"/"windows" -- neither "android" nor "ios" matches, so
+  # the module is empty and anything using baseview::Window fails to compile on either mobile
+  # target. Verified this session via `cargo check --target aarch64-linux-android -p namir-ui`
+  # (this machine has the NDK and both mobile rustup targets installed, unlike M6's authoring
+  # machine); it got through baseview's own compilation before failing on the already-documented
+  # blake3/NEON-needs-a-C-cross-compiler gap below, and platform.rs's cfg gating is a plain
+  # source-level fact regardless. See docs/02-architecture.md D-5.1's "Consequence (added M7)"
+  # note, which also corrects that table's "Builds for mobile?" cell for namir-ui from Yes to No.
+  #
   # These are library-only builds (no bins), so in principle they don't need a working final
   # linker for the target platform -- an rlib build has no link step. That reasoning holds for
   # the *link* step. It does NOT extend to every build-script compile step upstream of it: see
   # the Android job's own comment below for a real counter-example found while writing this file.
+  #
+  # trace: NFR-PORT-030
   mobile-cross-build-android:
     name: mobile cross-build (aarch64-linux-android)
     runs-on: ubuntu-latest

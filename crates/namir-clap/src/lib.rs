@@ -129,6 +129,7 @@ mod tests {
     use super::*;
 
     /// FR-CLAP-010: a stable, reverse-DNS plugin identifier, distinct from the spike's.
+    // trace: FR-CLAP-010
     #[test]
     fn plugin_id_is_reverse_dns_and_not_the_spike_id() {
         assert!(PLUGIN_ID.contains('.'));

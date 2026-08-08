@@ -1211,6 +1211,7 @@ mod tests {
         assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
     }
 
+    // trace: FR-NAM-040
     #[test]
     fn rejects_wrong_weight_count() {
         // Popping only the trailing `head_scale` float would leave `r.pos == weights.len()`,
@@ -1256,6 +1257,7 @@ mod tests {
         assert_eq!(err.code.id, error_codes::INVALID_SAMPLE_RATE.id);
     }
 
+    // trace: FR-NAM-110
     #[test]
     fn latency_samples_is_zero() {
         let prepared = PreparedWaveNet::from_file(&minimal_valid_file()).unwrap();

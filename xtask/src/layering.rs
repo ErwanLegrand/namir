@@ -4,6 +4,12 @@
 //! logic (`allowed_dependents`/`check_edges` and `scan_platform_cfg`); [`crate::main`] wires them
 //! to the real repository (`cargo metadata` and a filesystem walk respectively).
 //!
+//! NFR-PORT-020's "no platform-conditional code at all" in the engine/params/state/library is
+//! exactly [`scan_platform_cfg`]'s check. FR-CFG-030 ("the standalone app shall not require the
+//! CLAP plugin to be installed") follows structurally from [`LAYERING_TABLE`]'s own asymmetry:
+//! `namir-app`'s row never names `namir-clap`, so nothing in `namir-app` can reach it at compile
+//! time, let alone at runtime.
+//!
 //! [`LAYERING_TABLE`] is a manually-maintained mirror of `docs/02-architecture.md` §5's D-5.1
 //! table and must be kept in sync by hand whenever that table changes. Quoting its rows as they
 //! stand today, so there is no ambiguity about what this file is supposed to match:
@@ -30,6 +36,8 @@
 //! checked: `namir-nam`'s dev-dependency on `namir-fixtures` for its parity tests is legitimate
 //! and must never be flagged, which is why [`crate::cargo_meta::normal_namir_edges`] filters by
 //! dependency kind before any edge reaches [`check_edges`].
+
+// trace: NFR-PORT-020, FR-CFG-030
 
 const FIXTURES: &str = "namir-fixtures";
 

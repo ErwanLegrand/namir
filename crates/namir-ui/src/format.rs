@@ -46,6 +46,7 @@ mod tests {
     use super::*;
     use namir_params::stages::{gate, trim};
 
+    // trace: FR-UI-040
     #[test]
     fn continuous_parses_a_plain_number() {
         assert_eq!(parse_value(&trim::GAIN_DB, "6.0"), Some(6.0));
@@ -89,6 +90,7 @@ mod tests {
         assert_eq!(parse_value(&gate::ENABLED, "OFF"), Some(0.0));
     }
 
+    // trace: FR-UI-040
     #[test]
     fn stepped_parses_a_raw_step_index() {
         assert_eq!(parse_value(&gate::ENABLED, "1"), Some(1.0));

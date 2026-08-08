@@ -261,6 +261,7 @@ mod tests {
         assert_eq!(gate.status(), GateStatus::Closed);
     }
 
+    // trace: FR-GATE-020
     #[test]
     fn hysteresis_prevents_chatter_on_a_slowly_decaying_signal() {
         let sample_rate = 48_000u32;
@@ -295,6 +296,7 @@ mod tests {
         );
     }
 
+    // trace: FR-GATE-030
     #[test]
     fn attack_ramps_sample_accurately_not_in_one_step() {
         let mut gate = NoiseGate::new(sr(48_000));

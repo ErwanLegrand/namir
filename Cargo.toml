@@ -1,14 +1,20 @@
+# trace: FR-CFG-010, NFR-LIC-010, NFR-BUILD-010
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
 # Spikes are throwaway (§19: "not carried forward") and each pins its own Cargo.lock as a
 # measurement record — they must not be swept into this workspace by Cargo's upward workspace
 # discovery.
-# crates/namir-nam/fuzz and crates/namir-state/fuzz are cargo-fuzz projects: each carries its own
-# empty [workspace] table (the standard cargo-fuzz convention) so it's already its own workspace
-# root, but this exclude is belt-and-suspenders against upward discovery, matching the spikes/
-# convention above.
-exclude = ["spikes", "crates/namir-nam/fuzz", "crates/namir-state/fuzz"]
+# crates/namir-nam/fuzz, crates/namir-state/fuzz and crates/namir-ir/fuzz are cargo-fuzz projects:
+# each carries its own empty [workspace] table (the standard cargo-fuzz convention) so it's already
+# its own workspace root, but this exclude is belt-and-suspenders against upward discovery, matching
+# the spikes/ convention above.
+exclude = [
+    "spikes",
+    "crates/namir-nam/fuzz",
+    "crates/namir-state/fuzz",
+    "crates/namir-ir/fuzz",
+]
 
 [workspace.package]
 edition = "2024"
@@ -28,4 +34,5 @@ unsafe_code = "forbid" # D-5.3 default; namir-platform, namir-clap and SIMD kern
 # unrelated PR that adds one `pub` item without knowing this lint now exists mid-milestone. Every
 # crate this pass touches is made warning-clean anyway (the `-D warnings` clippy gate makes that
 # true in practice today), so `warn` costs nothing now and just avoids being a landmine later.
+# trace: NFR-DOC-020
 missing_docs = "warn"
