@@ -160,7 +160,7 @@ fn run_traceability(root: &Path, write: bool) -> bool {
     };
 
     let manual_tests_dir = root.join("docs/manual-tests");
-    let manual_test_docs: Vec<(String, String)> = std::fs::read_dir(&manual_tests_dir)
+    let mut manual_test_docs: Vec<(String, String)> = std::fs::read_dir(&manual_tests_dir)
         .map(|entries| {
             entries
                 .flatten()
@@ -172,6 +172,12 @@ fn run_traceability(root: &Path, write: bool) -> bool {
                 .collect()
         })
         .unwrap_or_default();
+    // `std::fs::read_dir`'s order is filesystem-dependent, not guaranteed stable across platforms
+    // -- sorted here so `build_report`'s `.find()` (for an id matched by more than one manual-test
+    // file's content) picks the same file on every OS. Without this, this function's own output
+    // could differ byte-for-byte between a local Windows run and Linux CI, which is exactly the
+    // "stale" false-positive this session found the hard way.
+    manual_test_docs.sort_by(|a, b| a.0.cmp(&b.0));
 
     // (crate_root, crate_name-per-first-path-component) -- xtask has no further nesting, so its
     // own directory name is used directly rather than derived per file.
@@ -245,15 +251,32 @@ fn run_traceability(root: &Path, write: bool) -> bool {
         println!("traceability: wrote {}", test_plan_path.display());
         true
     } else {
+        // Compares with CRLF/LF normalized away on both sides: `.gitattributes`' `eol=lf` should
+        // already guarantee an LF checkout on every platform, but this check has no reason to be
+        // sensitive to line-ending representation specifically (NFR-PORT-050's own spirit) when
+        // the only thing that actually matters is the text content.
         match std::fs::read_to_string(&test_plan_path) {
-            Ok(actual) if actual == expected => {
+            Ok(actual) if actual.replace("\r\n", "\n") == expected.replace("\r\n", "\n") => {
                 println!("traceability: {} is up to date", test_plan_path.display());
                 true
             }
-            _ => {
+            Ok(actual) => {
+                let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
+                let expected_lines: std::collections::HashSet<&str> = expected.lines().collect();
+                let extra = actual_lines.difference(&expected_lines).count();
+                let missing = expected_lines.difference(&actual_lines).count();
                 println!(
-                    "traceability: {} is stale or missing -- run `cargo run -p xtask -- \
-                     traceability --write` to regenerate it",
+                    "traceability: {} is stale -- {extra} line(s) present only in the checked-in \
+                     file, {missing} line(s) only in the freshly generated one. Run `cargo run -p \
+                     xtask -- traceability --write` to regenerate it",
+                    test_plan_path.display()
+                );
+                false
+            }
+            Err(e) => {
+                println!(
+                    "traceability: could not read {}: {e} -- run `cargo run -p xtask -- \
+                     traceability --write` to generate it",
                     test_plan_path.display()
                 );
                 false
