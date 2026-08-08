@@ -30,6 +30,8 @@ jobs:
   # #[cfg(test)] tests inside namir-engine (and the crates that exercise it) that run as part of
   # `cargo test --workspace` below -- there is no separate RT-harness step because there is no
   # separate RT-harness binary; do not read its absence as a missing gate.
+  #
+  # trace: NFR-QUAL-050, NFR-QUAL-060, NFR-BUILD-020
   build-test:
     name: build + test (${{ matrix.os }})
     strategy:
@@ -145,6 +147,8 @@ jobs:
   # root Cargo.toml's [workspace.package].rust-version at run time rather than hardcoded here, so
   # this job can't silently drift out of sync the way a copy-pasted version string could (the
   # exact failure mode §4 of the roadmap warns about for gate configuration in general).
+  #
+  # trace: NFR-PORT-010
   msrv:
     name: MSRV check
     runs-on: ubuntu-latest
@@ -182,6 +186,8 @@ jobs:
   # Linux linker driver is `cc` (a C compiler, gcc), which every build needs regardless of
   # language and which this job deliberately leaves in place. Only g++/clang++ are removed, then
   # asserted absent rather than just hoped absent.
+  #
+  # trace: NFR-PORT-040
   no-cxx-toolchain:
     name: build with no C++ compiler (NFR-PORT-040)
     runs-on: ubuntu-latest
@@ -305,6 +311,8 @@ jobs:
   # linker for the target platform -- an rlib build has no link step. That reasoning holds for
   # the *link* step. It does NOT extend to every build-script compile step upstream of it: see
   # the Android job's own comment below for a real counter-example found while writing this file.
+  #
+  # trace: NFR-PORT-030
   mobile-cross-build-android:
     name: mobile cross-build (aarch64-linux-android)
     runs-on: ubuntu-latest

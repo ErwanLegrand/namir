@@ -11,6 +11,8 @@
 //! concern with no pipeline yet (that's M8 territory, docs/03-implementation-roadmap.md §12) --
 //! this file does not claim to close that half.
 
+// trace: NFR-LIC-030
+
 use std::path::Path;
 
 use crate::cargo_meta;

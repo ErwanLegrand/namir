@@ -22,6 +22,8 @@
 //! pure parsing/matching logic, kept testable against synthetic strings with no filesystem access
 //! -- `main.rs` supplies the real FRS text, manual-test filenames, and source file contents.
 
+// trace: NFR-QUAL-010
+
 use std::collections::HashMap;
 
 /// One `Must`-priority requirement parsed from the FRS, paired with its `*Verify:*` code
@@ -101,17 +103,27 @@ fn extract_verify_code(line: &str) -> Option<char> {
         .filter(|c| c.is_ascii_alphabetic())
 }
 
-/// Extracts every id from every `// trace: ID[, ID...]` comment in `source` (one file's text).
+/// Both comment-prefix spellings the `trace:` annotation may use: `// trace:` in `.rs` source,
+/// `# trace:` in `.yml`/`.toml` config -- a real, non-trivial slice of Must requirements (MSRV,
+/// clippy-as-error, cargo-deny, mobile/no-C++ builds, network-free) are verified entirely by CI
+/// workflow/build configuration, not by any Rust test function, and would be permanently
+/// unresolvable without this.
+const TRACE_MARKERS: [&str; 2] = ["// trace:", "# trace:"];
+
+/// Extracts every id from every `trace: ID[, ID...]` comment in `source` (one file's text),
+/// recognizing either [`TRACE_MARKERS`] spelling.
 pub fn trace_annotations(source: &str) -> Vec<String> {
-    const MARKER: &str = "// trace:";
     let mut ids = Vec::new();
     for line in source.lines() {
-        if let Some(idx) = line.find(MARKER) {
-            for token in line[idx + MARKER.len()..].split(',') {
-                let id = token.trim();
-                if !id.is_empty() {
-                    ids.push(id.to_string());
+        for marker in TRACE_MARKERS {
+            if let Some(idx) = line.find(marker) {
+                for token in line[idx + marker.len()..].split(',') {
+                    let id = token.trim();
+                    if !id.is_empty() {
+                        ids.push(id.to_string());
+                    }
                 }
+                break;
             }
         }
     }

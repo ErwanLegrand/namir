@@ -13,6 +13,7 @@
 //! surface `crates/namir-state/tests/corpus.rs`'s targeted tests already prove correct on known
 //! inputs; this target's job is continuous exploration of the input space those tests can't reach
 //! by construction.
+// trace: NFR-QUAL-040
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
