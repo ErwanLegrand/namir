@@ -467,6 +467,7 @@ mod tests {
     // --- DC/Nyquist gain algebra, driven through apply() (mirrors biquad.rs's own DC/Nyquist
     // test style, minus that crate's private test-only dc_gain/nyquist_gain helpers).
 
+    // trace: FR-EQ-010
     #[test]
     fn low_shelf_gain_reflected_at_dc_and_flat_at_nyquist() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -627,6 +628,7 @@ mod tests {
 
     // --- ENABLED-toggle click-freedom (FR-CHAIN-020/FR-EQ-030).
 
+    // trace: FR-CHAIN-020, FR-EQ-030
     #[test]
     fn enabled_toggle_mid_signal_has_no_large_single_sample_jump() {
         let mut stage = stage(ChannelConfig::Mono);

@@ -483,6 +483,7 @@ mod tests {
 
     /// FR-IO-060's bridge-underrun path: pulling with nothing pushed yet counts an xrun rather
     /// than panicking or silently producing garbage.
+    // trace: FR-IO-060
     #[test]
     fn an_output_pull_with_no_input_yet_counts_an_xrun() {
         let backend = FakeBackend {

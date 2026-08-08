@@ -339,6 +339,7 @@ mod tests {
 
     /// NFR-PORT-050's core content: a backslash-separated (Windows-authored) path normalises to
     /// the same stored form as a forward-slash one.
+    // trace: NFR-PORT-050
     #[test]
     fn normalises_backslashes_to_forward_slashes() {
         let from_windows = RelPath::parse("cabs\\1960a.wav").unwrap();

@@ -226,6 +226,7 @@ mod tests {
     }
 
     /// FR-STATE-070's *Verify*: "each resolution path... exercised individually." Path 1.
+    // trace: FR-STATE-070
     #[test]
     fn resolves_via_library_relative_when_that_candidate_exists() {
         let reference = reference_with(Some("marshall/plexi.nam"), None);
@@ -246,6 +247,7 @@ mod tests {
     }
 
     /// Path 2.
+    // trace: FR-STATE-070
     #[test]
     fn resolves_via_absolute_when_library_relative_is_absent() {
         let reference = reference_with(None, Some("/abs/plexi.nam"));
@@ -280,6 +282,7 @@ mod tests {
     }
 
     /// Path 3.
+    // trace: FR-STATE-070
     #[test]
     fn resolves_via_content_hash_when_the_other_two_are_absent_or_miss() {
         let reference = reference_with(None, None);
@@ -298,6 +301,7 @@ mod tests {
     }
 
     /// The fourth outcome: none of the three candidates resolve.
+    // trace: FR-STATE-070
     #[test]
     fn all_three_candidates_failing_yields_missing_with_name_and_hash() {
         let reference = reference_with(Some("marshall/plexi.nam"), Some("/abs/plexi.nam"));

@@ -219,6 +219,7 @@ mod tests {
         assert!(!bytes.ends_with(b"\n\n"));
     }
 
+    // trace: NFR-SEC-020
     #[test]
     fn rejects_documents_over_the_size_ceiling() {
         // A byte slice over the ceiling never even reaches the JSON parser -- constructing it
@@ -309,6 +310,7 @@ mod tests {
     // the document itself, independent of anything it stores.
     // -----------------------------------------------------------------------------------
 
+    // trace: NFR-PORT-050
     #[test]
     fn written_bytes_never_contain_a_carriage_return() {
         // A regression that started emitting CRLF would previously have been silently repaired
@@ -324,6 +326,7 @@ mod tests {
         );
     }
 
+    // trace: NFR-PORT-050
     #[test]
     fn written_bytes_carry_no_byte_order_mark() {
         const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
@@ -334,6 +337,7 @@ mod tests {
         );
     }
 
+    // trace: NFR-PORT-050
     #[test]
     fn written_bytes_are_valid_utf8() {
         let bytes = Document::empty().to_pretty_bytes();

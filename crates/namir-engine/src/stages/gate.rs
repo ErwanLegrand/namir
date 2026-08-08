@@ -267,6 +267,7 @@ mod tests {
         buf[buf.len() - 1]
     }
 
+    // trace: FR-GATE-010
     #[test]
     fn burst_opens_and_silence_closes_through_the_stage() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -452,6 +453,7 @@ mod tests {
         assert!(max_delta > 0.0, "bypass crossfade never advanced");
     }
 
+    // trace: FR-CHAIN-050
     #[test]
     fn stereo_duplicates_the_mono_core_gate_result_onto_every_channel() {
         let mut stage = stage(ChannelConfig::Stereo);

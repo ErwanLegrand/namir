@@ -347,6 +347,7 @@ mod tests {
     }
 
     /// FR-LIB-010: a recursive scan finds `.nam` and IR files under nested directories.
+    // trace: FR-LIB-010
     #[test]
     fn a_full_scan_finds_every_file_under_nested_directories() {
         let root = temp_dir("full_scan");
@@ -414,6 +415,7 @@ mod tests {
 
     /// FR-LIB-070: a file removed between scans is reflected as a removal, when the scan
     /// completed.
+    // trace: FR-LIB-070
     #[test]
     fn a_deleted_file_is_reported_as_a_removal_on_a_complete_scan() {
         let root = temp_dir("deleted");
@@ -505,6 +507,7 @@ mod tests {
         assert_eq!(delta.warnings[0].code.id, error_codes::FILE_TOO_LARGE.id);
     }
 
+    // trace: FR-LIB-070
     #[test]
     fn an_unreadable_file_is_warned_about_and_skipped_not_fatal() {
         let root = temp_dir("vanishing");

@@ -138,6 +138,7 @@ mod tests {
 
     /// The headline property: a probe over a WaveNet file must agree with a full `NamFile::parse`
     /// on every field the probe claims to report.
+    // trace: FR-NAM-080
     #[test]
     fn probe_agrees_with_the_full_wavenet_parse() {
         let bytes = wavenet_json_with_weights(5);

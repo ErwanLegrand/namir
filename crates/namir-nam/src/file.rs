@@ -318,6 +318,7 @@ mod tests {
     /// omitting the key, which `#[serde(default)]` alone does not cover -- only the missing-key
     /// case in [`tolerates_missing_optional_fields`] above. Every field a real exporter has been
     /// observed to null must parse to the same default a missing key would.
+    // trace: FR-NAM-080
     #[test]
     fn tolerates_null_metadata_fields_the_same_as_missing_ones() {
         let mut value: serde_json::Value = serde_json::from_slice(&minimal_valid_json()).unwrap();
@@ -337,6 +338,7 @@ mod tests {
         assert_eq!(file.metadata.description, "");
     }
 
+    // trace: FR-NAM-040
     #[test]
     fn malformed_json_is_rejected_not_panicking() {
         let err = NamFile::parse(b"{not valid json").unwrap_err();

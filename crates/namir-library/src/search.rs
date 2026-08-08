@@ -154,6 +154,7 @@ mod tests {
         assert_eq!(filter(&index, &query).count(), 1);
     }
 
+    // trace: FR-LIB-040
     #[test]
     fn matches_the_file_stem_case_insensitively() {
         let index = index_with(vec![nam_entry("marshall/PLEXI.nam", "", "")]);
@@ -161,6 +162,7 @@ mod tests {
         assert_eq!(filter(&index, &Query::parse("fender")).count(), 0);
     }
 
+    // trace: FR-LIB-040
     #[test]
     fn matches_metadata_fields() {
         let index = index_with(vec![nam_entry("a.nam", "Plexi 1959", "a crunchy amp")]);

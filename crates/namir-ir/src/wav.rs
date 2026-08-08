@@ -295,6 +295,7 @@ mod tests {
     // build instruction not to trust a formula derived from documentation alone.
     // -------------------------------------------------------------------------------------
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_16bit_mono_round_trip() {
         // i16 full-scale is -32768..=32767; 0.5 * 32767 rounds to 16383 (hound narrows via `as`).
@@ -309,6 +310,7 @@ mod tests {
         }
     }
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_16bit_stereo_round_trip() {
         // Interleaved L,R,L,R,...
@@ -326,6 +328,7 @@ mod tests {
         assert!((right[2] - (32767.0 / 32768.0)).abs() < 1e-3);
     }
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_24bit_mono_round_trip() {
         let full = 1i32 << 23; // 8_388_608
@@ -338,6 +341,7 @@ mod tests {
         }
     }
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_24bit_stereo_round_trip() {
         let full = 1i32 << 23;
@@ -354,6 +358,7 @@ mod tests {
         assert!((right[2] - 0.0).abs() < 1e-6);
     }
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_32bit_int_mono_round_trip() {
         let full = 1i64 << 31; // 2_147_483_648
@@ -372,6 +377,7 @@ mod tests {
         }
     }
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_32bit_int_stereo_round_trip() {
         let full = 1i64 << 31;
@@ -395,6 +401,7 @@ mod tests {
         assert!((right[2] - 0.0).abs() < 1e-6);
     }
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_32bit_float_mono_round_trip() {
         let values: [f32; 5] = [0.0, 0.5, -0.5, 0.999, -1.0];
@@ -405,6 +412,7 @@ mod tests {
         }
     }
 
+    // trace: FR-IR-010
     #[test]
     fn decodes_32bit_float_stereo_round_trip() {
         let values: [f32; 6] = [0.0, 0.999, 0.5, -0.5, -1.0, 0.0];
@@ -478,6 +486,7 @@ mod tests {
         assert_eq!(err.code.id, error_codes::EMPTY_IR.id);
     }
 
+    // trace: FR-IR-010
     #[test]
     fn accepts_boundary_sample_rates() {
         let low = write_int_wav(8_000, 1, 16, &[0]);

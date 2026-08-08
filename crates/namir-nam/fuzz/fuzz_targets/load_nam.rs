@@ -6,7 +6,7 @@
 //! `crates/namir-nam/tests/fixtures.rs`'s `rejects_mutated_variants_without_panicking`. This
 //! target's job is continuous exploration of the input space that test can't reach by itself.
 
-// trace: NFR-QUAL-040
+// trace: NFR-QUAL-040, NFR-SEC-010
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

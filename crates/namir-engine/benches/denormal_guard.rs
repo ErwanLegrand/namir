@@ -408,6 +408,7 @@ fn pin_to_measurement_core() {
     core_affinity::set_for_current(ids[idx]);
 }
 
+// trace: NFR-RT-030
 fn main() {
     pin_to_measurement_core();
 

@@ -194,6 +194,7 @@ impl<'a> PluginAudioProcessorParams for NamirAudioProcessor<'a> {
 mod tests {
     use super::*;
 
+    // trace: FR-CLAP-060
     #[test]
     fn global_bypass_param_info_carries_the_is_bypass_flag() {
         let info = param_info(&GLOBAL_BYPASS);

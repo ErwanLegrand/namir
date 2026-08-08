@@ -943,6 +943,7 @@ mod tests {
         out
     }
 
+    // trace: FR-NAM-130
     #[test]
     fn nothing_loaded_is_exact_passthrough() {
         // FR-CHAIN-040/FR-NAM-130: usable with no model loaded, behaving as bypassed.
@@ -1159,6 +1160,7 @@ mod tests {
         audio_section(|| stage.process(&mut io));
     }
 
+    // trace: FR-NAM-050
     #[test]
     fn resampled_path_runs_many_varying_blocks_without_allocating_or_panicking() {
         // Best-effort coverage for the mismatched-rate path (this module's doc comment: not
