@@ -859,6 +859,23 @@ produces a model that loads cleanly, runs at the right cost, and sounds plausibl
 wrong, which is precisely the failure mode NFR-QUAL-030 exists to forbid and no amount of listening
 will catch. Recorded as **R-9** (§22), the highest-severity item this work carries.
 
+*Consequence (added 2026-08-08, from `NeuralAmpModelerCore` PR #264) — pin which build of the
+reference the oracle is measured against.* That PR bumps the vendored Eigen submodule from a 3.4-era
+dev snapshot to 5.0.1 (merged 2026-06-10) and documents, with hashes, that the reference's **default
+Eigen GEMM path is not bit-exact across the bump** — max absolute difference 9.5e-8, mean 5.7e-9, on
+a signal peaking at 0.071. Namir links no Eigen and is unaffected as a dependency (NFR-PORT-040's
+no-C++-compiler build is the standing proof). What it affects is the *target*: S-1 already reasoned
+that −131 dB sits "in the range of float32 rounding-level disagreement… consistent with
+`NeuralAmpModelerCore`'s own Eigen-version-bump measurements of ~1e-7 typical difference" (§19), and
+PR #264 is that prediction measured directly rather than cited — so it **confirms** the existing
+parity claim rather than unsettling it. The operational consequence is narrow but real: a
+re-measurement against a differently-built reference can move in the last digits for reasons that
+have nothing to do with Namir, so any parity run must record *which* reference build produced the
+target. PR #264 also supplies the lever — the `NAM_USE_INLINE_GEMM` path **is** bit-exact across the
+bump, because it bypasses Eigen's matrix product entirely. **Build the reference with
+`-DNAM_USE_INLINE_GEMM` for A2's oracle and for any re-anchoring under roadmap §15's item 4**, so
+the target is reproducible and a future Eigen bump cannot silently move it.
+
 *Consequence — FR-NAM-090/100 stop being blocked.* `namir-nam` currently declares loudness
 normalisation and calibration out of scope *because* they need metadata fields the `.nam` schema
 this crate reads does not carry. A2-era files carry `loudness`, `input_level_dbu` and
