@@ -69,6 +69,24 @@ artifact a build can inspect (found missing from this legend at M7, while buildi
 NFR-QUAL-010's mechanical traceability check against every code actually used below --
 NFR-QUAL-020 is this document's one user of it).
 
+*Consequence (added M9, 2026-08-08)* — The parenthetical immediately after a requirement's
+identifier is the **sole** priority marker, and the only one any tool or audit reads:
+`xtask/src/traceability.rs:81`'s `extract_must_id` takes the text between a line's leading `**` and
+the next `**`, splits it at the ` (`, and keeps the requirement only when the tag is exactly `Must`.
+Bold **Must**/**Should** words appearing inside a requirement's *body* are scope qualifiers on part
+of that requirement, not priority tags on it: FR-NAM-020 is a Must that makes `Linear`/`ConvNet` a
+Should, FR-IO-020 a Must that makes ASIO a Should, FR-IO-030 a Must that makes PipeWire/JACK a
+Should. Each counts as **one** Must and is adjudicated whole — a Must whose Should-scoped clause is
+unbuilt is not thereby Partial (FR-IO-020 is Partial for its exclusive-mode clause, not for ASIO).
+Recorded while deriving the authoritative per-section Must counts for `03-implementation-roadmap.md`
+§14's M9a re-audit, under `02-architecture.md` D-23.2, where several people adjudicate the same
+document and the reading has to be the same one. On that count: this document declares **130** Must
+requirements, 31 Should and 3 Could — 164 in all, every one written in the `**ID (Priority)** — `
+form above. A requirement written in any other shape is invisible to both `xtask traceability` and
+that count, and silently so: a missing `*Verify:*` line is a hard parse error
+(`xtask/src/traceability.rs:62-71`), but a declaration line the parser does not recognise as a
+declaration at all is simply never seen.
+
 ---
 
 ## 2. Definitions
@@ -1149,6 +1167,104 @@ subcommand — FR-PKG-010, FR-PKG-020 and FR-PKG-040 are all of this kind. FR-PK
 and therefore needs a `docs/manual-tests/fr-pkg-030-*.md` file, on the same terms as every other
 manual-verified requirement; it cannot be closed by a green release workflow.
 
+*Consequence (added M9, 2026-08-08 — correcting the note above on a matter of fact, and stating one
+corollary of the mechanism)* — "`xtask traceability` reads `// trace:` annotations in repository
+source, not workflow YAML" is not what the tool does, and never was. `xtask/src/traceability.rs:111`
+recognises two marker spellings — `// trace:` and `# trace:` — and `xtask/src/main.rs:205-216`
+deliberately adds four non-Rust files to the scanned set: `.github/workflows/ci.yml` and `fuzz.yml`
+under the component name `ci`, and the root `Cargo.toml` and `deny.toml` under `workspace`. Fifteen
+Must requirements are covered today by nothing else — FR-CFG-010, FR-ERR-060, FR-ERR-070,
+NFR-BUILD-010, NFR-BUILD-020, NFR-DOC-020, NFR-LIC-010, NFR-LIC-020, NFR-LIC-040, NFR-PORT-010,
+NFR-PORT-030, NFR-PORT-040, NFR-QUAL-050, NFR-QUAL-060 and NFR-SEC-030 — carried by eight tags, at
+`Cargo.toml:1` and `:37`, `deny.toml:15` and `:82`, and `.github/workflows/ci.yml:34`, `:158`,
+`:197` and `:322`. Checked this pass rather than assumed: none of the fifteen has a `// trace:`
+annotation or an `fr_*`/`nfr_*`-named test function anywhere in Rust source, and
+`docs/03-test-plan.md` records all fifteen as covered by `ci` or `workspace`. Enforcing the sentence
+as written would therefore take the uncovered count from 24 to 39 rather than tighten anything, and
+would leave NFR-PORT-030 and NFR-QUAL-050 unclosable in principle, since CI is what those two are
+*about*.
+
+**The distinction the note was reaching for is real; it is about adequacy, not file extension.** A
+`# trace:` in build or CI configuration is admissible evidence exactly when one of two things holds:
+
+1. **the requirement's own assertion is about the repository's build or CI configuration** — what
+   the manifest declares, what the lint set forbids, what the workflow matrix runs, what may be a
+   required build dependency. FR-CFG-010, NFR-BUILD-010, NFR-BUILD-020, NFR-DOC-020, NFR-LIC-040,
+   NFR-PORT-010, NFR-QUAL-050, NFR-QUAL-060 and NFR-SEC-030 are of this kind; or
+2. **the requirement's own `*Verify:*` line elects that configuration as the artifact to inspect** —
+   FR-ERR-060 ("a build-time check that no network-capable dependency is linked into the 1.0
+   binaries"), FR-ERR-070 ("the network-free build configuration is a permanent CI target; I per
+   feature"), NFR-LIC-010 ("licence files present, manifest metadata correct, SPDX headers
+   checked"), NFR-LIC-020 ("an automated licence audit gates CI"), NFR-PORT-030 ("shall build for
+   `aarch64-linux-android` and `aarch64-apple-ios` in CI"), NFR-PORT-040 ("CI builds in a container
+   with no C++ compiler present"). Where the `*Verify:*` line names the configuration, that election
+   governs even though the requirement's own subject is the product's behaviour.
+
+Nine of the fifteen fall under limb 1 and six under limb 2, which accounts for all of them. Eight of
+the nine rest on limb 1 alone, their `*Verify:*` lines being a bare `S.` that elects nothing:
+NFR-BUILD-010, NFR-BUILD-020, NFR-DOC-020, NFR-LIC-040, NFR-PORT-010, NFR-QUAL-050, NFR-QUAL-060 and
+NFR-SEC-030. FR-CFG-010 is the ninth and the only limb-1 requirement whose `*Verify:*` line
+elaborates at all ("both build targets are produced by CI from one workspace"); that elaboration
+itself elects the configuration, so FR-CFG-010 satisfies both limbs. Two of the eight are worth
+separating: NFR-LIC-040 rests on limb 1 cleanly, since what it asserts *is* which components may be
+a required build dependency; NFR-SEC-030 is split in shape, its build-producibility clause being
+limb 1 while its no-outbound-connection clause is derivative of FR-ERR-060 and leans on that
+requirement's own election rather than on anything NFR-SEC-030 itself says.
+
+Where neither limb holds — the requirement is about how the built product behaves, and its
+`*Verify:*` line does not elect the configuration — a workflow step is only the thing that *runs*
+the check, and the check itself must live in the repository as an annotated test or `xtask`
+subcommand. That is the disposition the note above reached for FR-PKG-020 and FR-PKG-040, and it
+stands: each of those names "the packaging step" as the thing that asserts, which is a check to be
+written, not a configuration to be inspected. FR-PKG-010, grouped with them above, is the one this
+pass reopens — its `*Verify:*` line elects the release workflow, which is limb 2, but `release.yml`
+does not exist yet and is not on the scanned list; `03-implementation-roadmap.md` §15 item 10
+records that choice, due before M13. Stated so the rule can be applied without re-deriving it:
+**tag the configuration when the configuration is the artifact under test; tag a test when the
+product is.** FR-CLAP-020 ("shall pass the reference CLAP validator with no errors, **as a gate in
+CI**") is limb 1 — its own assertion is about the repository's CI configuration, and its `*Verify:*`
+line is a bare `S.` that elects nothing — so the `clap-validator` step M9a adds may carry its
+`# trace:` directly and needs no hand-written test behind it.
+
+Checked against those fifteen, **two fail this rule as currently tagged**, recorded here rather than
+repaired:
+
+- **FR-ERR-070.** Its `*Verify:*` line elects the network-free build configuration, which is what
+  puts it in limb 2 — but that election reaches sub-clause 5 alone. The other five numbered
+  sub-clauses — explicit user action, one named endpoint, no user information, disabled by default,
+  unreachable from the audio thread — are runtime assertions about a capability that does not exist,
+  and `deny.toml`'s deny-list asserts none of them. That file's own comment says as much: the list
+  is "a standing assertion that stays true rather than a fix for a real violation"
+  (`deny.toml:70-72`), and FR-ERR-070's remaining sub-clauses are what will govern the first real
+  network client when one arrives (`deny.toml:79-80`). The requirement is **vacuously satisfied
+  while Namir has no network capability**, and the tag records that condition rather than
+  compliance. The commit that adds the first network feature re-opens it, and the "I per feature"
+  half of its own `*Verify:*` line is what closes it then.
+- **NFR-QUAL-050.** The platform-matrix half is in `ci.yml`; the "**and shall gate merges**" half is
+  a branch-protection setting held outside the repository, which no annotation inside it can assert.
+  A known limit of the evidence, not coverage of the whole requirement.
+
+One corollary of the mechanism above, stated because three Must requirements had already been read
+the other way. `xtask traceability`'s dispatch is **mutually exclusive**: `Verify: M` is resolved
+against `docs/manual-tests/` and never against source (`xtask/src/traceability.rs:177-186`);
+`Verify: Process` is exempt (`:187-189`); and **every other code is resolved against source and
+never against `docs/manual-tests/`** (`:190-192`). So a manual-test document written for a
+`Verify: I`/`U`/`G`/`B`/`S` requirement is structurally invisible to the check, however much
+executed evidence it records. That is deliberate and stays: for those codes the document is
+**supplementary** evidence about a residue no automated test can reach, and the traced artifact
+remains an annotated test. FR-CLAP-030, FR-CLAP-040 and FR-CLAP-100 each had the document and no
+test, and read as uncovered for that reason alone — FR-CLAP-060, FR-CLAP-090, FR-IO-060, FR-IO-070
+and FR-IO-080 are the same shape with both halves present, and all five resolve.
+`02-architecture.md` **D-18.6** records the policy and rejects the two alternatives considered:
+changing a requirement's `Verify` code, and teaching the tool to count a manual document for
+`Verify: I`.
+
+The two rules stated here do not weaken each other, because they are about different artifacts.
+Configuration is admissible evidence under the two limbs precisely when the configuration *is* the
+thing under test. A manual-test document is never the traced artifact for any code but **M**,
+because for every other code the thing under test is the built product, and a document is a record
+of someone having looked at it rather than the check itself.
+
 ---
 
 ## 11. Change log
@@ -1158,3 +1274,4 @@ manual-verified requirement; it cannot be closed by a green release workflow.
 | 0.1 | 2026-08-03 | Initial draft. |
 | 0.2 | 2026-08-03 | Copyright holder set. Section 7 restructured into 7.1 (out of scope) and 7.2 (post-1.0 direction, RD-1..RD-4). FR-ERR-060 scoped to 1.0; FR-ERR-070 added to set standing terms for any future network feature; NFR-SEC-030 aligned. OQ-9 and OQ-10 added. |
 | 0.3 | 2026-08-08 | M8-planning intake. New Section 5.15 Packaging and distribution: FR-PKG-010..050. FR-NAM-140 (unsupported architecture/configuration rejected distinctly from malformed) and FR-NAM-150 (NAM Architecture 2, A2-Full and A2-Lite) added; FR-UI-110 (brand mark and application icon), NFR-LIC-070 (brand assets not covered by the code licence), NFR-DOC-040 (README) added. Note appended at FR-CFG-040 recording that FR-PKG-010's installer does not conflict with it and that FR-PKG-050's plain archive is what keeps it true. Note appended at Section 10 recording that a CI workflow is not itself a traceable artifact. Planning index proposed FR-NAM-130, FR-UI-060 and NFR-LIC-060 for three of these; all three identifiers were already in use, and per Section 1.5 identifiers are never reused, so the new requirements took the next free numbers instead. |
+| 0.4 | 2026-08-08 | M9 P0 decision pass. Section 10's 2026-08-08 note is corrected on a matter of fact by an appended `*Consequence (added M9)*` note: `xtask traceability` does read CI and build configuration — `xtask/src/traceability.rs:111`'s `# trace:` marker and `xtask/src/main.rs:205-216`'s four hard-coded paths — and fifteen Must requirements rest on that alone, so the original sentence would have taken the uncovered count from 24 to 39 rather than tightening anything, and would have left NFR-PORT-030 and NFR-QUAL-050 unclosable in principle. Replaced with a two-limb adequacy rule (configuration is admissible evidence when the requirement's own assertion is about the configuration, or when its own `*Verify:*` line elects it) and its one-sentence form: tag the configuration when the configuration is the artifact under test; tag a test when the product is. Nine of the fifteen fall under limb 1 and six under limb 2; eight of the nine limb-1 requirements have a bare `*Verify:* S.` and rest on limb 1 alone, FR-CFG-010 being the only one whose Verify line also elects the configuration and so satisfies both. FR-PKG-020's and FR-PKG-040's disposition under the original note is unchanged; FR-PKG-010's is reopened, since its `*Verify:*` line elects a release workflow that does not exist yet (roadmap §15 item 10); FR-CLAP-020 is confirmed taggable in CI as limb 1, its "as a gate in CI" clause being in its body and its `*Verify:*` line a bare `S.` that elects nothing. Two of the fifteen are recorded as failing the rule rather than repaired: FR-ERR-070 (its limb-2 election reaches sub-clause 5 alone; the other five sub-clauses are runtime assertions about a capability that does not exist — vacuously satisfied, re-opened by the first network feature) and NFR-QUAL-050 ("shall gate merges" is a branch-protection setting outside the repository). The same note records the tool's dispatch exclusivity — `Verify: M` resolves against `docs/manual-tests/` only, `Verify: Process` is exempt, every other code resolves against source only — which is why FR-CLAP-030, FR-CLAP-040 and FR-CLAP-100 read uncovered while FR-CLAP-060, FR-CLAP-090 and FR-IO-060/-070/-080 resolve; `02-architecture.md` D-18.6 holds the policy. Note appended at Section 1.5: the parenthetical after an identifier is the sole priority marker (`xtask/src/traceability.rs:81`), bold **Must**/**Should** inside a requirement body scopes a clause rather than retagging the requirement (FR-NAM-020, FR-IO-020, FR-IO-030), and this document declares 130 Musts, 31 Shoulds and 3 Coulds — 164 in all. |

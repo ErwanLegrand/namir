@@ -31,10 +31,19 @@ Three documents in `docs/` form a strict hierarchy; where they conflict, the ear
   Acceptance criteria. §14 has a Must-requirement status snapshot table (Done/Partial/Not started
   per FRS section); §15 tracks open decisions still to make. **The numbers are not the running
   order**: M9–M13 were added after M8 existed and run *before* it, because M8 is the 1.0 exit gate
-  and nothing else. Execution order is M9 → M10 → M11 → M12 → M13 → M8; the roadmap says so at
-  §12's end. Also note §14's table is known-stale and its re-audit is M9's job — read
-  `docs/03-test-plan.md` (generated) for the mechanical view, and treat the table's cells as claims
-  of unknown age until that audit lands.
+  and nothing else. M9 is further split in two — **M9a**, the ledger, tooling and documents (the
+  Must-requirement triage, §14's rebuild, the traceability gate's split, the FRS §10 correction),
+  and **M9b**, the build work that triage scopes. These are phase labels inside §16, not new
+  milestone numbers — the same device M10 already uses for its Phase 0–4 — so every existing
+  reference to "M9" still resolves. Execution order is M9a → M10 → M11 → M12 → M13 → M9b → M8;
+  M9b blocks only M8, whose exit checklist nominates FR-CFG-020's golden vector. §12's arrow line
+  still reads M9 → M10 → M11 → M12 → M13 → M8 and is deliberately left as written; the refinement
+  is a dated note appended beneath it, not an edit to it. Also note §14's table is known-stale and
+  its re-audit is **M9a's** job — read `docs/03-test-plan.md` (generated) for the mechanical view,
+  and treat the table's cells as claims of unknown age until that audit lands. Afterwards a cell is
+  current only as of the milestone whose own evidence last moved it: M9a re-derives the whole table
+  from evidence as of M9a, and every milestone after it — M9b included — moves only the cells its
+  own evidence justifies.
 
 Also load-bearing: `docs/04-state-and-preset-format.md` (the `.namirpreset`/state JSON format) and
 `docs/manual-tests/*.md` — one file per requirement that can't be verified by an automated test
@@ -116,16 +125,37 @@ table entirely. `spikes/` is throwaway, pins its own `Cargo.lock`, and is exclud
 workspace — do not port code from there without re-reviewing it; it's a proof of feasibility, not
 production code.
 
-## `unsafe` code — confined to two crates
+## `unsafe` code — confined to two crates, three files
 
 Workspace-wide `unsafe_code = "forbid"` (not just `deny` — chosen specifically so no crate can
 locally `#![allow(unsafe_code)]` its way around it). Only `namir-platform` and `namir-clap` (plus a
 possible future SIMD kernel module) declare their own `[lints.rust] unsafe_code = "deny"` to opt
-back in, confined to one module each, with a written `// SAFETY:` argument on every block and a
-module-level doc comment giving the fuller argument (see `namir-platform/src/denormal.rs` or
-`namir-clap/src/gui.rs` for the house style). Any new `unsafe` block outside those two crates is a
-bug, not a style choice — the type system enforces this, so it will fail to compile rather than
-merely fail review.
+back in. **`deny` is not permission either** — it fails the build the same way; what actually makes
+a file legal is a `#![allow(unsafe_code)]` at the top of that file, and exactly three files carry
+one: `namir-platform/src/denormal.rs`, `namir-platform/src/thread_priority.rs` and
+`namir-clap/src/gui.rs`. So it is **two** designated modules in `namir-platform`, not one — this
+file previously said "confined to one module each" and was wrong. Each carries a written
+`// SAFETY:` argument on every unsafe block and a module-level doc comment giving the fuller
+argument; see `namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for the house style.
+
+**Tests and benches get no exemption** (D-5.3's *Consequence (added M9, 2026-08-08)*). Cargo
+applies a package's `[lints]` table to bench and integration-test targets too, so a `namir-clap`
+bench *could* carry `#![allow(unsafe_code)]` — it may not, and nothing mechanical would catch it:
+`xtask`'s subcommands are `layering`, `params-lock`, `attribution`, `traceability` and `preset`,
+none of which reads for `unsafe`. When a harness looks like it needs `unsafe`, the answer this
+project has reached every time is to take the capability from a dependency whose own `unsafe` is
+already audited, or to move the tested logic to a seam that takes plain types: `assert_no_alloc`
+for D-7.5's RT-allocation harness (`namir-dsp`/`namir-engine` say so in as many words in their own
+Cargo.toml comments), `rtrb` for both SPSC rings, and — decided at M9's P0 pass, built at M9b —
+`clack-host` as a `namir-clap` **dev**-dependency for the in-process CLAP host harness, adopted
+precisely because `clack-extensions`' own `__doc_utils.rs` instantiates a plugin through
+`PluginEntry::load_from_clack` with no `unsafe` at all. Checked this pass: the only `unsafe` blocks
+anywhere under `crates/` are one in `gui.rs`, five in `denormal.rs` and five in
+`thread_priority.rs` — plus that file's `unsafe extern "system"` declaration block, which edition
+2024 requires of any `extern` block — and none at all in any bench or integration test, where there
+should be none. Any new `unsafe` block outside those three files is a bug, not a style choice —
+inside a `forbid` crate the compiler enforces that; inside the two `deny` crates only review does,
+so say so in the review.
 
 ## `namir-ui`'s host seam — the key cross-cutting design to know before touching UI or either product shell
 
