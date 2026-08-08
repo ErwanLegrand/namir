@@ -261,6 +261,32 @@ mod tests {
     /// structurally unreachable, and this measures the same gap
     /// `a_nam_and_an_ir_handover_are_never_offered_simultaneously` measures at the `Instance::load`
     /// level, but driven through a real recall naming *both* a model and an IR.
+    ///
+    /// # FR-STATE-050's evidence, and why the tag below is plain rather than partial (D-23.1)
+    ///
+    /// *First question — does the requirement, or its `*Verify:*` method, quantify over a set?* No.
+    /// FR-STATE-050's own sentence is a **reference**, not a set: "Preset recall shall not glitch
+    /// the audio thread; the constraints of FR-NAM-070 apply to any model or IR change a preset
+    /// implies." It states no scale, enumerates no architectures, and its `*Verify:*` line is a bare
+    /// `I` — unlike FR-LIB-020's, which names 10 000 files and is a quantifier for that reason.
+    ///
+    /// *Second question — does this artifact execute the method as written?* `Verify: I` wants the
+    /// integration, and this is it: a real [`State`](namir_state::State) naming both resources,
+    /// resolved through a real [`namir_state::FileResolver`], loaded through a real
+    /// [`ResourceCache`] and a real command ring. The one way recall could break the constraints it
+    /// inherits is by overlapping the two handovers instead of serialising them — R-7's measured
+    /// 25.06-31.49% over-budget condition — and that is exactly what the elapsed-time assertion
+    /// below rules out.
+    ///
+    /// The "no click, no dropout" property those inherited constraints *are* is FR-NAM-070's own,
+    /// and is verified where that requirement lives, under a continuous sine with a self-calibrating
+    /// discontinuity threshold: `namir-engine`'s
+    /// `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`. This crate reaches
+    /// it *structurally* rather than by coincidence — R4 in this module's doc comment records that
+    /// every resource a recall implies goes through [`Instance::load`]/[`Instance::unload`] and
+    /// never a bespoke submit, so there is no second changeover path for FR-NAM-070's guarantee to
+    /// miss.
+    // trace: FR-STATE-050
     #[test]
     fn recalling_both_a_model_and_an_ir_never_offers_them_simultaneously() {
         let c = ctx();
