@@ -17,16 +17,24 @@ target the architecture must not preclude.
 Three documents in `docs/` form a strict hierarchy; where they conflict, the earlier one wins:
 
 - **`docs/01-functional-requirements.md`** (FRS) — *what* Namir must do. Every requirement has a
-  stable ID (`FR-*`, `NFR-*`) and a `Verify:` method (S/M/I/B — static, manual, integration test,
-  benchmark).
+  stable ID (`FR-*`, `NFR-*`) and a `Verify:` method. There are **seven** codes, not four: **U**
+  unit test, **I** integration test, **G** golden-reference comparison, **B** benchmark with a
+  numeric threshold, **S** static analysis or build-time check, **M** manual test against a written
+  script, and **Process** (enforced by review, evidenced by commit order). `xtask traceability`
+  parses these, so a wrong or invented code is a build-visible error, not a typo.
 - **`docs/02-architecture.md`** — *how*. Numbered Decisions (`D-x.y`) with Rationale/Consequence,
   a risk register (§22), a dependency register (§17), and a changelog (§24). Decisions are never
   silently rewritten — a later milestone that changes one appends a
   `*Consequence (added M<n>)*` note at the original decision, in place, rather than editing the
   original text.
-- **`docs/03-implementation-roadmap.md`** — *order*. Milestones M0–M8, each with Deliverables and
-  Acceptance criteria. §14 has a live Must-requirement status snapshot table (Done/Partial/Not
-  started per FRS section); §15 tracks open decisions still to make.
+- **`docs/03-implementation-roadmap.md`** — *order*. Milestones M0–M13, each with Deliverables and
+  Acceptance criteria. §14 has a Must-requirement status snapshot table (Done/Partial/Not started
+  per FRS section); §15 tracks open decisions still to make. **The numbers are not the running
+  order**: M9–M13 were added after M8 existed and run *before* it, because M8 is the 1.0 exit gate
+  and nothing else. Execution order is M9 → M10 → M11 → M12 → M13 → M8; the roadmap says so at
+  §12's end. Also note §14's table is known-stale and its re-audit is M9's job — read
+  `docs/03-test-plan.md` (generated) for the mechanical view, and treat the table's cells as claims
+  of unknown age until that audit lands.
 
 Also load-bearing: `docs/04-state-and-preset-format.md` (the `.namirpreset`/state JSON format) and
 `docs/manual-tests/*.md` — one file per requirement that can't be verified by an automated test
@@ -52,7 +60,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p xtask -- layering       # D-5.1 dependency-graph + platform-cfg lint
 cargo run -p xtask -- params-lock    # checks params.lock is in sync with namir-params::REGISTRY
+cargo run -p xtask -- attribution    # NFR-LIC-030 THIRD-PARTY-NOTICES.md freshness
+cargo run -p xtask -- traceability   # NFR-QUAL-010 Must-requirement coverage + docs/03-test-plan.md
 cargo deny check                     # NFR-LIC-020 license/advisory gate
+
+# Both generate-and-diff checks above take --write to regenerate rather than verify:
+cargo run -p xtask -- attribution --write
+cargo run -p xtask -- traceability --write   # regenerates docs/03-test-plan.md; never hand-edit it
 
 # Single crate / single test
 cargo test -p namir-engine
@@ -174,8 +188,16 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   than omitted) came from exactly this gap. When investigating a report against real user files,
   check whether the relevant fixture generator actually produces that shape before assuming the
   parser is exhaustively tested.
-- `cargo-fuzz` targets exist per parser that reads untrusted bytes (`crates/namir-nam/fuzz`,
-  `crates/namir-state/fuzz`), seeded from `namir-fixtures`' mutation corpus.
+- `cargo-fuzz` targets exist per parser that reads untrusted bytes — `crates/namir-nam/fuzz`,
+  `crates/namir-state/fuzz` and `crates/namir-ir/fuzz` (added M7) — seeded from `namir-fixtures`'
+  mutation corpus. Each is its own detached workspace and must be listed in the root `Cargo.toml`'s
+  `exclude`.
+- **A covering test existing is not the same as a requirement being met.** `xtask traceability`
+  answers "does something reference this ID?", which is the wrong question for any requirement that
+  quantifies over a set — one matching test satisfies the tool however much of the set it misses.
+  FR-NAM-030 ("for **each** supported architecture… match the reference NAM implementation") is the
+  known live instance: only WaveNet was ever compared that way, and the tool has reported it covered
+  since M3 regardless. Check the requirement's own wording, not just the gate.
 
 ## Commit conventions
 
