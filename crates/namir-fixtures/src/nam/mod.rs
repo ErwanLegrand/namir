@@ -271,13 +271,22 @@ impl WaveNetShape {
 
 /// The `hidden_size`/`num_layers` progressions [`generate_lstm`] can produce.
 ///
-/// **Not verified against any real NAM LSTM preset**, unlike [`WaveNetShape::Standard`]'s cited
-/// `neural-amp-modeler` source: this crate has no equivalent researched LSTM shape to confirm
-/// against, so — exactly like `WaveNetShape`'s own lite/feather/nano doc comment already
-/// disclaims for *its* unverified shapes — these three are only this crate's own plausible,
-/// monotonically-decreasing progression, chosen to exercise "a few stacked layers" and "one
-/// layer" shapes for parity/robustness testing. If real preset numbers surface later with a
-/// citation, replace these, not the architecture.
+/// **Verified against real NAM LSTM models (2026-08-08).** These three shapes were originally this
+/// crate's own guesses, disclaimed here as "not verified against any real NAM LSTM preset" because
+/// no researched LSTM shape was available to confirm against — unlike [`WaveNetShape::Standard`],
+/// which has always cited `neural-amp-modeler`'s own `get_wavenet_config`. That disclaimer is now
+/// retired: a set of 67 reference LSTM models published by NAM's author was examined directly
+/// (`docs/manual-tests/fr-nam-020-real-lstm-models.md` records the set and its provenance), and it
+/// is a systematic sweep of `num_layers` 1–4 against `hidden_size` 1–12, 16, 20, 24, 28, 32, every
+/// one at `input_size: 1` and 48 kHz. **All three shapes below exist in that sweep** — `Standard`
+/// is its `LSTM-2-032`, `Small` its `LSTM-1-016`, `Tiny` its `LSTM-1-004` — so the guessed numbers
+/// turned out to be real ones and need no replacing.
+///
+/// What that does and does not buy: these are confirmed to be *shapes the ecosystem actually
+/// ships*, so a fixture built from them exercises a real configuration rather than an invented one.
+/// It is not a numerical claim — the weights here are still generated per D-19.1, and no real LSTM
+/// model has yet been compared numerically against a reference implementation's render. See the
+/// manual test for that distinction stated in full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LstmShape {
     /// Two layers, hidden_size 32.
