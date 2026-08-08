@@ -1352,9 +1352,19 @@ until that count reaches zero, not because the check is unimportant but because 
 check nobody can act on trains reviewers to ignore CI, the opposite of what NFR-QUAL-010 exists to
 prevent.
 
+**Confirmed by this PR's second CI run** (after the sort-before-search fix, commit `f8f72d9`): all
+19 checks pass, including `layering + params.lock + attribution` as a whole. Reading that job's own
+Linux log directly (not inferring from the green checkmark) shows `xtask traceability` printing
+`docs/03-test-plan.md is up to date` on `ubuntu-latest` — the cross-platform staleness false
+positive is gone — immediately followed by the same 16-item missing-Musts list as the local Windows
+run, exiting 1 as designed and tolerated only by `continue-on-error`. Both halves of the fix hold:
+the determinism bug is actually fixed, not just no-longer-observed, and the real gap count is
+unchanged by the fix (as it should be — sorting search order doesn't change coverage).
+
 **Acceptance — partially met, stated honestly rather than claimed in full.** The CI-gate deliverables
-(mobile-list correction, `namir-ir` fuzz, network-free gate, attribution file) are built, verified
-locally, and will get their first real CI run once this branch is pushed — recorded as such, not
+(mobile-list correction, `namir-ir` fuzz, network-free gate, attribution file) are built and confirmed
+green on their real first CI run against this PR (all 19 checks passing, including both mobile
+cross-builds and the new `fuzz-smoke-ir`/`network-free`/`attribution` jobs) — recorded as such, not
 assumed green, per this project's own standard of not claiming untested behavior works. NFR-QUAL-010's
 traceability check is real and running, but does not yet report zero uncovered Musts: 16 remain,
 each individually investigated and confirmed as a genuine gap (not a tagging miss) by name above and
