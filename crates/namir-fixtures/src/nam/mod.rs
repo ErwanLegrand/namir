@@ -276,7 +276,7 @@ impl WaveNetShape {
 /// no researched LSTM shape was available to confirm against — unlike [`WaveNetShape::Standard`],
 /// which has always cited `neural-amp-modeler`'s own `get_wavenet_config`. That disclaimer is now
 /// retired: a set of 67 reference LSTM models published by NAM's author was examined directly
-/// (`docs/manual-tests/fr-nam-020-real-lstm-models.md` records the set and its provenance), and it
+/// (`docs/manual-tests/fr-nam-020-real-lstm-models.md` records the set, its provenance and its licence status), and it
 /// is a systematic sweep of `num_layers` 1–4 against `hidden_size` 1–12, 16, 20, 24, 28, 32, every
 /// one at `input_size: 1` and 48 kHz. **All three shapes below exist in that sweep** — `Standard`
 /// is its `LSTM-2-032`, `Small` its `LSTM-1-016`, `Tiny` its `LSTM-1-004` — so the guessed numbers
