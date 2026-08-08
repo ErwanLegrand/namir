@@ -267,7 +267,11 @@ mod tests {
         buf[buf.len() - 1]
     }
 
-    // trace: FR-GATE-010
+    // trace-partial: FR-GATE-010
+    // uncovered: FR-GATE-010 — of the five controls the "U per control" method names, Attack and
+    // uncovered: Release are exercised by no test: ATTACK_MS_ID is never written anywhere in the
+    // uncovered: workspace, and RELEASE_MS_ID only as a helper inside a test whose assertion is
+    // uncovered: about hold; closes M9b
     #[test]
     fn burst_opens_and_silence_closes_through_the_stage() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -453,7 +457,12 @@ mod tests {
         assert!(max_delta > 0.0, "bypass crossfade never advanced");
     }
 
-    // trace: FR-CHAIN-050
+    // trace-partial: FR-CHAIN-050
+    // uncovered: FR-CHAIN-050 — the mono-core-then-duplicate behaviour is shown for GateStage
+    // uncovered: only: NamStage has no multi-channel content assertion (every nam.rs test is
+    // uncovered: ChannelConfig::Mono bar one that asserts nothing about channel content), and
+    // uncovered: ChannelConfig::MonoToStereo appears in no gate.rs or nam.rs test at all;
+    // uncovered: closes M9b
     #[test]
     fn stereo_duplicates_the_mono_core_gate_result_onto_every_channel() {
         let mut stage = stage(ChannelConfig::Stereo);

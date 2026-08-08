@@ -194,7 +194,12 @@ impl<'a> PluginAudioProcessorParams for NamirAudioProcessor<'a> {
 mod tests {
     use super::*;
 
-    // trace: FR-CLAP-060
+    // trace-partial: FR-CLAP-060
+    // uncovered: FR-CLAP-060 — both "sample-accurate" and "click-free" are unspanned, the tagged
+    // uncovered: test asserting only that the bypass descriptor carries the IS_BYPASS flag and
+    // uncovered: processing no audio; sample-accuracy is contradicted by apply_automation, which is
+    // uncovered: called once before the block and applies every ParamValue event immediately
+    // uncovered: without reading the event header's sample offset; closes M9b
     #[test]
     fn global_bypass_param_info_carries_the_is_bypass_flag() {
         let info = param_info(&GLOBAL_BYPASS);

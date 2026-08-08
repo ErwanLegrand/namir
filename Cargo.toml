@@ -1,4 +1,7 @@
-# trace: FR-CFG-010, NFR-LIC-010, NFR-BUILD-010
+# NFR-LIC-010's own partial sits beside the `license` key in [workspace.package] below, which is the
+# one of its three named checks that has an artifact; D-23.1's adjacency rule takes one anchor per
+# tag, so it is annotated there rather than stacked here.
+# trace: FR-CFG-010, NFR-BUILD-010
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
@@ -18,6 +21,11 @@ exclude = [
 
 [workspace.package]
 edition = "2024"
+# trace-partial: NFR-LIC-010
+# uncovered: NFR-LIC-010 — two of the method's three named checks have no artifact: nothing checks
+# uncovered: that the licence files are present, so their removal would go unnoticed, and nothing
+# uncovered: checks SPDX headers, which only two tracked files under crates/ carry;
+# uncovered: closes M9b
 license = "MIT OR Apache-2.0"
 # NFR-PORT-010: MSRV stated in the manifest and enforced in CI (the CI job itself is the next
 # stage of M1, not built here). Pinned to the toolchain actually in use rather than an old floor:

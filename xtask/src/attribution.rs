@@ -11,7 +11,11 @@
 //! concern with no pipeline yet (that's M8 territory, docs/03-implementation-roadmap.md §12) --
 //! this file does not claim to close that half.
 
-// trace: NFR-LIC-030
+// trace-partial: NFR-LIC-030
+// uncovered: NFR-LIC-030 — the "produced by the build and shipped with the binaries" clause has
+// uncovered: no artifact of any kind: there is no release workflow, so THIRD-PARTY-NOTICES.md is
+// uncovered: generated and freshness-checked but packaged with nothing, and no check asserts its
+// uncovered: presence in a distributed artifact; closes M13
 
 use std::path::Path;
 

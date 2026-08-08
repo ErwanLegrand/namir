@@ -244,7 +244,12 @@ mod tests {
     /// FR-IO-070's non-hardware-dependent half: a device that cannot be opened at all (here,
     /// none present) is handled by returning `None` rather than panicking, which is what lets
     /// `crate::app::run` fall back to `open_window_without_audio` instead of crashing or hanging.
-    // trace: FR-IO-070
+    // trace-partial: FR-IO-070
+    // uncovered: FR-IO-070 — the method's named apparatus, a virtual device that can be made to
+    // uncovered: fail on demand, does not exist and the tagged test opens no device, its whole body
+    // uncovered: asserting that selecting from an empty slice is None, so device removal while in
+    // uncovered: use, "stop the stream cleanly" and "allow the user to select another device" are
+    // uncovered: all unexercised; closes M9b
     #[test]
     fn no_devices_at_all_yields_none() {
         assert!(select_device(&[], Some("Anything")).is_none());

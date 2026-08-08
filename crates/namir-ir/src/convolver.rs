@@ -1405,7 +1405,12 @@ mod tests {
     // comment for the scope note: this is not a rigorous stopband/ripple measurement.
     // -------------------------------------------------------------------------------------
 
-    // trace: FR-IR-030
+    // trace-partial: FR-IR-030
+    // uncovered: FR-IR-030 — the FR-NAM-060 quality bar this requirement imports (>= 100 dB
+    // uncovered: stopband, <= 0.1 dB passband ripple to 20 kHz or Nyquist) is measured nowhere
+    // uncovered: for resample_mono: the tagged test asserts only resampled length and that a
+    // uncovered: 1 kHz tone's magnitude exceeds 1 Hz by 10x, which a 40 dB-stopband, 3 dB-ripple
+    // uncovered: resampler would pass; closes M9b
     #[test]
     fn resampling_a_pure_tone_preserves_its_frequency_and_energy_roughly() {
         // A 1 kHz tone at 44.1 kHz, resampled (via being loaded as an "IR") to 48 kHz. This is

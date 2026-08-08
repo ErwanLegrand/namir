@@ -157,7 +157,11 @@ mod tests {
         assert!(!meter.clipped());
     }
 
-    // trace: FR-IN-020
+    // trace-partial: FR-IN-020
+    // uncovered: FR-IN-020 — the "M for the display" half of the Verify line has no artifact:
+    // uncovered: there is no docs/manual-tests/fr-in-020-*.md, and namir_ui::MeterReading carries
+    // uncovered: only peak_db and rms_db, so the peak-hold value TrimStage publishes reaches no
+    // uncovered: UI field for any script to observe; closes M9b
     #[test]
     fn peak_hold_latches_for_at_least_one_second() {
         let sample_rate = 48_000u32;

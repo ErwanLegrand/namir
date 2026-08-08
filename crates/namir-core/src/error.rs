@@ -68,7 +68,13 @@ mod tests {
         message_template: "Example: {detail}",
     };
 
-    // trace: FR-ERR-020
+    // trace-partial: FR-ERR-020
+    // uncovered: FR-ERR-020 — the method's second conjunct, "every error path in the code
+    // uncovered: maps to an entry", has no artifact of any kind: no xtask subcommand reads
+    // uncovered: error paths, ErrorCode's three fields are all pub so a call site can construct
+    // uncovered: an off-catalogue code inline, and
+    // uncovered: crates/namir-ui/examples/manual_window_smoke.rs:27 is a live instance of exactly
+    // uncovered: that; closes M9b
     #[test]
     fn unique_ids_pass() {
         assert_unique_ids(&[A, B]);

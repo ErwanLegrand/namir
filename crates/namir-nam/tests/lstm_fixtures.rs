@@ -109,7 +109,13 @@ fn chunked_processing_matches_monolithic_processing() {
     }
 }
 
-// trace: FR-NAM-030
+// trace-partial: FR-NAM-030
+// uncovered: FR-NAM-030 — neither architecture is compared against the reference NAM
+// uncovered: implementation the requirement names: both parity tests compare against
+// uncovered: namir-fixtures' own from-scratch port, and S-1's NeuralAmpModelerCore comparison
+// uncovered: lives in spikes/, excluded from the workspace and not runnable under cargo test;
+// uncovered: the probe is also 4 000 samples of sine plus noise, not the specified 10-second
+// uncovered: signal containing clean, transient and saturated material; closes M10
 #[test]
 fn numeric_parity_against_an_independent_reference_implementation() {
     let model =

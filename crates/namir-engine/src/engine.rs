@@ -572,6 +572,12 @@ mod tests {
 
     /// **FR-IR-060: "the same no-glitch, crossfaded changeover requirement as FR-NAM-070."** Same
     /// test body and same self-calibrating threshold, against the Ir stage.
+    // trace-partial: FR-IR-060
+    // uncovered: FR-IR-060 — the no-dropout half of the FR-NAM-070 method this requirement
+    // uncovered: imports is absent: the test asserts the discontinuity bound and the retire ring
+    // uncovered: only, and a changeover that faded both slots to silence and back would lower
+    // uncovered: that bound and pass; rt_stress.rs's dropout assertion never has an IR handover
+    // uncovered: in flight, submitting Target::Nam alone; closes M9b
     #[test]
     fn fr_ir_060_swapping_irs_under_a_sine_has_no_discontinuity_or_dropout() {
         const DISCONTINUITY_FACTOR: f32 = 3.0;
@@ -846,7 +852,12 @@ mod tests {
     /// effect on the very next `process` — it bypasses the ring, so there is no drain step for it
     /// to wait on — and must converge to the same state a ring-delivered [`Command::Param`] of the
     /// same change would (FR-PARAM-030).
-    // trace: FR-PARAM-030
+    // trace-partial: FR-PARAM-030
+    // uncovered: FR-PARAM-030 — of the three sources the requirement names, only two
+    // uncovered: engine-internal delivery paths are compared: no artifact loads a
+    // uncovered: namir_state::State and asserts the resulting engine state equals the state the
+    // uncovered: same values reach via a parameter change, and no artifact drives
+    // uncovered: namir_ui::UiIntent::SetParam into the comparison; closes M9b
     #[test]
     fn apply_param_direct_takes_effect_on_the_next_process_call_like_a_ring_delivered_change() {
         let c = ctx();

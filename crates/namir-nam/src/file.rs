@@ -318,7 +318,11 @@ mod tests {
     /// omitting the key, which `#[serde(default)]` alone does not cover -- only the missing-key
     /// case in [`tolerates_missing_optional_fields`] above. Every field a real exporter has been
     /// observed to null must parse to the same default a missing key would.
-    // trace: FR-NAM-080
+    // trace-partial: FR-NAM-080
+    // uncovered: FR-NAM-080 — the "and display" half spans only the name field: UiSnapshot
+    // uncovered: carries no metadata field beyond loaded_model_name, which namir-app fills from
+    // uncovered: the file's basename rather than metadata.name, so author, gear make/model/type,
+    // uncovered: tone type and description reach no screen; closes M9b
     #[test]
     fn tolerates_null_metadata_fields_the_same_as_missing_ones() {
         let mut value: serde_json::Value = serde_json::from_slice(&minimal_valid_json()).unwrap();

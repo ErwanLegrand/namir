@@ -373,7 +373,12 @@ mod tests {
         );
     }
 
-    // trace: FR-OUT-020
+    // trace-partial: FR-OUT-020
+    // uncovered: FR-OUT-020 — of the four characteristics this requirement imports from FR-IN-020
+    // uncovered: and FR-IN-030, only the clip latch is asserted at the stage: no test reads
+    // uncovered: OutStage's published peak_db, average_db or peak_hold_db telemetry entries, so a
+    // uncovered: wiring error emitting one under another's id would pass, and the clip indicator
+    // uncovered: is reachable by no user reset path; closes M9b
     #[test]
     fn clip_latches_and_is_reported_via_telemetry() {
         let mut stage = stage(ChannelConfig::Mono);

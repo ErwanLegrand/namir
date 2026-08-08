@@ -436,7 +436,12 @@ mod tests {
 
     /// FR-STATE-030: parameters and globals from the state reach the audio thread as part of the
     /// same recall.
-    // trace: FR-STATE-030
+    // trace-partial: FR-STATE-030
+    // uncovered: FR-STATE-030 — the save clause and both directions of "interchangeable between
+    // uncovered: the standalone application and the CLAP plugin" are unspanned: the tagged test
+    // uncovered: recalls an in-memory State and never writes or names a preset, and no artifact
+    // uncovered: loads an app-written .namirpreset into the plugin or a plugin-written blob into
+    // uncovered: the app; closes M9b
     #[test]
     fn recall_applies_globals_and_parameters() {
         let c = ctx();
