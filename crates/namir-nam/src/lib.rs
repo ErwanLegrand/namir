@@ -67,6 +67,10 @@ mod shared;
 mod wavenet;
 
 pub use error_codes::NamLoadError;
-pub use file::{LayerArrayConfig, LstmConfigJson, LstmFile, NamFile, NamMetadata, WaveNetConfig};
+pub use file::{
+    ActivationEntry, ActivationParams, ActivationSpec, Conv1x1FeatureConfig, FilmConfig,
+    LayerArrayConfig, LayerArrayHeadConfig, LstmConfigJson, LstmFile, NamFile, NamMetadata,
+    WaveNetConfig,
+};
 pub use model::{NamState, PreparedNam, load};
 pub use probe::{NamProbe, probe_metadata};

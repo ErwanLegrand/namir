@@ -245,6 +245,241 @@ mod tests {
         assert_eq!(err.code.id, error_codes::UNSUPPORTED_ARCHITECTURE.id);
     }
 
+    /// One JSON object's keys overwrite/insert into another's. `serde_json::Value` has no built-in
+    /// merge; every table-driven case below needs "the minimal valid layer array, but with this
+    /// one key added or changed," and this is the small helper that expresses that without 24
+    /// near-duplicate full JSON literals.
+    fn merge_object(
+        mut base: serde_json::Value,
+        overrides: serde_json::Value,
+    ) -> serde_json::Value {
+        let (Some(base_obj), serde_json::Value::Object(over_obj)) =
+            (base.as_object_mut(), overrides)
+        else {
+            panic!("merge_object: both arguments must be JSON objects");
+        };
+        for (k, v) in over_obj {
+            base_obj.insert(k, v);
+        }
+        base
+    }
+
+    /// A single minimal, otherwise-valid WaveNet layer array — the same shape
+    /// `minimal_wavenet_json` uses, as a `Value` so test cases can merge one or two keys into it.
+    fn minimal_layer_array_json() -> serde_json::Value {
+        serde_json::json!({
+            "input_size": 1,
+            "condition_size": 1,
+            "head_size": 1,
+            "channels": 1,
+            "kernel_size": 1,
+            "dilations": [1],
+            "activation": "Tanh",
+            "gated": false,
+            "head_bias": false
+        })
+    }
+
+    /// Builds a full `.nam` WaveNet document from `config_overrides` (merged into `config`) and
+    /// `layer_overrides` (merged into `config.layers[0]`), keeping every other field at
+    /// `minimal_wavenet_json`'s known-valid values, including its weight count — every case below
+    /// changes only *feature presence*, never a dimension, so the same 8-float weight array stays
+    /// valid throughout (a case that were to change a dimension would need its own weight count,
+    /// exactly like `wavenet.rs`'s `weight_count_for`).
+    fn wavenet_json(
+        config_overrides: serde_json::Value,
+        layer_overrides: serde_json::Value,
+    ) -> Vec<u8> {
+        let layer = merge_object(minimal_layer_array_json(), layer_overrides);
+        let config = merge_object(
+            serde_json::json!({ "layers": [layer], "head_scale": 0.5, "head": null }),
+            config_overrides,
+        );
+        serde_json::json!({
+            "architecture": "WaveNet",
+            "config": config,
+            "weights": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+            "sample_rate": 48000
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// FR-NAM-140 (Must): "A model file whose declared architecture, or whose configuration
+    /// within a supported architecture, Namir does not support shall be rejected with an error
+    /// that names the unsupported feature. That error shall be a distinct catalogue entry ...
+    /// from the one reported for a malformed or truncated file." Table-driven over every member
+    /// the requirement's "architecture, **or** ... configuration" quantifies over (D-23.1's first
+    /// question): an unsupported architecture string, D-9.12's two top-level A2 rejections
+    /// (`condition_dsp`, `in_channels`), and every feature
+    /// `wavenet::reject_unsupported_layer_features` rejects — every A2 field this build does not
+    /// yet implement. Each case asserts both halves the requirement's own `Verify: U` method names
+    /// (D-23.1's second question): the error id differs from `MALFORMED_JSON`'s **and** `detail`
+    /// names the offending key — asserting only the first would leave "names the unsupported
+    /// feature" untested and this tag would be a `trace-partial`, not a plain one.
+    // trace: FR-NAM-140
+    #[test]
+    fn unsupported_features_are_named_and_distinct_from_malformed() {
+        let none = || serde_json::json!({});
+
+        // (case name, top-level config overrides, layer-array overrides, substring `detail` must
+        // contain — the actual naming of the unsupported feature FR-NAM-140 requires).
+        let layer_cases: Vec<(&str, serde_json::Value, &str)> = vec![
+            (
+                "kernel_sizes",
+                serde_json::json!({"kernel_sizes": [1]}),
+                "kernel_sizes",
+            ),
+            (
+                "bottleneck",
+                serde_json::json!({"bottleneck": 1}),
+                "bottleneck",
+            ),
+            (
+                "nested head",
+                serde_json::json!({"head": {"out_channels": 1, "kernel_size": 1, "bias": true}}),
+                "head",
+            ),
+            (
+                "activation as object",
+                serde_json::json!({"activation": {"type": "LeakyReLU", "negative_slope": 0.1}}),
+                "activation",
+            ),
+            (
+                "activation as per-layer array",
+                serde_json::json!({"activation": ["Tanh"]}),
+                "activation",
+            ),
+            ("gated true", serde_json::json!({"gated": true}), "gated"),
+            (
+                "gating_mode",
+                serde_json::json!({"gating_mode": "gated"}),
+                "gating_mode",
+            ),
+            (
+                "secondary_activation",
+                serde_json::json!({"secondary_activation": "Sigmoid"}),
+                "secondary_activation",
+            ),
+            (
+                "groups_input",
+                serde_json::json!({"groups_input": 2}),
+                "groups_input",
+            ),
+            (
+                "groups_input_mixin",
+                serde_json::json!({"groups_input_mixin": 2}),
+                "groups_input_mixin",
+            ),
+            (
+                "layer1x1",
+                serde_json::json!({"layer1x1": {"active": true, "groups": 1}}),
+                "layer1x1",
+            ),
+            (
+                "head1x1 active",
+                serde_json::json!({"head1x1": {"active": true, "groups": 1, "out_channels": 1}}),
+                "head1x1",
+            ),
+            (
+                "slimmable",
+                serde_json::json!({"slimmable": {"method": "slice_channels_uniform"}}),
+                "slimmable",
+            ),
+            (
+                "conv_pre_film active",
+                serde_json::json!({"conv_pre_film": {"active": true}}),
+                "conv_pre_film",
+            ),
+            (
+                "conv_post_film active",
+                serde_json::json!({"conv_post_film": {"active": true}}),
+                "conv_post_film",
+            ),
+            (
+                "input_mixin_pre_film active",
+                serde_json::json!({"input_mixin_pre_film": {"active": true}}),
+                "input_mixin_pre_film",
+            ),
+            (
+                "input_mixin_post_film active",
+                serde_json::json!({"input_mixin_post_film": {"active": true}}),
+                "input_mixin_post_film",
+            ),
+            (
+                "activation_pre_film active",
+                serde_json::json!({"activation_pre_film": {"active": true}}),
+                "activation_pre_film",
+            ),
+            (
+                "activation_post_film active",
+                serde_json::json!({"activation_post_film": {"active": true}}),
+                "activation_post_film",
+            ),
+            (
+                "layer1x1_post_film active",
+                serde_json::json!({"layer1x1_post_film": {"active": true}}),
+                "layer1x1_post_film",
+            ),
+            (
+                "head1x1_post_film active",
+                serde_json::json!({"head1x1_post_film": {"active": true}}),
+                "head1x1_post_film",
+            ),
+        ];
+        for (name, layer_overrides, expect_substring) in layer_cases {
+            let bytes = wavenet_json(none(), layer_overrides);
+            let err = expect_err(load(&bytes));
+            assert_ne!(
+                err.code.id,
+                error_codes::MALFORMED_JSON.id,
+                "{name}: a well-formed-but-unsupported file must not be reported as malformed"
+            );
+            assert!(
+                err.detail.contains(expect_substring),
+                "{name}: detail {:?} does not name {expect_substring:?}",
+                err.detail
+            );
+        }
+
+        let top_level_cases: Vec<(&str, serde_json::Value, &str)> = vec![
+            (
+                "condition_dsp",
+                serde_json::json!({"condition_dsp": {"architecture": "WaveNet"}}),
+                "condition_dsp",
+            ),
+            (
+                "in_channels",
+                serde_json::json!({"in_channels": 2}),
+                "in_channels",
+            ),
+        ];
+        for (name, config_overrides, expect_substring) in top_level_cases {
+            let bytes = wavenet_json(config_overrides, none());
+            let err = expect_err(load(&bytes));
+            assert_ne!(
+                err.code.id,
+                error_codes::MALFORMED_JSON.id,
+                "{name}: a well-formed-but-unsupported file must not be reported as malformed"
+            );
+            assert!(
+                err.detail.contains(expect_substring),
+                "{name}: detail {:?} does not name {expect_substring:?}",
+                err.detail
+            );
+        }
+
+        // The architecture half of FR-NAM-140's "architecture, or ... configuration": a
+        // recognized-but-unsupported architecture string is also distinct from `MALFORMED_JSON`
+        // and names the offending value.
+        let bytes = serde_json::json!({"architecture": "RNN"})
+            .to_string()
+            .into_bytes();
+        let err = expect_err(load(&bytes));
+        assert_ne!(err.code.id, error_codes::MALFORMED_JSON.id);
+        assert!(err.detail.contains("RNN"));
+    }
+
     #[test]
     fn wavenet_and_lstm_models_both_process_through_the_same_api() {
         let wavenet = load(&minimal_wavenet_json()).unwrap();
