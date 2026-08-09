@@ -19,6 +19,11 @@ wide = "1.6"
 
 [dev-dependencies]
 namir-fixtures = { path = "../namir-fixtures" }
+# M10: reads the committed golden-reference WAV pairs (`tests/golden/`) FR-NAM-030's real-C++-
+# reference comparison needs -- see `tests/golden_reference.rs`. Pinned to the same "3.5" every
+# other hound consumer in this workspace uses (namir-fixtures, namir-ir, namir-worker), so there
+# is only one hound version in the dependency tree.
+hound = "3.5"
 # `warn_release` alongside `warn_debug`: pre-existing gap found during M3's verification pass --
 # with `warn_debug` alone, `reset_violation_count`/`violation_count` are compiled out under
 # `cargo test --release` (`cfg(any(all(warn_debug, debug_assertions), all(warn_release,
@@ -33,4 +38,11 @@ core_affinity = "0.8"
 
 [[bench]]
 name = "wavenet_inner_loops"
+harness = false
+
+# M10 Phase 4(b): FR-NAM-120 / NFR-PERF-010 LSTM cost curve across the real 67-model set's shape
+# grid (docs/manual-tests/fr-nam-020-real-lstm-models.md) -- see benches/lstm_inner_loops.rs's own
+# doc comment. Mirrors wavenet_inner_loops's shape exactly: plain fn main, no criterion.
+[[bench]]
+name = "lstm_inner_loops"
 harness = false

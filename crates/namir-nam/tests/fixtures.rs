@@ -110,20 +110,16 @@ fn chunked_processing_matches_monolithic_processing() {
     }
 }
 
-/// # Why the two tags are split around the attribute (D-23.1)
-///
-/// FR-NAM-030 is a partial and NFR-QUAL-030 is not, and a `trace-partial:` carries exactly one id,
-/// so the site needs two markers. They cannot be stacked: `scan_annotations` requires the first
-/// non-blank line after a tag not to be another comment, which a stacked pair violates. The plain
-/// tag therefore sits between `#[test]` and `fn`, where it is still immediately above the artifact
-/// it claims. Both tags name this same test.
-// trace-partial: FR-NAM-030
-// uncovered: FR-NAM-030 — neither architecture is compared against the reference NAM
-// uncovered: implementation the requirement names: both parity tests compare against
-// uncovered: namir-fixtures' own from-scratch port, and S-1's NeuralAmpModelerCore comparison
-// uncovered: lives in spikes/, excluded from the workspace and not runnable under cargo test;
-// uncovered: the probe is also 4 000 samples of sine plus noise, not the specified 10-second
-// uncovered: signal containing clean, transient and saturated material; closes M10
+/// M10 Phase 4: FR-NAM-030's tag moved off this test. It used to carry a `trace-partial:` here
+/// (neither this Rust-vs-Rust comparison nor a real-reference one existed in-tree), naming two
+/// unmet clauses: the comparison target (this crate's own from-scratch port, not the actual
+/// reference NAM implementation) and the probe signal (~83 ms of sine+noise, not the specified
+/// 10-second clean/transient/saturated one). Both are now closed by `tests/golden_reference.rs`,
+/// which compares against a real `NeuralAmpModelerCore` render over that exact signal — see that
+/// file's own doc comment. This test remains real, valuable evidence for **NFR-QUAL-030**
+/// (a stated, numerical, reproducible correctness reference — D-9.11's resolution of that
+/// requirement's wording) and for the A1/A2 non-regression baseline M10's weight-layout work was
+/// measured against; it simply no longer claims FR-NAM-030 on its own.
 #[test]
 // trace: NFR-QUAL-030
 fn numeric_parity_against_an_independent_reference_implementation() {
