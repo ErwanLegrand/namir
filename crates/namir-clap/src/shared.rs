@@ -283,6 +283,20 @@ impl SharedInner {
     pub(crate) fn clear_instance(&self) {
         *self.lock_instance() = None;
     }
+
+    /// Ends this instance's off-thread work and returns only once every worker thread it started
+    /// has been joined. Called from [`NamirShared`]'s [`Drop`] — that is, from
+    /// `clap_plugin.destroy`, on the main thread — and from nowhere else. See that impl's doc
+    /// comment for why it is not optional.
+    ///
+    /// A library scan is the one job that can run for seconds rather than microseconds, so it is
+    /// cancelled first: [`namir_worker::library::ScanHandle::cancel`] is cooperative and
+    /// `namir-library`'s step machine notices between steps, which bounds the join below by one
+    /// `Scanner::step` instead of by a whole library walk.
+    pub(crate) fn shutdown_workers(&self) {
+        self.cancel_library_scan();
+        self.pool.shutdown();
+    }
 }
 
 /// A worker/library warning this crate has nowhere richer to send yet — surfaced as an FR-UI-070
@@ -322,6 +336,54 @@ impl<'a> NamirShared<'a> {
             inner: Arc::new(SharedInner::new()),
             _lifetime: std::marker::PhantomData,
         }
+    }
+}
+
+/// **`clap_plugin.destroy` must not return while this instance's worker threads are still
+/// running**, and this is the only thing that guarantees it.
+///
+/// # The bug this exists to prevent (found M9a, fixed M9b)
+///
+/// `SharedInner` owns its [`ThreadPool`], and every worker job holds an `Arc<SharedInner>` to
+/// reach the rest of it (`crate::worker_jobs::spawn_recall`, `spawn_load_library_entry`, and
+/// [`SharedInner::start_library_scan`]'s two callbacks). That is an ownership cycle with exactly
+/// one exit: the pool is joined by `Drop for ThreadPool`, which cannot run until the last
+/// `Arc<SharedInner>` dies — and the last one belongs to whichever *job* finishes last, not to the
+/// host thread calling destroy.
+///
+/// So without this impl, `destroy` merely decremented a refcount and returned, with the plugin's
+/// worker threads still executing code inside the plugin's own shared library. A host is entitled
+/// to unload that library the instant destroy returns (`clap-validator` does exactly this — it
+/// calls `clap_entry->deinit()` and drops its `libloading::Library` at the end of every test), and
+/// unmapping code out from under a running thread is `STATUS_ACCESS_VIOLATION`. It presented as
+/// `ERROR Test state-reproducibility-basic crashed: exit code: 0xc0000005` on a contended CI
+/// runner and as nothing at all on an idle developer machine, because whether the job drained
+/// before destroy was purely a scheduling race — which is why it survived M6's manual 32-of-32
+/// validator run and M9a's local one.
+///
+/// The trigger was `crate::state_ext`'s `load`, whose last act is `spawn_recall`; the same cycle
+/// was live at `crate::audio`'s `activate` and at every GUI-driven job too.
+///
+/// # Why the shutdown is explicit rather than "make the job hold a `Weak`"
+///
+/// A `Weak` does not close it. A job that upgrades still holds a strong reference while it runs,
+/// so it can still be the last holder — and then `SharedInner`, and therefore `ThreadPool`, drops
+/// *on a pool thread*, where `ThreadPool::drop` joins its own `JoinHandle`. On Windows that is a
+/// permanent block: the crash would become a hang. The pool has to be shut down from a non-pool
+/// thread, before destroy returns, which is what this does. (`ThreadPool::shutdown` also carries a
+/// self-join guard now, so that shape degrades rather than wedges — but it is a backstop, not the
+/// fix.)
+///
+/// # Ordering
+///
+/// `clack_plugin`'s `PluginWrapper` declares `audio_processor`, `main_thread`, `shared` in that
+/// order, so by the time this runs the audio processor is gone (destroy deactivates first if the
+/// host did not) and `NamirMainThread` — which owns the embedded editor window, and with it the
+/// `crate::ui_host::ClapUiHost` that can dispatch new jobs — has already dropped. Nothing is left
+/// that could spawn; and `ThreadPool::spawn` drops rather than queues after a shutdown anyway.
+impl Drop for NamirShared<'_> {
+    fn drop(&mut self) {
+        self.inner.shutdown_workers();
     }
 }
 
@@ -385,6 +447,51 @@ mod tests {
         assert!(inner.is_dirty());
         inner.mark_clean();
         assert!(!inner.is_dirty());
+    }
+
+    /// **The M9a `clap-validator` crash, as a test.** `clap_plugin.destroy` — which is
+    /// `NamirShared`'s drop — must not return while a worker job this instance spawned is still in
+    /// flight, because the host may unload the plugin's shared library the moment it does. See
+    /// `impl Drop for NamirShared`'s doc comment for the full mechanism.
+    ///
+    /// The job below stands in for `crate::worker_jobs::spawn_recall`'s: what made teardown racy
+    /// was not what a recall job *does* (with no resources loaded it returns immediately) but that
+    /// it captures an `Arc<SharedInner>`, so the pool's only join was owned by the job rather than
+    /// by the thread calling destroy. Against the pre-fix code this test fails: the drop returned
+    /// at once and `finished` was still false.
+    #[test]
+    fn destroy_does_not_return_while_a_worker_job_is_still_in_flight() {
+        let shared = NamirShared::new();
+        let inner = Arc::clone(&shared.inner);
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let job_inner = Arc::clone(&inner);
+        let job_finished = Arc::clone(&finished);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        inner.pool.spawn(move || {
+            let _holds_shared_inner_alive = job_inner;
+            started_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            job_finished.store(true, Ordering::Release);
+        });
+
+        started_rx.recv().expect("the job must start");
+        // 200 ms of margin against a thread that has only just announced itself — the point is
+        // that the job is genuinely still running when destroy happens.
+        assert!(!finished.load(Ordering::Acquire));
+
+        drop(shared); // `clap_plugin.destroy`
+
+        assert!(
+            finished.load(Ordering::Acquire),
+            "destroy returned with a worker job still running: a host that unloads the library \
+             here faults the thread that is executing it (0xc0000005)"
+        );
+        assert_eq!(
+            inner.pool.threads(),
+            0,
+            "destroy must have joined every worker thread"
+        );
     }
 
     #[test]

@@ -2019,8 +2019,11 @@ form, so the ledger and the source agree.
   apparatus, a virtual device that can be made to fail on demand, does not exist, and the tagged test
   opens no device (`crates/namir-app/src/device_state.rs:247`).
 - **5.12 CLAP — 2 / 9 / 0.** *Done:* FR-CLAP-010 and FR-CLAP-020 — the reference validator the
-  `Verify:` lines name, run as a blocking CI job (`.github/workflows/ci.yml:263-305`), executed for
-  real at M9a with 32 of 32 applicable tests passing, plus
+  `Verify:` lines name, run as a blocking CI job (`.github/workflows/ci.yml:263-305`). This cell was
+  first written on a local 32-of-32 run and **the gate's own first CI run falsified it within the
+  hour** — `state-reproducibility-basic` crashed with `0xc0000005`. It reads Done again only because
+  that crash was root-caused and fixed (see the close-out below); the evidence is now CI's own
+  `44 tests run, 32 passed, 0 failed, 12 skipped`, plus
   `crates/namir-clap/src/lib.rs:132`, `:143`. *Partial:* FR-CLAP-030 — one stereo port pair is
   declared (`crates/namir-clap/src/audio_ports_ext.rs:30-48`); two of FR-CHAIN-060's three
   configurations are undeclared, and "across at least two host implementations" is unexecuted
@@ -3509,6 +3512,66 @@ verdict here is current as of 2026-08-09 and no later.
 **M9a is complete.** Its three deliverables — the tooling and tagging pass, the set-quantification
 sweep, and §14's per-requirement adjudication — have all run. M9b's scope is now readable directly
 off the table: 92 named gaps, of which the great majority declare M9b as their closing milestone.
+
+### M9a addendum: the gate found a crash on its first run, 2026-08-09
+
+Appended the same day as the close-out above, because it changes what that close-out's FR-CLAP-020
+cell rests on and is the strongest evidence this milestone produced about why any of it was worth
+doing.
+
+**PR #8's first CI run failed.** The `clap-validator` job M9a added for FR-CLAP-020 reported
+`44 tests run, 31 passed, 1 failed, 12 skipped`, with `state-reproducibility-basic` **crashing**:
+`exit code: 0xc0000005`, an access violation, not an assertion failure. Every other check on the PR
+passed, including the newly-required traceability step.
+
+**Root cause — an ownership cycle that let `destroy` return while plugin threads were still running
+inside the DLL.** `SharedInner` owns its `ThreadPool` (`crates/namir-clap/src/shared.rs:80`), every
+worker job captures an `Arc<SharedInner>` to reach the rest of it, and the pool's only join was
+`impl Drop for ThreadPool` — which cannot run until the last `Arc` dies, and that `Arc` belongs to
+whichever *job* finishes last, not to the host thread inside `clap_plugin.destroy`. So `destroy`
+decremented a refcount and returned with worker threads live; the host then `FreeLibrary`d the
+`.clap`, unmapping the code those threads were executing. `PluginStateImpl::load` ends with
+`spawn_recall` (`state_ext.rs:61`), which is why the state tests and only the state tests hit it —
+`state-invalid-empty`/`-random` return `Err` before reaching that line and are the negative control.
+
+**Established by experiment, not argument.** The three `state-reproducibility-*` tests call one
+function with two booleans, over a fixed PRNG seed, so they execute an identical sequence of plugin
+entry points — same input, one crash, which alone excludes a deterministic logic bug. Idle: 8/8
+clean, which is why M6's manual run and every local run since saw green. Under 48 CPU burners
+emulating a contended runner: **20/20 crashed** with the exact CI string. A control build whose job
+captured no `Arc`: **0/20**. After the fix, under the same load: 0/20 on the single test and 0/5 on
+the full suite; and a deliberately re-broken build re-crashed **10/10**.
+
+**The bug has been present since M6 and unobserved.** M6's "32 of 32 applicable tests passed" was a
+lucky idle-machine run, not a different test set: S-4 and this run both report 44 tests, and
+31 + 1 = 32 applicable with 12 skipped is the identical applicable set. `state_ext.rs` has not been
+touched since M6 except by annotation commits. **M9a did not introduce this crash; M9a is why anyone
+knows about it.**
+
+**What it says about the milestone.** M9a's own sweep had already written the gap down. The
+`// uncovered: FR-CLAP-050` field at `crates/namir-clap/src/state_ext.rs` names, verbatim, "load's
+own sequel work — set_last_document, push_notice on parse warnings, notify_params_changed and
+spawn_recall — runs nowhere". That is the code that crashed. The sweep found the *hole* by reading;
+the gate found the *bug* in it by running; neither would have found it alone.
+
+**Two things deliberately not done.** `notify_params_changed` was the obvious suspect and is
+**exonerated** — the control build left it intact and crashed 0/20, and `clap-validator` positively
+*requires* that rescan, so removing it would have converted a crash into a failure. And
+FR-CLAP-050's `// trace-partial:` annotation is unchanged: the fix does not exercise the host-driven
+`save`/`load` path, so its recorded gap still stands and closes at M9b.
+
+**Blast radius beyond the reported test, recorded because it is wider than FR-CLAP-020.** The same
+cycle exists at every site cloning `Arc<SharedInner>` into a job — `audio.rs:178` (`activate`),
+`ui_host.rs:138`, and `shared.rs`'s `start_library_scan`, which holds the reference for a whole
+library walk and so turns a millisecond window into a multi-second one. Closing a plugin during a
+rescan was the same crash with a far larger target. The fix is at the teardown seam, so it covers
+all of them. `namir-app` does not share the shape.
+
+**A consequence for teardown latency, stated rather than discovered later:** `clap_plugin.destroy`
+now blocks for the duration of any in-flight job. Library scans are cancelled cooperatively first,
+so those are bounded by one `Scanner::step`; recall jobs have no cancel flag and are joined
+outright. If a real DAW ever shows this as a stall, the remedy is to give recall jobs the same
+cooperative cancel the scanner already has.
 
 ---
 
