@@ -311,12 +311,17 @@ mod tests {
     /// from the one reported for a malformed or truncated file." Table-driven over every member
     /// the requirement's "architecture, **or** ... configuration" quantifies over (D-23.1's first
     /// question): an unsupported architecture string, D-9.12's two top-level A2 rejections
-    /// (`condition_dsp`, `in_channels`), and every feature
-    /// `wavenet::reject_unsupported_layer_features` rejects — every A2 field this build does not
-    /// yet implement. Each case asserts both halves the requirement's own `Verify: U` method names
-    /// (D-23.1's second question): the error id differs from `MALFORMED_JSON`'s **and** `detail`
-    /// names the offending key — asserting only the first would leave "names the unsupported
-    /// feature" untested and this tag would be a `trace-partial`, not a plain one.
+    /// (`condition_dsp`, `in_channels`), and every **permanently** out-of-scope feature
+    /// `wavenet::reject_unsupported_layer_features` rejects (D-9.12). M10 (A2, Steps A1-A4)
+    /// implemented `kernel_sizes`, `bottleneck`, the nested `head`, and object/per-layer
+    /// `activation` — those cases moved out of this table (they no longer belong in an "unsupported
+    /// features" test; `wavenet.rs`'s own unit tests cover them loading successfully instead) — and
+    /// narrowed `layer1x1`'s case from "any present object" to "present and inactive or grouped"
+    /// (a present, active, `groups: 1` `layer1x1` is core A2's ordinary, supported shape). Each case
+    /// asserts both halves the requirement's own `Verify: U` method names (D-23.1's second
+    /// question): the error id differs from `MALFORMED_JSON`'s **and** `detail` names the offending
+    /// key — asserting only the first would leave "names the unsupported feature" untested and this
+    /// tag would be a `trace-partial`, not a plain one.
     // trace: FR-NAM-140
     #[test]
     fn unsupported_features_are_named_and_distinct_from_malformed() {
@@ -325,31 +330,6 @@ mod tests {
         // (case name, top-level config overrides, layer-array overrides, substring `detail` must
         // contain — the actual naming of the unsupported feature FR-NAM-140 requires).
         let layer_cases: Vec<(&str, serde_json::Value, &str)> = vec![
-            (
-                "kernel_sizes",
-                serde_json::json!({"kernel_sizes": [1]}),
-                "kernel_sizes",
-            ),
-            (
-                "bottleneck",
-                serde_json::json!({"bottleneck": 1}),
-                "bottleneck",
-            ),
-            (
-                "nested head",
-                serde_json::json!({"head": {"out_channels": 1, "kernel_size": 1, "bias": true}}),
-                "head",
-            ),
-            (
-                "activation as object",
-                serde_json::json!({"activation": {"type": "LeakyReLU", "negative_slope": 0.1}}),
-                "activation",
-            ),
-            (
-                "activation as per-layer array",
-                serde_json::json!({"activation": ["Tanh"]}),
-                "activation",
-            ),
             ("gated true", serde_json::json!({"gated": true}), "gated"),
             (
                 "gating_mode",
@@ -372,8 +352,13 @@ mod tests {
                 "groups_input_mixin",
             ),
             (
+                "layer1x1 inactive",
+                serde_json::json!({"layer1x1": {"active": false, "groups": 1}}),
                 "layer1x1",
-                serde_json::json!({"layer1x1": {"active": true, "groups": 1}}),
+            ),
+            (
+                "layer1x1 grouped",
+                serde_json::json!({"layer1x1": {"active": true, "groups": 2}}),
                 "layer1x1",
             ),
             (
