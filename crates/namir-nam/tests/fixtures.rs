@@ -127,38 +127,48 @@ fn chunked_processing_matches_monolithic_processing() {
 #[test]
 // trace: NFR-QUAL-030
 fn numeric_parity_against_an_independent_reference_implementation() {
-    let model = nam::generate(WaveNetShape::Standard, 7).expect("standard fixture should generate");
-    let bytes = model.to_json_bytes();
-    let prepared = namir_nam::load(&bytes).expect("generated fixture should load");
+    // All four generated shapes, not just `Standard`. This is the regression baseline M10's A2
+    // work (crates/namir-nam's `wavenet.rs` weight-layout and activation unification) is measured
+    // against: every step of that refactor must leave these four figures unchanged, not merely
+    // "still under -100 dB" — an unchanged figure is what makes a regression attributable to the
+    // step that caused it, a merely-still-passing one is not.
+    //
+    // Baseline recorded before any A2 code touched this crate: standard -130.8 dB, lite -136.0 dB,
+    // feather -135.4 dB, nano -136.0 dB.
+    for (shape, name) in SHAPES {
+        let model = nam::generate(shape, 7).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let bytes = model.to_json_bytes();
+        let prepared = namir_nam::load(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
 
-    let probe = deterministic_signal(99, 4_000);
+        let probe = deterministic_signal(99, 4_000);
 
-    let reference = nam::reference_infer(&model, &probe);
-    let mut state = prepared.new_state(probe.len());
-    let ours = prepared.process(&mut state, &probe);
+        let reference = nam::reference_infer(&model, &probe);
+        let mut state = prepared.new_state(probe.len());
+        let ours = prepared.process(&mut state, &probe);
 
-    assert_eq!(reference.len(), ours.len());
+        assert_eq!(reference.len(), ours.len(), "{name}: length mismatch");
 
-    let mut sum_sq_err = 0.0f64;
-    let mut sum_sq_ref = 0.0f64;
-    for (&r, &o) in reference.iter().zip(ours.iter()) {
-        let d = f64::from(r) - f64::from(o);
-        sum_sq_err += d * d;
-        sum_sq_ref += f64::from(r) * f64::from(r);
+        let mut sum_sq_err = 0.0f64;
+        let mut sum_sq_ref = 0.0f64;
+        for (&r, &o) in reference.iter().zip(ours.iter()) {
+            let d = f64::from(r) - f64::from(o);
+            sum_sq_err += d * d;
+            sum_sq_ref += f64::from(r) * f64::from(r);
+        }
+        let rms_err = (sum_sq_err / reference.len() as f64).sqrt();
+        let rms_ref = (sum_sq_ref / reference.len() as f64).sqrt();
+        let db = 20.0 * (rms_err / rms_ref).log10();
+
+        // This is the strongest correctness signal this crate has: two independently-written
+        // from-scratch Rust ports of the same well-documented algorithm, both float32, agreeing to
+        // this tightly is strong evidence neither has a subtle porting bug. -100 dB is generous
+        // headroom below FR-NAM-030's -90 dB bar against the *real* C++ reference; if this is
+        // nowhere close, that's a bug in one of the two Rust ports to chase down, not a tolerance
+        // to loosen.
+        println!("numeric parity vs. namir-fixtures reference ({name}): {db:.1} dB");
+        assert!(
+            db < -100.0,
+            "{name}: numeric parity only {db:.1} dB (want <= -100 dB): a real bug, not noise"
+        );
     }
-    let rms_err = (sum_sq_err / reference.len() as f64).sqrt();
-    let rms_ref = (sum_sq_ref / reference.len() as f64).sqrt();
-    let db = 20.0 * (rms_err / rms_ref).log10();
-
-    // This is the strongest correctness signal this crate has: two independently-written
-    // from-scratch Rust ports of the same well-documented algorithm, both float32, agreeing to
-    // this tightly is strong evidence neither has a subtle porting bug. -100 dB is generous
-    // headroom below FR-NAM-030's -90 dB bar against the *real* C++ reference; if this is
-    // nowhere close, that's a bug in one of the two Rust ports to chase down, not a tolerance to
-    // loosen.
-    println!("numeric parity vs. namir-fixtures reference: {db:.1} dB");
-    assert!(
-        db < -100.0,
-        "numeric parity only {db:.1} dB (want <= -100 dB): a real bug, not noise"
-    );
 }
