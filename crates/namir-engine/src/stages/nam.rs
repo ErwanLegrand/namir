@@ -858,7 +858,9 @@ mod tests {
     use super::*;
     use crate::rt_harness::audio_section;
     use namir_core::ChannelConfig;
-    use namir_nam::{LayerArrayConfig, NamFile, NamMetadata, WaveNetConfig};
+    use namir_nam::{
+        ActivationEntry, ActivationSpec, LayerArrayConfig, NamFile, NamMetadata, WaveNetConfig,
+    };
 
     fn ctx(sample_rate_hz: u32, channel_config: ChannelConfig) -> PrepareContext {
         PrepareContext::new(SampleRate::new(sample_rate_hz).unwrap(), 64, channel_config).unwrap()
@@ -873,32 +875,57 @@ mod tests {
     /// A tiny, deterministic WaveNet layer array — same shape `namir-nam`'s own private test
     /// fixture uses (`wavenet.rs`'s `minimal_layer_array`, not reusable from here since it's not
     /// `pub`), rebuilt against the fully public `NamFile`/`LayerArrayConfig` surface instead.
+    /// M10: `LayerArrayConfig` widened to make room for A2's fields (see `namir_nam::file`'s
+    /// module doc comment) — every field beyond the A1 five is now `Option`, so this helper states
+    /// all of them explicitly (`None` where A1 has no opinion) rather than relying on a `Default`
+    /// impl, mirroring `wavenet.rs`'s own private `minimal_layer_array` test helper.
     fn minimal_layer_array() -> LayerArrayConfig {
         LayerArrayConfig {
             input_size: 1,
             condition_size: 1,
-            head_size: 1,
             channels: 2,
-            kernel_size: 2,
             dilations: vec![1],
-            activation: "Tanh".to_string(),
-            gated: false,
-            head_bias: false,
+            activation: ActivationSpec::One(ActivationEntry::Name("Tanh".to_string())),
+            kernel_size: Some(2),
+            kernel_sizes: None,
+            bottleneck: None,
+            head_size: Some(1),
+            head_bias: Some(false),
+            head: None,
+            gated: Some(false),
+            gating_mode: None,
+            secondary_activation: None,
+            groups_input: None,
+            groups_input_mixin: None,
+            layer1x1: None,
+            head1x1: None,
+            slimmable: None,
+            conv_pre_film: None,
+            conv_post_film: None,
+            input_mixin_pre_film: None,
+            input_mixin_post_film: None,
+            activation_pre_film: None,
+            activation_post_film: None,
+            layer1x1_post_film: None,
+            head1x1_post_film: None,
         }
     }
 
     /// How many flat weights `PreparedNam::from_file` consumes for one `minimal_layer_array`,
-    /// mirroring `wavenet.rs`'s own private `weight_count_for` test helper.
+    /// mirroring `wavenet.rs`'s own private `weight_count_for` test helper. Assumes `cfg` is a
+    /// plain A1 shape, as `minimal_layer_array` always produces.
     fn weight_count_for(cfg: &LayerArrayConfig) -> usize {
+        let kernel_size = cfg.kernel_size.expect("A1 fixture: kernel_size is set");
+        let head_size = cfg.head_size.expect("A1 fixture: head_size is set");
         let mut n = cfg.channels * cfg.input_size; // rechannel, no bias
         for _ in &cfg.dilations {
-            n += cfg.channels * cfg.channels * cfg.kernel_size; // dilated weight
+            n += cfg.channels * cfg.channels * kernel_size; // dilated weight
             n += cfg.channels; // dilated bias
             n += cfg.channels * cfg.condition_size; // mixin, no bias
             n += cfg.channels * cfg.channels; // residual weight
             n += cfg.channels; // residual bias
         }
-        n += cfg.head_size * cfg.channels; // head_rechannel weight
+        n += head_size * cfg.channels; // head_rechannel weight
         n
     }
 
@@ -917,6 +944,8 @@ mod tests {
                 layers: vec![cfg],
                 head_scale: 0.5,
                 head: None,
+                in_channels: None,
+                condition_dsp: None,
             },
             weights,
             sample_rate: Some(sample_rate_hz),
