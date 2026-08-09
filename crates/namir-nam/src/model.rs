@@ -71,6 +71,18 @@ impl PreparedNam {
         }
     }
 
+    /// FR-NAM-090: the model's declared integrated loudness (LUFS), or `None` when the source
+    /// file's `metadata.loudness` was absent or `null` -- see
+    /// `wavenet::PreparedWaveNet::loudness_lufs`'s doc comment for exactly which files that
+    /// covers. `namir-engine`'s Nam stage reads this to compute its normalisation gain; it applies
+    /// zero when this is `None` rather than guessing a value.
+    pub fn loudness_lufs(&self) -> Option<f32> {
+        match &self.0 {
+            Architecture::WaveNet(p) => p.loudness_lufs(),
+            Architecture::Lstm(p) => p.loudness_lufs(),
+        }
+    }
+
     /// The model's declared sample rate (or the 48 kHz default if the file omitted it).
     pub fn sample_rate(&self) -> SampleRate {
         match &self.0 {
@@ -227,6 +239,33 @@ mod tests {
         let prepared = load(&minimal_wavenet_json()).expect("wavenet file should load");
         assert_eq!(prepared.latency_samples(), 0);
         assert_eq!(prepared.sample_rate().hz(), 48_000);
+    }
+
+    /// FR-NAM-090: `loudness_lufs()` forwards through `PreparedNam`'s architecture dispatch (D-8.2's
+    /// enum-wrapping shape) for both Must architectures, and reports `None` when the source file
+    /// never declared a value (this fixture's `minimal_wavenet_json`/`minimal_lstm_json` omit
+    /// `metadata` entirely).
+    #[test]
+    fn loudness_lufs_forwards_through_both_architectures() {
+        let wavenet = load(&minimal_wavenet_json()).unwrap();
+        assert_eq!(wavenet.loudness_lufs(), None);
+
+        let mut wavenet_value: serde_json::Value =
+            serde_json::from_slice(&minimal_wavenet_json()).unwrap();
+        wavenet_value["metadata"] = serde_json::json!({ "loudness": -16.5 });
+        let bytes = serde_json::to_vec(&wavenet_value).unwrap();
+        let wavenet_with_loudness = load(&bytes).unwrap();
+        assert_eq!(wavenet_with_loudness.loudness_lufs(), Some(-16.5));
+
+        let lstm = load(&minimal_lstm_json()).unwrap();
+        assert_eq!(lstm.loudness_lufs(), None);
+
+        let mut lstm_value: serde_json::Value =
+            serde_json::from_slice(&minimal_lstm_json()).unwrap();
+        lstm_value["metadata"] = serde_json::json!({ "loudness": -22.1 });
+        let bytes = serde_json::to_vec(&lstm_value).unwrap();
+        let lstm_with_loudness = load(&bytes).unwrap();
+        assert_eq!(lstm_with_loudness.loudness_lufs(), Some(-22.1));
     }
 
     #[test]

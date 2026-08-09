@@ -32,6 +32,8 @@ ir.level_db 3704864057 continuous live
 ir.low_cut_enabled 1089690959 stepped live
 ir.low_cut_freq_hz 1056762835 continuous live
 nam.enabled 1703077744 stepped live
+nam.normalize_enabled 2036451968 stepped live
+nam.normalize_offset_db 3562711459 continuous live
 out.gain_db 3486062367 continuous live
 trim.dc_blocker_enabled 1770498595 stepped live
 trim.gain_db 1371108501 continuous live

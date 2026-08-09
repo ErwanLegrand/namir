@@ -9,6 +9,7 @@ mod attribution;
 mod cargo_meta;
 mod layering;
 mod milestones;
+mod nam_parity;
 mod params_lock;
 mod preset;
 mod traceability;
@@ -604,7 +605,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>>"
+        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>>"
     );
 }
 
@@ -634,6 +635,16 @@ fn main() {
             }
         },
         Some("preset") => preset::run(&args[1..]),
+        // Strict, like `traceability`'s own parse: see nam_parity's module comment for why an
+        // unrecognised flag here should be loud rather than silently ignored.
+        Some("nam-parity") => match nam_parity::parse_args(&args[1..]) {
+            Ok(parsed) => nam_parity::run(&parsed),
+            Err(e) => {
+                println!("{e}");
+                print_usage();
+                std::process::exit(2);
+            }
+        },
         _ => {
             print_usage();
             std::process::exit(2);

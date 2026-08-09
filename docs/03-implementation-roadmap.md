@@ -1818,7 +1818,7 @@ not adjudicate them further.
 | 5.1 CHAIN | 8 | 3 | 5 | 0 |
 | 5.2 IN | 3 | 1 | 2 | 0 |
 | 5.3 GATE | 3 | 1 | 2 | 0 |
-| 5.4 NAM | 13 | 3 | 8 | 2 |
+| 5.4 NAM | 13 | 6 | 7 | 0 |
 | 5.5 IR | 7 | 4 | 3 | 0 |
 | 5.6 EQ | 3 | 0 | 3 | 0 |
 | 5.7 OUT | 2 | 0 | 2 | 0 |
@@ -1838,7 +1838,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 1 | 1 |
-| **Total** | **130** | **29** | **92** | **9** |
+| **Total** | **130** | **32** | **91** | **7** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2188,6 +2188,45 @@ form, so the ledger and the source agree.
   a third party could write a reader from; `docs/04-state-and-preset-format.md:3-4` and the manual
   test's own "Requirement (literal)" line both silently restate it as the state and preset format.
   *Not started:* NFR-DOC-040 — there is no `README` of any extension at the repository root; M12's.
+
+**M10 moves, 2026-08-09 — 5.4 NAM only, four cells, appended per D-23.2's "every later milestone
+moves only the cells its own evidence justifies."** Row becomes **6 / 7 / 0** (was 3 / 8 / 2).
+
+- **FR-NAM-140: Partial → Done.** Both clauses the M9a bullet above named unmet are now met: the
+  configuration clause (`crates/namir-nam/src/wavenet.rs`'s `reject_unsupported_layer_features` and
+  `resolve_layer_array`, `crates/namir-nam/src/error_codes.rs`'s `UNSUPPORTED_CONFIGURATION`/
+  `INCONSISTENT_CONFIGURATION`) is built and covered by a table-driven test spanning every
+  permanently-rejected feature (`crates/namir-nam/src/model.rs`'s
+  `unsupported_features_are_named_and_distinct_from_malformed`), asserting both that the error id
+  differs from `MALFORMED_JSON`'s and that `detail` names the offending key — the requirement's own
+  quantifier ("architecture, **or** … configuration") and its `Verify: U` method both satisfied.
+- **FR-NAM-150: Not started → Done.** `crates/namir-nam/src/wavenet.rs` loads and runs core A2
+  (bottleneck threading, per-layer activation, the k-tap head); `crates/namir-nam/tests/
+  a2_fixtures.rs`'s `numeric_parity_against_an_independent_reference_implementation_for_a2` covers
+  both quantified configurations (`A2Shape::Full`/`A2Shape::Lite`, mapped to "A2-Full"/"A2-Lite" at
+  `crates/namir-fixtures/src/nam/mod.rs`'s `A2Shape` doc comment) against `namir-fixtures`'
+  independently-derived `reference_infer_a2`, to the accuracy FR-NAM-030 sets — the two agree to
+  the bit.
+- **FR-NAM-030: Partial → Done.** The M9a bullet above named two unmet clauses — comparison against
+  `namir-fixtures`' own port rather than the real reference implementation, and an ~83 ms probe
+  rather than the specified 10-second clean/transient/saturated signal. `crates/namir-nam/tests/
+  golden_reference.rs` closes both: committed, generated (D-19.1), regenerable fixtures compared
+  against a real `NeuralAmpModelerCore` render (pinned `3cde95c`,
+  `-DNAM_USE_INLINE_GEMM -DNAM_ENABLE_A2_FAST=OFF`) over the specified signal, for both
+  architectures — WaveNet to -137 dB, LSTM to the bit. Corroborated, not merely asserted: `xtask
+  nam-parity` run against seven real, locally-held LSTM models spanning the full `num_layers` 1-4
+  range (`docs/manual-tests/fr-nam-020-real-lstm-models.md`'s 2026-08-09 addendum), -114 to -130 dB,
+  no prewarm treatment needed for any of them.
+- **FR-NAM-090: Not started → Partial.** `crates/namir-nam/src/file.rs`'s `NamMetadata::loudness`,
+  `crates/namir-params/src/stages/nam.rs`'s `NORMALIZE_ENABLED`/`NORMALIZE_OFFSET_DB`, and
+  `crates/namir-engine/src/stages/nam.rs`'s `NamSlot::process_wet` (a smoothed, allocation-free
+  gain) implement the behaviour; `crates/namir-engine/src/stages/nam.rs`'s
+  `normalization_enabled_brings_differently_declared_models_within_one_lu` executes the `Verify: U`
+  method's comparison shape but substitutes plain RMS-in-dB for the method's named "integrated
+  loudness" (ITU-R BS.1770), which this codebase has no meter for — carries a `// trace-partial:`
+  in the source for exactly this reason, so **Partial** here agrees with the tag rather than
+  overriding it. FR-NAM-100 (dBu-calibrated operating levels) is untouched and stays **Not
+  started** — a distinct, Should-priority requirement this milestone did not scope.
 
 ---
 
@@ -3700,6 +3739,132 @@ one**, and that fact — not merely the number — is what the milestone records
 measured across the shape grid under D-2.4's conditions and reported as a curve, not a single
 figure; if it shows LSTM breaching NFR-PERF-010's budget at shapes users actually run, that is a
 finding to record and act on, not to average away.
+
+### M10 status — this session, 2026-08-09
+
+All five phases built, across three stacked PRs (Phase 0 alone; Phases 1-3; Phase 4 plus
+FR-NAM-090 plus this note). Recorded here honestly, including where the work landed on a
+different shape than this section predicted.
+
+**Naming, resolved.** "A2-Full"/"A2-Lite" do not appear anywhere in `NeuralAmpModelerCore`'s own
+source. The names map to upstream's **A2 standard** (`channels == bottleneck == 8`) and **A2
+nano** (`channels == bottleneck == 3`) respectively — `NAM/wavenet/a2_fast.h`'s own header
+comment and its strict shape detector (`a2_fast.cpp`, `is_a2_shape`) are the source. Recorded once,
+at `crates/namir-fixtures/src/nam/mod.rs`'s `A2Shape` doc comment, and restated at D-9.12's own
+consequence note in `docs/02-architecture.md` §9.5.
+
+**Phase 2's built scope is narrower than this section's literal list, by design, not oversight.**
+"Grouped dilated convolution... the convolutional head, and the activations" above reads as
+grouped convolution being built; it is not. Core A2's own detector requires `groups_input ==
+groups_input_mixin == layer1x1.groups == 1` — no real A2 shape ever exercises a grouped kernel — so
+building one would have shipped code with no fixture, real or generated, that ever calls it. What
+was built: per-layer `kernel_sizes`, a `bottleneck` width distinct from the residual trunk's
+`channels`, the `layer1x1` projection (upstream's name for what A1 called `residual`), a real k-tap
+dilated head rechannel, and six new activations (`LeakyReLU`, `SiLU`, `Hardswish`, `Softsign`,
+`LeakyHardtanh`, `PReLU`, scalar or per-channel). Every feature this scope excludes —
+`condition_dsp`, all eight FiLM sites, gating, non-unity `groups_*`, `slimmable`, an active
+`head1x1`, an inactive/grouped `layer1x1` — is rejected by name (FR-NAM-140), not silently ignored,
+and stays a permanent D-9.12 boundary, not a temporary Phase-0-only gap.
+
+**R-9, mitigated by process.** Two independent implementations were derived from the upstream C++
+source by two agents, neither reading the other's code: `crates/namir-nam`'s own A2 path, and
+`crates/namir-fixtures`' A2 generator plus `reference_infer_a2`. Their independently-derived weight
+orders agree exactly (compare `crates/namir-nam/src/wavenet.rs`'s weight walk against
+`crates/namir-fixtures/src/nam/mod.rs`'s `build_a2_weights` doc comment), and the in-tree
+Rust-vs-Rust parity test (`crates/namir-nam/tests/a2_fixtures.rs`) agrees to **-inf dB** — bit-exact,
+since core A2's `LeakyReLU` has no rounding-sensitive transcendental function and both
+implementations sum in the same order. Cross-checked against a real reference render
+(`NeuralAmpModelerCore`, pinned `3cde95c`, built with `-DNAM_USE_INLINE_GEMM
+-DNAM_ENABLE_A2_FAST=OFF`): A2 Full and A2 Lite (`WaveNetShape::Standard`-scale synthetic fixtures)
+measured -90.31 dB and -90.31 dB respectively against the real reference, with an A1 Standard
+re-confirmation on the same pass at -90.87 dB. A signal-complexity diagnostic (a single-sample
+impulse, a 100 ms probe, the full 2-second probe) found this figure flat regardless of signal
+length or complexity — the signature of per-operation floating-point non-associativity between
+Eigen's internal summation order and this crate's sequential per-tap loop, not a structural defect
+(a wrong weight order produces errors of a different order of magnitude, not a few dB that hold
+steady across wildly different signals). **R-9 is retired** — see `docs/02-architecture.md` §22's
+updated risk-register row.
+
+**That -90 dB figure is now understood, not just measured.** It comes from model *size*, not from
+a flat noise floor: the golden-reference fixtures added for FR-NAM-030 below use much smaller
+shapes (`WaveNetShape::Nano`, `LstmShape::Tiny`) and measure -137 dB (WaveNet) and bit-exact
+(LSTM) against the same real reference. More layers and channels accumulate more per-operation
+summation-order drift — `Standard`'s ten layers across two arrays versus `Nano`'s two-layer, one-
+array shape is the difference, not a hidden bug in either.
+
+**FR-NAM-030 closes, for both architectures, in-repo, permanently.** `crates/namir-nam/tests/
+golden_reference.rs` (new) commits small, generated (D-19.1: never captured), regenerable fixtures
+— `tests/golden/{wavenet_nano,lstm_tiny}.nam`, `input_10s.wav` (the specified 10-second
+clean/transient/saturated signal, built from the same recipe `spikes/s1-nam-inference`'s own
+generator uses), and each model's real-reference render — and asserts `namir-nam`'s own output
+against them in-process, tagged `// trace: FR-NAM-030` on both tests (the pair together spans "each
+supported architecture"; neither alone does). Building the LSTM fixture surfaced a real, useful
+finding along the way: `NeuralAmpModelerCore`'s `DSP::Reset` silently prewarms every stateful model
+with 0.5 s of processed silence by default (`NAM/lstm.cpp`'s own comment calls this "Hacky, but a
+half-second seems to work for most models") — a host-convenience default, not part of the LSTM
+model's mathematical definition or the `.nam` format itself, and `render.exe` always takes that
+default path. Omitting the same prewarm on `namir-nam`'s side (which always starts from the
+model's own declared `h0`/`c0`) produced -44 dB against a tiny, randomly-initialised fixture; once
+the test replicates the reference's own default treatment, both sides agree to the bit. Corroborated
+by `xtask nam-parity` (new, `xtask/src/nam_parity.rs`) run against seven real, locally-held LSTM
+models spanning every `num_layers` value in the 67-model grid documented in
+`docs/manual-tests/fr-nam-020-real-lstm-models.md` — none showed anything like the tiny fixture's
+prewarm sensitivity, measuring -114 to -130 dB with no prewarm treatment applied at all, consistent
+with real trained models' `h0`/`c0` already sitting close to where silence would settle them. No
+`namir-nam` production code changed because of this finding — see `tests/golden_reference.rs`'s own
+doc comment for why matching it in the test, not the product, is the correct read of what
+"matching the reference implementation" means here.
+
+**NFR-PERF-010, re-measured, informationally.** `crates/namir-nam`'s own inference in isolation
+(not the full six-stage chain, so not a certified figure under D-2.4 either way), three interleaved
+runs on the pinned reference machine, p99.9 of one core: A1 Standard 10.57-10.88%, A2 Full
+8.34-8.68%, A2 Lite 1.92-2.28%. A2 Full costs *less* than A1 Standard despite more than double the
+layers (23 vs. 10) — core A2's narrower per-layer channel count and `bottleneck == channels`
+(no grouped-conv overhead to pay, since Phase 2 never built one) more than offset the extra layer
+count. §17's own warning to "expect the first working A2 path to be slower than A1" did not
+materialize, for this specific comparison. A full six-stage-chain re-certification is not part of
+this milestone; the isolated-stage figure above is the informational evidence this acceptance
+criterion asks be recorded, "whichever direction it moves."
+
+**The LSTM cost curve is new evidence, and it is not entirely comfortable.**
+`crates/namir-nam/benches/lstm_inner_loops.rs` (new) sweeps the real 67-model grid's shape space
+(`num_layers` 1-4 x `hidden_size` 1-12/16/20/24/28/32). Informational (D-2.4: not >= 5 certified
+repetitions on the reference machine), but reproducible in direction across independent runs: a
+double-digit number of shapes at the larger end (`num_layers` >= 2, `hidden_size` >= ~16-20)
+breach NFR-PERF-010's 25%-of-one-core budget at p99.9, worst observed near 60% for `LSTM-3-032`
+excluding two runs' worth of clearly contaminated tail outliers at `LSTM-4-028`/`LSTM-4-032`
+(p99.9 in the hundreds-of-percent range, inconsistent with those same shapes' own p50/p99, the
+signature of the GPU-driver/DPC contamination `AGENTS.md`'s benchmark-methodology section already
+documents on this machine — not evidence those two shapes are that expensive). LSTM's low-compute
+reputation, which motivated collecting the 67-model grid in the first place, does not hold at the
+larger end of that same grid. Not acted on in this milestone — recorded as a finding for whoever
+scopes LSTM's own performance-closure work, the way M3 scoped WaveNet's.
+
+**FR-NAM-090 closes, FR-NAM-100 is explicitly deferred — not the "FR-NAM-090 and FR-NAM-100 close"
+this section's acceptance text originally predicted.** `namir-nam` parses and exposes
+`metadata.loudness`; `namir-params` gained `nam.normalize_enabled` (Stepped, default on) and
+`nam.normalize_offset_db` (Continuous, ±12 dB, default 0); `namir-engine`'s Nam stage applies a
+smoothed (`namir-dsp::GainRamp`, 25 ms, matching `trim.rs`/`out.rs`'s own convention),
+allocation-free normalisation gain computed as `-18 LUFS (this project's own reference point,
+documented at `namir_params::stages::nam::TARGET_LOUDNESS_LUFS`) minus the model's declared
+loudness, plus the user's offset`, or zero when a model declares none; old presets load unaffected
+(`namir-state`'s `ParamValues` is already positionally complete over `REGISTRY`, needing no code
+change); `namir-ui`'s existing generic-over-`REGISTRY` control surfacing needed no per-parameter
+code either. **Tagged `trace-partial:`, not a plain `trace:`**: FR-NAM-090's `Verify: U` method
+names "integrated loudness," ITU-R BS.1770's specific K-weighted, gated measurement, and the test
+(`crates/namir-engine/src/stages/nam.rs`) substitutes plain RMS-in-dB — a fair proxy for the
+matched-signal-pair comparisons that test makes, stated as a proxy in its own doc comment, but not
+the literal method, and no BS.1770 meter exists anywhere in this codebase. **FR-NAM-100 was not
+built** — a separate, Should-priority requirement (dBu-calibrated operating levels, a user-stated
+interface-sensitivity setting) that needs a real UI surface this milestone did not scope time for;
+deferred to whichever future milestone next touches NAM-stage calibration, not silently dropped.
+
+### M10 close-out — §14's re-audit table, this session, 2026-08-09
+
+FR-NAM-140, FR-NAM-150 and FR-NAM-030 move to **Done** in §14's `### M9a re-audit` table;
+FR-NAM-090 moves to **Partial**. See that table's own per-row evidence bullets, appended beneath it
+in the same session, for the file-path evidence D-23.2 requires. FR-NAM-100 stays **Not started** —
+this milestone did not touch it.
 
 ---
 
