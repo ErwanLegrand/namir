@@ -31,6 +31,27 @@
 //! module's `PreparedWaveNet`/`WaveNetState` and `lstm.rs`'s `PreparedLstm`/`LstmState`. This
 //! module's own types keep the plain, architecture-specific names an enum variant should have;
 //! `model.rs`'s doc comment explains the forwarding.
+//!
+//! # NAM Architecture 2 (M10, D-9.12)
+//!
+//! A2 files declare `architecture: "WaveNet"` exactly as A1 files do — D-9.12 extends this one
+//! parser/inference path rather than adding a second. Core A2 (enough to load and run the
+//! "A2 standard"/"A2 nano" configurations, FR-NAM-150) turned out to need three real structural
+//! additions on top of A1's shape, all provably inert when the file is A1 (`bottleneck` absent,
+//! `layer1x1` absent, a single per-array activation): a `bottleneck` width distinct from the
+//! residual trunk's `channels` (threaded through `Layer`/`LayerArray`/the weight walk); a
+//! per-layer, parameterized [`Activation`] (`LeakyReLU`/`SiLU`/`Hardswish`/`Softsign`/
+//! `LeakyHardtanh`/`PReLU`, replacing A1's four zero-payload variants); and a real k-tap, dilated
+//! `head_rechannel` (unified onto `Conv1D`, with A1's `head_size`/`head_bias` legacy shape now the
+//! `kernel_size = 1` degenerate case). `reject_unsupported_layer_features` enforces D-9.12's
+//! permanent scope boundary: `condition_dsp`, FiLM (all eight sites), gating, non-unity
+//! `groups_*`, `slimmable`, an active `head1x1`, and an inactive/grouped `layer1x1` are rejected
+//! by name (`UNSUPPORTED_CONFIGURATION`, FR-NAM-140), not silently ignored or misparsed as
+//! malformed. Cross-checked against a real reference render (`NeuralAmpModelerCore`, pinned
+//! `3cde95c`, built with `-DNAM_USE_INLINE_GEMM -DNAM_ENABLE_A2_FAST=OFF`) and against
+//! `namir-fixtures`'s independently-derived A2 oracle (`tests/a2_fixtures.rs`) — see R-9
+//! (`docs/02-architecture.md` §22) for why that independence, not just a passing test, is the
+//! actual risk mitigation this milestone's process was built around.
 
 use namir_core::SampleRate;
 use wide::f32x8;
@@ -85,28 +106,83 @@ const MAX_CONV_HISTORY_ELEMENTS: usize = 16_777_216;
 /// file omits `sample_rate` entirely (real exported files sometimes do).
 const DEFAULT_SAMPLE_RATE_HZ: u32 = 48_000;
 
+/// `LeakyReLU`/`PReLU`'s default slope when a `.nam` file's activation entry (bare name, or an
+/// object omitting its own `negative_slope`) doesn't state one — matching
+/// `NeuralAmpModelerCore`'s own hard-coded default (`activations.cpp`'s singleton constructions
+/// and `ActivationConfig::from_json`'s `j.value("negative_slope", 0.01f)`).
+const DEFAULT_LEAKY_SLOPE: f32 = 0.01;
+
 // ---------------------------------------------------------------------------------------------
 // Activation
 // ---------------------------------------------------------------------------------------------
 
 /// Replaces the spike's stringly-typed activation dispatch (which `panic!`d on an unrecognized
 /// name) with a closed enum parsed once, during validated construction. By the time a `Layer`
-/// exists, its activation is one of these four variants, so the per-sample `match` in
+/// exists, its activation is one of these variants, so the per-sample `match` in
 /// `Layer::apply_into` can never hit an unreachable case — the possibility of an invalid
 /// activation string is moved entirely out of the RT path and into `PreparedWaveNet::from_file`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// M10 (A2, Step A2): grew from four zero-payload variants (A1's whole vocabulary) to ten, six of
+/// which carry parameters read from the `.nam` file's `activation` entry — never from the weight
+/// stream, see `activations.h`/`.cpp`, read directly rather than guessed. No longer `Copy`
+/// (`PReLU`'s per-channel slopes are a `Vec<f32>`), so each `Layer` now clones its own resolved
+/// `Activation` out of a per-array-or-per-layer list rather than copying one shared value — A1
+/// files still resolve every layer in an array to the same cloned value (one list entry,
+/// `Vec::clone`d `dilations.len()` times), so this is provably inert for A1: same enum value, same
+/// math, just no longer literally the same bits via `Copy`.
+#[derive(Debug, Clone, PartialEq)]
 enum Activation {
     Tanh,
     ReLU,
     Sigmoid,
     Identity,
+    /// `x > 0 ? x : negative_slope * x`.
+    LeakyReLU {
+        negative_slope: f32,
+    },
+    /// `x * sigmoid(x)` (aka Swish).
+    SiLU,
+    /// `x * clamp(x + 3, 0, 6) / 6`.
+    Hardswish,
+    /// `x / (1 + |x|)`.
+    Softsign,
+    /// Piecewise-linear clamp: identity inside `[min_val, max_val]`, a shallow line of slope
+    /// `min_slope`/`max_slope` outside it.
+    LeakyHardtanh {
+        min_val: f32,
+        max_val: f32,
+        min_slope: f32,
+        max_slope: f32,
+    },
+    /// `LeakyReLU` with either one slope shared by every channel, or one slope per channel.
+    PReLU(PReluSlopes),
+}
+
+/// `PReLU`'s negative-slope parameter, resolved from the `.nam` file's `negative_slope` (scalar,
+/// shared by every channel) or `negative_slopes` (one entry per channel) key — see
+/// `activations.cpp`'s `ActivationConfig::from_json`, which prefers a present `negative_slope`
+/// over `negative_slopes` when (unusually) both are present.
+#[derive(Debug, Clone, PartialEq)]
+enum PReluSlopes {
+    Scalar(f32),
+    PerChannel(Vec<f32>),
 }
 
 impl Activation {
-    /// Math identical to the spike's `activation_apply`. `Tanh`/`Sigmoid` route through
-    /// [`vectorize_unary`] (R-4 follow-up, M3 §7's close-out pass) — see that function's doc
-    /// comment for why these two, not `ReLU`, needed a dedicated fix.
-    fn apply(self, x: &mut [f32]) {
+    /// `x`: flat `[channels * n]` in this crate's `Sig` layout (`data[channel * n + t]`, channel
+    /// slowest-varying). `n` (the block length) is consulted only by `PReLU(PerChannel(_))`, to
+    /// find each channel's own row within `x` — every other variant applies uniformly across the
+    /// whole slice and ignores `n` entirely.
+    ///
+    /// **Why `n`, not a channel index or count:** `NeuralAmpModelerCore`'s own
+    /// `ActivationPReLU::apply(float* data, long size)` indexes by `pos % negative_slopes.len()`,
+    /// which is correct there because its buffer is column-major, `(channels, frames)` with frame
+    /// slowest-varying — consecutive `pos` values cycle through channels within one frame. That
+    /// indexing does **not** transfer to this crate's row-major-by-channel layout: here,
+    /// consecutive `pos` values stay within one channel's row for `n` steps before advancing to
+    /// the next channel, so the right index is `pos / n` (equivalently, one `apply_leaky_relu`
+    /// call per `n`-wide row), not `pos % negative_slopes.len()`.
+    fn apply(&self, x: &mut [f32], n: usize) {
         match self {
             Activation::Tanh => vectorize_unary(x, f32x8::tanh, f32::tanh),
             Activation::ReLU => {
@@ -120,8 +196,91 @@ impl Activation {
                 |v| 1.0 / (1.0 + (-v).exp()),
             ),
             Activation::Identity => {}
+            Activation::LeakyReLU { negative_slope } => apply_leaky_relu(x, *negative_slope),
+            Activation::SiLU => vectorize_unary(
+                x,
+                |v| v * (f32x8::ONE / (f32x8::ONE + (-v).exp())),
+                |v| v / (1.0 + (-v).exp()),
+            ),
+            Activation::Hardswish => vectorize_unary(
+                x,
+                |v| {
+                    (v + f32x8::splat(3.0)).clamp(f32x8::ZERO, f32x8::splat(6.0))
+                        * v
+                        * f32x8::splat(1.0 / 6.0)
+                },
+                |v| {
+                    let t = v + 3.0;
+                    let clamped = t.clamp(0.0, 6.0);
+                    v * clamped * (1.0 / 6.0)
+                },
+            ),
+            Activation::Softsign => {
+                vectorize_unary(x, |v| v / (f32x8::ONE + v.abs()), |v| v / (1.0 + v.abs()))
+            }
+            Activation::LeakyHardtanh {
+                min_val,
+                max_val,
+                min_slope,
+                max_slope,
+            } => {
+                let (min_val, max_val, min_slope, max_slope) =
+                    (*min_val, *max_val, *min_slope, *max_slope);
+                vectorize_unary(
+                    x,
+                    move |v| {
+                        let below_mask = v.simd_lt(f32x8::splat(min_val));
+                        let above_mask = v.simd_gt(f32x8::splat(max_val));
+                        let below = (v - f32x8::splat(min_val)) * f32x8::splat(min_slope)
+                            + f32x8::splat(min_val);
+                        let above = (v - f32x8::splat(max_val)) * f32x8::splat(max_slope)
+                            + f32x8::splat(max_val);
+                        below_mask.select(below, above_mask.select(above, v))
+                    },
+                    move |v| {
+                        if v < min_val {
+                            (v - min_val) * min_slope + min_val
+                        } else if v > max_val {
+                            (v - max_val) * max_slope + max_val
+                        } else {
+                            v
+                        }
+                    },
+                );
+            }
+            Activation::PReLU(PReluSlopes::Scalar(slope)) => apply_leaky_relu(x, *slope),
+            Activation::PReLU(PReluSlopes::PerChannel(slopes)) => {
+                if n == 0 {
+                    return;
+                }
+                debug_assert_eq!(
+                    x.len(),
+                    slopes.len() * n,
+                    "PReLU per-channel slopes.len() must equal x's channel count"
+                );
+                for (row, &slope) in x.chunks_exact_mut(n).zip(slopes.iter()) {
+                    apply_leaky_relu(row, slope);
+                }
+            }
         }
     }
+}
+
+/// `x > 0 ? x : negative_slope * x`, shared by `LeakyReLU` and both `PReLU` shapes (a per-channel
+/// `PReLU` is exactly this formula, applied once per channel row with that channel's own slope).
+/// Vectorized via a comparison mask rather than `x.max(negative_slope * x)`, since the latter is
+/// only equivalent for `negative_slope <= 1.0` — a `.nam` file's slope is not guaranteed to be,
+/// and this must match `leaky_relu`'s unconditional branch (`activations.h`) for any slope value.
+#[inline]
+fn apply_leaky_relu(x: &mut [f32], negative_slope: f32) {
+    vectorize_unary(
+        x,
+        move |v| {
+            v.simd_gt(f32x8::ZERO)
+                .select(v, v * f32x8::splat(negative_slope))
+        },
+        move |v| if v > 0.0 { v } else { negative_slope * v },
+    );
 }
 
 /// Applies `vec_fn` to `x` 8 lanes at a time, `scalar_fn` to the `n % 8` leftover — the same
@@ -163,6 +322,10 @@ fn vectorize_unary(x: &mut [f32], vec_fn: impl Fn(f32x8) -> f32x8, scalar_fn: im
 impl TryFrom<&str> for Activation {
     type Error = NamLoadError;
 
+    /// A bare activation name resolves every parameter to its reference default — matching
+    /// `ActivationConfig::from_json`'s string branch, which builds a config with every
+    /// `std::optional` parameter unset, and `Activation::get_activation` then falling back to
+    /// each type's own hard-coded default (`0.01` slope, `[-1, 1]` clamp bounds, etc.).
     fn try_from(name: &str) -> Result<Self, Self::Error> {
         match name {
             "Tanh" => Ok(Activation::Tanh),
@@ -170,11 +333,85 @@ impl TryFrom<&str> for Activation {
             "Sigmoid" => Ok(Activation::Sigmoid),
             // The spike treated an empty string the same as "Identity"; preserved here.
             "Identity" | "" => Ok(Activation::Identity),
+            "LeakyReLU" => Ok(Activation::LeakyReLU {
+                negative_slope: DEFAULT_LEAKY_SLOPE,
+            }),
+            "SiLU" => Ok(Activation::SiLU),
+            "Hardswish" => Ok(Activation::Hardswish),
+            "Softsign" => Ok(Activation::Softsign),
+            // Reference supports both casings (`activations.cpp`'s `type_map`); mirrored here.
+            "LeakyHardtanh" | "LeakyHardTanh" => Ok(Activation::LeakyHardtanh {
+                min_val: -1.0,
+                max_val: 1.0,
+                min_slope: DEFAULT_LEAKY_SLOPE,
+                max_slope: DEFAULT_LEAKY_SLOPE,
+            }),
+            "PReLU" => Ok(Activation::PReLU(PReluSlopes::Scalar(DEFAULT_LEAKY_SLOPE))),
             other => Err(NamLoadError {
                 code: error_codes::UNSUPPORTED_ACTIVATION,
                 detail: format!("unsupported activation: {other:?}"),
             }),
         }
+    }
+}
+
+/// Resolves one `.nam` layer's `activation` entry (bare name, or an object naming `type` plus
+/// parameters — [`file::ActivationEntry`]) to this file's `Activation`. `bottleneck` is the
+/// layer's internal width, needed only to validate a per-channel `PReLU`'s `negative_slopes`
+/// length; `array_index`/`layer_index` are for error messages only (a per-layer `activation`
+/// array resolves one entry per layer, so a bad entry needs to name which layer it was).
+fn resolve_activation_entry(
+    entry: &file::ActivationEntry,
+    bottleneck: usize,
+    array_index: usize,
+    layer_index: usize,
+) -> Result<Activation, NamLoadError> {
+    match entry {
+        file::ActivationEntry::Name(name) => Activation::try_from(name.as_str()),
+        file::ActivationEntry::Params(p) => match p.kind.as_str() {
+            "Tanh" => Ok(Activation::Tanh),
+            "ReLU" => Ok(Activation::ReLU),
+            "Sigmoid" => Ok(Activation::Sigmoid),
+            "Identity" | "" => Ok(Activation::Identity),
+            "LeakyReLU" => Ok(Activation::LeakyReLU {
+                negative_slope: p.negative_slope.unwrap_or(DEFAULT_LEAKY_SLOPE),
+            }),
+            "SiLU" => Ok(Activation::SiLU),
+            "Hardswish" => Ok(Activation::Hardswish),
+            "Softsign" => Ok(Activation::Softsign),
+            "LeakyHardtanh" | "LeakyHardTanh" => Ok(Activation::LeakyHardtanh {
+                min_val: p.min_val.unwrap_or(-1.0),
+                max_val: p.max_val.unwrap_or(1.0),
+                min_slope: p.min_slope.unwrap_or(DEFAULT_LEAKY_SLOPE),
+                max_slope: p.max_slope.unwrap_or(DEFAULT_LEAKY_SLOPE),
+            }),
+            // Reference precedence (`ActivationConfig::from_json`): a present `negative_slope`
+            // wins over `negative_slopes` even if both are present.
+            "PReLU" => {
+                if let Some(slope) = p.negative_slope {
+                    Ok(Activation::PReLU(PReluSlopes::Scalar(slope)))
+                } else if let Some(slopes) = &p.negative_slopes {
+                    if slopes.len() != bottleneck {
+                        return Err(NamLoadError {
+                            code: error_codes::INCONSISTENT_CONFIGURATION,
+                            detail: format!(
+                                "layer array {array_index} layer {layer_index}: PReLU negative_slopes.len() ({}) does not match bottleneck ({bottleneck})",
+                                slopes.len()
+                            ),
+                        });
+                    }
+                    Ok(Activation::PReLU(PReluSlopes::PerChannel(slopes.clone())))
+                } else {
+                    Ok(Activation::PReLU(PReluSlopes::Scalar(DEFAULT_LEAKY_SLOPE)))
+                }
+            }
+            other => Err(NamLoadError {
+                code: error_codes::UNSUPPORTED_ACTIVATION,
+                detail: format!(
+                    "layer array {array_index} layer {layer_index}: unsupported activation: {other:?}"
+                ),
+            }),
+        },
     }
 }
 
@@ -370,15 +607,28 @@ impl Conv1D {
     /// `out_ch`, `in_ch` and `kernel_size` are always dimensions already checked against this
     /// crate's ceilings by the time this is called, so `out_ch * in_ch * kernel_size` cannot
     /// overflow `usize` on any 64-bit target.
+    ///
+    /// `has_bias`: M10 (A2, Step A1) addition. Every dilated conv in this crate's scope has bias
+    /// (`Layer::_conv` is always constructed with `true`, per `detail.h`), but a layer array's
+    /// head rechannel does not always — A1's legacy `head_bias: false` must read **zero** bias
+    /// floats (`LayerArray`'s ctor sizes the head Conv1D's bias vector to `head_bias ? 1 : 0` per
+    /// output channel), not silently consume weights the file never wrote. `bias` is still always
+    /// stored as an `out_ch`-length vector (zero-filled when `has_bias` is false) so
+    /// `apply_into`'s bias-add stays branch-free; only weight *consumption* differs.
     fn read(
         r: &mut WeightReader,
         out_ch: usize,
         in_ch: usize,
         kernel_size: usize,
         dilation: usize,
+        has_bias: bool,
     ) -> Result<Self, NamLoadError> {
         let weight = r.take(out_ch * in_ch * kernel_size)?;
-        let bias = r.take(out_ch)?;
+        let bias = if has_bias {
+            r.take(out_ch)?
+        } else {
+            vec![0.0; out_ch]
+        };
         Ok(Self {
             out_ch,
             in_ch,
@@ -405,6 +655,31 @@ impl Conv1D {
         out: &mut [f32],
     ) {
         let hl = self.history_len();
+
+        // M10 (A2, Step A1): `kernel_size == 1` (A1's degenerate head-rechannel case, and any
+        // other 1x1-shaped Conv1D) has no causal history at all — reading straight from `input`
+        // is both simpler and, unlike the general path below, allocates no `padded` scratch to
+        // size (see `ArrayScratch::head_padded`'s construction), keeping this exactly as cheap as
+        // the `Conv1x1` this replaced. Mathematically identical to the general path with `hl == 0`
+        // (empty `history`, `padded == input`), just without touching `history`/`padded` at all.
+        if hl == 0 {
+            for oc in 0..self.out_ch {
+                let out_row = &mut out[oc * n..(oc + 1) * n];
+                out_row.fill(self.bias[oc]);
+                for ic in 0..self.in_ch {
+                    // kernel_size == 1, so the general formula's `* kernel_size + k` collapses to
+                    // just `oc * in_ch + ic`.
+                    let w = self.weight[oc * self.in_ch + ic];
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let in_row = &input[ic * n..(ic + 1) * n];
+                    axpy(out_row, in_row, w);
+                }
+            }
+            return;
+        }
+
         let pn = hl + n;
 
         // padded[ic] = history[ic] ++ input[ic], length pn, flattened [in_ch * pn].
@@ -452,13 +727,23 @@ impl Conv1D {
 // Layer / LayerArray
 // ---------------------------------------------------------------------------------------------
 
+/// M10 (A2, Step A3) renaming: `channels` is the trunk width this layer's residual connection
+/// carries in and out (`layer_input`/`next_input_out`'s width); `bottleneck` is the internal width
+/// the dilated conv and mixin produce and the activation operates on (`z`'s width). A1 files never
+/// set `bottleneck` (it defaults to `channels`, D-9.12), so for A1 these two are always the same
+/// number — this split is provably inert for A1, just no longer conflating two quantities that
+/// happen to be equal there. What A1 called `residual` (a `channels -> channels` `Conv1x1`) is
+/// `NeuralAmpModelerCore`'s `layer1x1` (a `bottleneck -> channels` `Conv1x1`); same weight-stream
+/// slot, same dimensions when `bottleneck == channels`, renamed to match the reference and to stop
+/// implying it's *only* ever a residual projection.
 struct Layer {
     dilated: Conv1D,
     mixin: Conv1x1,
-    residual: Conv1x1,
+    layer1x1: Conv1x1,
     activation: Activation,
     gated: bool,
     channels: usize,
+    bottleneck: usize,
 }
 
 /// Per-layer reusable scratch, sized once for a chosen max block size and reused across every
@@ -468,16 +753,16 @@ struct Layer {
 struct LayerScratch {
     history: Sig,  // in_ch * history_len
     padded: Sig,   // in_ch * (history_len + max_n)
-    conv_buf: Sig, // dilated.out_ch * max_n  (out_ch is 2x channels when gated)
-    z_buf: Sig,    // channels * max_n
+    conv_buf: Sig, // dilated.out_ch * max_n  (out_ch is 2x bottleneck when gated)
+    z_buf: Sig,    // bottleneck * max_n
 }
 
 impl Layer {
     /// Allocation-free: writes into `scratch`'s buffers, accumulates into `head_sum`, and
-    /// writes the next layer's input into caller-provided `next_input_out`. `layer_input`,
-    /// `condition`, `head_sum` and `next_input_out` are all flat `[channels * n]` (`condition`
-    /// is `[condition_size * n]`, which is `[1 * n]` since `condition_size == 1` is enforced at
-    /// load time).
+    /// writes the next layer's input into caller-provided `next_input_out`. `layer_input` and
+    /// `next_input_out` are flat `[channels * n]` (the trunk width); `head_sum` is flat
+    /// `[bottleneck * n]`; `condition` is `[condition_size * n]`, which is `[1 * n]` since
+    /// `condition_size == 1` is enforced at load time.
     #[allow(clippy::too_many_arguments)]
     fn apply_into(
         &self,
@@ -489,7 +774,8 @@ impl Layer {
         next_input_out: &mut [f32],
     ) {
         let conv_len = self.dilated.out_ch * n;
-        let z_len = self.channels * n;
+        let bn_len = self.bottleneck * n;
+        let trunk_len = self.channels * n;
 
         self.dilated.apply_into(
             layer_input,
@@ -502,15 +788,15 @@ impl Layer {
             .apply_add_into(condition, n, &mut scratch.conv_buf[..conv_len]);
 
         if self.gated {
-            let (top, bottom) = scratch.conv_buf[..conv_len].split_at_mut(z_len);
-            self.activation.apply(top);
-            Activation::Sigmoid.apply(bottom);
-            for i in 0..z_len {
+            let (top, bottom) = scratch.conv_buf[..conv_len].split_at_mut(bn_len);
+            self.activation.apply(top, n);
+            Activation::Sigmoid.apply(bottom, n);
+            for i in 0..bn_len {
                 scratch.z_buf[i] = top[i] * bottom[i];
             }
         } else {
-            self.activation.apply(&mut scratch.conv_buf[..z_len]);
-            scratch.z_buf[..z_len].copy_from_slice(&scratch.conv_buf[..z_len]);
+            self.activation.apply(&mut scratch.conv_buf[..bn_len], n);
+            scratch.z_buf[..bn_len].copy_from_slice(&scratch.conv_buf[..bn_len]);
         }
 
         // `axpy(w=1.0)`, not a plain `+=` loop (this M3 close-out pass's own vectorization fix,
@@ -518,20 +804,36 @@ impl Layer {
         // in[i]` loop over disjoint `&mut`/`&` slices is exactly `axpy`'s shape with `w` fixed at
         // 1.0, so it costs nothing to route through the same vectorized primitive rather than
         // trust the optimizer to notice on its own.
-        axpy(&mut head_sum[..z_len], &scratch.z_buf[..z_len], 1.0);
+        axpy(&mut head_sum[..bn_len], &scratch.z_buf[..bn_len], 1.0);
 
-        self.residual
-            .apply_into(&scratch.z_buf[..z_len], n, &mut next_input_out[..z_len]);
-        axpy(&mut next_input_out[..z_len], &layer_input[..z_len], 1.0);
+        self.layer1x1.apply_into(
+            &scratch.z_buf[..bn_len],
+            n,
+            &mut next_input_out[..trunk_len],
+        );
+        axpy(
+            &mut next_input_out[..trunk_len],
+            &layer_input[..trunk_len],
+            1.0,
+        );
     }
 }
 
+/// M10 (A2, Step A3/A4) additions: `bottleneck` (the array's internal width — `head_rechannel`'s
+/// input width, since `head1x1` is permanently unsupported in this crate's scope, D-9.12) sits
+/// alongside `channels` (the trunk width) for the same reason `Layer` grew the same split. A1
+/// files never set `bottleneck`, so it always equals `channels` there.
 struct LayerArray {
     rechannel: Conv1x1,
     layers: Vec<Layer>,
-    head_rechannel: Conv1x1,
+    /// A1's legacy head was a bias-optional `Conv1x1` (kernel 1, no dilation). M10 (A2, Step A1)
+    /// unifies it onto `Conv1D`, constructed with `kernel_size = 1, dilation = 1` for A1 files —
+    /// see `Conv1D::apply_into`'s `history_len() == 0` fast path for why this costs nothing extra
+    /// for A1. A2's nested `head` object supplies a real kernel size/dilation instead.
+    head_rechannel: Conv1D,
     input_size: usize,
     channels: usize,
+    bottleneck: usize,
     head_size: usize,
 }
 
@@ -541,14 +843,19 @@ struct LayerArray {
 /// `layers.len() % 2` (deterministic from the immutable `LayerArray`, not stored here).
 struct ArrayScratch {
     io_buf: [Sig; 2], // channels * max_n each
-    head_sum: Sig,    // channels * max_n
+    head_sum: Sig,    // bottleneck * max_n
     head_out: Sig,    // head_size * max_n
+    /// `head_rechannel`'s causal-conv history/padded scratch (M10, A2 Step A4) — empty for A1
+    /// (`head_rechannel.history_len() == 0` there), so this costs nothing extra for A1; see
+    /// `Conv1D::apply_into`'s fast path.
+    head_history: Sig,
+    head_padded: Sig,
     layers: Vec<LayerScratch>,
 }
 
 /// Immutable, `Sync` weights and configuration (D-9.1 / D-8.2). Shareable across instances — the
 /// spike declared `unsafe impl Sync for PreparedWaveNet {}`, but every field here (`Vec<f32>`,
-/// `bool`, `usize`, the `Copy` `Activation` enum) is already auto-`Sync` on its own, and this
+/// `bool`, `usize`, the `Clone` `Activation` enum) is already auto-`Sync` on its own, and this
 /// crate forbids unsafe code anyway (workspace lint, D-5.3) — so no such impl exists here at all;
 /// `Sync` is simply derived.
 pub struct PreparedWaveNet {
@@ -581,17 +888,27 @@ impl WaveNetState {
                             history: vec![0f32; hl * layer.dilated.in_ch],
                             padded: vec![0f32; layer.dilated.in_ch * (hl + max_n)],
                             conv_buf: vec![0f32; layer.dilated.out_ch * max_n],
-                            z_buf: vec![0f32; layer.channels * max_n],
+                            z_buf: vec![0f32; layer.bottleneck * max_n],
                         }
                     })
                     .collect();
+                let head_hl = arr.head_rechannel.history_len();
                 ArrayScratch {
                     io_buf: [
                         vec![0f32; arr.channels * max_n],
                         vec![0f32; arr.channels * max_n],
                     ],
-                    head_sum: vec![0f32; arr.channels * max_n],
+                    head_sum: vec![0f32; arr.bottleneck * max_n],
                     head_out: vec![0f32; arr.head_size * max_n],
+                    head_history: vec![0f32; head_hl * arr.head_rechannel.in_ch],
+                    // M10 (A2, Step A4): zero-length for A1 (`head_hl == 0` there), matching
+                    // `Conv1D::apply_into`'s fast path, which never touches this buffer when the
+                    // conv has no history — see that fast path's own doc comment.
+                    head_padded: if head_hl == 0 {
+                        Vec::new()
+                    } else {
+                        vec![0f32; arr.head_rechannel.in_ch * (head_hl + max_n)]
+                    },
                     layers,
                 }
             })
@@ -609,28 +926,46 @@ impl WaveNetState {
 // ---------------------------------------------------------------------------------------------
 
 /// The subset of a layer array's config this crate actually builds a `Layer`/`LayerArray` from,
-/// once [`resolve_layer_array`] has confirmed the array is a plain A1 shape (M10 Phase 0: every
-/// A2-shaped array is rejected, not yet built — see [`reject_unsupported_layer_features`]).
-/// Carries the *resolved* scalar `kernel_size`/`head_size`/`head_bias`/`gated` even though
-/// `LayerArrayConfig`'s own fields are now `Option` (to make room for A2's alternatives), and the
-/// already-parsed `Activation`, so nothing downstream has to re-derive or re-match either.
+/// once [`resolve_layer_array`] has confirmed every feature the array uses is one this build
+/// supports (either A1's original shape, or the core-A2 subset D-9.12 scopes in — see
+/// [`reject_unsupported_layer_features`]). Carries the *resolved* per-layer
+/// `kernel_sizes`/`activations`, the resolved `bottleneck`/head fields, and `gated`, even though
+/// `LayerArrayConfig`'s own fields are `Option` (A1 scalar vs. A2 alternative), so nothing
+/// downstream has to re-derive or re-match either.
 struct ResolvedLayerArrayShape {
-    kernel_size: usize,
-    head_size: usize,
+    /// One entry per layer (`dilations.len()`); A1's scalar `kernel_size` broadcasts to every
+    /// entry, A2's `kernel_sizes` array is used verbatim.
+    kernel_sizes: Vec<usize>,
+    /// The array's internal (dilated-conv / mixin / activation) width. A1 never sets `bottleneck`,
+    /// so this defaults to `channels` there — the same number `Layer`'s `channels` field carries,
+    /// which is exactly why keeping the two conflated never mattered before A2.
+    bottleneck: usize,
+    /// `head_rechannel`'s output width — A1's `head_size`, or A2's nested `head.out_channels`.
+    head_out_channels: usize,
+    /// `head_rechannel`'s kernel width — always 1 for A1's legacy shape, A2's `head.kernel_size`
+    /// otherwise.
+    head_kernel_size: usize,
+    /// `head_rechannel`'s dilation — always 1 for A1's legacy shape (and when A2's `head_dilation`
+    /// is absent).
+    head_dilation: usize,
     head_bias: bool,
     gated: bool,
-    activation: Activation,
+    /// One entry per layer (`dilations.len()`); A1's single shared `activation` broadcasts to
+    /// every entry, A2's per-layer `activation` array is used verbatim.
+    activations: Vec<Activation>,
 }
 
-/// M10 Phase 0 (FR-NAM-140, D-9.12): rejects any A2-shaped feature this build does not implement,
-/// with `UNSUPPORTED_CONFIGURATION` naming the offending key — the whole point of this function
-/// existing is that a well-formed A2 file gets a true statement about *why* it doesn't load
-/// ("condition_dsp is not yet supported") instead of the misleading `MALFORMED_JSON` it got before
-/// M10. Nothing here is a scope decision this function itself makes: it enforces D-9.12's core-A2
-/// boundary and the roadmap's Phase 0/1/2/3 split — every key rejected below is either permanently
-/// out of scope (`condition_dsp`, FiLM, gating, non-unity `groups_*`, `slimmable`) or simply not
-/// yet implemented (`kernel_sizes`, `bottleneck`, the nested `head`, non-plain `activation`), and
-/// later M10 phases narrow this list, they do not widen it.
+/// D-9.12's core-A2 boundary: rejects any WaveNet feature this build does not implement, with
+/// `UNSUPPORTED_CONFIGURATION` naming the offending key — the whole point of this function
+/// existing is that a well-formed but out-of-scope file gets a true statement about *why* it
+/// doesn't load ("condition_dsp is not yet supported") instead of the misleading `MALFORMED_JSON`
+/// it got before M10. Every key rejected below is **permanently** out of scope per D-9.12: none of
+/// `condition_dsp`, FiLM (all eight sites), gating, non-unity `groups_*`, `slimmable`, an active
+/// `head1x1`, or an inactive/grouped `layer1x1` is planned for any future milestone. M10's earlier
+/// phases (Step A1-A4) *removed* the temporary rejections this function used to also carry for
+/// `kernel_sizes`, `bottleneck`, the nested `head`, and object/per-layer `activation` — those are
+/// now real, implemented core-A2 features, resolved by [`resolve_layer_array`] instead of rejected
+/// here.
 ///
 /// Called before any dimension ceiling check or weight read, alongside (and ahead of, in
 /// `PreparedWaveNet::from_file`'s ordering) [`validate_layer_array_dims`] — a file that is both
@@ -647,40 +982,6 @@ fn reject_unsupported_layer_features(
         }
     }
 
-    if cfg.kernel_sizes.is_some() {
-        return Err(unsupported(
-            index,
-            "kernel_sizes",
-            "(per-layer kernel size) is not yet supported",
-        ));
-    }
-    if cfg.bottleneck.is_some() {
-        return Err(unsupported(index, "bottleneck", "is not yet supported"));
-    }
-    if cfg.head.is_some() {
-        return Err(unsupported(
-            index,
-            "head",
-            "(the nested convolutional head) is not yet supported",
-        ));
-    }
-    match &cfg.activation {
-        file::ActivationSpec::One(file::ActivationEntry::Name(_)) => {}
-        file::ActivationSpec::One(file::ActivationEntry::Params(p)) => {
-            return Err(unsupported(
-                index,
-                "activation",
-                format!("as an object (type {:?}) is not yet supported", p.kind),
-            ));
-        }
-        file::ActivationSpec::PerLayer(_) => {
-            return Err(unsupported(
-                index,
-                "activation",
-                "as a per-layer array is not yet supported",
-            ));
-        }
-    }
     if cfg.gated == Some(true) {
         return Err(unsupported(
             index,
@@ -716,8 +1017,28 @@ fn reject_unsupported_layer_features(
             format!("{g} != 1 is not supported"),
         ));
     }
-    if cfg.layer1x1.is_some() {
-        return Err(unsupported(index, "layer1x1", "is not yet supported"));
+    // M10 (A2, Step A3): `layer1x1` defaults to active/groups=1 when the key is absent (matching
+    // `model.cpp`'s `bool layer1x1_active = true;` default) — A1 has always relied on exactly that
+    // default (its "residual" *is* this projection). A present object narrows what's permitted:
+    // core A2 requires it active with groups 1; an explicitly inactive or grouped `layer1x1` is a
+    // real, reference-supported shape this crate does not implement.
+    if let Some(l1x1) = &cfg.layer1x1 {
+        if !l1x1.active {
+            return Err(unsupported(
+                index,
+                "layer1x1.active",
+                "false is not supported",
+            ));
+        }
+        if let Some(g) = l1x1.groups
+            && g != 1
+        {
+            return Err(unsupported(
+                index,
+                "layer1x1.groups",
+                format!("{g} != 1 is not supported"),
+            ));
+        }
     }
     if let Some(head1x1) = &cfg.head1x1
         && head1x1.active
@@ -750,42 +1071,126 @@ fn reject_unsupported_layer_features(
     Ok(())
 }
 
-/// Confirms `cfg` is a plain A1 layer array (via [`reject_unsupported_layer_features`]) and
-/// resolves its now-`Option` A1 fields to the concrete values `PreparedWaveNet::from_file`'s
-/// weight walk needs. `kernel_size`/`head_size` being absent (with no A2 alternative present
-/// either, since that alternative would already have been rejected above) is a self-contradictory
-/// file — well-formed JSON, every feature it names supported, but missing a field this shape
-/// requires — hence `INCONSISTENT_CONFIGURATION` rather than `UNSUPPORTED_CONFIGURATION`.
+/// Confirms `cfg` uses only features this build supports (via [`reject_unsupported_layer_features`])
+/// and resolves its `Option`/alternative-shaped A1-or-A2 fields to the concrete, per-layer values
+/// `PreparedWaveNet::from_file`'s weight walk needs. Both-or-neither-present and
+/// length-disagreement cases (`kernel_size`/`kernel_sizes`, `head_size`+`head_bias`/`head`, a
+/// per-layer `kernel_sizes`/`activation` array whose length disagrees with `dilations`) are
+/// self-contradictory files — well-formed JSON, every feature it names supported, but internally
+/// inconsistent about which shape it is — hence `INCONSISTENT_CONFIGURATION` rather than
+/// `UNSUPPORTED_CONFIGURATION`.
 fn resolve_layer_array(
     cfg: &LayerArrayConfig,
     index: usize,
 ) -> Result<ResolvedLayerArrayShape, NamLoadError> {
     reject_unsupported_layer_features(cfg, index)?;
 
-    let kernel_size = cfg.kernel_size.ok_or_else(|| NamLoadError {
-        code: error_codes::INCONSISTENT_CONFIGURATION,
-        detail: format!("layer array {index}: neither kernel_size nor kernel_sizes is present"),
-    })?;
-    let head_size = cfg.head_size.ok_or_else(|| NamLoadError {
-        code: error_codes::INCONSISTENT_CONFIGURATION,
-        detail: format!("layer array {index}: neither head_size nor head is present"),
-    })?;
-    let head_bias = cfg.head_bias.unwrap_or(false);
+    fn inconsistent(index: usize, detail: impl std::fmt::Display) -> NamLoadError {
+        NamLoadError {
+            code: error_codes::INCONSISTENT_CONFIGURATION,
+            detail: format!("layer array {index}: {detail}"),
+        }
+    }
+
+    // NFR-SEC-020 ordering, checked here rather than only in `validate_layer_array_dims`: this
+    // function is about to allocate two `Vec`s sized to `dilations.len()`
+    // (`kernel_sizes`/`activations` below), which is itself a dimension-derived allocation and so
+    // must not happen before this dimension is bounded — see `PreparedWaveNet::from_file`'s
+    // load-bearing ordering doc comment. `validate_layer_array_dims` still checks this same bound
+    // again afterwards (harmless — `check_max` is a pure comparison); that copy documents the bound
+    // as part of "every declared dimension", this one is what actually guards the allocations below.
+    check_max(
+        cfg.dilations.len(),
+        MAX_DILATIONS_PER_LAYER_ARRAY,
+        &format!("layer array {index}: dilations.len()"),
+    )?;
+
+    let num_layers = cfg.dilations.len();
+
+    let kernel_sizes = match (cfg.kernel_size, &cfg.kernel_sizes) {
+        (Some(_), Some(_)) => {
+            return Err(inconsistent(
+                index,
+                "both kernel_size and kernel_sizes are present",
+            ));
+        }
+        (None, None) => {
+            return Err(inconsistent(
+                index,
+                "neither kernel_size nor kernel_sizes is present",
+            ));
+        }
+        (Some(k), None) => vec![k; num_layers],
+        (None, Some(ks)) => {
+            if ks.len() != num_layers {
+                return Err(inconsistent(
+                    index,
+                    format!(
+                        "kernel_sizes.len() ({}) does not match dilations.len() ({num_layers})",
+                        ks.len()
+                    ),
+                ));
+            }
+            ks.clone()
+        }
+    };
+
+    let bottleneck = cfg.bottleneck.unwrap_or(cfg.channels);
+
+    let (head_out_channels, head_kernel_size, head_dilation, head_bias) =
+        match (cfg.head_size, &cfg.head) {
+            (Some(_), Some(_)) => {
+                return Err(inconsistent(
+                    index,
+                    "both head_size/head_bias and head are present",
+                ));
+            }
+            (None, None) => {
+                return Err(inconsistent(index, "neither head_size nor head is present"));
+            }
+            (Some(head_size), None) => (head_size, 1, 1, cfg.head_bias.unwrap_or(false)),
+            (None, Some(h)) => (
+                h.out_channels,
+                h.kernel_size,
+                h.head_dilation.unwrap_or(1),
+                h.bias,
+            ),
+        };
+
     let gated = cfg.gated.unwrap_or(false);
 
-    let activation_name = match &cfg.activation {
-        file::ActivationSpec::One(file::ActivationEntry::Name(name)) => name.as_str(),
-        // `reject_unsupported_layer_features` above already rejected every other shape.
-        _ => unreachable!("reject_unsupported_layer_features rejects non-Name activation specs"),
+    let activations = match &cfg.activation {
+        file::ActivationSpec::One(entry) => {
+            let activation = resolve_activation_entry(entry, bottleneck, index, 0)?;
+            vec![activation; num_layers]
+        }
+        file::ActivationSpec::PerLayer(entries) => {
+            if entries.len() != num_layers {
+                return Err(inconsistent(
+                    index,
+                    format!(
+                        "activation.len() ({}) does not match dilations.len() ({num_layers})",
+                        entries.len()
+                    ),
+                ));
+            }
+            entries
+                .iter()
+                .enumerate()
+                .map(|(layer_idx, e)| resolve_activation_entry(e, bottleneck, index, layer_idx))
+                .collect::<Result<Vec<_>, _>>()?
+        }
     };
-    let activation = Activation::try_from(activation_name)?;
 
     Ok(ResolvedLayerArrayShape {
-        kernel_size,
-        head_size,
+        kernel_sizes,
+        bottleneck,
+        head_out_channels,
+        head_kernel_size,
+        head_dilation,
         head_bias,
         gated,
-        activation,
+        activations,
     })
 }
 
@@ -812,9 +1217,9 @@ fn validate_layer_array_dims(
         &format!("layer array {index}: condition_size"),
     )?;
     check_max(
-        resolved.head_size,
+        resolved.head_out_channels,
         MAX_HEAD_SIZE,
-        &format!("layer array {index}: head_size"),
+        &format!("layer array {index}: head out_channels"),
     )?;
     check_max(
         cfg.channels,
@@ -822,9 +1227,19 @@ fn validate_layer_array_dims(
         &format!("layer array {index}: channels"),
     )?;
     check_max(
-        resolved.kernel_size,
+        resolved.bottleneck,
+        MAX_CHANNELS,
+        &format!("layer array {index}: bottleneck"),
+    )?;
+    check_max(
+        resolved.head_kernel_size,
         MAX_KERNEL_SIZE,
-        &format!("layer array {index}: kernel_size"),
+        &format!("layer array {index}: head kernel_size"),
+    )?;
+    check_max(
+        resolved.head_dilation,
+        MAX_DILATION,
+        &format!("layer array {index}: head_dilation"),
     )?;
     check_max(
         cfg.dilations.len(),
@@ -835,12 +1250,20 @@ fn validate_layer_array_dims(
     check_min1(cfg.input_size, &format!("layer array {index}: input_size"))?;
     check_min1(cfg.channels, &format!("layer array {index}: channels"))?;
     check_min1(
-        resolved.kernel_size,
-        &format!("layer array {index}: kernel_size"),
+        resolved.bottleneck,
+        &format!("layer array {index}: bottleneck"),
     )?;
     check_min1(
-        resolved.head_size,
-        &format!("layer array {index}: head_size"),
+        resolved.head_out_channels,
+        &format!("layer array {index}: head out_channels"),
+    )?;
+    check_min1(
+        resolved.head_kernel_size,
+        &format!("layer array {index}: head kernel_size"),
+    )?;
+    check_min1(
+        resolved.head_dilation,
+        &format!("layer array {index}: head_dilation"),
     )?;
     check_min1(
         cfg.dilations.len(),
@@ -857,13 +1280,32 @@ fn validate_layer_array_dims(
         });
     }
 
+    // NFR-SEC-020: the head rechannel's own causal-conv history buffer
+    // (`bottleneck * (head_kernel_size - 1) * head_dilation` elements — `head_rechannel`'s input
+    // width is `bottleneck`, since `head1x1` is permanently unsupported here) is a product none of
+    // the individual per-factor ceilings above bounds on its own. Mirrors the per-layer check
+    // below; see `MAX_CONV_HISTORY_ELEMENTS`'s own doc comment.
+    let head_history_elements = resolved
+        .bottleneck
+        .saturating_mul(resolved.head_kernel_size.saturating_sub(1))
+        .saturating_mul(resolved.head_dilation);
+    check_max(
+        head_history_elements,
+        MAX_CONV_HISTORY_ELEMENTS,
+        &format!("layer array {index}: bottleneck * (head kernel_size - 1) * head_dilation"),
+    )?;
+
     // NFR-SEC-020, M10 addition: a dilation value appears in no weight count — unlike every other
     // dimension checked above — so nothing else here bounds it, and the padded causal-conv history
-    // buffer `Conv1D` allocates (`channels * (kernel_size - 1) * dilation` elements) is a product
-    // none of the individual per-factor ceilings above bounds either. See `MAX_DILATION`'s and
+    // buffer `Conv1D` allocates (`channels * (kernel_size - 1) * dilation` elements — the dilated
+    // conv's input width is `channels`, the trunk width, not `bottleneck`) is a product none of
+    // the individual per-factor ceilings above bounds either. See `MAX_DILATION`'s and
     // `MAX_CONV_HISTORY_ELEMENTS`' own doc comments for why this closes a real gap, not a
-    // hypothetical one.
-    for (layer_idx, &dilation) in cfg.dilations.iter().enumerate() {
+    // hypothetical one. M10 (A2, Step A3): `kernel_size` is now per-layer
+    // (`resolved.kernel_sizes[layer_idx]`), not a single array-wide scalar.
+    for (layer_idx, (&dilation, &kernel_size)) in
+        cfg.dilations.iter().zip(&resolved.kernel_sizes).enumerate()
+    {
         check_max(
             dilation,
             MAX_DILATION,
@@ -873,9 +1315,18 @@ fn validate_layer_array_dims(
             dilation,
             &format!("layer array {index} layer {layer_idx}: dilation"),
         )?;
+        check_max(
+            kernel_size,
+            MAX_KERNEL_SIZE,
+            &format!("layer array {index} layer {layer_idx}: kernel_size"),
+        )?;
+        check_min1(
+            kernel_size,
+            &format!("layer array {index} layer {layer_idx}: kernel_size"),
+        )?;
         let history_elements = cfg
             .channels
-            .saturating_mul(resolved.kernel_size.saturating_sub(1))
+            .saturating_mul(kernel_size.saturating_sub(1))
             .saturating_mul(dilation);
         check_max(
             history_elements,
@@ -904,32 +1355,46 @@ impl PreparedWaveNet {
     /// 6. `config.layers` is non-empty (`EMPTY_LAYER_ARRAYS`).
     /// 7. `config.layers.len()` and `weights.len()` are within their NFR-SEC-020 ceilings
     ///    (`DIMENSION_LIMIT_EXCEEDED`).
-    /// 8. Every layer array is resolved via `resolve_layer_array` (M10, FR-NAM-140): any A2-shaped
-    ///    feature the array uses is rejected by name (`UNSUPPORTED_CONFIGURATION`), a
-    ///    self-contradictory A1 shape is rejected as such (`INCONSISTENT_CONFIGURATION`), then its
-    ///    dimensions are checked against their ceilings, at least 1, and `condition_size == 1`
-    ///    (`DIMENSION_LIMIT_EXCEEDED` / `UNSUPPORTED_CONDITION_SIZE`), including the per-dilation
-    ///    NFR-SEC-020 checks `validate_layer_array_dims` performs.
+    /// 8. Every layer array is resolved via `resolve_layer_array` (M10, FR-NAM-140/D-9.12): any
+    ///    permanently out-of-scope feature the array uses is rejected by name
+    ///    (`UNSUPPORTED_CONFIGURATION`), a self-contradictory shape (both-or-neither of an A1/A2
+    ///    field pair present, or an array length disagreeing with `dilations.len()`) is rejected as
+    ///    such (`INCONSISTENT_CONFIGURATION`, including `dilations.len()` itself against its own
+    ///    ceiling — see that function's own doc comment for why that one check can't wait for step
+    ///    8's next part), then its dimensions (now including A2's per-layer `kernel_sizes`,
+    ///    `bottleneck`, and the nested head's `out_channels`/`kernel_size`/`head_dilation`) are
+    ///    checked against their ceilings, at least 1, and `condition_size == 1`
+    ///    (`DIMENSION_LIMIT_EXCEEDED` / `UNSUPPORTED_CONDITION_SIZE`), including the per-layer and
+    ///    per-head NFR-SEC-020 product checks `validate_layer_array_dims` performs.
     ///
     /// Step 8 all happens *before* step 9 reads a single weight or performs a single
-    /// dimension-derived multiplication. This ordering is load-bearing, not decorative: once
-    /// every dimension that ever appears in a product (`channels * input_size`,
-    /// `channels * channels * kernel_size`, and so on) is bounded well below any value that could
+    /// dimension-derived multiplication or allocation. This ordering is load-bearing, not
+    /// decorative: once every dimension that ever appears in a product (`channels * input_size`,
+    /// `bottleneck * channels * kernel_size`, and so on) is bounded well below any value that could
     /// overflow `usize` on a 64-bit target, every such product later in this function and in
     /// `Conv1x1::read`/`Conv1D::read`/`WeightReader::take` is safe from overflow by construction.
     /// Do not "helpfully" add `checked_mul` throughout the rest of this file to reproduce a
     /// guarantee this section already provides, and do not remove this section without replacing
-    /// that guarantee some other way. `MAX_CONV_HISTORY_ELEMENTS`'s check inside
-    /// `validate_layer_array_dims` is itself *part* of that guarantee, not a redundant check on
-    /// top of it — see its own doc comment.
+    /// that guarantee some other way. `MAX_CONV_HISTORY_ELEMENTS`'s checks inside
+    /// `validate_layer_array_dims` (one per layer, one for the head rechannel) are themselves
+    /// *part* of that guarantee, not a redundant check on top of it — see that constant's own doc
+    /// comment.
     ///
     /// 9. Each `LayerArray` is built via `WeightReader`, in the order the spike's own reading of
-    ///    `NeuralAmpModelerCore` established: per array `[rechannel (no bias), per-layer[dilated
-    ///    (bias), mixin (no bias), residual (bias)], head_rechannel (bias iff head_bias)]`
-    ///    (`WEIGHT_COUNT_MISMATCH` on exhaustion). M10 Phase 0 does not change this layout — every
-    ///    array that reaches this step has already been confirmed to be a plain A1 shape.
-    /// 10. Adjacent arrays chain correctly: `head_size[i] == channels[i+1]` and
-    ///     `channels[i] == input_size[i+1]` (`LAYER_ARRAY_CHAINING_MISMATCH`).
+    ///    `NeuralAmpModelerCore` established and A2's `a2_fast.cpp` independently restates: per
+    ///    array `[rechannel (no bias), per-layer[dilated (bias), mixin (no bias), layer1x1 (bias)],
+    ///    head_rechannel (bias iff head.bias/head_bias)]` (`WEIGHT_COUNT_MISMATCH` on exhaustion).
+    ///    `layer1x1` is A1's `residual` renamed (same weight-stream slot; A1's degenerate case has
+    ///    `bottleneck == channels`), and the dilated conv's output / mixin's output / activation /
+    ///    `layer1x1`'s input are all `bottleneck`-wide rather than `channels`-wide once A2's
+    ///    `bottleneck` differs from `channels` — see `Layer`'s own doc comment for the split.
+    /// 10. Adjacent arrays chain via two separate signals, per the module doc comment: the residual
+    ///     trunk feeds the next array's rechannel input (`channels[i] == input_size[i+1]`), and the
+    ///     head-rechannel output separately seeds the next array's head-sum accumulator, which is
+    ///     `bottleneck`-wide (`head_size[i] == bottleneck[i+1]`, corrected in M10 from an
+    ///     A1-era check against `channels[i+1]` that only ever agreed with the true constraint
+    ///     because A1 has no way to make `bottleneck` differ from `channels`) — both
+    ///     `LAYER_ARRAY_CHAINING_MISMATCH` on mismatch.
     /// 11. The trailing `head_scale` float is resolved exactly as the spike's confirmed reading
     ///     of `WaveNet::set_weights_`: if one float remains after step 9, it is authoritative; if
     ///     none remain, `config.head_scale` is used; anything else is `WEIGHT_COUNT_MISMATCH`.
@@ -1004,29 +1469,50 @@ impl PreparedWaveNet {
             let rechannel = Conv1x1::read(&mut r, cfg.channels, cfg.input_size, false)?;
 
             let mut layers = Vec::with_capacity(cfg.dilations.len());
-            for &dilation in &cfg.dilations {
+            for (li, (&dilation, &kernel_size)) in
+                cfg.dilations.iter().zip(&resolved.kernel_sizes).enumerate()
+            {
+                // Dilated conv: channels (trunk) -> bottleneck (or 2x when gated), always biased
+                // (`Layer::_conv` in `detail.h` is always constructed with `do_bias = true`).
                 let dilated = Conv1D::read(
                     &mut r,
-                    cfg.channels * out_mult,
+                    resolved.bottleneck * out_mult,
                     cfg.channels,
-                    resolved.kernel_size,
+                    kernel_size,
                     dilation,
+                    true,
                 )?;
-                let mixin =
-                    Conv1x1::read(&mut r, cfg.channels * out_mult, cfg.condition_size, false)?;
-                let residual = Conv1x1::read(&mut r, cfg.channels, cfg.channels, true)?;
+                let mixin = Conv1x1::read(
+                    &mut r,
+                    resolved.bottleneck * out_mult,
+                    cfg.condition_size,
+                    false,
+                )?;
+                // layer1x1: bottleneck -> channels (trunk), always biased when present, and
+                // `reject_unsupported_layer_features` has already confirmed it's either absent
+                // (A1's implicit default) or present-and-active-with-groups-1.
+                let layer1x1 = Conv1x1::read(&mut r, cfg.channels, resolved.bottleneck, true)?;
                 layers.push(Layer {
                     dilated,
                     mixin,
-                    residual,
-                    activation: resolved.activation,
+                    layer1x1,
+                    activation: resolved.activations[li].clone(),
                     gated: resolved.gated,
                     channels: cfg.channels,
+                    bottleneck: resolved.bottleneck,
                 });
             }
 
-            let head_rechannel =
-                Conv1x1::read(&mut r, resolved.head_size, cfg.channels, resolved.head_bias)?;
+            // Head rechannel: bottleneck -> head_out_channels (head1x1 is permanently
+            // unsupported here, so the head accumulator's width is always `bottleneck`).
+            let head_rechannel = Conv1D::read(
+                &mut r,
+                resolved.head_out_channels,
+                resolved.bottleneck,
+                resolved.head_kernel_size,
+                resolved.head_dilation,
+                resolved.head_bias,
+            )?;
 
             arrays.push(LayerArray {
                 rechannel,
@@ -1034,23 +1520,27 @@ impl PreparedWaveNet {
                 head_rechannel,
                 input_size: cfg.input_size,
                 channels: cfg.channels,
-                head_size: resolved.head_size,
+                bottleneck: resolved.bottleneck,
+                head_size: resolved.head_out_channels,
             });
         }
 
         // Adjacent arrays chain via TWO separate signals (see the module doc comment): the
         // residual trunk (dim = channels) feeds the next array's rechannel input, while the
         // head-rechannel output (dim = head_size) separately seeds the next array's head
-        // accumulator.
+        // accumulator, which is `bottleneck`-wide (head1x1 is permanently unsupported here, so
+        // the accumulator's width is always the next array's own `bottleneck`, not its
+        // `channels` — these only ever agreed for A1, where `bottleneck` can't differ from
+        // `channels` at all).
         for (i, w) in arrays.windows(2).enumerate() {
-            if w[0].head_size != w[1].channels {
+            if w[0].head_size != w[1].bottleneck {
                 return Err(NamLoadError {
                     code: error_codes::LAYER_ARRAY_CHAINING_MISMATCH,
                     detail: format!(
-                        "layer array {i} head_size ({}) does not match layer array {} channels ({})",
+                        "layer array {i} head_size ({}) does not match layer array {} bottleneck ({})",
                         w[0].head_size,
                         i + 1,
-                        w[1].channels
+                        w[1].bottleneck
                     ),
                 });
             }
@@ -1150,14 +1640,15 @@ impl PreparedWaveNet {
         condition[..n].copy_from_slice(input);
 
         for (a, arr) in self.arrays.iter().enumerate() {
-            let clen = arr.channels * n;
+            let clen = arr.channels * n; // trunk width
+            let bn_len = arr.bottleneck * n; // head-sum / activation width
             let (before, at_and_after) = state_arrays.split_at_mut(a);
             let ascratch = &mut at_and_after[0];
 
             if a == 0 {
                 arr.rechannel
                     .apply_into(&condition[..n], n, &mut ascratch.io_buf[0][..clen]);
-                ascratch.head_sum[..clen].fill(0.0);
+                ascratch.head_sum[..bn_len].fill(0.0);
             } else {
                 let prev_arr = &self.arrays[a - 1];
                 let prev_scratch = &before[a - 1];
@@ -1168,7 +1659,10 @@ impl PreparedWaveNet {
                     n,
                     &mut ascratch.io_buf[0][..clen],
                 );
-                ascratch.head_sum[..clen].copy_from_slice(&prev_scratch.head_out[..clen]);
+                // `bn_len` here equals `prev_arr.head_size * n` by the chaining check in
+                // `PreparedWaveNet::from_file` (`head_size[i] == bottleneck[i+1]`), so this is the
+                // same length as `prev_scratch.head_out`'s valid prefix.
+                ascratch.head_sum[..bn_len].copy_from_slice(&prev_scratch.head_out[..bn_len]);
             }
 
             let mut cur = 0usize;
@@ -1184,7 +1678,7 @@ impl PreparedWaveNet {
                     &condition[..n],
                     n,
                     &mut ascratch.layers[l],
-                    &mut ascratch.head_sum[..clen],
+                    &mut ascratch.head_sum[..bn_len],
                     write_buf,
                 );
                 cur = 1 - cur;
@@ -1192,8 +1686,10 @@ impl PreparedWaveNet {
 
             let head_len = arr.head_size * n;
             arr.head_rechannel.apply_into(
-                &ascratch.head_sum[..clen],
+                &ascratch.head_sum[..bn_len],
                 n,
+                &mut ascratch.head_history,
+                &mut ascratch.head_padded,
                 &mut ascratch.head_out[..head_len],
             );
         }
@@ -1383,8 +1879,9 @@ mod tests {
 
     /// Computes exactly how many weights `PreparedWaveNet::from_file` will consume for `cfg`, so
     /// tests can hand-build a matching (or deliberately mismatched) flat weight array without
-    /// going through JSON at all. Assumes `cfg` is a plain A1 shape — the only shape M10 Phase 0
-    /// builds a `LayerArray` from at all (see `resolve_layer_array`).
+    /// going through JSON at all. Assumes `cfg` is a plain A1 shape (`bottleneck == channels`, a
+    /// legacy scalar `head_size`/`head_bias`) — see [`a2_weight_count_for`] below for the core-A2
+    /// analogue used by this module's A2 tests.
     fn weight_count_for(cfg: &LayerArrayConfig) -> usize {
         let out_mult = if cfg.gated == Some(true) { 2 } else { 1 };
         let kernel_size = cfg.kernel_size.expect("A1 fixture: kernel_size is set");
@@ -1639,6 +2136,343 @@ mod tests {
         let mut state = prepared.new_state(64);
         let input = vec![0.1f32; 64];
         let mut output = vec![0.0f32; 64]; // head_size == 1
+        rt_harness::audio_section(|| {
+            prepared.process_block(&mut state, &input, &mut output);
+        });
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M10 (A2, Steps A1-A4): core-A2 feature coverage. Small-scale hand-built fixtures, not the
+    // full 23-layer "A2 standard"/"A2 nano" shapes `a2_fast.h` describes — nothing about that
+    // scale exercises different code than a 1-2 layer array does, per this crate's house style
+    // (see `minimal_layer_array`'s own doc comment on the same tradeoff). Per D-9.12/this PR's
+    // scope, `namir-fixtures` is deliberately never used or waited on here — see the module doc
+    // comment on why parity against that independent oracle is a separate, later integration step.
+    // -----------------------------------------------------------------------------------------
+
+    /// A hand-built core-A2 layer array: per-layer `kernel_sizes`, a `bottleneck` distinct from
+    /// `channels`, a real (non-`k=1`) nested `head`, a per-layer `activation` array mixing a bare
+    /// name and a parameterized object, and an explicit, active, ungrouped `layer1x1` — one array
+    /// that exercises every new code path Step A2/A3/A4 added.
+    fn a2_minimal_layer_array() -> LayerArrayConfig {
+        LayerArrayConfig {
+            input_size: 1,
+            condition_size: 1,
+            channels: 3,
+            dilations: vec![1, 2],
+            activation: file::ActivationSpec::PerLayer(vec![
+                file::ActivationEntry::Params(file::ActivationParams {
+                    kind: "LeakyReLU".to_string(),
+                    negative_slope: Some(0.1),
+                    negative_slopes: None,
+                    min_val: None,
+                    max_val: None,
+                    min_slope: None,
+                    max_slope: None,
+                }),
+                file::ActivationEntry::Name("Tanh".to_string()),
+            ]),
+            kernel_size: None,
+            kernel_sizes: Some(vec![2, 3]),
+            bottleneck: Some(2),
+            head_size: None,
+            head_bias: None,
+            head: Some(file::LayerArrayHeadConfig {
+                out_channels: 1,
+                kernel_size: 3,
+                head_dilation: Some(2),
+                bias: true,
+            }),
+            gated: Some(false),
+            gating_mode: None,
+            secondary_activation: None,
+            groups_input: None,
+            groups_input_mixin: None,
+            layer1x1: Some(file::Conv1x1FeatureConfig {
+                active: true,
+                groups: Some(1),
+                out_channels: None,
+            }),
+            head1x1: None,
+            slimmable: None,
+            conv_pre_film: None,
+            conv_post_film: None,
+            input_mixin_pre_film: None,
+            input_mixin_post_film: None,
+            activation_pre_film: None,
+            activation_post_film: None,
+            layer1x1_post_film: None,
+            head1x1_post_film: None,
+        }
+    }
+
+    /// The A2 analogue of `weight_count_for`: computes the exact weight count
+    /// `PreparedWaveNet::from_file` consumes for a core-A2-shaped `cfg` (per-layer
+    /// `kernel_sizes`, a `bottleneck` that may differ from `channels`, a nested `head`), so tests
+    /// can hand-build a matching flat weight array without going through JSON.
+    fn a2_weight_count_for(cfg: &LayerArrayConfig) -> usize {
+        let bottleneck = cfg.bottleneck.unwrap_or(cfg.channels);
+        let kernel_sizes: Vec<usize> = match (&cfg.kernel_size, &cfg.kernel_sizes) {
+            (Some(k), None) => vec![*k; cfg.dilations.len()],
+            (None, Some(ks)) => ks.clone(),
+            _ => panic!("a2_weight_count_for: exactly one of kernel_size/kernel_sizes expected"),
+        };
+        let mut n = cfg.channels * cfg.input_size; // rechannel, no bias
+        for &k in &kernel_sizes {
+            n += bottleneck * cfg.channels * k; // dilated weight
+            n += bottleneck; // dilated bias
+            n += bottleneck * cfg.condition_size; // mixin, no bias
+            n += cfg.channels * bottleneck; // layer1x1 weight
+            n += cfg.channels; // layer1x1 bias
+        }
+        let (head_out, head_kernel, head_bias) = match &cfg.head {
+            Some(h) => (h.out_channels, h.kernel_size, h.bias),
+            None => (
+                cfg.head_size.expect("A2 fixture: head_size or head is set"),
+                1,
+                cfg.head_bias.unwrap_or(false),
+            ),
+        };
+        n += head_out * bottleneck * head_kernel; // head_rechannel weight
+        if head_bias {
+            n += head_out;
+        }
+        n
+    }
+
+    fn a2_minimal_valid_file() -> NamFile {
+        let cfg = a2_minimal_layer_array();
+        let n = a2_weight_count_for(&cfg);
+        let mut weights = vec![0.01f32; n];
+        weights.push(0.5); // trailing head_scale
+        NamFile {
+            version: None,
+            architecture: "WaveNet".to_string(),
+            config: WaveNetConfig {
+                layers: vec![cfg],
+                head_scale: 0.5,
+                head: None,
+                in_channels: None,
+                condition_dsp: None,
+            },
+            weights,
+            sample_rate: Some(48_000),
+            metadata: NamMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn a2_layer_array_loads_successfully_and_produces_finite_output() {
+        let file = a2_minimal_valid_file();
+        let prepared = PreparedWaveNet::from_file(&file).expect("core-A2 layer array should load");
+        let mut state = prepared.new_state(8);
+        let input: Vec<f32> = (0..8).map(|i| 0.1 * i as f32).collect();
+        let out = prepared.process(&mut state, &input);
+        assert_eq!(out.len(), 8); // head.out_channels == 1
+        assert!(
+            out.iter().all(|v| v.is_finite()),
+            "output must be finite, not NaN/inf: {out:?}"
+        );
+        assert!(
+            out.iter().any(|&v| v != 0.0),
+            "output must be non-degenerate (not all zero): {out:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_both_kernel_size_and_kernel_sizes_present() {
+        let mut file = a2_minimal_valid_file();
+        file.config.layers[0].kernel_size = Some(2);
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+    }
+
+    #[test]
+    fn rejects_kernel_sizes_length_mismatch_with_dilations() {
+        let mut file = a2_minimal_valid_file();
+        file.config.layers[0].kernel_sizes = Some(vec![2]); // dilations has 2 entries
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+    }
+
+    #[test]
+    fn rejects_both_head_size_and_head_present() {
+        let mut file = a2_minimal_valid_file();
+        file.config.layers[0].head_size = Some(1);
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+    }
+
+    #[test]
+    fn rejects_activation_per_layer_length_mismatch_with_dilations() {
+        let mut file = a2_minimal_valid_file();
+        file.config.layers[0].activation =
+            file::ActivationSpec::PerLayer(vec![file::ActivationEntry::Name("Tanh".to_string())]);
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+    }
+
+    #[test]
+    fn rejects_layer1x1_inactive_even_when_other_a2_features_are_used() {
+        let mut file = a2_minimal_valid_file();
+        file.config.layers[0].layer1x1 = Some(file::Conv1x1FeatureConfig {
+            active: false,
+            groups: Some(1),
+            out_channels: None,
+        });
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(err.detail.contains("layer1x1"));
+    }
+
+    #[test]
+    fn rejects_layer1x1_grouped_even_when_other_a2_features_are_used() {
+        let mut file = a2_minimal_valid_file();
+        file.config.layers[0].layer1x1 = Some(file::Conv1x1FeatureConfig {
+            active: true,
+            groups: Some(2),
+            out_channels: None,
+        });
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(err.detail.contains("layer1x1"));
+    }
+
+    #[test]
+    fn resolves_bare_and_object_activation_entries() {
+        let leaky = resolve_activation_entry(
+            &file::ActivationEntry::Name("LeakyReLU".to_string()),
+            4,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            leaky,
+            Activation::LeakyReLU {
+                negative_slope: DEFAULT_LEAKY_SLOPE
+            }
+        );
+
+        let silu =
+            resolve_activation_entry(&file::ActivationEntry::Name("SiLU".to_string()), 4, 0, 0)
+                .unwrap();
+        assert_eq!(silu, Activation::SiLU);
+
+        let custom_leaky = resolve_activation_entry(
+            &file::ActivationEntry::Params(file::ActivationParams {
+                kind: "LeakyReLU".to_string(),
+                negative_slope: Some(0.2),
+                negative_slopes: None,
+                min_val: None,
+                max_val: None,
+                min_slope: None,
+                max_slope: None,
+            }),
+            4,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            custom_leaky,
+            Activation::LeakyReLU {
+                negative_slope: 0.2
+            }
+        );
+
+        let prelu_scalar = resolve_activation_entry(
+            &file::ActivationEntry::Params(file::ActivationParams {
+                kind: "PReLU".to_string(),
+                negative_slope: None,
+                negative_slopes: None,
+                min_val: None,
+                max_val: None,
+                min_slope: None,
+                max_slope: None,
+            }),
+            4,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            prelu_scalar,
+            Activation::PReLU(PReluSlopes::Scalar(DEFAULT_LEAKY_SLOPE))
+        );
+    }
+
+    #[test]
+    fn rejects_prelu_negative_slopes_length_disagreeing_with_bottleneck() {
+        let entry = file::ActivationEntry::Params(file::ActivationParams {
+            kind: "PReLU".to_string(),
+            negative_slope: None,
+            negative_slopes: Some(vec![0.1, 0.2, 0.3]), // 3 slopes, bottleneck is 2
+            min_val: None,
+            max_val: None,
+            min_slope: None,
+            max_slope: None,
+        });
+        let err = resolve_activation_entry(&entry, 2, 0, 0).unwrap_err();
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+    }
+
+    /// The single strongest detector for a mis-indexed per-channel `PReLU`: this crate's `Sig`
+    /// layout is `data[channel * n + t]` (channel slowest-varying), the *opposite* of
+    /// `NeuralAmpModelerCore`'s column-major `(channels, frames)` buffer its own `pos %
+    /// negative_slopes.len()` indexing assumes — see `Activation::apply`'s doc comment. Two
+    /// channels, both entirely negative but with different slopes and different magnitudes, so a
+    /// `pos % 2`-style bug (which would alternate slopes *within* a channel's own row instead of
+    /// applying one slope per whole row) produces visibly different numbers than the correct
+    /// per-row application asserted here.
+    #[test]
+    fn prelu_per_channel_applies_correct_slope_to_each_channel_row() {
+        let n = 3;
+        let activation = Activation::PReLU(PReluSlopes::PerChannel(vec![0.1, 0.5]));
+        let mut x = vec![-1.0, -2.0, -3.0, -4.0, -5.0, -6.0];
+        activation.apply(&mut x, n);
+        assert_eq!(&x[0..3], &[-0.1, -0.2, -0.3]);
+        assert_eq!(&x[3..6], &[-2.0, -2.5, -3.0]);
+    }
+
+    /// Mirrors `tests/fixtures.rs`'s `chunked_processing_matches_monolithic_processing`, but as a
+    /// hand-built unit test using a real (non-`k=1`) nested head (`a2_minimal_layer_array`'s
+    /// `head.kernel_size == 3`) — the single strongest detector for a mis-sized or missing head
+    /// history buffer (`ArrayScratch::head_history`/`head_padded`, M10 Step A4), since a wrong
+    /// buffer diverges immediately at chunk size 1.
+    #[test]
+    fn chunk_size_one_processing_matches_monolithic_for_a2_nested_head() {
+        let file = a2_minimal_valid_file();
+        let prepared = PreparedWaveNet::from_file(&file).unwrap();
+        let input: Vec<f32> = (0..16).map(|i| (i as f32 * 0.37).sin() * 0.5).collect();
+
+        let mut mono_state = prepared.new_state(16);
+        let mono_out = prepared.process(&mut mono_state, &input);
+        let per_sample = mono_out.len() / input.len();
+
+        let mut chunked_state = prepared.new_state(16);
+        let mut chunked_out = vec![0f32; mono_out.len()];
+        for (i, &sample) in input.iter().enumerate() {
+            let mut block_out = vec![0f32; per_sample];
+            prepared.process_block(&mut chunked_state, &[sample], &mut block_out);
+            chunked_out[i * per_sample..(i + 1) * per_sample].copy_from_slice(&block_out);
+        }
+
+        for (i, (&mono, &chunked)) in mono_out.iter().zip(chunked_out.iter()).enumerate() {
+            assert!(
+                (mono - chunked).abs() < 1e-4,
+                "sample {i}: monolithic {mono} vs. chunked {chunked} diverge"
+            );
+        }
+    }
+
+    #[test]
+    fn process_block_does_not_allocate_for_a2_layer_array() {
+        let file = a2_minimal_valid_file();
+        let prepared = PreparedWaveNet::from_file(&file).unwrap();
+        let mut state = prepared.new_state(64);
+        let input = vec![0.1f32; 64];
+        let mut output = vec![0.0f32; 64]; // head.out_channels == 1
         rt_harness::audio_section(|| {
             prepared.process_block(&mut state, &input, &mut output);
         });
