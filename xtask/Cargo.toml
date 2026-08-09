@@ -19,3 +19,11 @@ namir-core = { path = "../crates/namir-core" }
 namir-state = { path = "../crates/namir-state" }
 cargo_metadata = "0.19"
 walkdir = "2"
+# M10 Phase 4(a): `nam-parity` subcommand loads a real, locally-held `.nam` model through
+# namir-nam's own public API to compare it against a real reference render -- same "tooling
+# consuming a product crate's public API, not a product edge" reasoning as this crate's other
+# product-crate dependencies above.
+namir-nam = { path = "../crates/namir-nam" }
+# `nam-parity` reads WAV files (the probe input and the reference render) as plain f32 samples.
+# Pinned to the same "3.5" every other hound consumer in this workspace uses.
+hound = "3.5"
