@@ -66,6 +66,8 @@ pub const REGISTRY: &[ParamDescriptor] = &[
     stages::gate::HOLD_MS,
     stages::gate::RELEASE_MS,
     stages::nam::ENABLED,
+    stages::nam::NORMALIZE_ENABLED,
+    stages::nam::NORMALIZE_OFFSET_DB,
     stages::ir::ENABLED,
     stages::ir::LEVEL_DB,
     stages::ir::LOW_CUT_ENABLED,

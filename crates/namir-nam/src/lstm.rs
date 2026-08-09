@@ -385,6 +385,12 @@ impl PreparedLstm {
         &self.metadata
     }
 
+    /// FR-NAM-090: the model's declared integrated loudness (LUFS), or `None` when absent. See
+    /// `wavenet::PreparedWaveNet::loudness_lufs`'s identical doc comment.
+    pub fn loudness_lufs(&self) -> Option<f32> {
+        self.metadata.loudness
+    }
+
     /// The model's declared sample rate (or the 48 kHz default if the file omitted it).
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
