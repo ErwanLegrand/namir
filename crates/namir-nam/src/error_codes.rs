@@ -111,6 +111,35 @@ pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode {
     message_template: "This LSTM model's input/output channel configuration is not supported.",
 };
 
+/// FR-NAM-140: the file is well-formed and its `architecture` is supported, but its `config` uses
+/// a feature this build does not implement (D-9.12's core-A2 scope boundary): `condition_dsp`,
+/// FiLM conditioning at any of the eight `*_film` sites, an active `head1x1`, an inactive
+/// `layer1x1`, gating (`gating_mode` other than `"none"` or the legacy `gated: true`), a `groups_*`
+/// value other than 1, or a `slimmable` container. `detail` names the offending key — that naming
+/// is FR-NAM-140's own requirement text, not a courtesy. **Distinct from `MALFORMED_JSON` by
+/// construction**: reaching this code means `serde` already accepted the document as a `NamFile`,
+/// so "not valid JSON" was never a true statement about it. This is FR-NAM-140's *configuration*
+/// clause; `UNSUPPORTED_ARCHITECTURE` above remains its *architecture* clause.
+pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode {
+    id: "nam.load.unsupported_configuration",
+    severity: Severity::Error,
+    message_template: "This model uses a configuration option that this build of Namir does not support.",
+};
+
+/// The file is well-formed and every feature it uses is one this build supports, but its declared
+/// configuration contradicts itself: both or neither of `kernel_size`/`kernel_sizes` present; a
+/// `kernel_sizes` or per-layer `activation` array whose length disagrees with `dilations`; both or
+/// neither of the nested `head` object and the legacy `head_size`/`head_bias` pair. Kept separate
+/// from `UNSUPPORTED_CONFIGURATION`: "we don't support that" would be a false statement about a
+/// file that is simply self-contradictory, not one that names a real, unimplemented feature. Not
+/// required by FR-NAM-140's own text — added for message truthfulness, recorded here rather than
+/// left implicit so a reviewer doesn't have to rediscover the reasoning.
+pub const INCONSISTENT_CONFIGURATION: ErrorCode = ErrorCode {
+    id: "nam.load.inconsistent_configuration",
+    severity: Severity::Error,
+    message_template: "This model's declared configuration is internally inconsistent.",
+};
+
 /// Carries a `namir_core::ErrorCode` (D-16.1) plus a `detail` string naming the specific reason
 /// (FR-NAM-040 requires the rejection message to name "the specific reason"). This crate only
 /// ever sees bytes, not a file path, so `detail` carries whatever numbers/names are relevant to
@@ -150,6 +179,8 @@ const ALL: &[ErrorCode] = &[
     DIMENSION_LIMIT_EXCEEDED,
     INVALID_SAMPLE_RATE,
     UNSUPPORTED_LSTM_CHANNELS,
+    UNSUPPORTED_CONFIGURATION,
+    INCONSISTENT_CONFIGURATION,
 ];
 
 #[cfg(test)]

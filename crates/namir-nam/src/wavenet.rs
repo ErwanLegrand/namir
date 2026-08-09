@@ -36,7 +36,7 @@ use namir_core::SampleRate;
 use wide::f32x8;
 
 use crate::error_codes::{self, NamLoadError};
-use crate::file::{LayerArrayConfig, NamFile, NamMetadata};
+use crate::file::{self, LayerArrayConfig, NamFile, NamMetadata};
 use crate::shared::{WeightReader, check_max, check_min1};
 
 /// A flat, row-major multi-channel signal buffer: `data[channel * n + t]`. Ported verbatim from
@@ -61,6 +61,25 @@ const MAX_KERNEL_SIZE: usize = 64;
 const MAX_DILATIONS_PER_LAYER_ARRAY: usize = 4096;
 const MAX_LAYER_ARRAYS: usize = 64;
 const MAX_TOTAL_WEIGHTS: usize = 200_000_000;
+
+/// M10 addition, closing a gap found while scoping A2 support (present in A1 all along): a single
+/// dilation value never appears in any weight count, so nothing above bounded it before this —
+/// `{channels: 1, kernel_size: 2, dilations: [4_000_000_000]}` needs only ~8 weights, passes every
+/// other check, and then `WaveNetState::new` would attempt to allocate on the order of 16 GB for
+/// that one layer's causal-conv history. The real S-1-verified "standard" shape's largest dilation
+/// is 512 (10 layers, `1 << 9`); 8192 is generous headroom above any plausible export while still
+/// ruling out a hostile one.
+const MAX_DILATION: usize = 8_192;
+
+/// M10 addition, alongside `MAX_DILATION`: bounds the padded causal-conv history buffer a layer's
+/// `Conv1D` allocates, `channels * (kernel_size - 1) * dilation` elements. This is not a redundant
+/// guard duplicating the ordering guarantee `PreparedWaveNet::from_file`'s doc comment describes —
+/// `channels`, `kernel_size` and `dilation` are each individually bounded by the checks above and
+/// by `MAX_DILATION`, but their *product* is what the history buffer actually allocates, and no
+/// other single ceiling bounds that product. `saturating_mul` is used deliberately: the ceilings on
+/// the three factors are generous enough that legitimate values never approach `usize::MAX`, so
+/// saturation only ever affects a value this check was going to reject anyway.
+const MAX_CONV_HISTORY_ELEMENTS: usize = 16_777_216;
 
 /// FRS §2's definitions: model sample rate is "typically 48 kHz" — the fallback when a `.nam`
 /// file omits `sample_rate` entirely (real exported files sometimes do).
@@ -589,14 +608,199 @@ impl WaveNetState {
 // Validation helpers
 // ---------------------------------------------------------------------------------------------
 
+/// The subset of a layer array's config this crate actually builds a `Layer`/`LayerArray` from,
+/// once [`resolve_layer_array`] has confirmed the array is a plain A1 shape (M10 Phase 0: every
+/// A2-shaped array is rejected, not yet built — see [`reject_unsupported_layer_features`]).
+/// Carries the *resolved* scalar `kernel_size`/`head_size`/`head_bias`/`gated` even though
+/// `LayerArrayConfig`'s own fields are now `Option` (to make room for A2's alternatives), and the
+/// already-parsed `Activation`, so nothing downstream has to re-derive or re-match either.
+struct ResolvedLayerArrayShape {
+    kernel_size: usize,
+    head_size: usize,
+    head_bias: bool,
+    gated: bool,
+    activation: Activation,
+}
+
+/// M10 Phase 0 (FR-NAM-140, D-9.12): rejects any A2-shaped feature this build does not implement,
+/// with `UNSUPPORTED_CONFIGURATION` naming the offending key — the whole point of this function
+/// existing is that a well-formed A2 file gets a true statement about *why* it doesn't load
+/// ("condition_dsp is not yet supported") instead of the misleading `MALFORMED_JSON` it got before
+/// M10. Nothing here is a scope decision this function itself makes: it enforces D-9.12's core-A2
+/// boundary and the roadmap's Phase 0/1/2/3 split — every key rejected below is either permanently
+/// out of scope (`condition_dsp`, FiLM, gating, non-unity `groups_*`, `slimmable`) or simply not
+/// yet implemented (`kernel_sizes`, `bottleneck`, the nested `head`, non-plain `activation`), and
+/// later M10 phases narrow this list, they do not widen it.
+///
+/// Called before any dimension ceiling check or weight read, alongside (and ahead of, in
+/// `PreparedWaveNet::from_file`'s ordering) [`validate_layer_array_dims`] — a file that is both
+/// unsupported and over some ceiling should be told which feature is unsupported, since that is
+/// the actionable message.
+fn reject_unsupported_layer_features(
+    cfg: &LayerArrayConfig,
+    index: usize,
+) -> Result<(), NamLoadError> {
+    fn unsupported(index: usize, key: &str, detail: impl std::fmt::Display) -> NamLoadError {
+        NamLoadError {
+            code: error_codes::UNSUPPORTED_CONFIGURATION,
+            detail: format!("layer array {index}: {key} {detail}"),
+        }
+    }
+
+    if cfg.kernel_sizes.is_some() {
+        return Err(unsupported(
+            index,
+            "kernel_sizes",
+            "(per-layer kernel size) is not yet supported",
+        ));
+    }
+    if cfg.bottleneck.is_some() {
+        return Err(unsupported(index, "bottleneck", "is not yet supported"));
+    }
+    if cfg.head.is_some() {
+        return Err(unsupported(
+            index,
+            "head",
+            "(the nested convolutional head) is not yet supported",
+        ));
+    }
+    match &cfg.activation {
+        file::ActivationSpec::One(file::ActivationEntry::Name(_)) => {}
+        file::ActivationSpec::One(file::ActivationEntry::Params(p)) => {
+            return Err(unsupported(
+                index,
+                "activation",
+                format!("as an object (type {:?}) is not yet supported", p.kind),
+            ));
+        }
+        file::ActivationSpec::PerLayer(_) => {
+            return Err(unsupported(
+                index,
+                "activation",
+                "as a per-layer array is not yet supported",
+            ));
+        }
+    }
+    if cfg.gated == Some(true) {
+        return Err(unsupported(
+            index,
+            "gated",
+            "true (gating) is not supported",
+        ));
+    }
+    if cfg.gating_mode.is_some() {
+        return Err(unsupported(index, "gating_mode", "is not supported"));
+    }
+    if cfg.secondary_activation.is_some() {
+        return Err(unsupported(
+            index,
+            "secondary_activation",
+            "is not supported",
+        ));
+    }
+    if let Some(g) = cfg.groups_input
+        && g != 1
+    {
+        return Err(unsupported(
+            index,
+            "groups_input",
+            format!("{g} != 1 is not supported"),
+        ));
+    }
+    if let Some(g) = cfg.groups_input_mixin
+        && g != 1
+    {
+        return Err(unsupported(
+            index,
+            "groups_input_mixin",
+            format!("{g} != 1 is not supported"),
+        ));
+    }
+    if cfg.layer1x1.is_some() {
+        return Err(unsupported(index, "layer1x1", "is not yet supported"));
+    }
+    if let Some(head1x1) = &cfg.head1x1
+        && head1x1.active
+    {
+        return Err(unsupported(index, "head1x1", "active is not supported"));
+    }
+    if cfg.slimmable.is_some() {
+        return Err(unsupported(index, "slimmable", "is not supported"));
+    }
+    for (name, film) in [
+        ("conv_pre_film", &cfg.conv_pre_film),
+        ("conv_post_film", &cfg.conv_post_film),
+        ("input_mixin_pre_film", &cfg.input_mixin_pre_film),
+        ("input_mixin_post_film", &cfg.input_mixin_post_film),
+        ("activation_pre_film", &cfg.activation_pre_film),
+        ("activation_post_film", &cfg.activation_post_film),
+        ("layer1x1_post_film", &cfg.layer1x1_post_film),
+        ("head1x1_post_film", &cfg.head1x1_post_film),
+    ] {
+        if let Some(f) = film
+            && f.is_active()
+        {
+            return Err(unsupported(
+                index,
+                name,
+                "active (FiLM conditioning) is not supported",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Confirms `cfg` is a plain A1 layer array (via [`reject_unsupported_layer_features`]) and
+/// resolves its now-`Option` A1 fields to the concrete values `PreparedWaveNet::from_file`'s
+/// weight walk needs. `kernel_size`/`head_size` being absent (with no A2 alternative present
+/// either, since that alternative would already have been rejected above) is a self-contradictory
+/// file — well-formed JSON, every feature it names supported, but missing a field this shape
+/// requires — hence `INCONSISTENT_CONFIGURATION` rather than `UNSUPPORTED_CONFIGURATION`.
+fn resolve_layer_array(
+    cfg: &LayerArrayConfig,
+    index: usize,
+) -> Result<ResolvedLayerArrayShape, NamLoadError> {
+    reject_unsupported_layer_features(cfg, index)?;
+
+    let kernel_size = cfg.kernel_size.ok_or_else(|| NamLoadError {
+        code: error_codes::INCONSISTENT_CONFIGURATION,
+        detail: format!("layer array {index}: neither kernel_size nor kernel_sizes is present"),
+    })?;
+    let head_size = cfg.head_size.ok_or_else(|| NamLoadError {
+        code: error_codes::INCONSISTENT_CONFIGURATION,
+        detail: format!("layer array {index}: neither head_size nor head is present"),
+    })?;
+    let head_bias = cfg.head_bias.unwrap_or(false);
+    let gated = cfg.gated.unwrap_or(false);
+
+    let activation_name = match &cfg.activation {
+        file::ActivationSpec::One(file::ActivationEntry::Name(name)) => name.as_str(),
+        // `reject_unsupported_layer_features` above already rejected every other shape.
+        _ => unreachable!("reject_unsupported_layer_features rejects non-Name activation specs"),
+    };
+    let activation = Activation::try_from(activation_name)?;
+
+    Ok(ResolvedLayerArrayShape {
+        kernel_size,
+        head_size,
+        head_bias,
+        gated,
+        activation,
+    })
+}
+
 /// Validates one layer array's declared dimensions against this crate's NFR-SEC-020 ceilings,
 /// its lower bounds, and the `condition_size == 1` constraint (this implementation always feeds
 /// the raw mono input as the sole conditioning signal, matching every real WaveNet export — a
 /// different declared `condition_size` isn't representable by this code and must be rejected
 /// cleanly, not silently misread). Called *before* any weight reading or scratch sizing for this
 /// array, so every later multiplication involving these fields is safe from `usize` overflow by
-/// construction.
-fn validate_layer_array_dims(cfg: &LayerArrayConfig, index: usize) -> Result<(), NamLoadError> {
+/// construction. `resolved` is [`resolve_layer_array`]'s output for the same `cfg`/`index`.
+fn validate_layer_array_dims(
+    cfg: &LayerArrayConfig,
+    resolved: &ResolvedLayerArrayShape,
+    index: usize,
+) -> Result<(), NamLoadError> {
     check_max(
         cfg.input_size,
         MAX_INPUT_SIZE,
@@ -608,7 +812,7 @@ fn validate_layer_array_dims(cfg: &LayerArrayConfig, index: usize) -> Result<(),
         &format!("layer array {index}: condition_size"),
     )?;
     check_max(
-        cfg.head_size,
+        resolved.head_size,
         MAX_HEAD_SIZE,
         &format!("layer array {index}: head_size"),
     )?;
@@ -618,7 +822,7 @@ fn validate_layer_array_dims(cfg: &LayerArrayConfig, index: usize) -> Result<(),
         &format!("layer array {index}: channels"),
     )?;
     check_max(
-        cfg.kernel_size,
+        resolved.kernel_size,
         MAX_KERNEL_SIZE,
         &format!("layer array {index}: kernel_size"),
     )?;
@@ -631,10 +835,17 @@ fn validate_layer_array_dims(cfg: &LayerArrayConfig, index: usize) -> Result<(),
     check_min1(cfg.input_size, &format!("layer array {index}: input_size"))?;
     check_min1(cfg.channels, &format!("layer array {index}: channels"))?;
     check_min1(
-        cfg.kernel_size,
+        resolved.kernel_size,
         &format!("layer array {index}: kernel_size"),
     )?;
-    check_min1(cfg.head_size, &format!("layer array {index}: head_size"))?;
+    check_min1(
+        resolved.head_size,
+        &format!("layer array {index}: head_size"),
+    )?;
+    check_min1(
+        cfg.dilations.len(),
+        &format!("layer array {index}: dilations.len()"),
+    )?;
 
     if cfg.condition_size != 1 {
         return Err(NamLoadError {
@@ -645,6 +856,36 @@ fn validate_layer_array_dims(cfg: &LayerArrayConfig, index: usize) -> Result<(),
             ),
         });
     }
+
+    // NFR-SEC-020, M10 addition: a dilation value appears in no weight count — unlike every other
+    // dimension checked above — so nothing else here bounds it, and the padded causal-conv history
+    // buffer `Conv1D` allocates (`channels * (kernel_size - 1) * dilation` elements) is a product
+    // none of the individual per-factor ceilings above bounds either. See `MAX_DILATION`'s and
+    // `MAX_CONV_HISTORY_ELEMENTS`' own doc comments for why this closes a real gap, not a
+    // hypothetical one.
+    for (layer_idx, &dilation) in cfg.dilations.iter().enumerate() {
+        check_max(
+            dilation,
+            MAX_DILATION,
+            &format!("layer array {index} layer {layer_idx}: dilation"),
+        )?;
+        check_min1(
+            dilation,
+            &format!("layer array {index} layer {layer_idx}: dilation"),
+        )?;
+        let history_elements = cfg
+            .channels
+            .saturating_mul(resolved.kernel_size.saturating_sub(1))
+            .saturating_mul(dilation);
+        check_max(
+            history_elements,
+            MAX_CONV_HISTORY_ELEMENTS,
+            &format!(
+                "layer array {index} layer {layer_idx}: channels * (kernel_size - 1) * dilation"
+            ),
+        )?;
+    }
+
     Ok(())
 }
 
@@ -654,16 +895,23 @@ impl PreparedWaveNet {
     ///
     /// 1. `architecture == "WaveNet"` (LSTM and anything else: `UNSUPPORTED_ARCHITECTURE` — LSTM
     ///    support is a documented open scope gap, see the crate doc comment, not a bug).
-    /// 2. `config.head.is_none()` (`UNSUPPORTED_HEAD_CONFIG`).
-    /// 3. `sample_rate` is nonzero if present (`INVALID_SAMPLE_RATE`), else defaults to 48 kHz.
-    /// 4. `config.layers` is non-empty (`EMPTY_LAYER_ARRAYS`).
-    /// 5. `config.layers.len()` and `weights.len()` are within their NFR-SEC-020 ceilings
+    /// 2. `config.head.is_none()` (`UNSUPPORTED_HEAD_CONFIG` — this is the top-level post-stack
+    ///    head; a layer array's own nested `head` is a different field, checked in step 8).
+    /// 3. `config.condition_dsp.is_none()` (`UNSUPPORTED_CONFIGURATION` — D-9.12 defers this A2
+    ///    feature permanently).
+    /// 4. `config.in_channels` is absent or `1` (`UNSUPPORTED_CONFIGURATION` — core-A2 scope).
+    /// 5. `sample_rate` is nonzero if present (`INVALID_SAMPLE_RATE`), else defaults to 48 kHz.
+    /// 6. `config.layers` is non-empty (`EMPTY_LAYER_ARRAYS`).
+    /// 7. `config.layers.len()` and `weights.len()` are within their NFR-SEC-020 ceilings
     ///    (`DIMENSION_LIMIT_EXCEEDED`).
-    /// 6. Every layer array's dimensions are within their ceilings, at least 1, and
-    ///    `condition_size == 1` (`DIMENSION_LIMIT_EXCEEDED` / `UNSUPPORTED_CONDITION_SIZE`).
-    /// 7. Every layer array's `activation` string parses (`UNSUPPORTED_ACTIVATION`).
+    /// 8. Every layer array is resolved via `resolve_layer_array` (M10, FR-NAM-140): any A2-shaped
+    ///    feature the array uses is rejected by name (`UNSUPPORTED_CONFIGURATION`), a
+    ///    self-contradictory A1 shape is rejected as such (`INCONSISTENT_CONFIGURATION`), then its
+    ///    dimensions are checked against their ceilings, at least 1, and `condition_size == 1`
+    ///    (`DIMENSION_LIMIT_EXCEEDED` / `UNSUPPORTED_CONDITION_SIZE`), including the per-dilation
+    ///    NFR-SEC-020 checks `validate_layer_array_dims` performs.
     ///
-    /// Steps 5-7 all happen *before* step 8 reads a single weight or performs a single
+    /// Step 8 all happens *before* step 9 reads a single weight or performs a single
     /// dimension-derived multiplication. This ordering is load-bearing, not decorative: once
     /// every dimension that ever appears in a product (`channels * input_size`,
     /// `channels * channels * kernel_size`, and so on) is bounded well below any value that could
@@ -671,16 +919,19 @@ impl PreparedWaveNet {
     /// `Conv1x1::read`/`Conv1D::read`/`WeightReader::take` is safe from overflow by construction.
     /// Do not "helpfully" add `checked_mul` throughout the rest of this file to reproduce a
     /// guarantee this section already provides, and do not remove this section without replacing
-    /// that guarantee some other way.
+    /// that guarantee some other way. `MAX_CONV_HISTORY_ELEMENTS`'s check inside
+    /// `validate_layer_array_dims` is itself *part* of that guarantee, not a redundant check on
+    /// top of it — see its own doc comment.
     ///
-    /// 8. Each `LayerArray` is built via `WeightReader`, in the order the spike's own reading of
+    /// 9. Each `LayerArray` is built via `WeightReader`, in the order the spike's own reading of
     ///    `NeuralAmpModelerCore` established: per array `[rechannel (no bias), per-layer[dilated
     ///    (bias), mixin (no bias), residual (bias)], head_rechannel (bias iff head_bias)]`
-    ///    (`WEIGHT_COUNT_MISMATCH` on exhaustion).
-    /// 9. Adjacent arrays chain correctly: `head_size[i] == channels[i+1]` and
-    ///    `channels[i] == input_size[i+1]` (`LAYER_ARRAY_CHAINING_MISMATCH`).
-    /// 10. The trailing `head_scale` float is resolved exactly as the spike's confirmed reading
-    ///     of `WaveNet::set_weights_`: if one float remains after step 8, it is authoritative; if
+    ///    (`WEIGHT_COUNT_MISMATCH` on exhaustion). M10 Phase 0 does not change this layout — every
+    ///    array that reaches this step has already been confirmed to be a plain A1 shape.
+    /// 10. Adjacent arrays chain correctly: `head_size[i] == channels[i+1]` and
+    ///     `channels[i] == input_size[i+1]` (`LAYER_ARRAY_CHAINING_MISMATCH`).
+    /// 11. The trailing `head_scale` float is resolved exactly as the spike's confirmed reading
+    ///     of `WaveNet::set_weights_`: if one float remains after step 9, it is authoritative; if
     ///     none remain, `config.head_scale` is used; anything else is `WEIGHT_COUNT_MISMATCH`.
     pub fn from_file(nam: &NamFile) -> Result<Self, NamLoadError> {
         if nam.architecture != "WaveNet" {
@@ -693,6 +944,20 @@ impl PreparedWaveNet {
             return Err(NamLoadError {
                 code: error_codes::UNSUPPORTED_HEAD_CONFIG,
                 detail: "config.head is non-null".to_string(),
+            });
+        }
+        if nam.config.condition_dsp.is_some() {
+            return Err(NamLoadError {
+                code: error_codes::UNSUPPORTED_CONFIGURATION,
+                detail: "config.condition_dsp is not yet supported".to_string(),
+            });
+        }
+        if let Some(in_channels) = nam.config.in_channels
+            && in_channels != 1
+        {
+            return Err(NamLoadError {
+                code: error_codes::UNSUPPORTED_CONFIGURATION,
+                detail: format!("config.in_channels must be 1, found {in_channels}"),
             });
         }
 
@@ -722,21 +987,18 @@ impl PreparedWaveNet {
             "config.layers.len()",
         )?;
         check_max(nam.weights.len(), MAX_TOTAL_WEIGHTS, "weights.len()")?;
-        for (i, cfg) in nam.config.layers.iter().enumerate() {
-            validate_layer_array_dims(cfg, i)?;
-        }
 
-        let activations: Vec<Activation> = nam
-            .config
-            .layers
-            .iter()
-            .map(|cfg| Activation::try_from(cfg.activation.as_str()))
-            .collect::<Result<_, _>>()?;
+        let mut resolved_arrays = Vec::with_capacity(nam.config.layers.len());
+        for (i, cfg) in nam.config.layers.iter().enumerate() {
+            let resolved = resolve_layer_array(cfg, i)?;
+            validate_layer_array_dims(cfg, &resolved, i)?;
+            resolved_arrays.push(resolved);
+        }
 
         let mut r = WeightReader::new(&nam.weights);
         let mut arrays = Vec::with_capacity(nam.config.layers.len());
-        for (cfg, activation) in nam.config.layers.iter().zip(activations) {
-            let out_mult = if cfg.gated { 2 } else { 1 };
+        for (cfg, resolved) in nam.config.layers.iter().zip(&resolved_arrays) {
+            let out_mult = if resolved.gated { 2 } else { 1 };
             // No bias: NeuralAmpModelerCore's LayerArray ctor constructs `_rechannel` with
             // bias=false, confirmed by reading that constructor directly (see spike README).
             let rechannel = Conv1x1::read(&mut r, cfg.channels, cfg.input_size, false)?;
@@ -747,7 +1009,7 @@ impl PreparedWaveNet {
                     &mut r,
                     cfg.channels * out_mult,
                     cfg.channels,
-                    cfg.kernel_size,
+                    resolved.kernel_size,
                     dilation,
                 )?;
                 let mixin =
@@ -757,13 +1019,14 @@ impl PreparedWaveNet {
                     dilated,
                     mixin,
                     residual,
-                    activation,
-                    gated: cfg.gated,
+                    activation: resolved.activation,
+                    gated: resolved.gated,
                     channels: cfg.channels,
                 });
             }
 
-            let head_rechannel = Conv1x1::read(&mut r, cfg.head_size, cfg.channels, cfg.head_bias)?;
+            let head_rechannel =
+                Conv1x1::read(&mut r, resolved.head_size, cfg.channels, resolved.head_bias)?;
 
             arrays.push(LayerArray {
                 rechannel,
@@ -771,7 +1034,7 @@ impl PreparedWaveNet {
                 head_rechannel,
                 input_size: cfg.input_size,
                 channels: cfg.channels,
-                head_size: cfg.head_size,
+                head_size: resolved.head_size,
             });
         }
 
@@ -1082,36 +1345,61 @@ mod tests {
     // trusted generator's output.
     // -----------------------------------------------------------------------------------------
 
+    /// M10: every field beyond the five A1 requires is now `Option`, to make room for A2's
+    /// alternatives (see `file.rs`'s module doc comment) — so a "minimal" A1 layer array has to
+    /// state all of them explicitly (`None` where A1 has no opinion) rather than rely on a
+    /// `Default` impl, since `ActivationSpec` has no sensible default value to derive one from.
     fn minimal_layer_array() -> LayerArrayConfig {
         LayerArrayConfig {
             input_size: 1,
             condition_size: 1,
-            head_size: 1,
             channels: 2,
-            kernel_size: 2,
             dilations: vec![1],
-            activation: "Tanh".to_string(),
-            gated: false,
-            head_bias: false,
+            activation: file::ActivationSpec::One(file::ActivationEntry::Name("Tanh".to_string())),
+            kernel_size: Some(2),
+            kernel_sizes: None,
+            bottleneck: None,
+            head_size: Some(1),
+            head_bias: Some(false),
+            head: None,
+            gated: Some(false),
+            gating_mode: None,
+            secondary_activation: None,
+            groups_input: None,
+            groups_input_mixin: None,
+            layer1x1: None,
+            head1x1: None,
+            slimmable: None,
+            conv_pre_film: None,
+            conv_post_film: None,
+            input_mixin_pre_film: None,
+            input_mixin_post_film: None,
+            activation_pre_film: None,
+            activation_post_film: None,
+            layer1x1_post_film: None,
+            head1x1_post_film: None,
         }
     }
 
     /// Computes exactly how many weights `PreparedWaveNet::from_file` will consume for `cfg`, so
     /// tests can hand-build a matching (or deliberately mismatched) flat weight array without
-    /// going through JSON at all.
+    /// going through JSON at all. Assumes `cfg` is a plain A1 shape — the only shape M10 Phase 0
+    /// builds a `LayerArray` from at all (see `resolve_layer_array`).
     fn weight_count_for(cfg: &LayerArrayConfig) -> usize {
-        let out_mult = if cfg.gated { 2 } else { 1 };
+        let out_mult = if cfg.gated == Some(true) { 2 } else { 1 };
+        let kernel_size = cfg.kernel_size.expect("A1 fixture: kernel_size is set");
+        let head_size = cfg.head_size.expect("A1 fixture: head_size is set");
         let mut n = cfg.channels * cfg.input_size; // rechannel, no bias
         for _ in &cfg.dilations {
-            n += cfg.channels * out_mult * cfg.channels * cfg.kernel_size; // dilated weight
+            n += cfg.channels * out_mult * cfg.channels * kernel_size; // dilated weight
             n += cfg.channels * out_mult; // dilated bias
             n += cfg.channels * out_mult * cfg.condition_size; // mixin, no bias
             n += cfg.channels * cfg.channels; // residual weight
             n += cfg.channels; // residual bias
         }
-        n += cfg.head_size * cfg.channels; // head_rechannel weight
-        if cfg.head_bias {
-            n += cfg.head_size;
+        n += head_size * cfg.channels; // head_rechannel weight
+        if cfg.head_bias == Some(true) {
+            n += head_size;
         }
         n
     }
@@ -1138,6 +1426,8 @@ mod tests {
                 layers: vec![cfg],
                 head_scale: 0.5,
                 head: None,
+                in_channels: None,
+                condition_dsp: None,
             },
             weights,
             sample_rate: Some(48_000),
@@ -1187,7 +1477,8 @@ mod tests {
     #[test]
     fn rejects_unsupported_activation() {
         let mut file = minimal_valid_file();
-        file.config.layers[0].activation = "GELU".to_string();
+        file.config.layers[0].activation =
+            file::ActivationSpec::One(file::ActivationEntry::Name("GELU".to_string()));
         let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::UNSUPPORTED_ACTIVATION.id);
     }
@@ -1207,6 +1498,34 @@ mod tests {
         // ask for on the order of 10^18 floats. The test completing at all (rather than hanging
         // or OOMing) demonstrates the ceiling check runs first.
         file.config.layers[0].channels = 999_999_999;
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+    }
+
+    /// M10: closes a gap present in A1 all along and found while scoping A2 — a dilation value
+    /// appears in no weight count, so nothing bounded it before `MAX_DILATION` existed. Without
+    /// that check, `dilations: [4_000_000_000]` needs only a handful of weights and would attempt
+    /// to allocate on the order of 8 GB for one layer's causal-conv history
+    /// (`channels * (kernel_size - 1) * dilation`, with this fixture's `channels: 2,
+    /// kernel_size: 2`). The test completing at all demonstrates the ceiling check runs first.
+    #[test]
+    fn rejects_dilation_over_ceiling_without_attempting_a_huge_allocation() {
+        let mut file = minimal_valid_file();
+        file.config.layers[0].dilations = vec![4_000_000_000];
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+    }
+
+    /// A dilation that individually passes `MAX_DILATION` but whose implied history buffer
+    /// (`channels * (kernel_size - 1) * dilation`) is still enormous — the product ceiling
+    /// `MAX_CONV_HISTORY_ELEMENTS` exists specifically because no single-factor ceiling bounds
+    /// this product on its own.
+    #[test]
+    fn rejects_dilation_whose_history_product_exceeds_its_own_ceiling() {
+        let mut file = minimal_valid_file();
+        file.config.layers[0].channels = MAX_CHANNELS;
+        file.config.layers[0].kernel_size = Some(MAX_KERNEL_SIZE);
+        file.config.layers[0].dilations = vec![MAX_DILATION];
         let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
     }
@@ -1240,6 +1559,8 @@ mod tests {
                 layers: vec![cfg0, cfg1],
                 head_scale: 0.5,
                 head: None,
+                in_channels: None,
+                condition_dsp: None,
             },
             weights,
             sample_rate: Some(48_000),
@@ -1292,7 +1613,10 @@ mod tests {
                     "channels": cfg.channels,
                     "kernel_size": cfg.kernel_size,
                     "dilations": cfg.dilations,
-                    "activation": cfg.activation,
+                    // `ActivationSpec` is `Deserialize`-only (see this module's own doc comment on
+                    // why file.rs stays that way), so this is written as the literal JSON shape
+                    // `minimal_layer_array`'s `activation` field resolves to, not `cfg.activation`.
+                    "activation": "Tanh",
                     "gated": cfg.gated,
                     "head_bias": cfg.head_bias,
                 }],

@@ -10,6 +10,30 @@
 //! fields this crate doesn't read yet (training metadata, etc.), and FR-NAM-040 only asks that
 //! *malformed* files be rejected — unknown-but-otherwise-valid extra fields are not malformed.
 //!
+//! # M10 / D-9.12: one widened grammar, not a second parse path for A2
+//!
+//! A2 files declare `architecture: "WaveNet"` exactly as A1 files do (D-9.12), so `WaveNetConfig`/
+//! `LayerArrayConfig` are widened **in place** to also accept A2's fields, rather than gaining a
+//! sibling type the way LSTM did — a sibling here would need its own dispatch key, and A2 has none
+//! (see this module doc's "Two file shapes" section above, which is why LSTM *does* get one). Every
+//! field A2 adds is `Option<_>`/`Vec<_>` with `#[serde(default)]`, so a file that parses today keeps
+//! parsing unchanged; `wavenet::PreparedWaveNet::from_file` is where the A1/A2 semantic branch
+//! actually happens, not here.
+//!
+//! **Two rules keep this widening from becoming the mirror-image of the bug FR-NAM-140 exists to
+//! fix** (a well-formed-but-unsupported file misreported as malformed, or a genuinely malformed one
+//! misreported as merely unsupported):
+//!
+//! 1. `serde_json::Value` is used only for fields this crate never *reads* the contents of — the
+//!    permanently-rejected set (`condition_dsp`, `slimmable`, `gating_mode`, `secondary_activation`).
+//!    Presence and JSON kind (object vs. non-object) is all `wavenet.rs` inspects. Every field that
+//!    *is* consumed (`kernel_sizes`, `bottleneck`, `head.*`, activation parameters) keeps a concrete
+//!    type, so a wrong-typed value still fails at `serde` and is still reported as malformed.
+//! 2. **No untagged enum below gets a catch-all variant.** An `Other(serde_json::Value)` arm on
+//!    [`ActivationEntry`], for instance, would turn every activation *type* error (a bad
+//!    `negative_slope`, say) into a false "unsupported feature" claim instead of "malformed". This
+//!    rule does not get relaxed for convenience.
+//!
 //! # Two file shapes, not one `config: serde_json::Value`
 //!
 //! **Decision:** `NamFile.config` stays typed as `WaveNetConfig` (unchanged), and LSTM gets its
@@ -77,31 +101,236 @@ pub struct WaveNetConfig {
     /// only `wavenet::PreparedWaveNet::from_file` does.
     #[serde(default)]
     pub head: Option<serde_json::Value>,
+    /// A2: DSP input channel count. Absent means 1, matching the reference exporter's own
+    /// `config.value("in_channels", 1)`. Namir supports only 1 (core-A2 scope, D-9.12); a present
+    /// value other than 1 is rejected by `wavenet::PreparedWaveNet::from_file`, not here.
+    #[serde(default)]
+    pub in_channels: Option<usize>,
+    /// A2: a nested conditioning WaveNet. Kept opaque — its presence (non-null) alone is enough to
+    /// reject the file, per D-9.12's explicit deferral of `condition_dsp`; nothing here or in
+    /// `wavenet.rs` ever reads its contents.
+    #[serde(default)]
+    pub condition_dsp: Option<serde_json::Value>,
 }
 
 /// One WaveNet layer array's hyperparameters, as exported in the `.nam` JSON — field names match
 /// the exporter's schema, not this crate's own naming.
+///
+/// A1 and A2 share this one type (see this module's doc comment). Every field A2 adds beyond A1's
+/// original five required-plus-`kernel_size`/`gated`/`head_bias` set is `Option`, defaulting to
+/// absent; which of A1's or A2's reading applies is `wavenet::PreparedWaveNet::from_file`'s job.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LayerArrayConfig {
     /// Number of input channels into this layer array.
     pub input_size: usize,
     /// Number of conditioning channels feeding this layer array.
     pub condition_size: usize,
-    /// Number of channels feeding the array's head.
-    pub head_size: usize,
-    /// Number of channels each layer in the array carries internally.
+    /// Number of channels each layer in the array carries internally (the residual "trunk" width).
     pub channels: usize,
-    /// Convolution kernel width shared by every layer in the array.
-    pub kernel_size: usize,
     /// Per-layer dilation factors, one entry per layer in the array.
     pub dilations: Vec<usize>,
-    /// Activation function name (e.g. `"Tanh"`), interpreted by
-    /// `wavenet::PreparedWaveNet::from_file`.
-    pub activation: String,
-    /// Whether the layer array uses gated activation.
-    pub gated: bool,
-    /// Whether the array's head applies a bias term.
-    pub head_bias: bool,
+    /// Activation function, interpreted by `wavenet::PreparedWaveNet::from_file`. A1 files carry a
+    /// single name (`ActivationSpec::One(ActivationEntry::Name(_))`) shared by every layer in the
+    /// array; A2 files may instead carry a per-layer array, and either form's entries may be an
+    /// object naming activation-specific parameters (`ActivationEntry::Params`) rather than a bare
+    /// name. Required: every real export, A1 or A2, states it.
+    pub activation: ActivationSpec,
+
+    /// A1's scalar kernel width, shared by every layer in the array. Exactly one of this and
+    /// `kernel_sizes` must be present — `wavenet::PreparedWaveNet::from_file`'s job to check, not
+    /// this module's.
+    #[serde(default)]
+    pub kernel_size: Option<usize>,
+    /// A2's per-layer kernel widths — one entry per layer, so its length must agree with
+    /// `dilations.len()`.
+    #[serde(default)]
+    pub kernel_sizes: Option<Vec<usize>>,
+    /// A2's internal (dilated-conv / mixin) width, distinct from `channels` when grouped/bottleneck
+    /// convolution narrows the residual path. Absent means equal to `channels` — A1's case, and the
+    /// only case this crate supports as of M10's Phase 0/1 (core-A2 scope, D-9.12).
+    #[serde(default)]
+    pub bottleneck: Option<usize>,
+    /// A1's legacy head width. Exactly one of this (paired with `head_bias`) and `head` must be
+    /// present.
+    #[serde(default)]
+    pub head_size: Option<usize>,
+    /// A1's legacy head bias flag, paired with `head_size`.
+    #[serde(default)]
+    pub head_bias: Option<bool>,
+    /// A2's nested, convolutional head — replaces `head_size`/`head_bias`.
+    #[serde(default)]
+    pub head: Option<LayerArrayHeadConfig>,
+
+    /// A1's legacy gating flag. Namir supports only `false` (core-A2 scope defers gating);
+    /// consulted only when `gating_mode` is absent, matching the reference parser's own precedence.
+    #[serde(default)]
+    pub gated: Option<bool>,
+    /// A2's gating mode (`"none"` / `"gated"` / `"blended"`, scalar or per-layer array). Kept
+    /// opaque — Namir supports only the all-`"none"` case, so nothing beyond that fact is ever
+    /// read from it.
+    #[serde(default)]
+    pub gating_mode: Option<serde_json::Value>,
+    /// A2's blend/gate activation. Kept opaque: read only when gating is active, which Namir does
+    /// not support, so this is parsed solely so a rejection can name it if present.
+    #[serde(default)]
+    pub secondary_activation: Option<serde_json::Value>,
+    /// A2's dilated-conv group count. Namir supports only `1` (no grouped convolution kernels
+    /// exist yet — core-A2 scope, D-9.12).
+    #[serde(default)]
+    pub groups_input: Option<usize>,
+    /// A2's conditioning-mixin group count. Namir supports only `1`, for the same reason.
+    #[serde(default)]
+    pub groups_input_mixin: Option<usize>,
+    /// A2's `bottleneck -> channels` 1x1 projection (A1's `residual` is the degenerate case with
+    /// `bottleneck == channels`). Core A2 requires this active with `groups == 1`; an explicitly
+    /// inactive `layer1x1` is a real, reference-supported shape this crate does not implement.
+    #[serde(default)]
+    pub layer1x1: Option<Conv1x1FeatureConfig>,
+    /// A2's optional extra skip-path 1x1 projection. Namir supports only the inactive case.
+    #[serde(default)]
+    pub head1x1: Option<Conv1x1FeatureConfig>,
+    /// A2's channel-slicing container config. Kept opaque; Namir supports only its absence.
+    #[serde(default)]
+    pub slimmable: Option<serde_json::Value>,
+
+    /// FiLM conditioning at eight distinct points in the layer. Namir supports only every one of
+    /// these being inactive (D-9.12 explicitly defers FiLM); each is parsed only so a rejection can
+    /// name which one, if any, was active.
+    /// FiLM before the dilated convolution.
+    #[serde(default)]
+    pub conv_pre_film: Option<FilmConfig>,
+    /// FiLM after the dilated convolution.
+    #[serde(default)]
+    pub conv_post_film: Option<FilmConfig>,
+    /// FiLM before the conditioning mixin.
+    #[serde(default)]
+    pub input_mixin_pre_film: Option<FilmConfig>,
+    /// FiLM after the conditioning mixin.
+    #[serde(default)]
+    pub input_mixin_post_film: Option<FilmConfig>,
+    /// FiLM before the primary activation.
+    #[serde(default)]
+    pub activation_pre_film: Option<FilmConfig>,
+    /// FiLM after the primary activation.
+    #[serde(default)]
+    pub activation_post_film: Option<FilmConfig>,
+    /// FiLM after the `layer1x1` projection.
+    #[serde(default)]
+    pub layer1x1_post_film: Option<FilmConfig>,
+    /// FiLM after the `head1x1` projection.
+    #[serde(default)]
+    pub head1x1_post_film: Option<FilmConfig>,
+}
+
+/// A2's nested, convolutional layer-array head (`model.cpp`'s preferred head form, replacing A1's
+/// `head_size`/`head_bias` pair). `out_channels`/`kernel_size` mirror `LayerArrayConfig`'s own
+/// dimension fields; `head_dilation` defaults to 1 when absent, matching the reference parser.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LayerArrayHeadConfig {
+    /// Number of channels the head rechannel produces.
+    pub out_channels: usize,
+    /// Convolution kernel width of the head rechannel.
+    pub kernel_size: usize,
+    /// Dilation of the head rechannel; absent means 1.
+    #[serde(default)]
+    pub head_dilation: Option<usize>,
+    /// Whether the head rechannel applies a bias term.
+    pub bias: bool,
+}
+
+/// The shape of A2's `layer1x1`/`head1x1` config objects: whether the projection is active, and,
+/// when active, its group count and (for `head1x1` only) output width.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Conv1x1FeatureConfig {
+    /// Whether this projection is applied at all.
+    pub active: bool,
+    /// Group count for the projection; absent means 1 (ungrouped).
+    #[serde(default)]
+    pub groups: Option<usize>,
+    /// Output channel count, meaningful only for `head1x1`; absent means the array's own width.
+    #[serde(default)]
+    pub out_channels: Option<usize>,
+}
+
+/// A2's FiLM-site config: either the literal `false` shorthand for "inactive", or an object whose
+/// own `active` field (defaulting to `true` when the object is present but omits it, matching the
+/// reference parser's `film_config.value("active", true)`) is the real answer. No variant here
+/// reads `shift`/`groups` — Namir only ever needs to know whether a site is active, to reject the
+/// file if so.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum FilmConfig {
+    /// The literal `false` shorthand: always inactive.
+    Disabled(bool),
+    /// An object form; `active` defaults to `true` when the key itself is absent.
+    Params {
+        /// Whether this FiLM site is active; absent defaults to `true`.
+        #[serde(default)]
+        active: Option<bool>,
+    },
+}
+
+impl FilmConfig {
+    /// Mirrors `NAM/wavenet/model.cpp`'s `parse_film_params`: absent or literal `false` is
+    /// inactive; a present object defaults `active` to `true` when the key itself is omitted.
+    pub fn is_active(&self) -> bool {
+        match self {
+            FilmConfig::Disabled(active) => *active,
+            FilmConfig::Params { active } => active.unwrap_or(true),
+        }
+    }
+}
+
+/// One layer array's `activation` field: either one entry shared by every layer (A1's shape, and
+/// still legal for A2), or one entry per layer (A2's shape). See [`ActivationEntry`] for what an
+/// entry itself may be.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ActivationSpec {
+    /// One entry, shared by every layer in the array.
+    One(ActivationEntry),
+    /// One entry per layer; length must agree with the array's `dilations.len()`.
+    PerLayer(Vec<ActivationEntry>),
+}
+
+/// A single activation entry: either a bare name (`"Tanh"`), or an object naming the activation's
+/// `type` plus whatever parameters that activation takes (`negative_slope`, `min_val`, ...). No
+/// catch-all variant — see this module's doc comment for why that matters.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ActivationEntry {
+    /// A bare activation name, e.g. `"Tanh"`.
+    Name(String),
+    /// An object naming the activation's `type` plus its parameters.
+    Params(ActivationParams),
+}
+
+/// An activation's `type` plus every parameter any A2 activation this crate recognizes may carry.
+/// Which fields are meaningful depends on `kind`; unused fields for a given `kind` are simply
+/// absent from real files.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ActivationParams {
+    /// The activation's name, e.g. `"LeakyReLU"` (JSON key `type`).
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `LeakyReLU`'s slope for negative inputs.
+    #[serde(default)]
+    pub negative_slope: Option<f32>,
+    /// `PReLU`'s per-channel slopes for negative inputs.
+    #[serde(default)]
+    pub negative_slopes: Option<Vec<f32>>,
+    /// `LeakyHardtanh`'s lower clamp bound.
+    #[serde(default)]
+    pub min_val: Option<f32>,
+    /// `LeakyHardtanh`'s upper clamp bound.
+    #[serde(default)]
+    pub max_val: Option<f32>,
+    /// `LeakyHardtanh`'s slope below `min_val`.
+    #[serde(default)]
+    pub min_slope: Option<f32>,
+    /// `LeakyHardtanh`'s slope above `max_val`.
+    #[serde(default)]
+    pub max_slope: Option<f32>,
 }
 
 /// FR-NAM-080: "Namir shall read and display the model's metadata where present: name, author
