@@ -296,7 +296,11 @@ mod tests {
         );
     }
 
-    // trace: FR-GATE-030
+    // trace-partial: FR-GATE-030
+    // uncovered: FR-GATE-030 — the requirement's "sample-accurate within the block, not stepped
+    // uncovered: at block boundaries" distinction cannot be falsified by the tagged test, which
+    // uncovered: drives one sample per process call so a block boundary and a sample boundary are
+    // uncovered: the same event; the closing ramp's per-sample delta is never measured; closes M9b
     #[test]
     fn attack_ramps_sample_accurately_not_in_one_step() {
         let mut gate = NoiseGate::new(sr(48_000));

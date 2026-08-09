@@ -29,6 +29,35 @@
 //! nearly free, which is the wrong thing to measure here: NFR-PERF-050 is about the load a user
 //! actually waits on, the first one.
 //!
+//! # What the measured window does *not* include: the file read
+//!
+//! **Recorded plainly rather than left to be discovered.** All three arms call `Instance::load`
+//! with [`LoadSource::Bytes`] — an `Arc<[u8]>` that already exists in memory — so the clock starts
+//! after the bytes are there. [`LoadSource::File`], the variant a product shell actually uses, adds
+//! a `std::fs::metadata` and a `std::fs::read` of the whole file inside the same call
+//! (`namir-worker/src/lib.rs`'s `LoadSource::read`). NFR-PERF-050 states its ceiling **"for files
+//! up to 50 MB"**, and this binary measures a 50 MB *payload*, never a 50 MB *file*: the disk read
+//! is outside the window, so every figure below is a lower bound on what a user waits for, by
+//! however long the volume takes to hand the bytes over. That is a deliberate choice — parse and
+//! prepare cost is Namir's, and a `std::fs::read` figure is a property of the machine's storage —
+//! but it means the 500 ms assertion this binary makes is an assertion about the loader, not about
+//! the whole wall-clock duration the requirement's sentence describes.
+//!
+//! # The other half of the sentence: the audio-thread clause
+//!
+//! NFR-PERF-050 is two clauses joined by an "and" — "shall complete within 500 ms for files up to
+//! 50 MB **on the reference machine, and shall never delay the audio thread regardless of duration
+//! (FR-NAM-070)**". This binary measures the first and says nothing about the second: nothing here
+//! runs an audio thread at all. The nearest evidence is `tests/rt_stress.rs`'s axis A, which drives
+//! `Instance::load` in a loop against a live `AudioEngine` and asserts zero audio-thread
+//! allocation, zero dropout blocks and a bounded worst block — real evidence, but an integration
+//! test rather than the `Verify: B` NFR-PERF-050 names, and its models are `WaveNetShape::Nano`, so
+//! "regardless of duration" is exercised at no long duration by anything in this tree.
+//!
+//! Both gaps are why the tag above `main` is a `// trace-partial:` rather than a plain `// trace:`
+//! (D-23.1: a plain tag asserts the **whole** requirement by its stated `Verify:` method). Closing
+//! them is M9b's, alongside the certified re-measurement M9b already owes this requirement.
+//!
 //! # Read this before quoting any number from this binary
 //!
 //! D-2.4 governs, same as every other benchmark in this workspace: pin away from CPU 0 (absorbs
@@ -52,6 +81,28 @@ const BLOCK: usize = 64;
 /// test pins at ~49.6 MB. If that test's assertion range ever needs to move, this constant moves
 /// with it.
 const OVERSIZED_CHANNELS: usize = 430;
+
+/// NFR-PERF-050's ceiling, **asserted** rather than printed as a closing line for a human to
+/// compare against by eye. The FRS defines `Verify: B` as "benchmark with a numeric threshold", so
+/// until this constant had an `assert!` behind it (M9a) this binary was not a `B` at all.
+///
+/// The assertion is necessary for a tag, not sufficient for a plain one: this binary still spans
+/// only part of NFR-PERF-050's sentence, so the tag above `main` is a `// trace-partial:` and names
+/// both gaps — see its own `// uncovered:` field, and this file's "What the measured window does
+/// *not* include" section above.
+///
+/// Per D-2.4 a failing assertion means *re-run before believing it*: this bench is not on CI's
+/// critical path (only `six_stage_chain` runs there), so an absolute wall-clock threshold cannot
+/// make CI flaky, and the certified figure remains a §2-reference-machine matter across >= 5
+/// repetitions on a quiet machine.
+const NFR_PERF_050_CEILING: Duration = Duration::from_millis(500);
+
+/// The "for files up to 50 MB" half of the same sentence, in the MiB the fixture's own size test
+/// uses. The 500 ms ceiling is only claimed for payloads at or under this size, so an arm that
+/// outgrew it would be asserting something the requirement does not say — checked rather than
+/// assumed, because the oversized arm's size is a fixture property ([`OVERSIZED_CHANNELS`]) that
+/// can drift out from under this file.
+const NFR_PERF_050_MAX_BYTES: usize = 50 * 1024 * 1024;
 
 fn ctx() -> PrepareContext {
     PrepareContext::new(SampleRate::new(SR).unwrap(), BLOCK, ChannelConfig::Stereo).unwrap()
@@ -83,6 +134,15 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 /// Measures `reps` independent cold loads of `bytes` against `target`, each against a fresh
 /// engine/instance/cache — see this file's own "Cold, not cached" section.
 fn measure(label: &str, target: Target, bytes: &Arc<[u8]>, reps: usize) {
+    assert!(
+        bytes.len() <= NFR_PERF_050_MAX_BYTES,
+        "{label}: this arm's payload is {} bytes, past NFR-PERF-050's {NFR_PERF_050_MAX_BYTES}-byte \
+         \"files up to 50 MB\" clause -- the 500 ms ceiling is not claimed for it, so asserting the \
+         ceiling here would assert something the requirement does not say. Shrink the fixture, or \
+         report this arm without the assertion and say so",
+        bytes.len()
+    );
+
     let mut durations = Vec::with_capacity(reps);
     for _ in 0..reps {
         let c = ctx();
@@ -110,8 +170,33 @@ fn measure(label: &str, target: Target, bytes: &Arc<[u8]>, reps: usize) {
         "{label:<32} bytes={:>11} reps={reps:>3} | p50 {p50:>9.2?} | p99 {p99:>9.2?} | max {max:>9.2?}",
         bytes.len(),
     );
+
+    // Printed first, asserted second, deliberately: a failing arm still leaves its own measured row
+    // above the panic, which is what a reader needs to judge whether the run was contaminated.
+    //
+    // On `max` rather than `p50`: "shall complete within 500 ms" is a statement about a load, not
+    // about a median load, and at both `reps` values used here `percentile(.., 0.99)` already
+    // resolves to the last element, so a p99 assertion would be the same assertion wearing a
+    // narrower-sounding name.
+    assert!(
+        max <= NFR_PERF_050_CEILING,
+        "NFR-PERF-050: {label} ({} bytes) took {max:.2?} on its slowest of {reps} repetitions, over \
+         the {NFR_PERF_050_CEILING:?} ceiling (p50 {p50:.2?}, p99 {p99:.2?}). D-2.4: one reading on \
+         a machine that was not verified quiet is not evidence of a regression -- re-run pinned \
+         (NAMIR_PIN_CORE) >= 5 times before believing this, and note that a certified figure is a \
+         reference-machine (02-architecture.md section 2) figure only",
+        bytes.len()
+    );
 }
 
+// trace-partial: NFR-PERF-050
+// uncovered: NFR-PERF-050 — (a) the "for files up to 50 MB" clause: every arm loads
+// uncovered: LoadSource::Bytes, so the fs::metadata + fs::read that LoadSource::File performs is
+// uncovered: outside the measured window, and this binary therefore times a 50 MB payload and
+// uncovered: never a 50 MB file. (b) the "shall never delay the audio thread regardless of
+// uncovered: duration" clause is not measured here at all: its only evidence is rt_stress.rs's
+// uncovered: axis A, an integration test rather than the Verify: B this requirement names, whose
+// uncovered: concurrent loads are Nano fixtures and so exercise no long duration; closes M9b
 fn main() {
     pin_to_measurement_core();
 
@@ -154,5 +239,10 @@ fn main() {
         5,
     );
 
-    println!("\nNFR-PERF-050's ceiling: 500 ms, for files up to 50 MB.");
+    println!(
+        "\nPASS: every arm's slowest repetition stayed inside NFR-PERF-050's \
+         {NFR_PERF_050_CEILING:?} ceiling, for payloads up to 50 MB. Read this file's \"What the \
+         measured window does not include\" section before quoting it against the requirement's \
+         own \"for files up to 50 MB\" wording."
+    );
 }

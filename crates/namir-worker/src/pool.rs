@@ -9,8 +9,40 @@
 
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+
+/// Live worker threads across every [`ThreadPool`] in this process — see [`live_worker_threads`].
+static LIVE_WORKER_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many pool worker threads are alive in this process right now, summed over every
+/// [`ThreadPool`].
+///
+/// **Test observability**, for one assertion that cannot be made any other way: that a *host-driven*
+/// teardown has joined the threads the torn-down thing started, before the call that tore it down
+/// returned. `clap_plugin.destroy`'s caller is entitled to `FreeLibrary` the plugin the instant
+/// destroy returns, so "did destroy join its workers?" is a correctness question, not a tidiness
+/// one — and from outside the plugin (an in-process CLAP host harness, which is all
+/// `crates/namir-clap/tests/clap_host_teardown.rs` gets) there is no handle on that instance's pool
+/// to ask. Answered process-globally instead.
+///
+/// Two atomic read-modify-writes per **thread lifetime** — never per job, never per sample, and
+/// nowhere near the audio thread. A reader that shares the process with unrelated pools sees their
+/// threads too, so compare against a baseline taken in the same process rather than against zero,
+/// and only in a test binary that is not building pools concurrently on other threads.
+pub fn live_worker_threads() -> usize {
+    LIVE_WORKER_THREADS.load(Ordering::Acquire)
+}
+
+/// Decrements [`LIVE_WORKER_THREADS`] however the worker thread ends — including an unwind that
+/// escapes [`worker_loop`] itself (a job's own panic is already caught inside it, per D-16.3).
+struct LiveThreadGuard;
+
+impl Drop for LiveThreadGuard {
+    fn drop(&mut self) {
+        LIVE_WORKER_THREADS.fetch_sub(1, Ordering::Release);
+    }
+}
 
 /// D-7.1's sizing, with a floor.
 ///
@@ -41,9 +73,21 @@ struct Shared {
 }
 
 /// A fixed-size pool of worker threads.
+///
+/// # Shutdown is a method, not only a `Drop` (added M9b)
+///
+/// [`Self::shutdown`] exists because an owner cannot always rely on its own `Drop` running when it
+/// needs the threads gone. `namir-clap` is the case that forced this: its `SharedInner` *owns* the
+/// pool, every worker job holds an `Arc<SharedInner>` to reach it, and so the last `Arc` — the one
+/// whose drop would run `Drop for ThreadPool` — belongs to whichever job finishes last, not to the
+/// host thread calling `clap_plugin.destroy`. See that impl's own doc comment
+/// (`crates/namir-clap/src/shared.rs`) for what that cost.
+///
+/// `threads` is therefore behind a `Mutex` rather than being a plain `Vec`: shutdown has to be
+/// callable through a `&self` reached from inside an `Arc`.
 pub struct ThreadPool {
     shared: Arc<Shared>,
-    threads: Vec<std::thread::JoinHandle<()>>,
+    threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl ThreadPool {
@@ -66,21 +110,86 @@ impl ThreadPool {
         let threads = (0..threads.max(1))
             .map(|_| {
                 let shared = Arc::clone(&shared);
-                std::thread::spawn(move || worker_loop(&shared))
+                // Incremented on *this* thread, before the spawn, so the count is already exact by
+                // the time this constructor returns; the guard inside decrements it however the
+                // worker ends.
+                LIVE_WORKER_THREADS.fetch_add(1, Ordering::Release);
+                std::thread::spawn(move || {
+                    let _live = LiveThreadGuard;
+                    worker_loop(&shared)
+                })
             })
             .collect();
-        Self { shared, threads }
+        Self {
+            shared,
+            threads: Mutex::new(threads),
+        }
     }
 
-    /// How many threads this pool actually runs.
+    /// How many threads this pool still has to join — its full size until [`Self::shutdown`] runs,
+    /// zero after.
     pub fn threads(&self) -> usize {
-        self.threads.len()
+        lock(&self.threads).len()
     }
 
     /// Queues `job`. It runs on a worker thread, isolated per D-16.3 — see [`worker_loop`].
+    ///
+    /// After [`Self::shutdown`] this **drops `job` instead of queueing it**, and does so under the
+    /// queue lock (which is also where `shutdown` publishes the flag) so the two cannot straddle
+    /// each other. Queueing onto a pool with no threads left would not merely lose the job: the job
+    /// owns whatever it captured, so it would keep an owner alive with nothing left to release it.
+    /// Jobs queued *before* shutdown still run — see [`Self::shutdown`].
     pub fn spawn(&self, job: impl FnOnce() + Send + 'static) {
-        lock(&self.shared.queue).push_back(Box::new(job));
+        {
+            let mut queue = lock(&self.shared.queue);
+            if self.shared.shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            queue.push_back(Box::new(job));
+        }
         self.shared.ready.notify_one();
+    }
+
+    /// Stops accepting new jobs, lets every already-queued one run, and joins every worker thread
+    /// **on the calling thread** — returning only once none of this pool's threads is running any
+    /// more. Idempotent, and what [`Drop`] does.
+    ///
+    /// # Why an owner may need to call this rather than just dropping the pool
+    ///
+    /// See this type's own doc comment: an owner reachable from inside its own jobs cannot be
+    /// dropped by the thread that wants the threads gone. Calling `shutdown` directly is how such
+    /// an owner gets the join to happen on *its* thread, at the point it chooses.
+    ///
+    /// # Two deadlocks this deliberately does not have
+    ///
+    /// The handles are **taken out of the mutex and joined with the lock released**. Holding it
+    /// across a join would deadlock the moment a job's own drop glue re-entered `shutdown` (which
+    /// is exactly what happens when a job holds the last reference to the pool's owner): the joiner
+    /// would wait for a thread that was waiting for the joiner's lock. Draining first makes a
+    /// re-entrant call find an empty list and return at once.
+    ///
+    /// A handle belonging to the **calling** thread is skipped rather than joined. `JoinHandle::
+    /// join` on one's own thread blocks forever on Windows (`WaitForSingleObject` against the
+    /// caller's own handle) and returns `EDEADLK` on Linux; either way it is never what the caller
+    /// meant. Skipping detaches that one thread — it still observes the shutdown flag and exits on
+    /// its own — which is a leak of one handle in a path that should not be reachable at all, and
+    /// strictly better than wedging the thread that asked for the shutdown.
+    pub fn shutdown(&self) {
+        {
+            // Published under the queue lock, so `spawn`'s check of it cannot straddle the store.
+            let _queue = lock(&self.shared.queue);
+            self.shared.shutdown.store(true, Ordering::Release);
+        }
+        self.shared.ready.notify_all();
+
+        let handles = std::mem::take(&mut *lock(&self.threads));
+        let current = std::thread::current().id();
+        for handle in handles {
+            if handle.thread().id() == current {
+                continue;
+            }
+            let _ = handle.join();
+        }
     }
 
     /// Queued-but-not-yet-started jobs. Test observability.
@@ -96,17 +205,14 @@ impl Default for ThreadPool {
 }
 
 impl Drop for ThreadPool {
-    /// Signals shutdown and joins every thread.
+    /// Signals shutdown and joins every thread, via [`ThreadPool::shutdown`] — a no-op if an owner
+    /// already called that itself, which is the point of it being idempotent.
     ///
     /// A `join()` that returns `Err` — a thread that unwound *outside* a job body — is deliberately
     /// swallowed rather than propagated: a `Drop` impl that panics during an unwind aborts the
     /// process, which would be precisely the FR-ERR-040 failure this design exists to prevent.
     fn drop(&mut self) {
-        self.shared.shutdown.store(true, Ordering::Release);
-        self.shared.ready.notify_all();
-        for handle in self.threads.drain(..) {
-            let _ = handle.join();
-        }
+        self.shutdown();
     }
 }
 
@@ -189,7 +295,13 @@ mod tests {
     /// **D-16.3 / FR-ERR-040:** a panicking job is contained at the job boundary and the pool keeps
     /// serving. The panic hook is silenced for the duration so the suite's output stays readable —
     /// noted because otherwise it looks like a test is failing.
-    // trace: FR-ERR-040
+    // trace-partial: FR-ERR-040
+    // uncovered: FR-ERR-040 — the method's "inject a fault into each non-audio subsystem" reaches
+    // uncovered: only the generic worker thread pool: no fault is injected into the library
+    // uncovered: scanner, the state save/load path, settings I/O, the resource cache or the GUI
+    // uncovered: thread, and the plugin-configuration clause "continue passing audio, degraded if
+    // uncovered: necessary" is asserted by nothing, the tagged test running no audio at all;
+    // uncovered: closes M9b
     #[test]
     fn a_panicking_job_is_contained_and_the_pool_keeps_serving() {
         let previous = std::panic::take_hook();
@@ -219,5 +331,99 @@ mod tests {
         }
         drop(pool); // joins
         assert_eq!(count.load(Ordering::SeqCst), 8, "drop must drain the queue");
+    }
+
+    /// The property `namir-clap`'s `clap_plugin.destroy` needs and could not get from `Drop` alone:
+    /// `shutdown` returns only once every worker thread is gone, and it is the *caller's* thread
+    /// that waits.
+    #[test]
+    fn shutdown_returns_only_after_an_in_flight_job_has_finished() {
+        let pool = ThreadPool::with_threads(2);
+        let (started_tx, started_rx) = mpsc::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let job_finished = Arc::clone(&finished);
+        pool.spawn(move || {
+            started_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            job_finished.store(true, Ordering::Release);
+        });
+
+        started_rx.recv().expect("the job must start");
+        // A 200 ms margin against a thread that has only just announced itself: the point is that
+        // the job is genuinely still in flight when shutdown is called, not that it is fast.
+        assert!(!finished.load(Ordering::Acquire));
+
+        pool.shutdown();
+        assert!(
+            finished.load(Ordering::Acquire),
+            "shutdown must not return while a job is still running"
+        );
+        assert_eq!(pool.threads(), 0, "every thread must have been joined");
+
+        pool.shutdown(); // idempotent; must not hang or panic on an already-drained pool
+    }
+
+    /// A job queued after shutdown is dropped rather than left in a queue no thread will ever
+    /// drain — otherwise it would hold whatever it captured (in `namir-clap`, an `Arc` to the very
+    /// thing being torn down) alive with nothing left to release it.
+    #[test]
+    fn a_job_spawned_after_shutdown_is_dropped_rather_than_queued() {
+        let pool = ThreadPool::with_threads(1);
+        pool.shutdown();
+
+        let captured = Arc::new(AtomicUsize::new(0));
+        let job_captured = Arc::clone(&captured);
+        pool.spawn(move || {
+            job_captured.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(pool.queued(), 0, "the job must not be queued");
+        assert_eq!(
+            Arc::strong_count(&captured),
+            1,
+            "the dropped job must have released what it captured"
+        );
+        assert_eq!(captured.load(Ordering::SeqCst), 0, "and never have run");
+    }
+
+    /// The self-join guard. A job that happens to hold the last reference to whatever owns the pool
+    /// runs the pool's own `Drop` **on a pool thread**, so the drained handle list contains that
+    /// thread's own handle. Joining it blocks forever on Windows; this asserts the drop returns.
+    ///
+    /// The completion signal is a `Sender` declared *after* the pool, so it is dropped — closing
+    /// the channel — only once the pool's own drop has returned. A self-join would wedge that
+    /// thread mid-drop, the sender would never drop, and this reports `Timeout` rather than
+    /// hanging the whole test binary.
+    #[test]
+    fn dropping_the_pool_from_inside_one_of_its_own_jobs_does_not_self_join() {
+        struct Owner {
+            pool: ThreadPool,
+            /// Field order is the assertion: dropped after `pool` has finished dropping.
+            _done: mpsc::Sender<()>,
+        }
+
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let owner = Arc::new(Owner {
+            pool: ThreadPool::with_threads(2),
+            _done: done_tx,
+        });
+
+        let job_owner = Arc::clone(&owner);
+        owner.pool.spawn(move || {
+            // Long enough that the reference below is gone first, so this job holds the *last*
+            // one and `Drop for ThreadPool` therefore runs here, on a pool thread.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(job_owner);
+        });
+        drop(owner);
+
+        match done_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Err(mpsc::RecvTimeoutError::Disconnected) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("the pool self-joined: its drop never returned")
+            }
+            Ok(()) => unreachable!("nothing is ever sent on this channel"),
+        }
     }
 }

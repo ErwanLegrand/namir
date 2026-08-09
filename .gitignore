@@ -24,3 +24,8 @@ desktop.ini
 # Kernel/ETW traces produced by xperf during performance investigation (can be hundreds of MB).
 trace.etl
 *.etl
+
+# Where the clap-validator CI job (FR-CLAP-020) stages the built plugin as `Namir.clap` before
+# running the validator against it. A ~7 MB cdylib copy, reproducible from a build; running that
+# job locally leaves one behind.
+staging/

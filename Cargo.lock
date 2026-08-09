@@ -308,6 +308,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "clack-host"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f0d9f10d8ea9b1b79863aefb41fb8eae144db8491557cc58f91e16c8be32e55"
+dependencies = [
+ "clack-common",
+ "clack-plugin",
+ "clap-sys",
+]
+
+[[package]]
 name = "clack-plugin"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1104,6 +1115,7 @@ version = "0.1.0"
 dependencies = [
  "baseview",
  "clack-extensions",
+ "clack-host",
  "clack-plugin",
  "namir-core",
  "namir-engine",

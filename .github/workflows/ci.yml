@@ -31,7 +31,11 @@ jobs:
   # `cargo test --workspace` below -- there is no separate RT-harness step because there is no
   # separate RT-harness binary; do not read its absence as a missing gate.
   #
-  # trace: NFR-QUAL-050, NFR-QUAL-060, NFR-BUILD-020
+  # NFR-BUILD-020's own partial sits beside the build/test steps below, which are the commands its
+  # gap is about; D-23.1's adjacency rule takes one anchor per tag, so the three ids this site
+  # carried until M9a are now annotated separately rather than stacked here.
+  #
+  # trace: NFR-QUAL-050, NFR-QUAL-060
   build-test:
     name: build + test (${{ matrix.os }})
     strategy:
@@ -74,6 +78,13 @@ jobs:
         # specifically, not a workaround, and not silence-by-ignoring-all-warnings.
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # trace-partial: NFR-BUILD-020
+      # uncovered: NFR-BUILD-020 — "exercised by CI so it cannot drift" has no artifact: nothing
+      # uncovered: extracts or runs the commands docs/user-guide.md documents, the tagged job
+      # uncovered: running cargo build --workspace --all-targets and cargo test --workspace with no
+      # uncovered: link to any document, so the guide can drift freely; the test limb is
+      # uncovered: undocumented for a user in any case, cargo test appearing in no user-facing
+      # uncovered: document; closes M12
       - name: cargo build --workspace --all-targets
         run: cargo build --workspace --all-targets
 
@@ -105,17 +116,46 @@ jobs:
       - name: xtask attribution (NFR-LIC-030)
         run: cargo run -p xtask -- attribution
 
-      # M7: NFR-QUAL-010's traceability check -- reports every Must requirement with no
-      # `// trace:`/manual-test coverage found, and whether the generated docs/03-test-plan.md is
-      # stale. Deliberately `continue-on-error` (informational), same reasoning as the `coverage`
-      # and `nfr-perf-010-chain-bench` jobs further down this file: the tool is real and the number
-      # it reports is real, but as of M7's own close-out 16 Must requirements are genuine,
-      # individually-confirmed gaps (see docs/03-implementation-roadmap.md's M7 status section) --
-      # several needing real new benchmark/test infrastructure that is out of this milestone's own
-      # scope. Making this step hard-blocking today would leave a *required* check permanently red
-      # until every one of those 16 closes, training reviewers to ignore it -- the opposite of what
-      # NFR-QUAL-010 exists for. Flip this back to blocking once the count reaches zero.
-      - name: xtask traceability (NFR-QUAL-010, informational until the gap list is empty)
+      # M9a: NFR-QUAL-010's traceability check, now **split into two steps with different flip
+      # dates** per D-18.5 (`docs/02-architecture.md:2002-2079`). It was one `continue-on-error`
+      # step from M7 until this commit, and the M7 comment it replaced was right about the coverage
+      # half and silently wrong about the other one: the tool returned `plan_up_to_date &&
+      # coverage_clean` as a single value, so a single `continue-on-error: true` made *both*
+      # properties advisory. Deleting a `// trace:` annotation from a currently-covered Must left
+      # CI green -- the regression half of NFR-QUAL-010 was enforced nowhere, the pre-commit hook
+      # included. That is the hole D-18.5 exists to close, and closing it costs nothing the M7
+      # reasoning was protecting.
+      #
+      # The two halves are genuinely independent and are ready on different dates:
+      #
+      #   * **Required, from today.** The generated `docs/03-test-plan.md` matches what the tool
+      #     generates, and Section 14's `### M9a re-audit` denominators match the FRS (D-23.2's
+      #     derived half rides here, not on the informational one). Both are mechanical and
+      #     satisfiable right now: `--write` regenerates the plan, and Section 14's row set is
+      #     hand-fixed. Nothing about a milestone's progress can make this red.
+      #   * **Informational, until M13's close-out.** Zero uncovered Musts. It cannot reach zero
+      #     inside M9 for a reason that is not a verification gap -- ten of the currently uncovered
+      #     ids belong to milestones that have not run (M10, M12, M13), and the only route to zero
+      #     today is tagging unbuilt work, which D-23.1 forbids. Making this blocking now would
+      #     recreate exactly the permanently-red check M7 argued against.
+      #
+      # Both steps print the identical uncovered list, each id beside the milestone the roadmap
+      # makes responsible for it -- a derived label the exit status never reads. The second step
+      # exists so a non-zero count is a visible annotation on the run rather than a line in a log
+      # nobody opens; the first would otherwise be green while printing the same gaps.
+      #
+      # **The M13 close-out flip is the deletion of the flag and of the second step**, deliberately
+      # two edits and no restructuring. Do not flip it early by deleting only the flag.
+      #
+      # One interaction worth knowing rather than rediscovering: if the required step fails, the job
+      # stops and the informational step does not run, so a stale plan temporarily hides the
+      # coverage annotation. Harmless -- the required step has already printed the same list -- and
+      # left alone rather than papered over with `if: always()`, which would make the M13 flip a
+      # three-line edit instead of the two D-18.5 specifies.
+      - name: xtask traceability -- plan + Section 14 denominators (D-18.5, required)
+        run: cargo run -p xtask -- traceability --allow-uncovered
+
+      - name: xtask traceability -- uncovered Musts (NFR-QUAL-010, informational until M13)
         run: cargo run -p xtask -- traceability
         continue-on-error: true
 
@@ -149,6 +189,122 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check bans
+
+  # M9a: FR-CLAP-020's own words are "shall pass the reference CLAP validator with no errors, **as a
+  # gate in CI**" -- so the artifact under test is this configuration, not a hand-written Rust test.
+  # That is limb 1 of FRS Section 10's M9 adequacy rule ("tag the configuration when the
+  # configuration is the artifact under test; tag a test when the product is",
+  # `docs/01-functional-requirements.md:1223-1227`), and FR-CLAP-020's `*Verify:*` line is a bare
+  # `S.` electing nothing, so this job carries the requirement's `# trace:` directly and needs no
+  # test behind it. Until now the row's entire evidence was M6's single manual 32/32 run
+  # (`docs/03-implementation-roadmap.md:1701-1703`); a one-time run is not a gate.
+  #
+  # ---- Supply-chain shape (closes `docs/03-implementation-roadmap.md` Section 15 item 11, "due at
+  # M9a, before the gate lands"). Recorded here rather than in `02-architecture.md` Section 17,
+  # under that register's own titled note (`02-architecture.md:1836-1847`): the register exists for
+  # NFR-LIC-020/030 and tracks what is *linked into the shipped binary*; a tool that runs on a CI
+  # machine and puts nothing of its own into the artifact would blur exactly that distinction. That
+  # note already names `clap-validator` as covered by the reasoning, and says its "availability,
+  # versions and licences are D-18.3's and the CI configuration's business, recorded there" --
+  # this comment is that record.
+  #
+  #   * Not published on crates.io (S-4's finding, `02-architecture.md:2474-2475`), so this is an
+  #     install from git: the first non-registry build input in this workflow. `deny.toml`'s
+  #     `[sources]` policy governs cargo *dependencies* and cannot see a CI-installed tool at all,
+  #     so nothing that already exists catches this -- the pin below is the whole mitigation.
+  #     Same class of exposure as D-13.4's forked `cpal`, tracked by R-10.
+  #   * Pinned by **commit**, which is item 11's first option, taken over the other two. Vendoring a
+  #     built binary was rejected: upstream's prebuilt artifacts come from a third-party redirector
+  #     over expiring Actions artifacts, and committing an opaque executable into a repository whose
+  #     every test fixture is generated by decision (D-19.1) is a worse provenance story than a
+  #     hash, not a better one. A floating install was rejected because it makes this gate's meaning
+  #     change without any commit here -- the failure mode being a red build nobody caused, or a
+  #     quietly weakened validator, neither of which a reviewer can see in a diff.
+  #   * `--locked` is load-bearing, not hygiene: upstream commits its own `Cargo.lock`, so the flag
+  #     pins the validator's entire transitive tree to what upstream resolved, not to whatever
+  #     resolves on the day this job runs.
+  #   * Version/licence/toolchain, read from the pinned checkout on 2026-08-08 rather than inherited:
+  #     `clap-validator` 0.4.1, `license = "MIT"` with a LICENSE file present, `rust-version =
+  #     "1.95.0"` (under this workspace's own 1.97 pin, so `@stable` satisfies both), commit dated
+  #     2026-07-24 -- the same date Section 19 records for the S-4 spike's copy.
+  #   * Deliberately **not** cached. The install is a from-source build on every run; that is the
+  #     price of the pin being the only trusted input, and `Swatinem/rust-cache` explicitly does not
+  #     manage `~/.cargo/bin`, so a hand-rolled binary cache here would be a second, unpinned
+  #     artifact to reason about.
+  #
+  # ---- Runner scope: **Windows only**, and each exclusion is a reason rather than a default.
+  #   * **macOS is structurally impossible today**, not merely untested. A `.clap` on macOS is a
+  #     *bundle directory*, not a renamed dylib -- CLAP's own `entry.h` definition, recorded at
+  #     D-13.3's M8-planning Consequence (`02-architecture.md:1305-1316`) -- and `xtask bundle`, the
+  #     only thing that produces one, is D-18.3/M13 work that does not exist yet. There is no macOS
+  #     artifact to hand the validator; a renamed `.dylib` is something no host will load.
+  #   * **Linux is deferred for a product reason, not a runner one.** `crates/namir-clap/src/gui.rs`
+  #     restricts `is_api_supported`/`get_preferred_api` to `GuiApiType::WIN32` with **no `cfg`**
+  #     (`gui.rs:91-105`), so on a Linux runner this plugin declares the `gui` extension while
+  #     supporting no API there. Every executed validator run in this project's history is Windows
+  #     (S-4 2026-08-04, M6's 32/32, and M9a's own run below), so adding Linux here would gate a
+  #     merge on a surface nobody has ever exercised -- the "red on arrival" failure D-18.5's own
+  #     mechanism paragraph warns about. It is worth adding once someone has run it by hand, and the
+  #     GUI-portability question behind it is Section 15's live scope item, not this job's to settle.
+  #   * FR-CLAP-020 does **not** quantify over platforms -- one sentence, `Verify: S`, no "each" and
+  #     no enumerated list -- so under D-23.1's first question a single-runner gate spans the whole
+  #     requirement and the plain `# trace:` above is honest. Windows is also AGENTS.md's primary
+  #     platform.
+  #   * **S-4's MSVC `linker_messages` finding does not bite this job**, stated because it is the
+  #     obvious reason to think Windows was the wrong choice here. That finding (see `build-test`'s
+  #     clippy step above) is about a bare `-D warnings` gate failing on the linker's stdout chatter
+  #     during a `cdylib` link. This job builds with plain `cargo build` and no `-D warnings`, so
+  #     the warning, if it appears, is printed and ignored. It constrains the clippy step, not this
+  #     one.
+  #
+  # This job is blocking, with no `continue-on-error`. "As a gate in CI" is the requirement's own
+  # text, and an informational validator step would not be one.
+  #
+  # trace: FR-CLAP-020
+  clap-validator:
+    name: clap-validator (FR-CLAP-020)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Installed after `rust-cache` so the binary is not in `~/.cargo/bin` while that action takes
+      # its inventory. Re-running with an unchanged rev is cheap by cargo's own bookkeeping: it
+      # records the source in `.crates.toml` and skips an identical install.
+      - name: Install clap-validator (pinned; see this job's supply-chain comment)
+        run: >
+          cargo install --locked
+          --git https://github.com/free-audio/clap-validator
+          --rev b2f1d9b79b1d264a5747f46707d72b1aa40a02ef
+          clap-validator
+
+      - name: Build the plugin (cdylib)
+        run: cargo build --release -p namir-clap --lib
+
+      # The validator takes a path to a `.clap`, and on Windows a `.clap` *is* the built shared
+      # library under that name (D-13.3's Consequence, `02-architecture.md:1305-1307`) -- so the
+      # rename is the whole of "put it where the validator finds it", and it is the same artifact
+      # D-18.3's packaging job will place at D-13.3's install paths. Staged into its own directory
+      # rather than renamed in `target/release/` so nothing downstream trips over a file cargo did
+      # not put there.
+      - name: Stage the built cdylib as Namir.clap
+        # `pwsh` is already the default `run` shell on a Windows runner; named explicitly so this
+        # step does not silently become `bash` if that default is ever changed workflow-wide.
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          Copy-Item target/release/namir_clap.dll staging/Namir.clap -Force
+
+      # Out-of-process (the validator's default) rather than `--in-process`: a plugin crash is then
+      # reported as a failed test instead of taking the validator down with it. Full output is kept
+      # rather than `--only-failed`, since the run log is this requirement's evidence and a passing
+      # run that prints nothing evidences nothing. Exits non-zero iff any test failed, which is what
+      # makes this a gate (upstream `src/commands/validate.rs:83-87`).
+      - name: clap-validator validate
+        run: clap-validator validate staging/Namir.clap
 
   # Covers D-18.1's "an MSRV pin ... enforced" (NFR-PORT-010). The pinned version is read out of
   # root Cargo.toml's [workspace.package].rust-version at run time rather than hardcoded here, so

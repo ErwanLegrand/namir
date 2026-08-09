@@ -495,6 +495,11 @@ mod tests {
         assert!(decode(&high).is_ok());
     }
 
+    /// NFR-SEC-020: `MAX_LOAD_SECONDS` is this module's documented allocation bound (see the
+    /// module doc comment) — a file declaring more frames than it permits is capped to the bound
+    /// and the capping is reported (`was_truncated`), rather than sizing a buffer from the
+    /// untrusted declared count.
+    // trace: NFR-SEC-020
     #[test]
     fn truncates_and_reports_ir_longer_than_ten_seconds_at_file_rate() {
         // 8 kHz * 11 s of frames, mono, cheap to synthesize and decode.

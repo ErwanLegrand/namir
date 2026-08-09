@@ -65,3 +65,41 @@ baseview = "0.2"
 # `pub(crate)` to that crate. Not a new dependency in spirit -- `namir-state` already depends on
 # it and re-exports nothing narrower for this purpose.
 serde_json = "1"
+
+# D-18.6 (M9a): the in-process CLAP host harness this crate's extension impls need to be callable
+# at all. `clack_extensions::audio_ports::AudioPortInfoWriter::from_raw` is `pub(crate) unsafe fn`
+# and the `HostInfo`/`Host*Handle` `from_raw` family is `unsafe` throughout, so an in-crate host
+# stub would need `unsafe` outside `src/gui.rs` -- which D-5.3 forbids. `clack-host` is the route
+# that stays inside D-5.3: `PluginEntry::load_from_clack::<SinglePluginEntry<NamirClapPlugin>>`
+# instantiates this crate's real plugin through the real C vtable with no `dlopen` and no `unsafe`
+# (see `clack-extensions` 0.1.1's own `src/__doc_utils.rs:114-146`, which does exactly that).
+#
+# **Dev-dependency only -- never linked into a release build**, on the same terms as
+# `assert_no_alloc` in `namir-engine` (§17). Pinned to exactly the 0.1.1 line `clack-plugin` and
+# `clack-extensions` above are pinned to, per R-2's dated M9a note: the pre-1.0 churn residual is
+# reopened here only on a dev-only surface, and only at the version the shipped side already uses.
+#
+# Features mirror `clack-extensions` 0.1.1's own dev-dependency on this crate (its
+# `Cargo.toml:140-143`), and both halves are load-bearing rather than copied:
+#  - `clack-plugin` is `clack-host`'s optional-dependency feature (`clack-host` 0.1.1
+#    `Cargo.toml:49`) that turns on `PluginEntry::load_from_clack` -- the in-process entry point.
+#  - `default-features = false` drops `clack-host`'s default `libloading` feature
+#    (`:50-54`, `libloading = ["dep:libloading", "dep:objc2-foundation"]`), which is the `dlopen`
+#    path D-18.6 specifically says this harness does not take. Dropping it is why adding this
+#    dependency resolves *one* new package and no transitive ones.
+clack-host = { version = "0.1.1", features = [
+    "clack-plugin",
+], default-features = false }
+# NOT enabled here, deliberately, and this is a blocker M9b inherits rather than an oversight:
+# `clack-extensions`' own `clack-host` feature (the host halves of audio-ports/params/state/latency
+# that a harness observing those extensions will eventually want) is **not** turned on, because
+# doing so fails D-18.6's third landing gate. `clack-extensions` declares `clack-host` as an
+# *optional normal* dependency (its `Cargo.toml:118-121`), so enabling that feature -- even from a
+# `[dev-dependencies]` entry here -- makes `clack-extensions -> clack-host` a `Normal`-kind edge in
+# `cargo metadata`'s single unified resolve. `xtask attribution` walks exactly that resolve keeping
+# any edge with a `Normal` `dep_kinds` entry (`xtask/src/cargo_meta.rs:82-91`), so it then adds
+# `| clack-host | 0.1.1 | MIT OR Apache-2.0 |` to THIRD-PARTY-NOTICES.md -- the one thing §17's row
+# says must not happen ("must not gain a row for a dev-only crate"). Measured, not predicted:
+# `cargo tree -e normal` agrees the cdylib never reaches it and the release build links nothing new,
+# so this is `xtask attribution`'s fidelity, not a real leak. Whoever needs the feature at M9b must
+# resolve that first; see this session's report.

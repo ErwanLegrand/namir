@@ -110,8 +110,22 @@ fn chunked_processing_matches_monolithic_processing() {
     }
 }
 
-// trace: FR-NAM-030, NFR-QUAL-030
+/// # Why the two tags are split around the attribute (D-23.1)
+///
+/// FR-NAM-030 is a partial and NFR-QUAL-030 is not, and a `trace-partial:` carries exactly one id,
+/// so the site needs two markers. They cannot be stacked: `scan_annotations` requires the first
+/// non-blank line after a tag not to be another comment, which a stacked pair violates. The plain
+/// tag therefore sits between `#[test]` and `fn`, where it is still immediately above the artifact
+/// it claims. Both tags name this same test.
+// trace-partial: FR-NAM-030
+// uncovered: FR-NAM-030 — neither architecture is compared against the reference NAM
+// uncovered: implementation the requirement names: both parity tests compare against
+// uncovered: namir-fixtures' own from-scratch port, and S-1's NeuralAmpModelerCore comparison
+// uncovered: lives in spikes/, excluded from the workspace and not runnable under cargo test;
+// uncovered: the probe is also 4 000 samples of sine plus noise, not the specified 10-second
+// uncovered: signal containing clean, transient and saturated material; closes M10
 #[test]
+// trace: NFR-QUAL-030
 fn numeric_parity_against_an_independent_reference_implementation() {
     let model = nam::generate(WaveNetShape::Standard, 7).expect("standard fixture should generate");
     let bytes = model.to_json_bytes();

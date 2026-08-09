@@ -435,7 +435,10 @@ mod tests {
 
     // --- Stability sweep (FR-EQ-020).
 
-    // trace: FR-EQ-020
+    // trace-partial: FR-EQ-020
+    // uncovered: FR-EQ-020 — two of the six sample rates the method names by number, 88.2 kHz and
+    // uncovered: 176.4 kHz, are absent from the sweep's rate array, which is [44_100, 48_000,
+    // uncovered: 96_000, 192_000]; closes M9b
     #[test]
     fn stable_across_a_wide_parameter_and_sample_rate_sweep() {
         let kinds = [

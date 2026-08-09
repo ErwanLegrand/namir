@@ -239,7 +239,11 @@ fn pin_to_measurement_core() {
     core_affinity::set_for_current(ids[idx]);
 }
 
-// trace: NFR-PERF-010
+// trace-partial: NFR-PERF-010
+// uncovered: NFR-PERF-010 — the Verify: B threshold is printed, never asserted: both branches of
+// uncovered: the p99.9-against-25%-of-one-core comparison print "indicative only", the binary's
+// uncovered: only assertions being on channel count and fault count, and the CI job that runs it
+// uncovered: is named informational by its own design; closes M9b
 fn main() {
     // Pin to one core, per D-2.1: every figure is single-core, and cross-core migration would
     // pollute the tail with scheduler noise unrelated to the chain's own cost.
