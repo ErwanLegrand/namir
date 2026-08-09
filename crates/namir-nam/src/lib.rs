@@ -44,9 +44,15 @@
 //! (malformed files rejected with a specific reason, never a panic), FR-NAM-080 (metadata, both
 //! the full parse's `NamFile::metadata`/`LstmFile::metadata` and, added M5, [`probe_metadata`]'s
 //! weights-free read for `namir-library`'s FR-LIB-040 search index), FR-NAM-110 (latency = 0 —
-//! both architectures are causal and block-preserving, see each module's own doc comment). A
-//! `.nam` file whose `architecture` is neither `"WaveNet"` nor `"LSTM"` is rejected via
-//! [`NamLoadError`] with `error_codes::UNSUPPORTED_ARCHITECTURE`, not silently misread.
+//! both architectures are causal and block-preserving, see each module's own doc comment),
+//! FR-NAM-140 (M10: a supported-architecture file whose `config` uses a feature this build does
+//! not implement is rejected with `error_codes::UNSUPPORTED_CONFIGURATION`/
+//! `INCONSISTENT_CONFIGURATION`, distinct from `MALFORMED_JSON`), FR-NAM-150 (M10: core NAM
+//! Architecture 2 — D-9.12's scope, `wavenet.rs`'s module doc comment). A `.nam` file whose
+//! `architecture` is neither `"WaveNet"` nor `"LSTM"` is rejected via [`NamLoadError`] with
+//! `error_codes::UNSUPPORTED_ARCHITECTURE`; a `"WaveNet"` file using a feature this build does not
+//! implement (grouped/gated convolution, FiLM, `condition_dsp`, `slimmable`, ...) is rejected with
+//! a distinct code naming the feature (FR-NAM-140) — neither case is silently misread.
 //!
 //! Out of scope, deliberately, for this crate:
 //! - FR-NAM-050/060 (resampling to the model's declared sample rate) — a stage wrapping this one.
