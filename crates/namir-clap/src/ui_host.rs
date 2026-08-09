@@ -115,6 +115,10 @@ impl UiHost for ClapUiHost {
             loaded_model_name: self.inner.nam_ref().map(|r| r.display_name),
             loaded_ir_name: self.inner.ir_ref().map(|r| r.display_name),
             library: self.inner.library_snapshot(),
+            // FR-IO-020's indicator is `None` here, and permanently: a CLAP plugin never opens an
+            // audio device — the host owns it, and hands this plugin buffers it has already
+            // captured — so there is no share mode this crate could report without inventing one.
+            audio_mode: None,
             unsaved_changes: self.inner.is_dirty(),
             notices: self.inner.notices(),
         }

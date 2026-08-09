@@ -92,6 +92,36 @@ impl Default for LibrarySnapshot {
     }
 }
 
+/// Which share mode the audio device a host is running against is actually open in — FR-IO-020's
+/// two WASAPI modes, as seen from the view layer.
+///
+/// A separate declaration from `namir_app::audio_io::ShareMode` rather than a re-export of it,
+/// because D-5.1 forbids this crate from depending on `namir-app` at all (the dependency runs the
+/// other way). The host performs the one-line conversion; see
+/// `crates/namir-app/src/host.rs`'s `From` impl.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioShareMode {
+    /// The device is shared with other applications on the system.
+    Shared,
+    /// The host process holds the device exclusively.
+    Exclusive,
+}
+
+/// FR-IO-020's mode indicator: what the audio device **actually** opened as, never what was asked
+/// for. `docs/03-implementation-roadmap.md` §18 rules out "a mode indicator that lies", so a host
+/// that requested exclusive mode and was refused reports [`AudioShareMode::Shared`] here — the
+/// refusal itself arrives separately, as a [`UiNotice`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioModeStatus {
+    /// The mode actually granted.
+    pub share_mode: AudioShareMode,
+    /// The device this names, as the host names it. The share mode is settled once per session
+    /// across both directions (`namir-app` will not run an exclusive input against a shared
+    /// output), so naming one device is a display choice about *which* name to show, not a claim
+    /// that the mode applies to that device only — `namir-app` passes its output device.
+    pub device_name: String,
+}
+
 /// Everything [`crate::render`] needs to draw one frame of FR-UI-020's screen -- a single,
 /// self-contained, read-only picture of engine/library/preset state at one instant. Built fresh by
 /// [`UiHost::snapshot`] every frame; this crate never retains one past the frame it was rendered
@@ -113,6 +143,10 @@ pub struct UiSnapshot {
     pub loaded_ir_name: Option<String>,
     /// The library-browsing surface's current state.
     pub library: LibrarySnapshot,
+    /// FR-IO-020's mode indicator, or `None` when this host does not own an audio device to have
+    /// a share mode for — which is the ordinary case for `namir-clap`, where the CLAP host owns
+    /// the device and the plugin never opens one.
+    pub audio_mode: Option<AudioModeStatus>,
     /// Whether the current in-memory state differs from what was last saved/recalled -- the
     /// `namir_state::State`-relative "dirty" concept this crate surfaces but never computes
     /// itself (the host is the one crate that can see both the live state and the last-saved
@@ -124,9 +158,9 @@ pub struct UiSnapshot {
 
 impl Default for UiSnapshot {
     /// Every parameter at its documented default (mirroring `namir_state::State::defaults`), no
-    /// meters, nothing loaded, an empty library, no notices -- the state a freshly opened window
-    /// should render before its first real [`UiHost::snapshot`] call, and what every test in this
-    /// crate starts from.
+    /// meters, nothing loaded, an empty library, no audio-mode indicator, no notices -- the state a
+    /// freshly opened window should render before its first real [`UiHost::snapshot`] call, and
+    /// what every test in this crate starts from.
     fn default() -> Self {
         Self {
             params: ParamValues::defaults(),
@@ -135,6 +169,7 @@ impl Default for UiSnapshot {
             loaded_model_name: None,
             loaded_ir_name: None,
             library: LibrarySnapshot::default(),
+            audio_mode: None,
             unsaved_changes: false,
             notices: Vec::new(),
         }
@@ -242,8 +277,24 @@ mod tests {
         assert_eq!(snapshot.params, ParamValues::defaults());
         assert!(snapshot.loaded_model_name.is_none());
         assert!(snapshot.loaded_ir_name.is_none());
+        assert!(snapshot.audio_mode.is_none());
         assert!(!snapshot.unsaved_changes);
         assert!(snapshot.notices.is_empty());
+    }
+
+    /// FR-IO-020's indicator is `Option`al because "no audio device of my own" is a real state a
+    /// host can be in (`namir-clap`), and is distinct from "shared mode" -- a default snapshot must
+    /// not claim a mode nobody granted.
+    #[test]
+    fn a_default_snapshot_claims_no_share_mode_rather_than_claiming_shared() {
+        assert_eq!(UiSnapshot::default().audio_mode, None);
+        assert_ne!(
+            UiSnapshot::default().audio_mode,
+            Some(AudioModeStatus {
+                share_mode: AudioShareMode::Shared,
+                device_name: String::new(),
+            })
+        );
     }
 
     #[test]

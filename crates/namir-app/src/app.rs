@@ -315,7 +315,14 @@ pub fn run() {
     let worker = WorkerHandle::spawn(worker_ctx);
     let stream_event_sender = worker.event_sender();
 
-    let mut host = AppHost::new(instance, worker, telemetry, library, state);
+    // FR-IO-020's mode indicator: the mode actually granted, never the one requested. The output
+    // device names it -- see `namir_ui::AudioModeStatus::device_name` for why one name is enough
+    // when the mode is settled across both directions.
+    let audio_mode = Some(namir_ui::AudioModeStatus {
+        share_mode: share_mode.mode.into(),
+        device_name: output.device.name.clone(),
+    });
+    let mut host = AppHost::new(instance, worker, telemetry, library, state, audio_mode);
     if let Some(w) = settings_warning {
         host.report(w.code, w.detail);
     }
@@ -451,7 +458,9 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
         state: Arc::clone(&state),
     };
     let worker = WorkerHandle::spawn(worker_ctx);
-    let mut host = AppHost::new(instance, worker, telemetry, library, state);
+    // No device was opened at all on this path, so there is no share mode to indicate -- `None`
+    // rather than a truthful-looking "Shared", which would claim a device this window does not have.
+    let mut host = AppHost::new(instance, worker, telemetry, library, state, None);
     host.report(
         crate::error_codes::NO_SUPPORTED_CONFIG,
         "no audio device could be opened; parameters can still be edited but nothing will be \
