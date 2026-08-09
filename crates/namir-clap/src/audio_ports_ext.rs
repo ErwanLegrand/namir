@@ -10,8 +10,9 @@
 //! configuration the host requests" is satisfied for the one configuration this plugin declares
 //! (a host that queries `count`/`get` sees exactly what it gets, correctly, every time); it is
 //! *not* satisfied in the sense of offering Mono or Mono→stereo as alternatives. Recorded here,
-//! and in `docs/manual-tests/fr-clap-030-audio-ports.md`, as a scope decision to revisit rather
-//! than a silent gap.
+//! and in `docs/manual-tests/fr-clap-030-audio-ports-negotiation.md`, as a scope decision to
+//! revisit rather than a silent gap — raised as `docs/03-implementation-roadmap.md` §15 item 9,
+//! due before M8.
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPortsImpl,

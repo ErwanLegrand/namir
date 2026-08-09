@@ -51,7 +51,12 @@ mod tests {
     }
 
     /// (a): a deliberately-allocating fake `Stage` trips the harness.
-    // trace: FR-ERR-030
+    // trace-partial: FR-ERR-030
+    // uncovered: FR-ERR-030 — the logging limb of "no logging, allocation or formatting for
+    // uncovered: logging" is checked by neither the S nor the I half of the Verify line:
+    // uncovered: assert_no_alloc catches allocation only, so a non-allocating log call on the
+    // uncovered: audio thread passes the harness clean, and no static check for logging calls
+    // uncovered: exists in xtask or anywhere else; closes M9b
     #[test]
     #[should_panic(expected = "allocation occurred inside an audio section")]
     fn harness_catches_a_real_allocation() {

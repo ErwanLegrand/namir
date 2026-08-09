@@ -5,7 +5,12 @@
 //! `namir-params`'s own `#[ignore] generate_params_lock` test performs, exposed here as a
 //! developer-facing command instead of a one-shot test).
 
-// trace: FR-PARAM-020
+// trace-partial: FR-PARAM-020
+// uncovered: FR-PARAM-020 — the reused-identifier half of the method has no artifact in the gate:
+// uncovered: check_manifest, the function that detects TOMBSTONE_REUSED and ID_CHANGED, has no
+// uncovered: caller outside its own test module, and the byte-equality check CI runs against
+// uncovered: render_manifest's live-only output makes a tombstoned line in params.lock fail the
+// uncovered: gate permanently and be deleted by --write; closes M9b
 
 use std::path::Path;
 

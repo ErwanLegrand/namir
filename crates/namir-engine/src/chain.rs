@@ -606,7 +606,12 @@ mod tests {
         assert_eq!(io.channel(0), &[0.0, 0.0, 0.0, 0.1, 0.2]);
     }
 
-    // trace: FR-CHAIN-080
+    // trace-partial: FR-CHAIN-080
+    // uncovered: FR-CHAIN-080 — the method's "inject a NaN into each stage's state" is performed
+    // uncovered: on none of the six product stages: the only NaN write in the engine is
+    // uncovered: chain.rs:546's test-local NanOnce fake writing into an output buffer, never into
+    // uncovered: a real stage's filter, ramp, convolver or model state, and never through
+    // uncovered: build_default_chain; closes M9b
     #[test]
     fn fault_detection_zeroes_whole_block_then_processing_continues_next_call() {
         let mut chain = Chain::new(vec![Box::new(NanOnce { injected: false })]);

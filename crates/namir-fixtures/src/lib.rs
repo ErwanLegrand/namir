@@ -13,7 +13,12 @@
 //! Prior art: `spikes/s1-nam-inference` (constrained-init WaveNet generation) and
 //! `spikes/s2-ir-convolution` (the `fixtures` module this crate's `ir` module ports).
 //!
-// trace: NFR-LIC-050
+// trace-partial: NFR-LIC-050
+// uncovered: NFR-LIC-050 — the manifest the method names does not exist, and the traced artifact
+// uncovered: is a runtime generator whose output is never committed: the fifteen assets tracked
+// uncovered: under crates/*/fuzz/corpus, including a .wav impulse response and a .nam model, are
+// uncovered: recorded nowhere and no check would catch a captured asset added beside them;
+// uncovered: closes M9b
 
 pub mod ir;
 pub mod library;

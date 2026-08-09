@@ -208,7 +208,13 @@ fn pin_to_measurement_core() {
     core_affinity::set_for_current(ids[idx]);
 }
 
-// trace: NFR-RT-040
+// trace-partial: NFR-RT-040
+// uncovered: NFR-RT-040 — the binary asserts no invariance and varies neither of the
+// uncovered: requirement's first two variables: all 105 000 blocks are driven with one xorshift
+// uncovered: noise material at one amplitude, and the gate and EQ parameters are set once before
+// uncovered: the measured loop and never varied within it, so "shall not depend on audio content
+// uncovered: or parameter values" is untested and the residue analysis is reported rather than
+// uncovered: asserted; closes M9b
 fn main() {
     pin_to_measurement_core();
 

@@ -35,6 +35,12 @@ use crate::stage::{Stage, StagePrep};
 /// `03-implementation-roadmap.md` §6 directs M2 to build the actual chain that way:
 /// `gate → trim → nam → ir → eq → out`.
 ///
+/// *Amended (M9a, 2026-08-09):* D-9.8's flagged-for-review divergence is resolved, and resolved in
+/// this function's favour — FR-CHAIN-010 is amended to describe the shipped order rather than this
+/// chain rebuilt to the old prose. The paragraph above is therefore history, not a live deviation:
+/// `gate → trim → nam → ir → eq → out` is what the FRS and this function both say. See D-9.8's own
+/// M9a consequence note in `02-architecture.md`.
+///
 /// None of the six stages has a resource loaded yet (no NAM model, no IR) — per FR-CHAIN-040/
 /// FR-NAM-130/FR-IR-100 every stage that can hold one already behaves as bypassed until a future
 /// caller (M4's worker, once it exists) calls `NamStage::load_model`/`IrStage::load_ir`.
@@ -72,15 +78,25 @@ mod tests {
     /// The whole point of M2: this compiles and runs at all, for every channel configuration
     /// FR-CHAIN-060 requires, with nothing loaded (FR-CHAIN-040) and produces silence in, silence
     /// out without panicking, allocating on the audio thread, or emitting a non-finite sample.
-    // trace: FR-CHAIN-010, FR-CHAIN-040, FR-CHAIN-060
+    // trace-partial: FR-CHAIN-010
+    // uncovered: FR-CHAIN-010 — the Verify: I method's "measure stage interaction against a
+    // uncovered: specified probe signal" is unexecuted: the tagged test fills every channel with
+    // uncovered: 0.0 and asserts 0.0 out with nothing loaded, which cannot distinguish any
+    // uncovered: ordering of any stages from an empty chain; closes M9b
     #[test]
     fn builds_and_runs_silently_for_every_channel_config() {
+        // trace-partial: FR-CHAIN-060
+        // uncovered: FR-CHAIN-060 — of the table's three rows the "I per configuration"
+        // uncovered: method names, the Mono→stereo row's IR-stage cell ("stereo IR, or dual mono
+        // uncovered: IR") is exercised by nothing: no test loads any IR into an IrStage prepared
+        // uncovered: with ChannelConfig::MonoToStereo; closes M9b
         for channel_config in [
             ChannelConfig::Mono,
             ChannelConfig::MonoToStereo,
             ChannelConfig::Stereo,
         ] {
             let ctx = ctx(channel_config);
+            // trace: FR-CHAIN-040
             let mut chain = build_default_chain(&ctx).unwrap();
             let n = channel_config.output_channels() as usize;
             let mut bufs: Vec<Vec<f32>> = (0..n).map(|_| vec![0.0f32; 64]).collect();
@@ -97,7 +113,12 @@ mod tests {
         }
     }
 
-    // trace: NFR-PERF-020
+    // trace-partial: NFR-PERF-020
+    // uncovered: NFR-PERF-020 — the first conjunct, that the engine adds no latency beyond
+    // uncovered: what it reports, is measured nowhere: no test compares a chain's actual group
+    // uncovered: delay against latency_samples() for any configuration where that value is
+    // uncovered: nonzero, and the tagged test asserts 0 with nothing loaded, where every stage's
+    // uncovered: own latency_samples() is 0 by construction; closes M9b
     #[test]
     fn reports_a_nonzero_latency_only_from_stages_that_declare_one() {
         let ctx = ctx(ChannelConfig::Mono);

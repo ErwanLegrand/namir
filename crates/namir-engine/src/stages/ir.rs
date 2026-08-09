@@ -1208,7 +1208,12 @@ mod tests {
         (buf[total - 1], last_input)
     }
 
-    // trace: FR-IR-070
+    // trace-partial: FR-IR-070
+    // uncovered: FR-IR-070 — of the four controls the "U per control" method names, the low cut's
+    // uncovered: 20-500 Hz and high cut's 1 kHz-20 kHz ranges are set by no test:
+    // uncovered: LOW_CUT_FREQ_HZ_ID and HIGH_CUT_FREQ_HZ_ID appear only in their declarations and
+    // uncovered: live apply arms, and both cut tests run at the descriptor defaults probing DC
+    // uncovered: and Nyquist, which is blind to the corner frequency; closes M9b
     #[test]
     fn low_cut_enabled_blocks_dc_and_passes_near_nyquist() {
         let sample_rate = 48_000;

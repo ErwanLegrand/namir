@@ -279,9 +279,34 @@ mod tests {
         std::fs::write(dir.join(name), model.to_json_bytes()).unwrap();
     }
 
+    /// How long every test here but one waits for its scan's terminal `ScanOutcome`. Ample: each
+    /// of those fixtures is two files or fewer, and
+    /// `cancelling_a_large_scan_stops_it_before_completion` uses the 10,000-file corpus but
+    /// cancels immediately rather than reading it to the end.
+    const SCAN_BUDGET: Duration = Duration::from_secs(30);
+
+    /// The exception, for `a_full_scan_of_the_shared_corpus_reports_progress_more_than_once`: the
+    /// only test in this module that reads *and content-hashes* all 10,000 files of
+    /// `namir-fixtures`' shared corpus through to completion, which is a different order of work
+    /// from every neighbour above.
+    ///
+    /// **Why it differs, recorded rather than left as an unexplained number.** That test failed
+    /// once at [`SCAN_BUDGET`] and then passed eight consecutive re-runs unchanged on the same
+    /// machine — the signature of a budget sized for the median run rather than for one sharing a
+    /// disk with the rest of `cargo test --workspace`, not of a broken assertion. It runs in CI's
+    /// `build-test` job, which already blocks a merge, so an intermittent timeout there is
+    /// expensive and this is the cheap fix. Deliberately **not** paired with any change to that
+    /// test's `>= 2` progress-call threshold: the threshold is the property under test and was
+    /// never what was marginal.
+    const FULL_CORPUS_SCAN_BUDGET: Duration = Duration::from_secs(180);
+
     fn recv(rx: &mpsc::Receiver<ScanOutcome>) -> ScanOutcome {
-        rx.recv_timeout(Duration::from_secs(30))
-            .expect("the scan job should have completed")
+        recv_within(rx, SCAN_BUDGET)
+    }
+
+    fn recv_within(rx: &mpsc::Receiver<ScanOutcome>, budget: Duration) -> ScanOutcome {
+        rx.recv_timeout(budget)
+            .unwrap_or_else(|e| panic!("the scan job should have completed within {budget:?}: {e}"))
     }
 
     /// FR-LIB-010, driven end to end through the worker: a scan started on the pool finds files
@@ -458,6 +483,95 @@ mod tests {
             "an incomplete scan must never report removals"
         );
         assert!(!service.is_scanning());
+    }
+
+    /// FR-LIB-020's **"progress shall be visible"** clause, at the scale that requirement's own
+    /// `*Verify:*` method names ("I with a synthetic library of at least 10 000 files"): a full,
+    /// uncancelled scan of `namir-fixtures`' shared corpus must call `on_progress` **more than
+    /// once**, so at least one of those calls came from [`LibraryService::start_scan`]'s cadence
+    /// branch (`last_reported_at.elapsed() >= SCAN_PROGRESS_CADENCE`) rather than from the
+    /// unconditional terminal report alone.
+    ///
+    /// **What this closes.** Before it, the cadence branch was asserted by no test at any scale.
+    /// `a_scan_commits_found_files_to_the_snapshot_and_the_store` counts calls but asserts `>= 1`
+    /// against a two-file fixture, and its own message says what that measures: the terminal report
+    /// firing "even for a scan shorter than the cadence". The only >= 10 000-file test,
+    /// `cancelling_a_large_scan_stops_it_before_completion`, passes `|_| {}`.
+    ///
+    /// **Why a new test rather than an assertion added to the cancel test.** That test cancels
+    /// immediately after `start_scan` returns, so its loop can break before a single
+    /// [`SCAN_PROGRESS_CADENCE`] window has elapsed; a `>= 2` assertion there would be flaky by
+    /// construction rather than a check of anything.
+    ///
+    /// # Why FR-LIB-020's tag is `trace-partial:` and not plain (D-23.1)
+    ///
+    /// D-23.1's **first** question: the `*Verify:*` method names a scale, which is a quantifier
+    /// even though the requirement's own sentence has none. Three of the four clauses are spanned
+    /// at that scale or structurally:
+    ///
+    /// - *"Progress shall be visible"* — this test, against the 10 000-file corpus.
+    /// - *"the scan cancellable"* — `cancelling_a_large_scan_stops_it_before_completion`, same
+    ///   corpus.
+    /// - *"shall not block the user interface"* — `start_scan` sets `scanning` synchronously and
+    ///   hands the walk to [`ThreadPool`], so it returns without doing the work
+    ///   (`a_second_concurrent_scan_is_refused` depends on exactly that ordering); the residue that
+    ///   only a human at a screen can observe is recorded in
+    ///   `docs/manual-tests/fr-lib-020-ui-responsiveness-during-scan.md`, which under D-18.6 is
+    ///   supplementary evidence and never the traced artifact, FR-LIB-020 being `Verify: I`.
+    ///
+    /// The fourth is not, and the `uncovered:` field below names it: *"shall occur off the audio
+    /// thread"* is evidenced only by `tests/rt_stress.rs` axis C, whose `write_small_scan_corpus`
+    /// writes **six** files. That is deliberate rather than an oversight to patch — that function's
+    /// own doc comment wants many fast scan cycles inside the run window rather than one slow one,
+    /// so re-pointing it at the shared corpus would destroy the axis it exists to run. Extending
+    /// the axis is harness work, and M9b owns it.
+    // trace-partial: FR-LIB-020
+    // uncovered: FR-LIB-020 — the off-the-audio-thread clause is exercised only against a
+    // uncovered: 6-file corpus in rt_stress.rs axis C, not the 10 000-file scale the Verify
+    // uncovered: method names; closes M9b
+    #[test]
+    fn a_full_scan_of_the_shared_corpus_reports_progress_more_than_once() {
+        let corpus =
+            namir_fixtures::library::generate_shared_corpus(1).expect("corpus should generate");
+        let index_path = temp_dir("progress").join("index.json");
+
+        let (service, _) = LibraryService::open(index_path, vec![corpus.root.clone()]);
+        let pool = ThreadPool::with_threads(1);
+        let (tx, rx) = mpsc::channel();
+        let progress_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = Arc::clone(&progress_calls);
+        let handle = service
+            .start_scan(
+                &pool,
+                move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                },
+                move |outcome| tx.send(outcome).unwrap(),
+            )
+            .expect("no scan already running");
+
+        // `FULL_CORPUS_SCAN_BUDGET`, not the module's ordinary `recv` -- see that constant's own
+        // doc comment for why this one test needs a longer budget than every neighbour here.
+        let outcome = recv_within(&rx, FULL_CORPUS_SCAN_BUDGET);
+        drop(handle);
+
+        assert!(
+            outcome.complete,
+            "this scan is never cancelled, so it must run every root to completion"
+        );
+        assert_eq!(
+            outcome.upserted,
+            namir_fixtures::library::TOTAL_COUNT,
+            "a first scan of the shared corpus must upsert every file in it"
+        );
+        assert!(
+            progress_calls.load(Ordering::SeqCst) >= 2,
+            "a full {}-file scan reported progress {} time(s); at least one call must come from \
+             the {SCAN_PROGRESS_CADENCE:?} cadence branch on top of the unconditional terminal \
+             report, or \"progress shall be visible\" is true of the end of the scan only",
+            namir_fixtures::library::TOTAL_COUNT,
+            progress_calls.load(Ordering::SeqCst)
+        );
     }
 
     /// A missing index file (the ordinary first-run case) opens cleanly with no warnings and an

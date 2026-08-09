@@ -65,8 +65,10 @@
 //!
 //! Confined to this one module per D-5.3/NFR-QUAL-070 — `#![allow(unsafe_code)]` below opts only
 //! this file back into the one `unsafe` block above out of this crate's `[lints.rust] unsafe_code
-//! = "deny"` (`Cargo.toml`), the same "`deny`, not `forbid`, so exactly one designated module can
-//! opt back in" shape `namir-platform`'s `denormal.rs`/`thread_priority.rs` already use.
+//! = "deny"` (`Cargo.toml`), the same "`deny`, not `forbid`, so only a *designated* module can opt
+//! back in" shape `namir-platform`'s `denormal.rs` and `thread_priority.rs` already use — two such
+//! modules there, one here, and per D-5.3's *Consequence (added M9, 2026-08-08)* none in any test
+//! or bench target of either crate.
 
 #![allow(unsafe_code)]
 
