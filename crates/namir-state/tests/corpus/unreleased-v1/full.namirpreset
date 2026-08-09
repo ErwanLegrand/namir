@@ -27,6 +27,8 @@
     "ir.low_cut_enabled": 1.0,
     "ir.low_cut_freq_hz": 100.0,
     "nam.enabled": 0.0,
+    "nam.normalize_enabled": 0.0,
+    "nam.normalize_offset_db": 2.0,
     "out.gain_db": -3.0,
     "trim.dc_blocker_enabled": 0.0,
     "trim.gain_db": 2.5

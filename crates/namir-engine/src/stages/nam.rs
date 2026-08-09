@@ -71,9 +71,12 @@ use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 
 use namir_core::SampleRate;
+use namir_dsp::GainRamp;
 use namir_nam::{NamState, PreparedNam};
 use namir_params::ParamKind;
-use namir_params::stages::nam::ENABLED;
+use namir_params::stages::nam::{
+    ENABLED, NORMALIZE_ENABLED, NORMALIZE_OFFSET_DB, TARGET_LOUDNESS_LUFS,
+};
 use rubato::{FftFixedInOut, Resampler};
 
 use crate::command::RetireSink;
@@ -102,6 +105,17 @@ const RESAMPLE_CHUNK_FRAMES: usize = 256;
 /// for the same key — see `trim.rs`'s identical convention and its doc comment for why the two
 /// crates carry distinct `ParamId` types on purpose.
 const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
+/// See [`ENABLED_ID`].
+const NORMALIZE_ENABLED_ID: ParamId = ParamId(NORMALIZE_ENABLED.id.0);
+/// See [`ENABLED_ID`].
+const NORMALIZE_OFFSET_DB_ID: ParamId = ParamId(NORMALIZE_OFFSET_DB.id.0);
+
+/// FR-NAM-090's normalisation-gain smoothing time constant. Same figure and same rationale as
+/// `trim.rs`/`out.rs`'s identical constant — `gain_ramp.rs`'s own doc comment derives 20 ms as
+/// the exact bound FR-PARAM-040 implies for a one-pole, with "very little margin" against `f32`
+/// rounding at exactly that figure; 25 ms is that module's documented choice of comfortable
+/// margin, reproduced here since its public API imposes no default of its own.
+const NORMALIZE_GAIN_RAMP_TIME_CONSTANT_MS: f32 = 25.0;
 
 /// Telemetry signal id: whether `slots[active]` currently holds a model (post-handover; a slot
 /// that is only mid-handover-fade-in does not yet count, matching `latency_samples`'s own use of
@@ -145,6 +159,18 @@ impl StagePrep for NamPrep {
             ParamKind::Stepped { default_index, .. } => default_index.0 == 1,
             ParamKind::Continuous { .. } => unreachable!("nam.enabled is declared Stepped"),
         };
+        let normalize_enabled_default_on = match NORMALIZE_ENABLED.kind {
+            ParamKind::Stepped { default_index, .. } => default_index.0 == 1,
+            ParamKind::Continuous { .. } => {
+                unreachable!("nam.normalize_enabled is declared Stepped")
+            }
+        };
+        let normalize_offset_default_db = match NORMALIZE_OFFSET_DB.kind {
+            ParamKind::Continuous { default, .. } => default,
+            ParamKind::Stepped { .. } => {
+                unreachable!("nam.normalize_offset_db is declared Continuous")
+            }
+        };
 
         let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * sample_rate.hz_f64();
         let mix_coeff = (1.0 - (-1.0_f64 / tau_samples).exp()) as f32;
@@ -160,6 +186,8 @@ impl StagePrep for NamPrep {
             crossfade: None,
             crossfade_total_samples: crossfade_total_samples.max(1),
             enabled: enabled_default_on,
+            normalize_enabled: normalize_enabled_default_on,
+            normalize_offset_db: normalize_offset_default_db,
             // FR-CHAIN-040: nothing loaded behaves as bypassed, regardless of `enabled` — no
             // prior audio exists yet at stage creation either, so `mix` starts already settled at
             // its target rather than needing to ramp there.
@@ -190,6 +218,22 @@ pub(crate) struct NamSlot {
     /// `None` exactly when `model.sample_rate() == engine sample rate` (D-9.2: "bypassed
     /// entirely... zero cost and zero added latency"); `Some` otherwise.
     resample: Option<SlotResampler>,
+    /// FR-NAM-090: this slot's model's declared-loudness normalisation gain relative to
+    /// [`TARGET_LOUDNESS_LUFS`], in dB — `TARGET_LOUDNESS_LUFS - model.loudness_lufs()` when the
+    /// model declares a loudness, or `0.0` (no correction) when it doesn't (A1 files, or any A2
+    /// file omitting the key — "there's nothing to normalise against" per FR-NAM-090's own scope,
+    /// not a value worth guessing). Computed once here, at construction, since it depends only on
+    /// the model itself, never on a live parameter; `process_wet` combines it with the stage's
+    /// current `normalize_enabled`/`normalize_offset_db` every block.
+    base_normalize_gain_db: f32,
+    /// FR-NAM-090's applied gain, smoothed with the same one-pole `namir_dsp::GainRamp` pattern
+    /// every other continuous gain-shaped parameter in this crate uses (D-10.3). Its *target* is
+    /// recomputed every block in `process_wet` from `base_normalize_gain_db` plus the stage's own
+    /// `normalize_enabled`/`normalize_offset_db`, so a live toggle or offset change ramps smoothly
+    /// rather than stepping — and a freshly loaded slot itself ramps in from unity gain (`GainRamp`
+    /// always starts there), composing with the handover crossfade the same way the shared bypass
+    /// blend already does (this module's doc comment, "two independent fades, composed").
+    normalize_gain: GainRamp,
 }
 
 impl NamSlot {
@@ -208,12 +252,22 @@ impl NamSlot {
         max_block_size: usize,
     ) -> Self {
         let model_rate = model.sample_rate();
+        // FR-NAM-090: fixed for this model's whole lifetime as a slot -- see this field's own doc
+        // comment for why `None` (no declared loudness) becomes `0.0` rather than a guess.
+        let base_normalize_gain_db = model
+            .loudness_lufs()
+            .map(|declared| TARGET_LOUDNESS_LUFS - declared)
+            .unwrap_or(0.0);
+        let normalize_gain =
+            GainRamp::new(engine_sample_rate, NORMALIZE_GAIN_RAMP_TIME_CONSTANT_MS);
         if model_rate.hz() == engine_sample_rate.hz() {
             let state = model.new_state(max_block_size);
             Self {
                 model,
                 state,
                 resample: None,
+                base_normalize_gain_db,
+                normalize_gain,
             }
         } else {
             let resample = SlotResampler::new(engine_sample_rate, model_rate, max_block_size);
@@ -222,18 +276,37 @@ impl NamSlot {
                 model,
                 state,
                 resample: Some(resample),
+                base_normalize_gain_db,
+                normalize_gain,
             }
         }
     }
 
     /// Runs this slot's model (resampled around, if `resample` is `Some`) on `input`, writing
-    /// exactly `input.len()` frames into `output`. RT-safe once constructed: every buffer this
-    /// touches was sized in `NamSlot::new`/`SlotResampler::new`.
-    fn process_wet(&mut self, input: &[f32], output: &mut [f32]) {
+    /// exactly `input.len()` frames into `output`, then applies FR-NAM-090's normalisation gain to
+    /// `output` in place. `normalize_enabled`/`normalize_offset_db` are the stage's current values
+    /// (read once per call by `NamStage::process_channel0`, not stored here, since they're shared
+    /// across both slots and can change independently of this slot's own model). RT-safe once
+    /// constructed: every buffer this touches was sized in `NamSlot::new`/`SlotResampler::new`,
+    /// and `GainRamp::set_target_db`/`process` allocate nothing (`gain_ramp.rs`'s own contract).
+    fn process_wet(
+        &mut self,
+        input: &[f32],
+        output: &mut [f32],
+        normalize_enabled: bool,
+        normalize_offset_db: f32,
+    ) {
         match &mut self.resample {
             None => self.model.process_block(&mut self.state, input, output),
             Some(resampler) => resampler.process(&self.model, &mut self.state, input, output),
         }
+        let target_db = if normalize_enabled {
+            self.base_normalize_gain_db + normalize_offset_db
+        } else {
+            0.0
+        };
+        self.normalize_gain.set_target_db(target_db);
+        self.normalize_gain.process(output);
     }
 
     /// This slot's own added latency: its resampler's, or `0` if it runs at the engine rate.
@@ -469,6 +542,12 @@ pub struct NamStage {
     /// FR-CHAIN-020's per-stage enable/disable for this stage, independent of whether any model is
     /// loaded (`mix_target`'s own doc comment covers how the two combine).
     enabled: bool,
+    /// FR-NAM-090: whether declared-loudness normalisation gain is applied at all. Independent of
+    /// `enabled` above — see [`NORMALIZE_ENABLED`]'s own doc comment.
+    normalize_enabled: bool,
+    /// FR-NAM-090: user-controlled trim added to the computed normalisation gain, in dB. See
+    /// [`NORMALIZE_OFFSET_DB`]'s own doc comment.
+    normalize_offset_db: f32,
     /// Current dry/wet blend for the *shared* bypass crossfade: `0.0` = fully dry/bypassed,
     /// `1.0` = fully wet/engaged. See this module's doc comment for how this composes with the
     /// separate handover crossfade above.
@@ -620,11 +699,22 @@ impl NamStage {
     /// `total`, so the tail of the block after completion is already pure incoming-slot output,
     /// consistent with the finalization performed once after the loop).
     fn process_channel0(&mut self, io: &mut StageIo<'_>, n: usize) {
+        // FR-NAM-090: read once per block, before any of `self.slots` is borrowed below -- shared
+        // across both slots (each applies its own `base_normalize_gain_db` against these same two
+        // values), and can change independently of either slot's own model.
+        let normalize_enabled = self.normalize_enabled;
+        let normalize_offset_db = self.normalize_offset_db;
+
         let Some(mut crossfade) = self.crossfade else {
             // FR-CHAIN-040: `None` is a pure passthrough -- `io.channel(0)` already holds the
             // input, so there is nothing to do in that case.
             if let Some(slot) = &mut self.slots[self.active] {
-                slot.process_wet(&self.dry[0][..n], io.channel(0));
+                slot.process_wet(
+                    &self.dry[0][..n],
+                    io.channel(0),
+                    normalize_enabled,
+                    normalize_offset_db,
+                );
             }
             return;
         };
@@ -641,17 +731,32 @@ impl NamStage {
             // deferral lasts. Skipping it also avoids paying the 2x inference cost in a state
             // that can persist across many blocks.
             if let Some(slot) = &mut self.slots[incoming_idx] {
-                slot.process_wet(&self.dry[0][..n], io.channel(0));
+                slot.process_wet(
+                    &self.dry[0][..n],
+                    io.channel(0),
+                    normalize_enabled,
+                    normalize_offset_db,
+                );
             }
             return;
         }
 
         match &mut self.slots[outgoing_idx] {
-            Some(slot) => slot.process_wet(&self.dry[0][..n], &mut self.crossfade_outgoing[..n]),
+            Some(slot) => slot.process_wet(
+                &self.dry[0][..n],
+                &mut self.crossfade_outgoing[..n],
+                normalize_enabled,
+                normalize_offset_db,
+            ),
             None => self.crossfade_outgoing[..n].copy_from_slice(&self.dry[0][..n]),
         }
         match &mut self.slots[incoming_idx] {
-            Some(slot) => slot.process_wet(&self.dry[0][..n], &mut self.crossfade_incoming[..n]),
+            Some(slot) => slot.process_wet(
+                &self.dry[0][..n],
+                &mut self.crossfade_incoming[..n],
+                normalize_enabled,
+                normalize_offset_db,
+            ),
             None => self.crossfade_incoming[..n].copy_from_slice(&self.dry[0][..n]),
         }
 
@@ -788,6 +893,10 @@ impl Stage for NamStage {
             // is "On" per `ENABLED`'s descriptor.
             self.enabled = change.value >= 0.5;
             self.recompute_mix_target();
+        } else if change.id == NORMALIZE_ENABLED_ID {
+            self.normalize_enabled = change.value >= 0.5;
+        } else if change.id == NORMALIZE_OFFSET_DB_ID {
+            self.normalize_offset_db = change.value;
         }
     }
 
@@ -971,6 +1080,93 @@ mod tests {
         }
         out
     }
+
+    /// Runs the whole of `input` through a mono stage in 64-sample chunks, returning every output
+    /// sample in order — the non-constant-input analogue of `process_constant_in_chunks`, needed
+    /// by the FR-NAM-090 tests below since a constant input can't distinguish "converged to the
+    /// same level" from "both settled to the same silence".
+    fn process_signal_in_chunks(stage: &mut NamStage, input: &[f32]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(input.len());
+        let mut offset = 0usize;
+        while offset < input.len() {
+            let end = (offset + 64).min(input.len());
+            let n = end - offset;
+            let mut buf = input[offset..end].to_vec();
+            let mut channels: [&mut [f32]; 1] = [&mut buf];
+            let mut io = StageIo::new(&mut channels, n);
+            audio_section(|| stage.process(&mut io));
+            out.extend_from_slice(io.channel(0));
+            offset = end;
+        }
+        out
+    }
+
+    /// Same shape as `tiny_model`, but with a caller-chosen `head_scale` and declared `loudness`
+    /// metadata (FR-NAM-090). `head_scale` linearly rescales the model's raw output as the very
+    /// last step of the pipeline (`wavenet.rs`'s own doc comment: "output scaling applied after
+    /// the head"), *after* every nonlinearity in the network -- so for a fixed input, doubling it
+    /// is an exact +6.02 dB gain regardless of the internal `Tanh` activations, which makes it a
+    /// clean, deterministic way to give two otherwise-identical fixture models a known real
+    /// amplitude difference to normalise away.
+    fn tiny_model_with_loudness(
+        sample_rate_hz: u32,
+        head_scale: f32,
+        loudness: Option<f32>,
+    ) -> Arc<PreparedNam> {
+        let cfg = minimal_layer_array();
+        let n = weight_count_for(&cfg);
+        let mut weights: Vec<f32> = (0..n).map(|i| 0.01 * ((i % 7) as f32 - 3.0)).collect();
+        weights.push(head_scale); // trailing weight is the authoritative head_scale.
+        let file = NamFile {
+            version: None,
+            architecture: "WaveNet".to_string(),
+            config: WaveNetConfig {
+                layers: vec![cfg],
+                head_scale,
+                head: None,
+                in_channels: None,
+                condition_dsp: None,
+            },
+            weights,
+            sample_rate: Some(sample_rate_hz),
+            metadata: NamMetadata {
+                loudness,
+                ..NamMetadata::default()
+            },
+        };
+        Arc::new(PreparedNam::from_file(&file).expect("minimal fixture should load"))
+    }
+
+    /// A deterministic, non-constant test signal (a slow sine, same shape
+    /// `load_model_settles_to_match_direct_process_block` already drives its own comparison
+    /// with) -- a constant input can't distinguish "two outputs converged to the same level" from
+    /// "both settled to the same near-silent DC value" the way a genuinely time-varying signal
+    /// can.
+    fn sine_signal(total: usize) -> Vec<f32> {
+        (0..total)
+            .map(|i| 0.2 * ((i as f32) * 0.01).sin())
+            .collect()
+    }
+
+    /// Plain RMS-to-dB, standing in for a true ITU-R BS.1770 integrated-loudness (LUFS)
+    /// measurement, which does not exist anywhere in this codebase yet and would be a large
+    /// undertaking outside this task's scope (no K-weighting, no gating, no channel weighting --
+    /// just `20 * log10(rms)`). For the comparisons the tests below actually make -- two signals
+    /// that are otherwise identical (or near enough) differing only in the gain FR-NAM-090's
+    /// normalisation applies -- a plain RMS-in-dB figure moves in lockstep with what a true LUFS
+    /// meter would report, so it is a fair proxy for *this* purpose even though it is not a
+    /// conformant loudness measurement in general.
+    fn rms_db(samples: &[f32]) -> f32 {
+        let sum_sq: f64 = samples.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+        let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+        namir_core::linear_to_db(rms)
+    }
+
+    /// Comfortably past the ~20 ms handover crossfade, the separate ~15 ms shared bypass blend,
+    /// and FR-NAM-090's own 25 ms normalisation-gain ramp (all one-pole; several time constants
+    /// each) -- 400 ms at 48 kHz, the same margin `load_model_settles_to_match_direct_process_block`
+    /// already uses for the first two.
+    const NORMALIZE_SETTLE_SAMPLES: usize = 19_200;
 
     // trace: FR-NAM-130
     #[test]
@@ -1213,5 +1409,166 @@ mod tests {
                 assert!(s.is_finite(), "non-finite output at iteration {i}");
             }
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // FR-NAM-090: loudness normalisation.
+    // -----------------------------------------------------------------------------------------
+
+    /// FR-NAM-090's own `Verify: U` method, executed close to verbatim: "measure integrated
+    /// loudness of two models with differing declared loudness driven by the same input; the
+    /// difference shall be within 1 LU with normalisation enabled." The two fixture models share
+    /// every weight except a doubled `head_scale` on the louder one (an exact +6.02 dB real
+    /// amplitude difference — see `tiny_model_with_loudness`'s doc comment for why that's clean to
+    /// reason about), and declare loudness values 6 dB apart to match (`-20`/`-14` LUFS) — so
+    /// normalisation should very nearly cancel the real gap. `rms_db` is a stated proxy for a true
+    /// LUFS meter; see its own doc comment for why that's a fair substitution here.
+    // trace-partial: FR-NAM-090
+    // uncovered: FR-NAM-090 — the Verify: U method names "integrated loudness," ITU-R BS.1770's
+    // uncovered: specific K-weighted, gated measurement; this test substitutes plain RMS-in-dB
+    // uncovered: (rms_db's own doc comment states the substitution). The two agree for this
+    // uncovered: test's own otherwise-matched signal pairs, which is why the behavior under test
+    // uncovered: is real, but a true LUFS meter does not exist anywhere in this codebase, so the
+    // uncovered: method is not executed as stated in the general case; closes M9b
+    #[test]
+    fn normalization_enabled_brings_differently_declared_models_within_one_lu() {
+        let sample_rate = 48_000;
+        let mut quiet = stage(sample_rate, ChannelConfig::Mono);
+        let mut loud = stage(sample_rate, ChannelConfig::Mono);
+        quiet.load_model(tiny_model_with_loudness(sample_rate, 0.5, Some(-20.0)));
+        loud.load_model(tiny_model_with_loudness(sample_rate, 1.0, Some(-14.0)));
+
+        let input = sine_signal(48_000);
+        let quiet_out = process_signal_in_chunks(&mut quiet, &input);
+        let loud_out = process_signal_in_chunks(&mut loud, &input);
+
+        let quiet_level = rms_db(&quiet_out[NORMALIZE_SETTLE_SAMPLES..]);
+        let loud_level = rms_db(&loud_out[NORMALIZE_SETTLE_SAMPLES..]);
+        assert!(
+            (quiet_level - loud_level).abs() <= 1.0,
+            "quiet_level={quiet_level} loud_level={loud_level}, expected within 1 LU"
+        );
+    }
+
+    /// FR-NAM-090: "The user shall be able to disable this normalisation" — with it off, the two
+    /// models' real ~6.02 dB amplitude gap (from the doubled `head_scale`, see
+    /// `tiny_model_with_loudness`'s doc comment) must survive essentially untouched, not collapse
+    /// the way the enabled case above does.
+    #[test]
+    fn normalization_disabled_leaves_models_at_their_original_relative_levels() {
+        let sample_rate = 48_000;
+        let mut quiet = stage(sample_rate, ChannelConfig::Mono);
+        let mut loud = stage(sample_rate, ChannelConfig::Mono);
+        quiet.apply(ParamChange {
+            id: NORMALIZE_ENABLED_ID,
+            value: 0.0,
+        });
+        loud.apply(ParamChange {
+            id: NORMALIZE_ENABLED_ID,
+            value: 0.0,
+        });
+        quiet.load_model(tiny_model_with_loudness(sample_rate, 0.5, Some(-20.0)));
+        loud.load_model(tiny_model_with_loudness(sample_rate, 1.0, Some(-14.0)));
+
+        let input = sine_signal(48_000);
+        let quiet_out = process_signal_in_chunks(&mut quiet, &input);
+        let loud_out = process_signal_in_chunks(&mut loud, &input);
+
+        let quiet_level = rms_db(&quiet_out[NORMALIZE_SETTLE_SAMPLES..]);
+        let loud_level = rms_db(&loud_out[NORMALIZE_SETTLE_SAMPLES..]);
+        let gap = loud_level - quiet_level;
+        assert!(
+            (gap - 6.02).abs() < 0.5,
+            "expected the raw ~6.02 dB gap to survive with normalisation disabled, got {gap}"
+        );
+    }
+
+    /// FR-NAM-090: "The user shall be able to... offset it" — applying a +6 dB offset to a single
+    /// loaded model's normalisation gain must raise its output level by ~6 dB relative to no
+    /// offset.
+    #[test]
+    fn offset_parameter_shifts_the_applied_gain_by_the_expected_amount() {
+        let sample_rate = 48_000;
+        let input = sine_signal(48_000);
+
+        let mut baseline_stage = stage(sample_rate, ChannelConfig::Mono);
+        baseline_stage.load_model(tiny_model_with_loudness(sample_rate, 0.5, Some(-20.0)));
+        let baseline_out = process_signal_in_chunks(&mut baseline_stage, &input);
+        let baseline_level = rms_db(&baseline_out[NORMALIZE_SETTLE_SAMPLES..]);
+
+        let mut offset_stage = stage(sample_rate, ChannelConfig::Mono);
+        offset_stage.apply(ParamChange {
+            id: NORMALIZE_OFFSET_DB_ID,
+            value: 6.0,
+        });
+        offset_stage.load_model(tiny_model_with_loudness(sample_rate, 0.5, Some(-20.0)));
+        let offset_out = process_signal_in_chunks(&mut offset_stage, &input);
+        let offset_level = rms_db(&offset_out[NORMALIZE_SETTLE_SAMPLES..]);
+
+        let delta = offset_level - baseline_level;
+        assert!(
+            (delta - 6.0).abs() < 0.5,
+            "expected a +6 dB shift from the offset parameter, got {delta}"
+        );
+    }
+
+    /// FR-NAM-090: "When a model has no declared loudness at all... apply no normalisation gain"
+    /// — a model whose `loudness` is `None` (A1 files, or any file omitting the key) must sound
+    /// identical whether normalisation is on or off, since there is nothing declared to normalise
+    /// against.
+    #[test]
+    fn model_with_no_declared_loudness_gets_zero_normalization_gain() {
+        let sample_rate = 48_000;
+        let input = sine_signal(48_000);
+
+        let mut normalize_on = stage(sample_rate, ChannelConfig::Mono);
+        normalize_on.load_model(tiny_model_with_loudness(sample_rate, 0.5, None));
+        let on_out = process_signal_in_chunks(&mut normalize_on, &input);
+
+        let mut normalize_off = stage(sample_rate, ChannelConfig::Mono);
+        normalize_off.apply(ParamChange {
+            id: NORMALIZE_ENABLED_ID,
+            value: 0.0,
+        });
+        normalize_off.load_model(tiny_model_with_loudness(sample_rate, 0.5, None));
+        let off_out = process_signal_in_chunks(&mut normalize_off, &input);
+
+        let on_level = rms_db(&on_out[NORMALIZE_SETTLE_SAMPLES..]);
+        let off_level = rms_db(&off_out[NORMALIZE_SETTLE_SAMPLES..]);
+        assert!(
+            (on_level - off_level).abs() < 0.05,
+            "expected a model with no declared loudness to receive zero normalisation gain \
+             regardless of the enable flag, got on={on_level} off={off_level}"
+        );
+    }
+
+    /// NFR-RT-010: FR-NAM-090's normalisation gain (the per-slot `GainRamp::set_target_db`/
+    /// `process` calls `process_wet` now makes every block) must not allocate on the audio
+    /// thread. Stereo, with a nonzero offset applied, so both the duplicate-channel shuttle and a
+    /// genuinely non-unity ramp target are exercised inside the harness — mirrors
+    /// `crossfade_in_progress_does_not_allocate`'s shape.
+    #[test]
+    fn normalization_gain_application_does_not_allocate() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: NORMALIZE_OFFSET_DB_ID,
+            value: 3.0,
+        });
+        stage.load_model(tiny_model_with_loudness(sample_rate, 0.5, Some(-20.0)));
+
+        let mut left = [0.1f32; 64];
+        let mut right = [0.1f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+
+        // A second block, still inside the ramp's settling window, so the harness also covers a
+        // genuinely-moving (not-yet-converged) gain target, not just a settled one.
+        let mut left = [0.1f32; 64];
+        let mut right = [0.1f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
     }
 }

@@ -22,31 +22,43 @@
 //! This crate's WaveNet support is ported from `spikes/s1-nam-inference`, a from-scratch Rust
 //! WaveNet inference engine whose operation order and flat-weight-array layout were confirmed by
 //! reading `NeuralAmpModelerCore`'s C++ source directly (see that spike's README) and validated
-//! against it to -131 dB error (FR-NAM-030 requires only -90 dB). The port changes exactly one
-//! thing structurally: every place the spike used `panic!`/`assert!` to reject malformed input
-//! (because it only ever saw its own trusted generator's output) is replaced here with a
-//! catalogued, `Result`-based rejection (P6: "untrusted input is parsed in one hardened place per
-//! format, and that place is fuzzed"; FR-NAM-040; NFR-QUAL-040: "shall not panic, hang,
-//! over-allocate ... on any input"). The algorithm itself — weight layout, the two-signal
-//! chaining between layer arrays, the trailing `head_scale` float — is unchanged; see
-//! `wavenet.rs`'s module doc comment for the details this crate relies on the spike having
-//! already confirmed.
+//! against it to -131 dB error (FR-NAM-030 requires only -90 dB) — the spike's *own* number, for
+//! its own from-scratch implementation, not this crate's. The port changes exactly one thing
+//! structurally: every place the spike used `panic!`/`assert!` to reject malformed input (because
+//! it only ever saw its own trusted generator's output) is replaced here with a catalogued,
+//! `Result`-based rejection (P6: "untrusted input is parsed in one hardened place per format, and
+//! that place is fuzzed"; FR-NAM-040; NFR-QUAL-040: "shall not panic, hang, over-allocate ... on
+//! any input"). The algorithm itself — weight layout, the two-signal chaining between layer
+//! arrays, the trailing `head_scale` float — is unchanged; see `wavenet.rs`'s module doc comment
+//! for the details this crate relies on the spike having already confirmed.
 //!
 //! LSTM support has no spike behind it: `lstm.rs`'s module doc comment records, in the same
 //! spirit, exactly which facts about `NeuralAmpModelerCore`'s `NAM/lstm.h`/`NAM/lstm.cpp` it
 //! relies on and were read directly from that source for this work.
 //!
+//! M10 closed the actual FR-NAM-030 gap for *this crate's own code* (rather than the spike's):
+//! `tests/golden_reference.rs` compares `PreparedNam::process`'s real output against a real
+//! `NeuralAmpModelerCore` render, for both architectures — WaveNet to -137 dB, LSTM to the bit
+//! once the reference's default silent-prewarm behavior is matched (that file's own doc comment
+//! explains why prewarming is a host-convenience default the reference DSP wrapper applies, not
+//! part of the LSTM model's own mathematical definition, and so is reproduced only in the test,
+//! not in this crate's production `LstmState` initialization).
+//!
 //! # Scope
 //!
 //! In scope: FR-NAM-010 (load/validate `.nam` files by content), FR-NAM-020 (both Must
 //! architectures — WaveNet, `wavenet.rs`; LSTM, `lstm.rs` — unified behind
-//! [`PreparedNam`]/[`NamState`] by `model.rs`'s small architecture-dispatching enum), FR-NAM-040
-//! (malformed files rejected with a specific reason, never a panic), FR-NAM-080 (metadata, both
-//! the full parse's `NamFile::metadata`/`LstmFile::metadata` and, added M5, [`probe_metadata`]'s
-//! weights-free read for `namir-library`'s FR-LIB-040 search index), FR-NAM-110 (latency = 0 —
-//! both architectures are causal and block-preserving, see each module's own doc comment),
-//! FR-NAM-140 (M10: a supported-architecture file whose `config` uses a feature this build does
-//! not implement is rejected with `error_codes::UNSUPPORTED_CONFIGURATION`/
+//! [`PreparedNam`]/[`NamState`] by `model.rs`'s small architecture-dispatching enum), FR-NAM-030
+//! (M10: `tests/golden_reference.rs` — see the Provenance section above), FR-NAM-040 (malformed
+//! files rejected with a specific reason, never a panic), FR-NAM-080 (metadata, both the full
+//! parse's `NamFile::metadata`/`LstmFile::metadata` and, added M5, [`probe_metadata`]'s
+//! weights-free read for `namir-library`'s FR-LIB-040 search index), FR-NAM-090 (M10: this
+//! crate's own contribution is narrow — parsing and exposing `metadata.loudness` via
+//! [`NamMetadata::loudness`] and each architecture's `loudness_lufs()` accessor; *applying* the
+//! normalisation gain is `namir-engine`'s Nam stage's job, not this crate's, per D-5.1), FR-NAM-110
+//! (latency = 0 — both architectures are causal and block-preserving, see each module's own doc
+//! comment), FR-NAM-140 (M10: a supported-architecture file whose `config` uses a feature this
+//! build does not implement is rejected with `error_codes::UNSUPPORTED_CONFIGURATION`/
 //! `INCONSISTENT_CONFIGURATION`, distinct from `MALFORMED_JSON`), FR-NAM-150 (M10: core NAM
 //! Architecture 2 — D-9.12's scope, `wavenet.rs`'s module doc comment). A `.nam` file whose
 //! `architecture` is neither `"WaveNet"` nor `"LSTM"` is rejected via [`NamLoadError`] with
@@ -57,8 +69,9 @@
 //! Out of scope, deliberately, for this crate:
 //! - FR-NAM-050/060 (resampling to the model's declared sample rate) — a stage wrapping this one.
 //! - FR-NAM-070 (crossfaded model-swap handover) — `namir-engine`'s job.
-//! - FR-NAM-090/100 (loudness normalisation/calibration) — needs metadata fields the current
-//!   `.nam` schema this crate reads doesn't carry.
+//! - FR-NAM-100 (dBu-calibrated operating levels, user-stated interface sensitivity) — a distinct,
+//!   Should-priority requirement from FR-NAM-090 above; this crate reads neither
+//!   `input_level_dbu` nor `output_level_dbu`, and no calibrated-mode UI exists anywhere.
 //! - FR-NAM-120 (computational cost reporting) — needs a benchmark harness.
 //! - Parametric/conditioning inputs for either architecture (WaveNet's `condition_size == 1`
 //!   restriction, `wavenet.rs`; LSTM's `input_size == in_channels == out_channels == 1`
