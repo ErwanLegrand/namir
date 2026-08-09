@@ -344,6 +344,17 @@ pub struct ActivationParams {
 /// this shape produced. [`null_or_default`] closes that gap for every field here.
 ///
 /// `PartialEq` added M5: `probe.rs`'s tests compare a probe's metadata against a full parse's.
+///
+/// `loudness` added M10 (D-9.12's *Consequence — FR-NAM-090/100 stop being blocked*): A2-era
+/// exports carry `metadata.loudness` (an integrated-loudness figure in LUFS) alongside
+/// `input_level_dbu`/`output_level_dbu` (FR-NAM-100 territory, not read by this crate at all —
+/// out of scope for FR-NAM-090). A1 files never carried any of the three, so `loudness` is
+/// genuinely optional with no schema-level assumption about presence, `Option<f32>` rather than
+/// this struct's usual `String` + [`null_or_default`] pattern: unlike the display-only text
+/// fields, "absent" and "present but zero LUFS" are not the same value here, so there is no
+/// sensible non-`Option` default to fall back to. `Option<f32>`'s own `Deserialize` impl already
+/// treats a present JSON `null` the same as an absent key (both become `None`), so this field
+/// needs no `deserialize_with` of its own the way the `String` fields above do.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct NamMetadata {
     /// The model's display name.
@@ -361,6 +372,11 @@ pub struct NamMetadata {
     /// Free-text description, shown as-is.
     #[serde(default, deserialize_with = "null_or_default")]
     pub description: String,
+    /// FR-NAM-090: the model's declared integrated loudness, in LUFS. `None` when the file omits
+    /// the key (every A1 file; any A2 file that doesn't declare it either) — `namir-engine`'s Nam
+    /// stage applies zero normalisation gain in that case rather than guessing a value.
+    #[serde(default)]
+    pub loudness: Option<f32>,
 }
 
 /// Treats a present-but-`null` JSON value the same as an absent key: both become `T::default()`.
@@ -569,6 +585,38 @@ mod tests {
         assert_eq!(file.metadata.gear_type, "");
         assert_eq!(file.metadata.tone_type, "");
         assert_eq!(file.metadata.description, "");
+    }
+
+    /// FR-NAM-090 (M10): A1 files, and any A2 file omitting the key, never carry
+    /// `metadata.loudness` -- an absent key must parse to `None`, not `0.0` (this is exactly why
+    /// the field is `Option<f32>` rather than the other metadata fields' `String` + default-empty
+    /// shape -- see `NamMetadata`'s own doc comment).
+    #[test]
+    fn loudness_defaults_to_none_when_absent() {
+        let file = NamFile::parse(&minimal_valid_json()).unwrap();
+        assert_eq!(file.metadata.loudness, None);
+    }
+
+    /// A2-era files carry `metadata.loudness` as a plain number.
+    #[test]
+    fn loudness_parses_when_present() {
+        let mut value: serde_json::Value = serde_json::from_slice(&minimal_valid_json()).unwrap();
+        value["metadata"] = serde_json::json!({ "loudness": -18.3 });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let file = NamFile::parse(&bytes).unwrap();
+        assert_eq!(file.metadata.loudness, Some(-18.3));
+    }
+
+    /// `Option<f32>`'s own `Deserialize` treats a present JSON `null` the same as an absent key --
+    /// unlike the `String` fields above, this needs no `null_or_default` helper to get that for
+    /// free (this test is what proves it, rather than trusting the claim in the doc comment).
+    #[test]
+    fn loudness_null_is_treated_the_same_as_absent() {
+        let mut value: serde_json::Value = serde_json::from_slice(&minimal_valid_json()).unwrap();
+        value["metadata"] = serde_json::json!({ "loudness": null });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let file = NamFile::parse(&bytes).unwrap();
+        assert_eq!(file.metadata.loudness, None);
     }
 
     // trace: FR-NAM-040

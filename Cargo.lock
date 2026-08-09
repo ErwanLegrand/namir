@@ -1213,6 +1213,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "core_affinity",
+ "hound",
  "namir-core",
  "namir-fixtures",
  "serde",
@@ -2845,7 +2846,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "hound",
  "namir-core",
+ "namir-nam",
  "namir-params",
  "namir-state",
  "walkdir",
