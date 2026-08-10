@@ -1834,11 +1834,11 @@ not adjudicate them further.
 | 6.2 PERF | 6 | 0 | 6 | 0 |
 | 6.3 PORT | 5 | 3 | 2 | 0 |
 | 6.4 QUAL | 6 | 2 | 4 | 0 |
-| 6.5 LIC | 6 | 2 | 3 | 1 |
+| 6.5 LIC | 6 | 3 | 3 | 0 |
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
-| 6.8 DOC | 3 | 1 | 1 | 1 |
-| **Total** | **130** | **33** | **90** | **7** |
+| 6.8 DOC | 3 | 1 | 2 | 0 |
+| **Total** | **130** | **34** | **91** | **5** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2254,6 +2254,39 @@ evidence is written into the 5.11 IO bullet itself rather than restated here —
 be the only thing a separate entry added. What that bullet replaces is quoted inside it, so the
 cell's age stays readable, and no other requirement's text in it moved. Nothing else in §14 changes:
 M11 produced evidence for FR-IO-020 and for nothing else.
+
+**M12 moves, 2026-08-10 — two rows, two cells, appended per D-23.2's "every later milestone moves
+only the cells its own evidence justifies."** 6.5 LIC becomes **3 / 3 / 0** (was 2 / 3 / 1); 6.8 DOC
+becomes **1 / 2 / 0** (was 1 / 1 / 1); **Total** becomes **34 / 91 / 5** (was 33 / 90 / 7,
+M11's move having landed first). **M12 was built before M11 and rebased onto it**, so its own
+deltas are unchanged — two cells, both in rows M11 never touched — and only the Total, which both
+milestones write, had to be recomputed against the newer base.
+
+- **NFR-LIC-070: Not started → Done.** The M9a bullet above named the gap exactly — "no
+  TRADEMARK/BRAND file or brand-asset licensing statement exists". `TRADEMARK.md` now exists at the
+  repository root and takes the position the requirement asks to be explicit: the code licence
+  covers the code and not the name "Namir" or the mark, and the assets under `images/` are all
+  rights reserved. The `Verify: S` method is executed rather than asserted —
+  `xtask/src/identity.rs:70`'s `TRADEMARK_REQUIRED` check fails if the document or any required
+  statement goes missing, run on every push by `.github/workflows/ci.yml`'s `xtask identity` step.
+  Tagged plainly, because a build-time check asserting the document exists and states the terms is
+  that method as written.
+- **NFR-DOC-040: Not started → Partial**, one column and not two. `README.md` now exists at the root
+  and carries what the requirement enumerates — the product, its licence, and the commands to build,
+  run and test it — with `xtask/src/identity.rs:31`'s check asserting each of those substrings is
+  present. But the requirement also says the README shall *identify the product* and *state what it
+  does*, and no substring check reaches whether the prose actually does either. The tag is
+  `// trace-partial: NFR-DOC-040` with its mandatory `uncovered:` field naming that clause, and
+  under D-23.2 a Partial is not Done. Closes M13.
+
+**One row deliberately not moved, recorded so its absence is not read as an oversight.** 6.7 BUILD
+stays **0 / 2 / 0**. M12 improved NFR-BUILD-020 — the README documents the build, run and test
+commands, and `xtask identity` pins those exact strings, so the document can no longer drift
+silently from what CI runs — but the requirement's "exercised by CI" clause is still unmet: nothing
+executes a command *as documented*. That tag's `uncovered:` field is rewritten to say so and its
+closing milestone moved from M12 to M13, which is a correction to a claim M12 would otherwise have
+been recorded as meeting. **FR-UI-110 appears in no row here**: it is a Should, and §14 counts Musts
+only. It stays open after M12 — see `docs/manual-tests/fr-ui-110-brand-mark.md`.
 
 ---
 
