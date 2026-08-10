@@ -719,7 +719,14 @@ mod cpal_impl {
 
 #[cfg(test)]
 mod tests {
+    use super::cpal_impl::{exclusive_outcome, wasapi_options};
     use super::*;
+
+    /// The one host API on which FR-IO-020's exclusive mode exists at all, spelled as
+    /// `cpal::HostId::name()` spells it. Compared at **runtime**, never compiled against: D-5.1
+    /// keeps platform attributes out of every crate but `namir-platform` (`xtask layering` enforces
+    /// it), and D-13.4's fork is deliberately free of them for the same reason.
+    const WASAPI_HOST_NAME: &str = "WASAPI";
 
     fn params() -> StreamParams {
         StreamParams {
@@ -728,6 +735,36 @@ mod tests {
             channels: 2,
             share_mode: ShareMode::Exclusive,
         }
+    }
+
+    /// One exclusive-mode range as a device might report it, for the probe-rule tests below.
+    fn range(channels: u16, min_hz: u32, max_hz: u32) -> SupportedConfigRange {
+        SupportedConfigRange {
+            channels,
+            min_sample_rate_hz: min_hz,
+            max_sample_rate_hz: max_hz,
+            buffer_size: BufferSizeRange::Unknown,
+        }
+    }
+
+    /// Every `(host, device)` pair this machine actually enumerates, both directions. Empty on a
+    /// machine with no audio hardware — which is the normal case in CI's containers, and the reason
+    /// no test below asserts that it found any.
+    fn enumerated_devices(backend: &CpalBackend) -> Vec<(HostInfo, DeviceInfo)> {
+        backend
+            .hosts()
+            .into_iter()
+            .flat_map(|host| {
+                let devices = backend
+                    .input_devices(&host)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(backend.output_devices(&host).unwrap_or_default());
+                devices
+                    .map(move |device| (host.clone(), device))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     /// FR-IO-020/FR-IO-080: a session that never asked for anything gets shared mode. Pinned on
@@ -739,53 +776,193 @@ mod tests {
         assert_eq!(ShareMode::default(), ShareMode::Shared);
     }
 
-    /// **An honest pin on interim behaviour, which SHOULD go red the day D-13.4's fork is pinned.**
-    /// `cpal` 0.18.1 cannot request `AUDCLNT_SHAREMODE_EXCLUSIVE` at all, so the real backend
-    /// answers `Unsupported` for every device on every platform — including Windows, which is why
-    /// this test needs no hardware, no device and no platform-conditional compilation to run
-    /// everywhere CI runs.
-    /// When the fork lands and a real device answers `Engaged`, this assertion fails, and that
-    /// failure is the intended signal to delete it rather than a regression to fix.
+    /// **The honest-pin test, rewritten at M11 rather than deleted.**
+    ///
+    /// It was written to go red the day D-13.4's fork was pinned, and its name said so. It did not
+    /// go red, and would not have: the fork refuses exclusive mode wherever there is no WASAPI
+    /// endpoint behind the device, so on CI's Linux and macOS legs the real backend still answers
+    /// `Unsupported` — for the same underlying reason it always did, no WASAPI. Keeping the old
+    /// name would have left a passing test asserting something untrue about why it passes, so what
+    /// it pins now is the property that *is* true and worth pinning: **a device with no WASAPI
+    /// endpoint behind it never reports exclusive mode engaged.**
+    ///
+    /// This is the one test that drives the whole real probe path — `resolve_host`,
+    /// `exclusive_configs`, the fork's `supported_{input,output}_configs_with`, `exclusive_outcome`
+    /// — against real `cpal::Device`s rather than a fake, which is possible on a headless Linux
+    /// runner precisely because the fork's share-mode API is compiled on every platform.
+    ///
+    /// WASAPI is skipped **by host name at runtime**, not by conditional compilation. On a Windows
+    /// machine with a real interface a WASAPI endpoint may legitimately answer `Engaged`, and a
+    /// test that failed there would be asserting the opposite of what FR-IO-020 asks for. On a
+    /// machine with no audio devices at all the enumeration loop is empty, which is why the two
+    /// hardware-free cases are asserted unconditionally first.
     #[test]
-    fn the_real_cpal_backend_reports_exclusive_mode_unsupported_until_the_fork_lands() {
+    fn a_device_with_no_wasapi_endpoint_never_reports_exclusive_mode_engaged() {
         let backend = CpalBackend::new();
-        let host = HostInfo {
-            name: "any".to_string(),
-        };
-        let device = DeviceInfo {
-            name: "any".to_string(),
-            is_default: true,
-        };
+
+        // No hardware needed for either of these: a host that resolves to nothing, and a device
+        // name no host enumerates, are both "no WASAPI endpoint behind this device".
         assert_eq!(
-            backend.supports_exclusive(&host, &device, params()),
+            backend.supports_exclusive(
+                &HostInfo {
+                    name: "no such host".to_string(),
+                },
+                &DeviceInfo {
+                    name: "no such device".to_string(),
+                    is_default: true,
+                },
+                params(),
+            ),
             ExclusiveModeOutcome::Unsupported,
         );
+        assert_eq!(
+            backend.supports_exclusive(
+                &backend.default_host(),
+                &DeviceInfo {
+                    name: "no such device".to_string(),
+                    is_default: true,
+                },
+                params(),
+            ),
+            ExclusiveModeOutcome::Unsupported,
+        );
+
+        for (host, device) in enumerated_devices(&backend) {
+            if host.name == WASAPI_HOST_NAME {
+                continue;
+            }
+            assert_eq!(
+                backend.supports_exclusive(&host, &device, params()),
+                ExclusiveModeOutcome::Unsupported,
+                "host {:?}, device {:?}",
+                host.name,
+                device.name,
+            );
+        }
     }
 
-    /// The query answers from the build's own capability, not from what it was handed — a caller
+    /// The query answers from what the device reports, not from what it was handed — a caller
     /// cannot talk the real backend into exclusive mode by passing `ShareMode::Exclusive` in the
-    /// params, and cannot be told "unsupported" merely for having passed `Shared`.
+    /// params, and cannot be told "unsupported" merely for having passed `Shared`. Asserted as an
+    /// equality between two answers rather than against a constant, so it holds on a real WASAPI
+    /// endpoint that genuinely does support exclusive mode, and every enumerated device is
+    /// included for that reason.
     #[test]
     fn the_real_backends_answer_does_not_depend_on_the_share_mode_it_was_handed() {
         let backend = CpalBackend::new();
-        let host = HostInfo {
-            name: "any".to_string(),
-        };
-        let device = DeviceInfo {
-            name: "any".to_string(),
-            is_default: true,
-        };
-        let asked_shared = backend.supports_exclusive(
-            &host,
-            &device,
-            StreamParams {
-                share_mode: ShareMode::Shared,
-                ..params()
+        let mut pairs = enumerated_devices(&backend);
+        pairs.push((
+            HostInfo {
+                name: "no such host".to_string(),
             },
+            DeviceInfo {
+                name: "no such device".to_string(),
+                is_default: true,
+            },
+        ));
+        for (host, device) in pairs {
+            let asked_shared = backend.supports_exclusive(
+                &host,
+                &device,
+                StreamParams {
+                    share_mode: ShareMode::Shared,
+                    ..params()
+                },
+            );
+            assert_eq!(
+                asked_shared,
+                backend.supports_exclusive(&host, &device, params()),
+                "host {:?}, device {:?}",
+                host.name,
+                device.name,
+            );
+        }
+    }
+
+    /// The probe's decision rule, exercised without a device: a reported exclusive-mode range that
+    /// covers both the settled channel count and the settled rate is what `Engaged` means.
+    #[test]
+    fn the_exclusive_probe_engages_only_on_a_range_covering_the_settled_rate_and_channels() {
+        assert_eq!(
+            exclusive_outcome(Ok(vec![range(2, 44_100, 96_000)]), params()),
+            ExclusiveModeOutcome::Engaged,
+        );
+        // A range's endpoints are inclusive, and a device reporting one discrete rate reports it as
+        // min == max -- the shape WASAPI's exclusive-mode format probe actually produces.
+        assert_eq!(
+            exclusive_outcome(Ok(vec![range(2, 48_000, 48_000)]), params()),
+            ExclusiveModeOutcome::Engaged,
+        );
+        // Only one of several reported ranges has to cover.
+        assert_eq!(
+            exclusive_outcome(
+                Ok(vec![range(2, 96_000, 192_000), range(2, 48_000, 48_000)]),
+                params(),
+            ),
+            ExclusiveModeOutcome::Engaged,
+        );
+    }
+
+    /// Every other shape of answer is `Unsupported` and the session runs shared. The channel-count
+    /// case is the one worth spelling out: exclusive mode does no channel or format conversion, so
+    /// a range at the right rate but the wrong channel count is not a configuration Namir can open.
+    #[test]
+    fn the_exclusive_probe_refuses_anything_short_of_a_covering_range() {
+        for (case, probed) in [
+            ("rate below the range", Ok(vec![range(2, 88_200, 192_000)])),
+            ("rate above the range", Ok(vec![range(2, 22_050, 44_100)])),
+            ("wrong channel count", Ok(vec![range(1, 48_000, 48_000)])),
+            ("no ranges at all", Ok(vec![])),
+            (
+                "the device refused, or has no WASAPI endpoint",
+                Err(AudioIoError::ExclusiveModeUnavailable(
+                    "Exclusive mode requires a WASAPI device".to_string(),
+                )),
+            ),
+        ] {
+            assert_eq!(
+                exclusive_outcome(probed, params()),
+                ExclusiveModeOutcome::Unsupported,
+                "{case}",
+            );
+        }
+    }
+
+    /// [`SupportedConfigRange::covers_rate`]'s endpoints are inclusive at both ends — pinned
+    /// because two callers now depend on it (FR-IO-040's rate negotiation and FR-IO-020's
+    /// exclusive probe) and an off-by-one at either end silently changes both.
+    #[test]
+    fn a_supported_config_ranges_endpoints_are_both_inclusive() {
+        let r = range(2, 44_100, 48_000);
+        assert!(r.covers_rate(44_100));
+        assert!(r.covers_rate(48_000));
+        assert!(r.covers_rate(46_000));
+        assert!(!r.covers_rate(44_099));
+        assert!(!r.covers_rate(48_001));
+    }
+
+    /// The one-line translation into D-13.4's fork's own vocabulary, pinned because inverting it
+    /// would open every stream in the mode the session did *not* settle on, with nothing else in
+    /// this crate able to notice: [`crate::app`]'s mode indicator reports the negotiated decision,
+    /// not what the backend then did with it.
+    #[test]
+    fn the_share_mode_handed_to_the_fork_is_the_one_the_session_settled_on() {
+        use cpal::platform::{ShareMode as CpalShareMode, WasapiStreamOptions};
+
+        assert_eq!(
+            wasapi_options(ShareMode::Exclusive).share_mode,
+            CpalShareMode::Exclusive
         );
         assert_eq!(
-            asked_shared,
-            backend.supports_exclusive(&host, &device, params())
+            wasapi_options(ShareMode::Shared).share_mode,
+            CpalShareMode::Shared
+        );
+        // `WasapiStreamOptions::default()` is the fork's own "behaves exactly as the plain
+        // DeviceTrait method" case, and Namir's default share mode has to agree with it or a
+        // session that asked for nothing would take a different path through the fork.
+        assert_eq!(
+            wasapi_options(ShareMode::default()),
+            WasapiStreamOptions::default()
         );
     }
 
