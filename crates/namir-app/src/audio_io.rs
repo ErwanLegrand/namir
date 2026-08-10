@@ -4,18 +4,32 @@
 //! [`crate::stream`]) is written against these two traits and the plain data types below, never
 //! against a `cpal::*` type directly. This module is the one place `cpal` is named.
 //!
-//! # A verified, load-bearing limitation of D-13.1's chosen dependency
+//! # FR-IO-020's exclusive mode, and the forked dependency that closes it
 //!
-//! FR-IO-020 (Must) requires WASAPI **shared and exclusive** mode. Reading `cpal` 0.18.1's own
-//! WASAPI backend source (`cpal-0.18.1/src/host/wasapi/device.rs`, both
-//! `build_input_stream_raw_inner` and `build_output_stream_raw_inner`) shows the share mode is
-//! hardcoded to `AUDCLNT_SHAREMODE_SHARED` with **no public API to request
-//! `AUDCLNT_SHAREMODE_EXCLUSIVE`** — this is not a gap in this crate's usage of `cpal`, it is
-//! absent from the dependency itself as pinned by D-13.1. [`ExclusiveModeOutcome::Unsupported`]
-//! is what [`CpalBackend`] reports whenever exclusive mode is requested; see this crate's final
-//! report for the full analysis and options (a `namir-platform`-owned raw WASAPI path — this crate
-//! is not on D-5.3's unsafe carve-out list, so it cannot write one itself — or an upstream/forked
-//! `cpal` change).
+//! FR-IO-020 (Must) requires WASAPI **shared and exclusive** mode. Upstream `cpal` 0.18.1 cannot
+//! provide the second half. Reading its own WASAPI backend source
+//! (`cpal-0.18.1/src/host/wasapi/device.rs`, both `build_input_stream_raw_inner` and
+//! `build_output_stream_raw_inner`) showed the share mode hardcoded to `AUDCLNT_SHAREMODE_SHARED`
+//! with **no public API to request `AUDCLNT_SHAREMODE_EXCLUSIVE`** — absent from the dependency
+//! itself, not a gap in this crate's usage of it. That M6 verification still stands; what changed
+//! at **M11** is which `cpal` this crate depends on.
+//!
+//! D-13.4's Namir-maintained `cpal` fork — pinned by commit hash in this crate's `Cargo.toml`, with
+//! its own narrow `[sources]` allowance in the workspace `deny.toml` — adds
+//! `cpal::platform::{ShareMode, WasapiStreamOptions, WasapiDeviceExt}`: a share-mode-aware mirror of
+//! `DeviceTrait`'s configuration queries and stream builders. [`CpalBackend::supports_exclusive`]
+//! now asks the device through that trait instead of answering from a constant, and both stream
+//! builders carry [`StreamParams::share_mode`] into the open.
+//!
+//! Those names carry no conditional compilation of their own — deliberately, on the fork's side:
+//! the types and the trait are compiled on every platform and `WasapiDeviceExt` is implemented for
+//! the platform-dispatch `cpal::Device` everywhere, refusing exclusive mode *at runtime* wherever
+//! there is no WASAPI endpoint behind the device (any non-Windows build, and any Windows host that
+//! is not WASAPI). Its configuration queries refuse rather than quietly answering for shared mode,
+//! which is exactly what a pre-flight probe needs. That is what lets this module stay free of
+//! platform attributes — which D-5.1 requires of it in any case, `xtask layering` confining those
+//! to `namir-platform` — and it is why every path below, the exclusive probe included, is reachable
+//! from a headless Linux test run.
 //!
 //! # Why device/config data crosses this boundary as plain structs, not `cpal` references
 //!
@@ -77,6 +91,19 @@ pub struct SupportedConfigRange {
     pub buffer_size: BufferSizeRange,
 }
 
+impl SupportedConfigRange {
+    /// Whether this range covers `hz` — its endpoints are inclusive, as `cpal`'s own
+    /// `SupportedStreamConfigRange` defines them.
+    ///
+    /// Sited on the type rather than beside either caller because both
+    /// [`crate::device_state`]'s FR-IO-040 negotiation and [`CpalBackend::supports_exclusive`]'s
+    /// FR-IO-020 probe have to ask it, and two copies of an inclusive-bounds test is exactly the
+    /// kind of pair that drifts apart at one endpoint.
+    pub fn covers_rate(&self, hz: u32) -> bool {
+        hz >= self.min_sample_rate_hz && hz <= self.max_sample_rate_hz
+    }
+}
+
 /// What to open a stream with, already negotiated by [`crate::device_state`] against a device's
 /// [`SupportedConfigRange`]s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,9 +147,10 @@ pub enum ShareMode {
     Exclusive,
 }
 
-/// FR-IO-020's exclusive-mode request outcome — see this module's doc comment for why
-/// [`Unsupported`](Self::Unsupported) is, today, the only outcome this crate's `cpal` version can
-/// produce, regardless of platform.
+/// FR-IO-020's exclusive-mode request outcome. Since M11 both variants are reachable from the real
+/// backend: [`CpalBackend::supports_exclusive`] asks the device through D-13.4's fork rather than
+/// answering from a constant, so [`Unsupported`](Self::Unsupported) now means "not this device, at
+/// this rate and channel count, in this build" rather than "this dependency cannot ask".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExclusiveModeOutcome {
     /// The stream was opened in exclusive mode.
@@ -277,7 +305,8 @@ pub trait AudioBackend: Send {
     ) -> Result<Box<dyn AudioStream>, AudioIoError>;
 }
 
-/// The real backend, over `cpal` 0.18.1.
+/// The real backend, over D-13.4's `cpal` fork (0.18.1 plus WASAPI share-mode support), pinned by
+/// commit hash in this crate's `Cargo.toml`.
 pub struct CpalBackend;
 
 impl CpalBackend {
@@ -297,11 +326,13 @@ impl Default for CpalBackend {
 mod cpal_impl {
     use std::time::Duration;
 
+    use cpal::platform::{ShareMode as CpalShareMode, WasapiDeviceExt, WasapiStreamOptions};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     use super::{
         AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CpalBackend, DeviceInfo,
-        ExclusiveModeOutcome, HostInfo, StreamFailure, StreamParams, SupportedConfigRange,
+        ExclusiveModeOutcome, HostInfo, ShareMode, StreamFailure, StreamParams,
+        SupportedConfigRange,
     };
 
     /// Resolves `host`'s name to a live `cpal::Host`. `cpal::available_hosts`/`host_from_id`
@@ -340,6 +371,24 @@ mod cpal_impl {
     }
 
     /// f32-only, per this module's own doc comment on [`SupportedConfigRange`].
+    ///
+    /// # This filter is load-bearing for exclusive mode, and narrows it
+    ///
+    /// Under `AUDCLNT_SHAREMODE_SHARED` the Windows audio engine converts for a stream, so the f32
+    /// filter costs a device nothing it could otherwise have offered. Exclusive mode has no engine
+    /// to convert for it and D-13.4's fork does not pretend otherwise: it drops
+    /// `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM` and `SRC_DEFAULT_QUALITY` there, WASAPI rejecting both
+    /// under exclusive mode, so only a format the device accepts **natively** will open. Namir's
+    /// engine is f32 end to end and this crate has no sample-format conversion layer, so a device
+    /// that natively accepts only S16 or S24 is one Namir cannot feed in exclusive mode at all.
+    ///
+    /// The honest consequence, stated rather than left to be discovered: **exclusive mode engages
+    /// only on devices that natively accept f32 in exclusive mode; an S16- or S24-only device falls
+    /// back to shared.** That is the graceful degradation D-13.4 asks for, not a silent failure —
+    /// [`crate::app`] says so in a notice. Widening this filter to make exclusive mode engage more
+    /// often would only move the failure later: [`CpalBackend::supports_exclusive`] would answer
+    /// `Engaged` for a format the build then cannot open. Supporting those devices needs a
+    /// conversion layer and is out of M11's scope.
     fn to_f32_configs(
         configs: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
     ) -> Vec<SupportedConfigRange> {
@@ -364,15 +413,13 @@ mod cpal_impl {
         }
     }
 
-    /// The single choke point where [`StreamParams::share_mode`] will eventually reach `cpal` —
-    /// both `build_input_stream` and `build_output_stream` below go through here.
+    /// One half of what an open needs: the rate/buffer/channel-count `cpal::StreamConfig`.
     ///
-    /// **It currently ignores that field**, and there is nowhere for it to go: `cpal::StreamConfig`
-    /// (0.18.1) has no share-mode member, because the share mode is a hardcoded
-    /// `AUDCLNT_SHAREMODE_SHARED` local inside cpal's own WASAPI stream construction — this
-    /// module's doc comment records the verification. D-13.4's forked `cpal` is what gives this
-    /// function a field to set; until then dropping it here is the honest behaviour, and
-    /// [`CpalBackend::supports_exclusive`] is what makes sure nobody was told otherwise.
+    /// [`StreamParams::share_mode`] is the *other* half and deliberately does not appear here.
+    /// `cpal::StreamConfig` has no share-mode member in the fork either, because the share mode is
+    /// meaningless on every backend but WASAPI; it travels beside the config as a
+    /// [`WasapiStreamOptions`] instead — see [`wasapi_options`], which every caller of this
+    /// function pairs it with.
     fn stream_config(params: StreamParams) -> cpal::StreamConfig {
         cpal::StreamConfig {
             channels: params.channels,
@@ -381,6 +428,83 @@ mod cpal_impl {
                 Some(frames) => cpal::BufferSize::Fixed(frames),
                 None => cpal::BufferSize::Default,
             },
+        }
+    }
+
+    /// The other half: [`StreamParams::share_mode`] in the fork's own vocabulary.
+    ///
+    /// `WasapiStreamOptions` is `#[non_exhaustive]`, so it is built from `default()` (which is
+    /// `Shared`, i.e. exactly what the cross-platform API already does) and adjusted, never
+    /// field-by-field — a later addition to it must not break this call site.
+    pub(super) fn wasapi_options(share_mode: ShareMode) -> WasapiStreamOptions {
+        WasapiStreamOptions::default().with_share_mode(match share_mode {
+            ShareMode::Shared => CpalShareMode::Shared,
+            ShareMode::Exclusive => CpalShareMode::Exclusive,
+        })
+    }
+
+    /// The two stream directions, for the one query that has to try both — see
+    /// [`CpalBackend::supports_exclusive`] for why it does.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Direction {
+        Input,
+        Output,
+    }
+
+    /// `name`'s **exclusive-mode** f32 configurations in `direction`, as that device reports them.
+    ///
+    /// `None` means the host enumerates no device of that name in that direction at all. That is a
+    /// different fact from a device that answered and refused, and collapsing the two would make an
+    /// output-only device look like an input device that says no.
+    fn exclusive_configs(
+        cpal_host: &cpal::Host,
+        name: &str,
+        direction: Direction,
+    ) -> Option<Result<Vec<SupportedConfigRange>, AudioIoError>> {
+        let devices = match direction {
+            Direction::Input => cpal_host.input_devices(),
+            Direction::Output => cpal_host.output_devices(),
+        }
+        .ok()?;
+        let device = resolve_device(devices, name).ok()?;
+        let options = wasapi_options(ShareMode::Exclusive);
+        // The fork's queries answer for the share mode they are handed, and refuse exclusive mode
+        // outright where there is no WASAPI endpoint -- which is the whole reason this is a query
+        // and not an open-and-see (see `AudioBackend::supports_exclusive`'s own doc comment).
+        let configs = match direction {
+            Direction::Input => device.supported_input_configs_with(options),
+            Direction::Output => device.supported_output_configs_with(options),
+        };
+        Some(
+            configs
+                .map(to_f32_configs)
+                .map_err(|e| AudioIoError::ExclusiveModeUnavailable(e.to_string())),
+        )
+    }
+
+    /// The rule [`CpalBackend::supports_exclusive`] applies to one direction's answer, split out
+    /// from the device access above so the decision is testable with no device present.
+    ///
+    /// [`ExclusiveModeOutcome::Engaged`] needs a **positive** answer: an exclusive-mode range that
+    /// actually covers the channel count and sample rate the caller has already settled on. Every
+    /// other shape of answer is [`ExclusiveModeOutcome::Unsupported`] and the session runs shared —
+    /// an `Err` (`ErrorKind::UnsupportedOperation` from a device with no WASAPI endpoint, or the
+    /// device's own refusal), an empty set, and a set whose ranges are all for some other rate or
+    /// channel count. Erring towards `Unsupported` is the direction that cannot produce a mode
+    /// indicator that lies.
+    pub(super) fn exclusive_outcome(
+        probed: Result<Vec<SupportedConfigRange>, AudioIoError>,
+        params: StreamParams,
+    ) -> ExclusiveModeOutcome {
+        let covered = probed.is_ok_and(|configs| {
+            configs
+                .iter()
+                .any(|c| c.channels == params.channels && c.covers_rate(params.sample_rate_hz))
+        });
+        if covered {
+            ExclusiveModeOutcome::Engaged
+        } else {
+            ExclusiveModeOutcome::Unsupported
         }
     }
 
@@ -480,28 +604,63 @@ mod cpal_impl {
             Ok(to_f32_configs(configs))
         }
 
-        /// Always [`ExclusiveModeOutcome::Unsupported`], on every platform, for every device — the
-        /// interim behaviour this module's doc comment promises, restated here because this is the
-        /// method that makes the promise observable.
+        /// Asks the device, through D-13.4's fork, whether it reports an exclusive-mode f32
+        /// configuration covering `params`' sample rate and channel count
+        /// (`IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, ...)` underneath, on Windows). Until
+        /// M11 this answered [`ExclusiveModeOutcome::Unsupported`] from a constant, because
+        /// upstream `cpal` 0.18.1 exposes no way to request `AUDCLNT_SHAREMODE_EXCLUSIVE` at all —
+        /// see this module's doc comment and `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`
+        /// for that verification, which is now history rather than current behaviour.
         ///
-        /// This is not a "not implemented yet" stub for something already reachable: `cpal` 0.18.1
-        /// exposes no way to request `AUDCLNT_SHAREMODE_EXCLUSIVE` at all (verified against its
-        /// vendored source at M6; see the module doc comment and
-        /// `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`). **D-13.4's Namir-maintained
-        /// `cpal` fork, pinned by commit, is the single change that flips this**: once
-        /// `crates/namir-app/Cargo.toml`'s `cpal` line points at it, this method asks the device
-        /// through the fork's own share-mode-aware format negotiation
-        /// (`IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, ...)`) instead of answering from a
-        /// constant, and `stream_config` above gains a field to carry `params.share_mode` into.
-        /// Nothing else in this crate changes: the seam, the negotiation in [`crate::app`] and the
-        /// mode indicator are all already written against the answer, not against the constant.
+        /// # Why it probes both directions
+        ///
+        /// [`AudioBackend::supports_exclusive`] is asked per *device* and carries no direction; the
+        /// caller ([`crate::app::run`]) asks once for the input device and once for the output one.
+        /// On WASAPI — the only backend where the question means anything — a device *is* a single
+        /// endpoint, capture or render, so a name resolves in exactly one of the two lists and only
+        /// that direction is probed. A host where one name really is both directions (ALSA's
+        /// `default`) gets both probed and the answers ANDed, which is the conservative reading:
+        /// answering `Engaged` off the one direction that happened to say yes would be the mode
+        /// indicator lying about the other.
+        ///
+        /// A name in neither list is `Unsupported`, not an error — this method has no error channel
+        /// and, per its trait doc comment, exists precisely so a caller never has to recover from a
+        /// failed open.
+        ///
+        /// # What it probes against
+        ///
+        /// `params` is the configuration [`crate::device_state`] already negotiated against the
+        /// device's **shared-mode** config set (FR-IO-040 runs before FR-IO-020's share mode is
+        /// settled, since the rate and buffer size are what the user picks and persists). A device
+        /// whose exclusive-mode format list does not happen to include that settled rate therefore
+        /// answers `Unsupported` and the session runs shared, even though some *other* rate would
+        /// have opened exclusively. Re-negotiating rate and buffer per share mode is a larger change
+        /// to the settings path than M11 takes on; recorded here so it is not mistaken for a bug in
+        /// the probe.
         fn supports_exclusive(
             &self,
-            _host: &HostInfo,
-            _device: &DeviceInfo,
-            _params: StreamParams,
+            host: &HostInfo,
+            device: &DeviceInfo,
+            params: StreamParams,
         ) -> ExclusiveModeOutcome {
-            ExclusiveModeOutcome::Unsupported
+            let Ok(cpal_host) = resolve_host(host) else {
+                return ExclusiveModeOutcome::Unsupported;
+            };
+            let mut answered = false;
+            for direction in [Direction::Input, Direction::Output] {
+                let Some(probed) = exclusive_configs(&cpal_host, &device.name, direction) else {
+                    continue;
+                };
+                if exclusive_outcome(probed, params) != ExclusiveModeOutcome::Engaged {
+                    return ExclusiveModeOutcome::Unsupported;
+                }
+                answered = true;
+            }
+            if answered {
+                ExclusiveModeOutcome::Engaged
+            } else {
+                ExclusiveModeOutcome::Unsupported
+            }
         }
 
         fn build_input_stream(
@@ -519,8 +678,9 @@ mod cpal_impl {
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
             let cpal_device = resolve_device(devices, &device.name)?;
             let stream = cpal_device
-                .build_input_stream::<f32, _, _>(
+                .build_input_stream_with::<f32, _, _>(
                     stream_config(params),
+                    wasapi_options(params.share_mode),
                     move |data: &[f32], _info| on_data(data),
                     move |err| on_error(to_stream_failure(err)),
                     Some(activation_timeout),
@@ -544,8 +704,9 @@ mod cpal_impl {
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
             let cpal_device = resolve_device(devices, &device.name)?;
             let stream = cpal_device
-                .build_output_stream::<f32, _, _>(
+                .build_output_stream_with::<f32, _, _>(
                     stream_config(params),
+                    wasapi_options(params.share_mode),
                     move |data: &mut [f32], _info| on_data(data),
                     move |err| on_error(to_stream_failure(err)),
                     Some(activation_timeout),
