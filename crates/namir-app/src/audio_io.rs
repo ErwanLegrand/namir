@@ -43,6 +43,20 @@
 
 use std::time::Duration;
 
+/// The block size, in frames, a session runs at when the device reported no buffer-size preference
+/// of its own and the settings file named none either.
+///
+/// Read by [`crate::app`] for [`namir_engine::PrepareContext`]'s `max_block_size`, and — since M11
+/// — by `cpal_impl` for how much sample-format conversion scratch a stream pre-sizes; one constant
+/// rather than two literals so those two can never disagree about how big a block is.
+pub const DEFAULT_BLOCK_FRAMES: u32 = 512;
+
+/// The block size, in frames, for a negotiated `buffer_frames` — [`DEFAULT_BLOCK_FRAMES`] when the
+/// negotiation produced nothing, and never zero.
+pub fn block_frames(buffer_frames: Option<u32>) -> usize {
+    buffer_frames.unwrap_or(DEFAULT_BLOCK_FRAMES).max(1) as usize
+}
+
 /// One audio host API (WASAPI, ALSA, CoreAudio, ...), by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostInfo {
@@ -985,5 +999,15 @@ mod tests {
             text,
             AudioIoError::OpenFailed("the device is already held exclusively".into()).to_string()
         );
+    }
+
+    /// The block size a session runs at is one number, not two: [`crate::app`]'s engine
+    /// `max_block_size` and (from M11) the sample-format conversion scratch both come from here, so
+    /// they cannot disagree.
+    #[test]
+    fn the_default_block_size_is_used_whenever_the_negotiation_produced_none() {
+        assert_eq!(block_frames(None), DEFAULT_BLOCK_FRAMES as usize);
+        assert_eq!(block_frames(Some(0)), 1);
+        assert_eq!(block_frames(Some(256)), 256);
     }
 }

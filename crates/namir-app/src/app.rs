@@ -257,7 +257,7 @@ pub fn run() {
     input_params.share_mode = share_mode.mode;
     output_params.share_mode = share_mode.mode;
 
-    let max_block_size = buffer_frames.unwrap_or(512).max(1) as usize;
+    let max_block_size = crate::audio_io::block_frames(buffer_frames);
     let channel_config = if output_channels >= 2 {
         ChannelConfig::MonoToStereo
     } else {
