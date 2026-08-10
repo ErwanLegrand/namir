@@ -321,9 +321,10 @@ pub(crate) struct FakeBackend {
     /// The output callback the last `build_output_stream` captured.
     pub(crate) output_data: std::sync::Mutex<Option<OutputCallback>>,
     /// Which device names answer [`ExclusiveModeOutcome::Engaged`] to
-    /// `supports_exclusive`. Every other name answers `Unsupported`, matching the real
-    /// [`crate::audio_io::CpalBackend`]'s current behaviour, so a test that says nothing about
-    /// exclusive mode gets the interim answer rather than an optimistic one.
+    /// `supports_exclusive`. Every other name answers `Unsupported` — what the real
+    /// [`crate::audio_io::CpalBackend`] answers for any device with no exclusive-capable WASAPI
+    /// endpoint behind it, so a test that says nothing about exclusive mode gets the conservative
+    /// answer rather than an optimistic one.
     exclusive_devices: Vec<String>,
     /// The [`ShareMode`] each direction's `build_*_stream` was actually handed —
     /// the observable that distinguishes "the session settled on exclusive" from "the session
