@@ -2344,7 +2344,7 @@ that happens to depend on them first.
    it does *not* cost — `AppSettings::exclusive_mode` already exists as a persisted field, so no
    settings migration is needed and the trait boundary this item worried about is extended rather
    than redrawn, exactly as hoped. **Built in M11 (§18 below).**
-7. **Whether Namir accepts a build script in a shipped crate, in order to embed the Windows `.exe`
+7. ~~**Whether Namir accepts a build script in a shipped crate, in order to embed the Windows `.exe`
    icon.** Raised 2026-08-08 while planning M12. Embedding an icon resource into a Windows
    executable needs a build script, and this project's dependency-adoption bar treats build scripts
    as a real cost rather than a neutral convenience — `02-architecture.md` §17 records `libc` as
@@ -2356,7 +2356,13 @@ that happens to depend on them first.
    icon outside the build, as a post-build step in M13's packaging pipeline, which keeps the crate
    build-script-free but means a `cargo build` and a released binary differ in a user-visible way.
    **Due before M12 (§19 below)**, and worth deciding deliberately rather than discovering
-   mid-implementation, since the third option silently moves work from M12 into M13.
+   mid-implementation, since the third option silently moves work from M12 into M13.~~
+   **Resolved 2026-08-10: `02-architecture.md` D-17.3** — the third of the three answers. The bar
+   holds: `namir-app` takes no build script, and M13's packaging pipeline embeds the icon. The
+   decision records what that costs — a `cargo build` and a released binary differ in a user-visible
+   way until M13 — and one thing this item did not know: FR-UI-110's *window* icon is blocked in M12
+   as well, `baseview` 0.2.2's `WindowOpenOptions` having no icon field at all, so the two clauses
+   defer together rather than one moving and one landing. **Deferred to M13 (§20 below).**
 8. **Whether the plugin configuration ever gets a persisted verbosity setting, or stays
    environment-variable-only.** Raised 2026-08-08 by M9's P0 decision pass while settling
    `02-architecture.md` **D-16.5**. D-16.4 says FR-ERR-010's verbosity is "configurable from
