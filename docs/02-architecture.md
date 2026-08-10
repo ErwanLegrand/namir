@@ -2005,6 +2005,40 @@ that is not a cargo dependency. Their availability, versions and licences are D-
 configuration's business, recorded there. The same reasoning already covers `clap-validator` and
 `cargo-deny` themselves, which have likewise never appeared in this table.
 
+**Decision D-17.3 (added M12, 2026-08-10)** — the adoption bar does not bend for presentation.
+`namir-app` takes no build script; the Windows `.exe` icon is embedded by M13's packaging pipeline
+instead. This resolves `03-implementation-roadmap.md` §15 item 7, which named three answers and
+declined to pick one.
+
+*Rationale:* the `libc` note above is the only knowing exception in this workspace, and what earns it
+is that a mismatched `sched_param` layout across an FFI boundary is a genuine out-of-bounds read. An
+icon is cosmetic and can borrow none of that reasoning; if the bar bends here it is not a bar. A
+build script in a shipped crate is also a cross-compilation surface, and three CI jobs would have to
+be proven inert against it — `no-cxx-toolchain`, `mobile-cross-build-android` and
+`mobile-cross-build-ios` — for a feature none of those targets can display.
+
+*Rejected:* `winresource`/`embed-resource` as a second knowing exception — the bar is worth more than
+the icon. Also rejected: shipping with no executable icon at all, which leaves FR-UI-110 permanently
+unmet rather than deferred to the milestone that is already building installers.
+
+*Consequence:* a `cargo build` and a released binary differ in a user-visible way until M13 lands.
+That is the cost this decision accepts, and it is small because M13 is what produces a distributable
+artifact at all. Recorded here rather than in §18 because the question is whether the adoption bar
+bends, not how CI is arranged.
+
+*Consequence (added M12, 2026-08-10, from planning the work):* FR-UI-110's **window** icon clause is
+blocked in M12 independently of this decision, so the two clauses defer together. `baseview` 0.2.2's
+`WindowOpenOptions` is `#[non_exhaustive]` and carries exactly `title`, `size` and `scale` plus an
+`opengl`-gated `gl_config` — there is no icon field of any kind, so `03-implementation-roadmap.md`
+§19's instruction that the window icon "has to be set through baseview's own window options" is
+mistaken. Setting one would mean `WM_SETICON` against the HWND: `#[cfg(windows)]` and `unsafe`,
+admissible only in `namir-platform` under D-5.1/D-5.3, and only by adding a fourth
+`#![allow(unsafe_code)]` file for a cosmetic feature. Whether embedding the executable icon also
+gives the window one depends on how `baseview` registers its window class and is **not** asserted
+here; M13 verifies that on real Windows rather than assuming it.
+
+*Traces:* FR-UI-110.
+
 ---
 
 ## 18. Build, CI and target matrix
