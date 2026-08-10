@@ -453,9 +453,10 @@ mod cpal_impl {
 
     /// `name`'s **exclusive-mode** f32 configurations in `direction`, as that device reports them.
     ///
-    /// `None` means the host enumerates no device of that name in that direction at all. That is a
-    /// different fact from a device that answered and refused, and collapsing the two would make an
-    /// output-only device look like an input device that says no.
+    /// `None` means there was no device of that name in that direction to ask — the host
+    /// enumerated none by that name, or the enumeration itself failed. That is a different fact
+    /// from a device that answered and refused, and collapsing the two would make an output-only
+    /// device look like an input device that says no.
     fn exclusive_configs(
         cpal_host: &cpal::Host,
         name: &str,
