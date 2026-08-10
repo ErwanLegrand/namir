@@ -36,8 +36,8 @@ So this requirement stays **open** after M12. It is recorded here, not closed he
    the embedded GUI. Both shells route through one `namir_ui::render`, so this checks the embedding
    path rather than a second implementation.
 3. **Appearance.** Confirm the mark is the `#ff6600` wordmark plus leopard head, not a coloured
-   rectangle or a blank gap — i.e. that the alpha mask decoded and tinted correctly — and that it is
-   legible rather than aliased at 1x and at a HiDPI scale factor.
+   rectangle or a blank gap — i.e. that the alpha mask decoded and tinted correctly — and that it
+   is legible rather than aliased at 1x and at a HiDPI scale factor.
 4. **Accessibility (FR-UI-030 regression check).** Confirm the image still exposes the accessible
    name "Namir" that the text heading previously provided, and that hovering it shows that name.
 
@@ -67,5 +67,10 @@ pixel on a screen**, which is the whole reason this requirement's method is `M` 
 
 **This document is therefore incomplete by design, and FR-UI-110 is not closed by M12.** The four
 steps above must be run on the §2 reference machine — which is the same Windows machine M13 needs
-anyway for the icon work and for FR-PKG-030's install-scope test. Running them there, alongside the
-icon clauses, is the cheaper sequencing and is what M13 should do.
+anyway for the icon work and for its own install-scope test. Running them there, alongside the icon
+clauses, is the cheaper sequencing and is what M13 should do.
+
+*(That install-scope requirement is deliberately not named by id here: `xtask traceability` matches
+a `Verify: M` requirement against a manual-test document's **whole content**, so a bare prose
+mention of an unrelated id silently marks it covered. It did, in this document's first draft,
+until a review caught it.)*
