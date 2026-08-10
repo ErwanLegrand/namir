@@ -80,12 +80,14 @@ cargo test --workspace
 cargo run -p xtask -- layering       # D-5.1 dependency-graph + platform-cfg lint
 cargo run -p xtask -- params-lock    # checks params.lock is in sync with namir-params::REGISTRY
 cargo run -p xtask -- attribution    # NFR-LIC-030 THIRD-PARTY-NOTICES.md freshness
+cargo run -p xtask -- identity       # M12: brand-mark blob freshness + README/TRADEMARK statements
 cargo run -p xtask -- traceability   # NFR-QUAL-010 coverage + plan diff + §14's denominators
 cargo deny check                     # NFR-LIC-020 license/advisory gate
 
-# All three generate-and-diff checks take --write to regenerate rather than verify:
+# The generate-and-diff checks take --write to regenerate rather than verify:
 cargo run -p xtask -- params-lock --write
 cargo run -p xtask -- attribution --write
+cargo run -p xtask -- identity --write       # regenerates the brand-mark alpha blob
 cargo run -p xtask -- traceability --write   # regenerates docs/03-test-plan.md; never hand-edit it
 
 # traceability's second flag: keep only the required half of its exit status (see below).
@@ -177,7 +179,8 @@ argument; see `namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for th
 **Tests and benches get no exemption** (D-5.3's *Consequence (added M9, 2026-08-08)*). Cargo
 applies a package's `[lints]` table to bench and integration-test targets too, so a `namir-clap`
 bench *could* carry `#![allow(unsafe_code)]` — it may not, and nothing mechanical would catch it:
-`xtask`'s subcommands are `layering`, `params-lock`, `attribution`, `traceability` and `preset`,
+`xtask`'s subcommands are `layering`, `params-lock`, `attribution`, `traceability`, `preset`,
+`nam-parity` (added M10) and `identity` (added M12),
 none of which reads for `unsafe`. When a harness looks like it needs `unsafe`, the answer this
 project has reached every time is to take the capability from a dependency whose own `unsafe` is
 already audited, or to move the tested logic to a seam that takes plain types: `assert_no_alloc`
@@ -292,8 +295,10 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   anything non-obvious.
 - **Expect `trace-partial:` to be the common case, not a rarity.** M9a swept every Must against
   D-23.1's two questions and demoted 54 tags from plain `trace:` in one comment-only pass — no test
-  logic changed and nothing regressed; the tags stopped over-claiming. The tally that sweep leaves
-  is **130 Musts = 54 plain, 56 partial, 20 with no tag at all**, so a `**PARTIAL**` row in
+  logic changed and nothing regressed; the tags stopped over-claiming. The tally that sweep left
+  was **130 Musts = 54 plain, 56 partial, 20 with no tag at all**; M10 and M12 have moved it since,
+  and the number to trust is what `cargo run -p xtask -- traceability` prints today, not this
+  sentence. A `**PARTIAL**` row in
   `docs/03-test-plan.md` is the ordinary mid-project state of a requirement, not a defect someone
   forgot to clean up. The way to retire one is to close the gap its `// uncovered:` field names and
   then promote the tag; promoting the tag on its own deletes the ledger entry and is the failure

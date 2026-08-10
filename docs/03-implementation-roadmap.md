@@ -2267,13 +2267,13 @@ milestones write, had to be recomputed against the newer base.
   repository root and takes the position the requirement asks to be explicit: the code licence
   covers the code and not the name "Namir" or the mark, and the assets under `images/` are all
   rights reserved. The `Verify: S` method is executed rather than asserted —
-  `xtask/src/identity.rs:70`'s `TRADEMARK_REQUIRED` check fails if the document or any required
+  `xtask/src/identity.rs`'s `TRADEMARK_REQUIRED` check fails if the document or any required
   statement goes missing, run on every push by `.github/workflows/ci.yml`'s `xtask identity` step.
   Tagged plainly, because a build-time check asserting the document exists and states the terms is
   that method as written.
 - **NFR-DOC-040: Not started → Partial**, one column and not two. `README.md` now exists at the root
   and carries what the requirement enumerates — the product, its licence, and the commands to build,
-  run and test it — with `xtask/src/identity.rs:31`'s check asserting each of those substrings is
+  run and test it — with `xtask/src/identity.rs`'s `README_REQUIRED` check asserting each of those substrings is
   present. But the requirement also says the README shall *identify the product* and *state what it
   does*, and no substring check reaches whether the prose actually does either. The tag is
   `// trace-partial: NFR-DOC-040` with its mandatory `uncovered:` field naming that clause, and
@@ -4129,6 +4129,15 @@ requirement and by REUSE compliance respectively.
   a text heading standing in for a mark. One thing to know before starting: this UI is
   **egui-on-baseview, not eframe**, so the usual `eframe` window-icon recipe does not apply and the
   window icon has to be set through baseview's own window options instead.
+
+  *Correction (added M12, 2026-08-10):* **the last clause is wrong and cannot be followed.**
+  `baseview` 0.2.2's `WindowOpenOptions` is `#[non_exhaustive]` and carries exactly `title`, `size`
+  and `scale` plus an `opengl`-gated `gl_config` — there is no icon field of any kind, so there are
+  no "baseview's own window options" to set one through. `02-architecture.md` **D-17.3**'s second
+  consequence note records the finding and its effect: the window icon defers to M13 alongside the
+  executable icon, rather than being the half of FR-UI-110 that lands here. §17's register row for
+  `baseview` said `0.3.0` when this was written and the tree has always pinned 0.2.2; that row is
+  corrected in the same pass, and whether 0.3.0 gained an icon field is unchecked.
 - **The Windows `.exe` icon**, which needs a build script to embed the resource. Flagged rather
   than waved through: build scripts sit awkwardly with this project's dependency-adoption bar, and
   `libc` is already on record as the one knowing exception to it. Decide this one deliberately,

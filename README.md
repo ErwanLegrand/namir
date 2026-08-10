@@ -86,13 +86,15 @@ cargo test --workspace
 cargo run -p xtask -- layering       # crate dependency-graph and platform-cfg lint
 cargo run -p xtask -- params-lock    # params.lock matches the parameter registry
 cargo run -p xtask -- attribution    # THIRD-PARTY-NOTICES.md is current
+cargo run -p xtask -- identity       # brand mark, README and TRADEMARK.md are current
 cargo run -p xtask -- traceability   # requirement coverage and generated test-plan diff
 cargo deny check                     # licence, advisory and dependency-ban audit
 ```
 
-`params-lock`, `attribution` and `traceability` take `--write` to regenerate their artifact instead
-of verifying it. `traceability` also takes `--allow-uncovered`, which is the form CI gates on until
-requirement coverage reaches zero gaps; the plain form runs alongside it as an informational step.
+`params-lock`, `attribution`, `identity` and `traceability` take `--write` to regenerate their
+artifact instead of verifying it. `traceability` also takes `--allow-uncovered`, which is the form
+CI gates on until requirement coverage reaches zero gaps; the plain form runs alongside it as an
+informational step.
 
 A pre-commit hook running the fast half of the gate (`cargo fmt --check` plus
 `cargo check --workspace --all-targets`) is available; opt in once per clone with:
