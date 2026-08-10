@@ -65,3 +65,13 @@ serde_json = "1"
 
 [dev-dependencies]
 namir-fixtures = { path = "../namir-fixtures" }
+# D-7.5's RT-allocation test harness (see src/rt_harness.rs's module doc for why an external crate
+# is used rather than a hand-rolled `GlobalAlloc`: this crate's `unsafe_code = "forbid"` rules out
+# implementing that trait here). Added at M11 for `audio_io::convert`, the first arithmetic this
+# crate runs inside an audio callback on its own account rather than delegating to `namir-engine`.
+# A `#[global_allocator]` is one per binary, so this is declared per crate rather than shared --
+# the same duplication `namir-dsp`, `namir-engine`, `namir-ir`, `namir-nam` and `namir-worker`
+# already carry. Both `warn_*` features for the same reason those crates give: with `warn_debug`
+# alone, `rt_harness` fails to compile under `cargo test --release`. Dev-dependency only, so it is
+# never linked into a release build of this crate.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
