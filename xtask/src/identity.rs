@@ -14,19 +14,32 @@
 //!
 //! The artwork is a single fill (`#ff6600`) on a transparent background, so every bit of shape and
 //! anti-aliasing information in it lives in the alpha channel: an 8-bit alpha mask plus one
-//! compile-time colour constant is a *lossless* re-encoding of it, not a lossy substitute. That is
-//! what lets `namir-ui` gain no dependency at all for this — it `include_bytes!`es a mask and
-//! tints it, with no image decoder anywhere in either shipped product. The decoder lives here, in
-//! dev tooling that is in neither product's dependency graph (see this crate's `Cargo.toml`).
+//! compile-time colour constant is a *colour-lossless* re-encoding of it. The three channels that
+//! are dropped carry nothing [`MARK_FILL`] does not already carry — and [`decode_alpha`] now
+//! *checks* that premise rather than assuming it, so artwork it is false for is refused rather
+//! than silently flattened to one colour.
+//!
+//! Colour is the only axis on which nothing is lost. The reduction to [`MARK_TARGET_HEIGHT`] rows
+//! (1767x474 down to 358x96 for the shipped artwork) throws away resolution, deliberately and
+//! irreversibly: it is what keeps the embedded blob at 34 KiB rather than 3.3 MiB, sized in
+//! [`MARK_TARGET_HEIGHT`]'s own note against how the mark is actually drawn.
+//!
+//! What the re-encoding buys is that `namir-ui` gains no dependency at all for this — it
+//! `include_bytes!`es a mask and tints it, with no image decoder anywhere in either shipped
+//! product. The decoder lives here, in dev tooling that is in neither product's dependency graph
+//! (see this crate's `Cargo.toml`).
 //!
 //! # Why the whole reduction is integer-only
 //!
-//! [`check`] byte-compares a fresh render against the checked-in blob, and CI runs that comparison
-//! on Windows, Linux and macOS. Any float in the path — a scale factor, a weight, a rounded
-//! average — risks a one-ULP difference between platforms turning the gate red on two of the three
-//! for no reason anyone could act on. So [`target_width`] and [`downsample_alpha`] use `u64`
-//! accumulation and integer division throughout, and there is no `f32`/`f64` anywhere between
-//! reading the PNG's bytes and writing the blob's.
+//! [`check`] byte-compares a fresh render against the checked-in blob, so the blob has to be
+//! reproducible on any machine a developer regenerates it from — not merely on the one runner
+//! that happens to run the gate (`identity` runs in CI's single `ubuntu-latest`
+//! `layering-and-params` job; it is not matrixed across platforms, and nothing here claims it is).
+//! Any float in the path — a scale factor, a weight, a rounded average — risks a one-ULP
+//! difference between two machines, which would make the checked-in artifact depend on *who* last
+//! ran `—write` and turn the gate red for a reason nobody could act on. So [`target_width`] and
+//! [`downsample_alpha`] use `u64` accumulation and integer division throughout, and there is no
+//! `f32`/`f64` anywhere between reading the PNG's bytes and writing the blob's.
 
 // trace-partial: NFR-DOC-040
 // uncovered: NFR-DOC-040 — the "stating what it does" clause has no artifact: this check asserts
@@ -41,10 +54,39 @@ pub const MARK_SOURCE_PATH: &str = "images/namir.png";
 /// Repository-relative path of the generated alpha blob `namir-ui` embeds.
 pub const BLOB_PATH: &str = "crates/namir-ui/src/brand/namir_mark.alpha";
 
-/// Height, in pixels, the mark is reduced to. Chosen against the tallest row the mark is drawn in
-/// (a heading row on a high-DPI display), with enough headroom that the GPU is always minifying
-/// rather than magnifying it — the direction in which a bilinear sample stays sharp.
+/// Height, in pixels, the mark is reduced to.
+///
+/// The mark is drawn at `TextStyle::Heading` row height, ~20-24 pt, and the blob is embedded once
+/// and never re-rendered per display — so it has to be dense enough for the *densest* case it
+/// will be drawn in, a 2x HiDPI scale factor, where that row is ~40-48 physical pixels. 96 rows
+/// keeps roughly a 2x margin over even that.
+///
+/// The cost of the headroom is that the mark is always minified, ~4-5x at a 1x scale factor, and
+/// minification — not magnification — is the direction in which a plain bilinear sample
+/// undersamples and aliases. `namir-ui`'s `brand::render` therefore uploads the texture with
+/// mipmapping enabled; see `MARK_TEXTURE_OPTIONS` there.
 pub const MARK_TARGET_HEIGHT: u32 = 96;
+
+/// The one colour `images/namir.png` is drawn in, and the colour `namir-ui`'s `brand::MARK_FILL`
+/// re-tints the mask with. The two must agree; this is a second copy because `xtask` is in neither
+/// product's dependency graph and so cannot import the other.
+pub const MARK_FILL: [u8; 3] = [0xff, 0x66, 0x00];
+
+/// Alpha at or above which a pixel's colour is held to [`MARK_FILL`] by [`decode_alpha`].
+///
+/// Below it a pixel contributes almost nothing to the rendered mark, and a PNG encoder is free to
+/// put anything at all in the colour channels of a near-transparent texel: `images/namir.png` has
+/// 294 texels stored as pure red, every one of them under alpha 16.
+pub const FILL_ALPHA_FLOOR: u8 = 128;
+
+/// Per-channel tolerance around [`MARK_FILL`] for a pixel at or above [`FILL_ALPHA_FLOOR`].
+///
+/// Measured against the shipped artwork (August 2026): of its 285,449 texels at alpha >= 128,
+/// 283,559 are exactly `#ff6600` and the remaining 1,890 differ by **1** in green and by nothing
+/// at all in red or blue. A tolerance of 8 therefore clears the real asset by 8x, while still
+/// being far too tight for genuinely multi-coloured artwork, whose second fill would miss by tens
+/// or hundreds at full alpha.
+pub const FILL_TOLERANCE: u8 = 8;
 
 /// Substrings `README.md` must contain (NFR-DOC-040): what the product is, how to build, run and
 /// test it, and where its licence terms live.
@@ -63,14 +105,21 @@ const README_REQUIRED: [&str; 12] = [
     "TRADEMARK.md",
 ];
 
-/// Substrings `TRADEMARK.md` must contain. This is the whole of NFR-LIC-070's mechanical half: a
-/// document at the repository root, headed for the trademark and the brand assets, that names the
-/// code licence it is *distinguishing itself from*, names where the assets live, and states the
-/// reservation explicitly rather than by omission.
+/// Substrings `TRADEMARK.md` must contain.
+///
+/// NFR-LIC-070 names an enumerated two-member set — the name "Namir" *and* the logo — and asks
+/// that the terms on which each may be used be stated explicitly in the repository. Its `Verify:`
+/// method is **S**, a static check, so executing that method as written means asserting that a
+/// document at the repository root states those terms for **both** members. These five needles do
+/// exactly that and nothing more: the heading that makes the document the one being looked for,
+/// the code licence it is *distinguishing itself from*, the name member (`the name "Namir"`, the
+/// literal phrase the name clause is written with), the logo member by where the assets live, and
+/// the reservation stated explicitly rather than left to be inferred by omission.
 // trace: NFR-LIC-070
-const TRADEMARK_REQUIRED: [&str; 4] = [
+const TRADEMARK_REQUIRED: [&str; 5] = [
     "# Trademark and brand assets",
     "MIT OR Apache-2.0",
+    "the name \"Namir\"",
     "images/",
     "All rights reserved",
 ];
@@ -140,12 +189,22 @@ fn span(i: u32, dst_len: u32, src_len: u32) -> (u32, u32) {
     (start, end.max(start + 1).min(src_len))
 }
 
-/// Decodes an 8-bit RGBA PNG and returns `(width, height, alpha_channel)`.
+/// Decodes an 8-bit RGBA PNG, verifies it is a single-fill image, and returns
+/// `(width, height, alpha_channel)`.
 ///
-/// Deliberately strict about the input: `images/namir.png` is 8-bit RGBA (PNG colour type 6), and
-/// a different colour type would mean either the artwork changed shape or the wrong file was
-/// passed — both worth an error naming what was found rather than a silent reinterpretation of the
-/// bytes.
+/// Deliberately strict about the input on two counts, both of them the premise that discarding the
+/// colour channels is colour-lossless:
+///
+/// * the colour type must be 8-bit RGBA (PNG colour type 6). `images/namir.png` is, and a
+///   different colour type would mean either the artwork changed shape or the wrong file was
+///   passed;
+/// * every pixel at or above [`FILL_ALPHA_FLOOR`] alpha must be within [`FILL_TOLERANCE`] of
+///   [`MARK_FILL`] on every channel. Without this, multi-coloured artwork would decode without a
+///   word of complaint and then render as a flat orange blob, because `namir-ui` re-tints the mask
+///   with one constant — a silent visual regression that no byte comparison downstream could
+///   catch, since the blob would agree with the render that produced it.
+///
+/// Both are an error naming what was found rather than a silent reinterpretation of the bytes.
 pub fn decode_alpha(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let decoder = png::Decoder::new(png_bytes);
     let mut reader = decoder
@@ -167,8 +226,30 @@ pub fn decode_alpha(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     }
 
     let frame = &buf[..info.buffer_size()];
+    if let Some((i, px)) = frame
+        .chunks_exact(4)
+        .enumerate()
+        .find(|(_, px)| px[3] >= FILL_ALPHA_FLOOR && !is_mark_fill(px))
+    {
+        let i = i as u32;
+        let (x, y) = (i % info.width.max(1), i / info.width.max(1));
+        return Err(format!(
+            "pixel ({x}, {y}) is rgb({}, {}, {}) at alpha {}, further than {FILL_TOLERANCE} per \
+             channel from the brand fill rgb({}, {}, {}) — the alpha-mask encoding is only \
+             colour-lossless for artwork that is a single fill on a transparent background",
+            px[0], px[1], px[2], px[3], MARK_FILL[0], MARK_FILL[1], MARK_FILL[2]
+        ));
+    }
+
     let alpha = frame.iter().skip(3).step_by(4).copied().collect();
     Ok((info.width, info.height, alpha))
+}
+
+/// Whether an RGBA pixel's colour is within [`FILL_TOLERANCE`] of [`MARK_FILL`] on every channel.
+fn is_mark_fill(px: &[u8]) -> bool {
+    px.iter()
+        .zip(MARK_FILL)
+        .all(|(&c, fill)| c.abs_diff(fill) <= FILL_TOLERANCE)
 }
 
 /// Full generation path: decode `png_bytes`, reduce its alpha channel to `target_h` rows, and
@@ -352,15 +433,28 @@ mod tests {
     #[test]
     fn trademark_needles_are_satisfied_by_a_conforming_document() {
         let trademark = "# Trademark and brand assets\n\nThe code is MIT OR Apache-2.0. \
-             The marks under images/ are not. All rights reserved.\n";
+             That licence does not extend to the name \"Namir\", nor to the marks under images/. \
+             All rights reserved.\n";
         assert!(missing_substrings("TRADEMARK.md", trademark, &TRADEMARK_REQUIRED).is_empty());
+    }
+
+    /// NFR-LIC-070 enumerates two members, the name and the logo, and a document covering only one
+    /// of them does not satisfy it. The needle set is what makes that a build error rather than a
+    /// judgement call, so it is asserted here directly.
+    #[test]
+    fn a_trademark_document_silent_on_the_name_is_a_violation() {
+        let logo_only = "# Trademark and brand assets\n\nThe code is MIT OR Apache-2.0. \
+             The marks under images/ are not. All rights reserved.\n";
+        let violations = missing_substrings("TRADEMARK.md", logo_only, &TRADEMARK_REQUIRED);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("the name"), "{}", violations[0]);
     }
 
     #[test]
     fn trademark_check_names_every_absent_needle() {
         let violations =
             missing_substrings("TRADEMARK.md", "# Nothing here\n", &TRADEMARK_REQUIRED);
-        assert_eq!(violations.len(), 4);
+        assert_eq!(violations.len(), TRADEMARK_REQUIRED.len());
     }
 
     #[test]
@@ -437,6 +531,57 @@ mod tests {
         let png = synthetic_grayscale_png(4, 2);
         let err = render_blob(&png, 1).unwrap_err();
         assert!(err.contains("8-bit RGBA"), "{err}");
+    }
+
+    /// Artwork the alpha-mask encoding is *not* colour-lossless for must be refused, not reduced
+    /// to a mask and re-tinted into a flat orange blob.
+    #[test]
+    fn a_multi_coloured_png_is_refused_by_name() {
+        let png = synthetic_rgba_png(4, 2, |x, _| {
+            if x < 2 {
+                [0xff, 0x66, 0x00, 0xff]
+            } else {
+                [0x00, 0x66, 0xff, 0xff]
+            }
+        });
+        let err = render_blob(&png, 1).unwrap_err();
+        assert!(err.contains("colour-lossless"), "{err}");
+        assert!(
+            err.contains("(2, 0)"),
+            "the offending pixel is not named: {err}"
+        );
+    }
+
+    /// The tolerance exists because real artwork is not bit-exact (see [`FILL_TOLERANCE`]): a
+    /// texel a shade off the fill must still pass, and a near-transparent texel's colour channels
+    /// are not looked at at all, because an encoder is free to put anything in them.
+    #[test]
+    fn near_fill_and_near_transparent_pixels_are_tolerated() {
+        // Off by 1 in green at full alpha -- exactly the shipped artwork's worst case.
+        let nearly = synthetic_rgba_png(4, 2, |_, _| [0xff, 0x67, 0x00, 0xff]);
+        assert!(render_blob(&nearly, 1).is_ok());
+
+        // Pure red, but below FILL_ALPHA_FLOOR: not looked at, as in the real PNG.
+        let ghost = synthetic_rgba_png(4, 2, |_, _| [0xff, 0x00, 0x00, FILL_ALPHA_FLOOR - 1]);
+        assert!(render_blob(&ghost, 1).is_ok());
+
+        // The same colour at the floor is refused.
+        let visible = synthetic_rgba_png(4, 2, |_, _| [0xff, 0x00, 0x00, FILL_ALPHA_FLOOR]);
+        assert!(render_blob(&visible, 1).is_err());
+    }
+
+    /// The gate is only as good as its premise, so assert the premise against the real artwork
+    /// rather than only against synthetic inputs: `images/namir.png` itself must pass
+    /// [`decode_alpha`]'s single-fill check.
+    #[test]
+    fn the_shipped_artwork_is_a_single_fill() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ has a parent");
+        let png = std::fs::read(root.join(MARK_SOURCE_PATH)).expect("the artwork is checked in");
+        let (w, h, alpha) = decode_alpha(&png).expect("the shipped artwork is a single fill");
+        assert_eq!((w, h), (1767, 474));
+        assert_eq!(alpha.len(), (w * h) as usize);
     }
 
     fn synthetic_rgba_png(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {

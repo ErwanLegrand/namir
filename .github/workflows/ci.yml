@@ -79,14 +79,17 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # trace-partial: NFR-BUILD-020
-      # uncovered: NFR-BUILD-020 — M12 closed the "document" half and pinned it: README.md carries
-      # uncovered: the build, run and test commands, and xtask identity asserts those exact strings
-      # uncovered: are present, so the document cannot silently drift from the commands this job
-      # uncovered: runs. "Exercised by CI" is still unmet — nothing executes a command *as
-      # uncovered: documented*, docs/user-guide.md's per-platform install and run instructions are
-      # uncovered: unexercised, and "every product configuration on every supported platform" is
-      # uncovered: unspanned while no job assembles a macOS bundle or installs the plugin into a
-      # uncovered: host; closes M13
+      # uncovered: NFR-BUILD-020 — M12 closed the "document" half: README.md carries the build,
+      # uncovered: run and test commands, and xtask identity asserts those exact strings are
+      # uncovered: present, so they cannot silently *disappear* from it. They can still drift from
+      # uncovered: this file — identity compares README.md against literals in
+      # uncovered: xtask/src/identity.rs and nothing compares either against ci.yml, and they are
+      # uncovered: already apart: this job runs `cargo build --workspace --all-targets` where the
+      # uncovered: README documents `cargo build --workspace`. "Exercised by CI" is unmet on top of
+      # uncovered: that — nothing executes a command *as documented*, docs/user-guide.md's
+      # uncovered: per-platform install and run instructions are unexercised, and "every product
+      # uncovered: configuration on every supported platform" is unspanned while no job assembles a
+      # uncovered: macOS bundle or installs the plugin into a host; closes M13
       - name: cargo build --workspace --all-targets
         run: cargo build --workspace --all-targets
 
@@ -97,7 +100,7 @@ jobs:
   # Pure static checks over the dependency graph and a checked-in manifest -- not
   # platform-dependent, so one OS is enough.
   layering-and-params:
-    name: layering + params.lock + attribution
+    name: layering + params.lock + attribution + identity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
