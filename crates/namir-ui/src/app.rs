@@ -8,6 +8,7 @@ use egui::{CentralPanel, Panel, ScrollArea, Ui};
 use namir_params::global::{GLOBAL_BYPASS, OUTPUT_CEILING_DB};
 use namir_state::ParamValues;
 
+use crate::brand;
 use crate::controls::param_control;
 use crate::host::{UiHost, UiSnapshot};
 use crate::library_view::{self, LibraryViewState};
@@ -22,6 +23,10 @@ use crate::{UiIntent, meter};
 #[derive(Default)]
 pub struct ViewState {
     library: LibraryViewState,
+    /// The brand mark's uploaded texture, `None` until the first frame draws it. Cached here
+    /// rather than re-uploaded per frame -- see `brand`'s module doc comment for why this crate's
+    /// own view state is the right owner for it.
+    brand: Option<egui::TextureHandle>,
 }
 
 /// Renders FR-UI-020's whole screen into `ui` (the root `Ui` `egui::Context::run_ui`/
@@ -37,7 +42,9 @@ pub fn render(
 ) {
     Panel::top("namir_ui_top").show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.heading("Namir");
+            // FR-UI-110's brand mark, drawn at the height the `ui.heading("Namir")` it replaced
+            // occupied, so nothing beside it moves.
+            brand::render(ui, &mut view.brand);
             if let Some(mode) = &snapshot.audio_mode {
                 ui.label(audio_mode_label(mode)).on_hover_text(
                     "The share mode the audio device is actually open in. Exclusive mode gives \
