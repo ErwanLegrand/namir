@@ -79,12 +79,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # trace-partial: NFR-BUILD-020
-      # uncovered: NFR-BUILD-020 — "exercised by CI so it cannot drift" has no artifact: nothing
-      # uncovered: extracts or runs the commands docs/user-guide.md documents, the tagged job
-      # uncovered: running cargo build --workspace --all-targets and cargo test --workspace with no
-      # uncovered: link to any document, so the guide can drift freely; the test limb is
-      # uncovered: undocumented for a user in any case, cargo test appearing in no user-facing
-      # uncovered: document; closes M12
+      # uncovered: NFR-BUILD-020 — M12 closed the "document" half and pinned it: README.md carries
+      # uncovered: the build, run and test commands, and xtask identity asserts those exact strings
+      # uncovered: are present, so the document cannot silently drift from the commands this job
+      # uncovered: runs. "Exercised by CI" is still unmet — nothing executes a command *as
+      # uncovered: documented*, docs/user-guide.md's per-platform install and run instructions are
+      # uncovered: unexercised, and "every product configuration on every supported platform" is
+      # uncovered: unspanned while no job assembles a macOS bundle or installs the plugin into a
+      # uncovered: host; closes M13
       - name: cargo build --workspace --all-targets
         run: cargo build --workspace --all-targets
 
@@ -115,6 +117,14 @@ jobs:
       # job rather than its own -- no OS-specific behaviour to matrix over.
       - name: xtask attribution (NFR-LIC-030)
         run: cargo run -p xtask -- attribution
+
+      # M12: the product-identity gate. Three static checks in one subcommand -- the checked-in
+      # brand-mark alpha blob against a fresh render of `images/namir.png` (integer-only, so this
+      # is a byte comparison that holds on every runner), plus README.md's and TRADEMARK.md's
+      # required statements. Same reasoning as the three steps above for living in this job: pure
+      # static/text checks over checked-in files, with no OS-specific behaviour to matrix over.
+      - name: xtask identity (NFR-DOC-040, NFR-LIC-070)
+        run: cargo run -p xtask -- identity
 
       # M9a: NFR-QUAL-010's traceability check, now **split into two steps with different flip
       # dates** per D-18.5 (`docs/02-architecture.md:2002-2079`). It was one `continue-on-error`

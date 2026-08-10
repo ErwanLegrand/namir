@@ -63,6 +63,7 @@
 //!   to verify them against a real scaled display or touch device.
 
 mod app;
+mod brand;
 mod controls;
 mod format;
 mod host;
