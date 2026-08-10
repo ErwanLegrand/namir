@@ -37,7 +37,7 @@
 //! `layering-and-params` job; it is not matrixed across platforms, and nothing here claims it is).
 //! Any float in the path — a scale factor, a weight, a rounded average — risks a one-ULP
 //! difference between two machines, which would make the checked-in artifact depend on *who* last
-//! ran `—write` and turn the gate red for a reason nobody could act on. So [`target_width`] and
+//! ran `--write` and turn the gate red for a reason nobody could act on. So [`target_width`] and
 //! [`downsample_alpha`] use `u64` accumulation and integer division throughout, and there is no
 //! `f32`/`f64` anywhere between reading the PNG's bytes and writing the blob's.
 
@@ -219,8 +219,8 @@ pub fn decode_alpha(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
         return Err(format!(
             "expected an 8-bit RGBA PNG (colour type 6), found {:?} at {:?} -- the alpha-mask \
-             encoding is only lossless for artwork that is a single fill on a transparent \
-             background",
+             encoding is only colour-lossless for artwork that is a single fill on a \
+             transparent background",
             info.color_type, info.bit_depth
         ));
     }
