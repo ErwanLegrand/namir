@@ -4153,6 +4153,83 @@ instructions have actually been followed on a clean clone rather than assumed co
 mark renders in both product shells; the standalone window and executable carry the icon on
 Windows; the brand-asset licensing statement is in the repository.
 
+### M12 status — this session, 2026-08-10
+
+Built **before M11**, which §19's own header permits ("**Depends on:** nothing technical") and
+which M11's state made the sensible order: M11's one prerequisite is a forked `cpal` that does not
+exist, `crates/namir-app/Cargo.toml` still pinning `cpal = "0.18.1"` from crates.io. Nothing
+downstream waits on M11 — §20's M13 depends on M12 and M9, not on M11 — so the reordering costs
+nothing and unblocks M13.
+
+**The first deliverable was already done before it was written.** "Track `images/` in git. It is
+currently **untracked** … Do this first; every other item here depends on it" is stale:
+`images/namir.png` and `images/namir.svg` were committed in `9c1c698`, the same commit that wrote
+that sentence. No action was needed.
+
+**The brand mark ships with no image decoder in either product, and no build script.** The artwork
+is a single fill on a transparent background, which makes an 8-bit alpha mask a *colour*-lossless
+re-encoding — the colour is constant and every bit of shape and anti-aliasing lives in alpha. So
+`xtask identity` decodes `images/namir.png` with an `xtask`-only `png` dependency and emits a 34
+376-byte blob (358x96 plus an 8-byte header) that `namir-ui` `include_bytes!`s and tints at upload.
+`cargo tree -e normal` reaches `png` from neither product and `xtask attribution` is unchanged.
+Generation is integer-only so the blob cannot depend on which machine ran `--write`. The 24x
+downsample from 1767x474 is a deliberate, separate loss, not covered by "lossless".
+
+**Both icon clauses moved to M13, one of them for a reason this section got wrong.** §15 item 7 is
+resolved by **D-17.3** against admitting a build script to a shipped crate for a cosmetic feature.
+The window icon then turned out to be blocked independently: `baseview` 0.2.2's `WindowOpenOptions`
+has no icon field at all, so this section's instruction to set it "through baseview's own window
+options" cannot be followed — corrected by an appended note at that bullet. §17's register row
+compounded it by recording `baseview` 0.3.0, a version the tree has never used; that row is fixed
+in place and whether 0.3.0 gained an icon field is left explicitly unchecked for M13.
+
+**What the requirements actually did.** NFR-LIC-070 closes (plain tag). **NFR-DOC-040 closes only
+partially** — a substring check cannot reach its "stating what it does" clause — so §14's 6.8 DOC
+cell moves one column, not two. **FR-UI-110 does not close at all**; only its brand-mark clause was
+in scope and even that is unobserved, below.
+
+**One correction against this milestone's own scoreboard.** `ci.yml`'s NFR-BUILD-020 partial
+declared `closes M12`. M12 gives it a README carrying the build, run and test commands with `xtask
+identity` asserting those strings are present — but nothing executes a command *as documented*, and
+the README and CI are already apart (`cargo build --workspace` against `cargo build --workspace
+--all-targets`). The field is rewritten to claim only what holds and moved to `closes M13`.
+
+**An adversarial review found a defect this milestone introduced into the gate itself, and it is
+the most useful thing in this section.** The FR-UI-110 manual-test document mentioned `FR-PKG-030`
+in passing prose. `xtask traceability` resolves a `Verify: M` requirement against a manual-test
+file's **whole content** (`xtask/src/traceability.rs`'s `build_report`), so that bare mention
+marked an unrelated Must — the Windows installer's per-user/system-wide scope — as covered in
+checked-in `docs/03-test-plan.md`, and dropped the informational uncovered count from 15 to 14.
+Reworded; the count is 15 again. **The durable fix is not made**: the whole-content match should be
+narrowed to a declared-ids line, which is left for M9b or M13 as a note here rather than done in a
+milestone that had no other business in that tool. Three further over-claims the same review caught
+are fixed and recorded in `02-architecture.md`'s changelog 0.24.
+
+**What was verified, and what was not.** From a genuine clean clone of this branch: `cargo build
+--workspace` finished in 1m26s, `cargo test --workspace` ran 41 suites with no failures, and
+`identity`, `layering` and `attribution` were all clean — so §19's "followed on a clean clone
+rather than assumed correct" is met for the *source tree*. It is **not** met for a cold machine:
+this sandbox already had Rust 1.97 and `libasound2-dev` installed before the clone, so the README's
+prerequisite list is still untested against a fresh environment.
+
+**The brand mark has never been seen.** No display exists here — `cargo run -p namir-app` starts
+audio and then panics in `baseview`'s X11 window open, and `xvfb-run` does not help, `baseview`
+0.2.2 needing a GLX-capable display. No host was available for the plugin shell either. So this
+section's Acceptance clause "the brand mark renders in both product shells" is met in code and
+**unverified in fact**, and `docs/manual-tests/fr-ui-110-brand-mark.md` records all four of its
+steps as not executed. The same applies to the mipmapping added after review found the mark is
+minified ~4-5x without it: a reasoned fix to a problem nobody has observed, asserted by a test that
+reads the texture options back rather than by looking.
+
+### M12 close-out — §14's re-audit table, this session, 2026-08-10
+
+**NFR-LIC-070** moves to **Done** and **NFR-DOC-040** to **Partial** in §14's `### M9a re-audit`
+table; 6.5 LIC becomes 3 / 3 / 0, 6.8 DOC becomes 1 / 2 / 0, Total 32 / 91 / 7 → 33 / 92 / 5. See
+that table's own appended `**M12 moves**` block for the file-path evidence D-23.2 requires,
+including why 6.7 BUILD deliberately does not move. **FR-UI-110 stays open** — it is a Should, so
+it sits in no §14 row, and its remaining work is the four manual steps plus both icon clauses, all
+of which need the Windows machine M13 requires anyway.
+
 ---
 
 ## 20. M13 — Distribution and packaging
