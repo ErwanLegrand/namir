@@ -458,7 +458,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.18.1"
-source = "git+https://github.com/ErwanLegrand/cpal?rev=f37bf652202a3ab443150aa775ec3963b0bbf6b2#f37bf652202a3ab443150aa775ec3963b0bbf6b2"
+source = "git+https://github.com/ErwanLegrand/cpal?rev=ab5f40ac3558306dafc66a9aca4a35b5908d8579#ab5f40ac3558306dafc66a9aca4a35b5908d8579"
 dependencies = [
  "alsa",
  "block2 0.6.2",
