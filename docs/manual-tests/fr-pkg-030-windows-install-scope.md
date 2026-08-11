@@ -197,13 +197,15 @@ not the `(x86)` directory. That is the one result that could not have been obtai
 `ArchitecturesInstallIn64BitMode=x64compatible` was added on Inno's documented behaviour, and the
 failure it prevents is silent by construction.
 
-**One thing this document does not record, and should have.** Step 2.1 asks for the **verbatim**
-wording of the option Inno's install-mode dialog preselects, because that preselection literally
-*is* "shall default to per-user" — an installer offering both scopes but preselecting system-wide
-passes every other clause and fails this one. The step is reported as passing; the string itself was
-not captured. The verdict stands on the runner's report, and this note records that the strongest
-form of the evidence is missing rather than pretending it is present. Worth capturing on the next
-run, which the release pipeline will force anyway.
+**Step 2.1 was re-confirmed on its own, because it is the clause that carries the whole "defaults
+to" half of this requirement.** An installer that offers both scopes but preselects system-wide
+passes every other clause and fails this one, so a general "everything passed" is not enough to
+rest it on. Asked specifically, the runner confirmed: **the installer defaults to per-user.**
+
+What is still not in this document is the **verbatim** wording Inno's install-mode dialog shows for
+that preselected option. The behaviour is confirmed; the string is not recorded. That is a weaker
+form of the same evidence — a future reader cannot tell from this file what they should expect to
+see on screen — and it is noted rather than quietly upgraded. Capture it on the next run.
 
 **Uninstall was exercised and worked**, in both scopes: after the run, neither
 `%LOCALAPPDATA%\Programs\Common\CLAP\Namir.clap` nor `%CommonProgramFiles%\CLAP\Namir.clap`
