@@ -14,6 +14,7 @@
 #     LICENSE-MIT             ) script refuses to install a payload missing any of them rather
 #     LICENSE-APACHE          ) than quietly installing the parts that are there
 #     README.md
+#     TRADEMARK.md
 #
 # The tarball this script ships inside is built by the release workflow; the exact `tar` command
 # is in `packaging/linux/README.md` beside this file, not here, because building the archive is
@@ -52,7 +53,11 @@ set -eu
 # gap in the README beside this file rather than left to be discovered.
 CLAP_ARTIFACT='Namir.clap'
 STANDALONE='namir'
-DOCUMENTS='THIRD-PARTY-NOTICES.md LICENSE-MIT LICENSE-APACHE README.md'
+# The last two are not FR-PKG-040 files -- that set is exactly the first three, named by the
+# requirement. TRADEMARK.md rides along because the staged README's licence section points at it and
+# NFR-LIC-070 wants the mark's terms stated wherever the mark travels; the installed binaries carry
+# the mark. A distribution that names a file and then omits it is worse than one that says nothing.
+DOCUMENTS='THIRD-PARTY-NOTICES.md LICENSE-MIT LICENSE-APACHE README.md TRADEMARK.md'
 
 # The per-user CLAP directory, and why it is this literal path.
 #

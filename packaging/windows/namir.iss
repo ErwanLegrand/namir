@@ -166,10 +166,15 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 
-; No SetupIconFile: the repository has no .ico. images/ carries namir.png and namir.svg only, and
-; FR-UI-110's executable-icon clause is deferred to this milestone by its own M12 Consequence note
-; but is not built. Setup and the installed namir.exe therefore both show a default icon. See
-; README.md's "Wanted from outside packaging/windows/".
+; FR-UI-110's executable-icon clause, M13. `images/namir.ico` is a *generated* artifact -- `xtask
+; identity --write` renders it from images/namir.png and plain `xtask identity` byte-compares it,
+; the same freshness gate M12's brand-mark blob runs under. It is not hand-committed artwork.
+;
+; This line covers the Setup executable only. The installed `namir.exe` carries its own PE resource,
+; embedded post-build by `rcedit` before `xtask bundle` stages it -- see README.md's recipe. That
+; split is D-17.3: the icon is embedded by the packaging pipeline rather than by a build script in a
+; shipped crate, which is why a `cargo build` and a released binary differ in a user-visible way.
+SetupIconFile={#SourcePath}\..\..\images\namir.ico
 
 ; D-18.3: "signing steps are skipped when the identity secret is absent and the unsigned build
 ; takes the identical code path, so enabling signing later is adding a secret, not restructuring."
@@ -208,13 +213,17 @@ Source: "{#Staging}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Componen
 ; FR-PKG-040: the machine-generated attribution file of NFR-LIC-030 and the full text of both
 ; licences of NFR-LIC-010, in every distribution. No Components: parameter on any of the four, so
 ; they are installed whatever the user selects -- a plugin-only install still carries them, which
-; is what "every distribution" means. README.md is staged by `xtask bundle` beside them and is
-; installed for the same reason bundle stages it: a distribution with no statement of what it is
-; is a worse artifact than one with a redundant file in it.
+; is what "every distribution" means. README.md and TRADEMARK.md are staged by `xtask bundle`
+; beside them and installed for the reasons that tool's own constants give: a distribution with no
+; statement of what it is is a worse artifact than one with a redundant file in it, and the shipped
+; binaries carry the brand mark, so NFR-LIC-070's statement of the mark's terms has to travel with
+; them -- the README's licence section points at TRADEMARK.md, and a distribution that names a file
+; and then omits it is worse than one that says nothing.
 Source: "{#Staging}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Staging}\TRADEMARK.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; {autoprograms} follows the install scope the same way {autocf} does: the current user's Start
