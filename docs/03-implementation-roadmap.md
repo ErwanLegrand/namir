@@ -4230,6 +4230,36 @@ including why 6.7 BUILD deliberately does not move. **FR-UI-110 stays open** —
 it sits in no §14 row, and its remaining work is the four manual steps plus both icon clauses, all
 of which need the Windows machine M13 requires anyway.
 
+### M12 addendum: the manual test ran on Windows, and found the mark too small, 2026-08-11
+
+**Supersedes the status subsection's "The brand mark has never been seen" paragraph**, which is
+left as written per this document's convention -- it was true of the session that wrote it, and it
+is why that session's design notes were reasoned rather than observed.
+
+FR-UI-110's manual test was executed on Windows, the only platform where its step 2 is possible at
+all (`namir-clap` declares Win32 embedded-only GUI support). **Steps 1, 2 and 4 pass**: the mark is
+visible in the standalone window, visible in the CLAP plugin inside a host, and its accessible name
+reads "Namir", so FR-UI-030 did not regress when an image replaced a text heading. The Acceptance
+clause "the brand mark renders in both product shells" is now met **in fact** and not only in code.
+
+**Step 3 found a real defect: the mark was too small in both shells.** It was drawn at one
+`TextStyle::Heading` row -- ~25 logical pixels, the height of a line of text rather than of a logo.
+`brand::MARK_HEIGHT_IN_HEADINGS` now doubles it to ~50. That factor is the largest one free of
+cost: the blob is 96 rows, so ~50 logical pixels is ~100 physical at 2x HiDPI against 96 stored,
+which is effectively 1:1 and the sharpest this asset can be drawn. **The consequence is that the
+blob's former ~2x resolution margin is now spent**, recorded at `MARK_TARGET_HEIGHT`'s own doc
+comment in `xtask/src/identity.rs`: any further increase in the drawn size has to raise that
+constant in the same change, or the mark magnifies a mask with no more detail in it.
+
+**What is still open, and it is smaller than it was.** Step 3's other half -- that the mark be
+legible rather than aliased at 1x and at a HiDPI scale factor -- was not reported either way, and
+the enlarged mark has not been seen at all. That half matters because two fixes now ride on it
+unobserved: the mipmapping added when a review found the mark minified ~4-5x with `mipmap_mode:
+None`, and this size change, which halves that minification to ~2x. Both are reasoned from the
+pinned sources; neither has been looked at. **FR-UI-110 therefore stays open**, on that half plus
+both icon clauses, which D-17.3 defers to M13. No §14 cell moves -- FR-UI-110 is a Should and sits
+in no row.
+
 ---
 
 ## 20. M13 — Distribution and packaging
