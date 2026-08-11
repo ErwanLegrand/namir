@@ -171,6 +171,18 @@ jobs:
         with:
           command: check licenses
 
+      # M11: `deny.toml`'s `[sources]` policy -- `unknown-git = "deny"` plus a narrow, named
+      # `allow-git` -- was enforced by nothing in CI until this step. `license-audit` ran `check
+      # licenses` and `network-free` ran `check bans`; `check sources` ran only when somebody
+      # typed the full `cargo deny check` locally, which AGENTS.md's command list assumes but no
+      # gate required. That gap did not matter while every dependency came from crates.io. D-13.4
+      # ends that: the `cpal` fork is the tree's first non-registry source, the allowance naming it
+      # is what keeps this gate green, and without this step a *second*, unreviewed git source
+      # could be added and CI would not notice. Its own risk row is R-10.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check sources
+
   # M7: D-18.2/FR-ERR-070.5's network-free build gate, deferred here by design since M1 (see this
   # file's own header comment above) until there was a whole product to check against. FR-ERR-070's
   # own *Verify* method is S -- "a build-time check that no network-capable dependency is linked

@@ -55,6 +55,10 @@ use namir_platform::{DenormalGuard, elevate_current_thread_priority};
 use crate::audio_io::{
     AudioBackend, AudioStream, DeviceInfo, HostInfo, StreamFailure, StreamParams,
 };
+#[cfg(test)]
+use crate::audio_io::{
+    AudioIoError, BufferSizeRange, ExclusiveModeOutcome, ShareMode, SupportedConfigRange,
+};
 use crate::bridge::{BridgeConsumer, BridgeProducer, bridge};
 use crate::xrun::XrunCounter;
 
@@ -300,100 +304,183 @@ fn build_output(
     )
 }
 
+/// A minimal in-process fake backend: no real device, just two channels connected through nothing
+/// but a test's own direct calls into the callbacks it captures. Proves the *wiring* (channel
+/// selection, chunking, xrun accounting, and since M11 the share mode each direction was opened
+/// with) without any real audio hardware — so every test built on it runs on a headless Linux CI
+/// runner exactly as it does on Windows.
+///
+/// Declared at module level rather than nested inside this module's own `mod tests`, and
+/// `pub(crate)`, for the same reason `namir_ui::host::RecordingHost` is: [`crate::app`]'s tests
+/// need an [`AudioBackend`] too, and a second, separately-drifting fake is worse than one shared
+/// one.
+#[cfg(test)]
+pub(crate) struct FakeBackend {
+    /// The input callback the last `build_input_stream` captured, for a test to drive directly.
+    pub(crate) input_data: std::sync::Mutex<Option<InputCallback>>,
+    /// The output callback the last `build_output_stream` captured.
+    pub(crate) output_data: std::sync::Mutex<Option<OutputCallback>>,
+    /// Which device names answer [`ExclusiveModeOutcome::Engaged`] to
+    /// `supports_exclusive`. Every other name answers `Unsupported` — what the real
+    /// [`crate::audio_io::CpalBackend`] answers for any device with no exclusive-capable WASAPI
+    /// endpoint behind it, so a test that says nothing about exclusive mode gets the conservative
+    /// answer rather than an optimistic one.
+    exclusive_devices: Vec<String>,
+    /// The [`ShareMode`] each direction's `build_*_stream` was actually handed —
+    /// the observable that distinguishes "the session settled on exclusive" from "the session
+    /// settled on exclusive and then opened shared anyway".
+    asked_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
+}
+
+#[cfg(test)]
+impl FakeBackend {
+    /// A backend that refuses exclusive mode on every device — the interim real-world answer.
+    pub(crate) fn new() -> Self {
+        Self {
+            input_data: std::sync::Mutex::new(None),
+            output_data: std::sync::Mutex::new(None),
+            exclusive_devices: Vec::new(),
+            asked_share_modes: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Makes `device_name` answer `Engaged` to `supports_exclusive`. Per device, not per backend,
+    /// so a test can grant exclusive mode to one direction and refuse it on the other.
+    pub(crate) fn granting_exclusive_to(mut self, device_name: &str) -> Self {
+        self.exclusive_devices.push(device_name.to_string());
+        self
+    }
+
+    /// The share mode `direction`'s stream was actually opened with, or `None` if that direction
+    /// was never opened.
+    pub(crate) fn share_mode_asked_for(&self, direction: Direction) -> Option<ShareMode> {
+        self.asked_share_modes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(d, _)| *d == direction)
+            .map(|(_, mode)| *mode)
+    }
+}
+
+#[cfg(test)]
+struct FakeStream;
+
+#[cfg(test)]
+impl AudioStream for FakeStream {
+    fn play(&self) -> Result<(), AudioIoError> {
+        Ok(())
+    }
+    fn pause(&self) -> Result<(), AudioIoError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) type InputCallback = Box<dyn FnMut(&[f32]) + Send>;
+#[cfg(test)]
+pub(crate) type OutputCallback = Box<dyn FnMut(&mut [f32]) + Send>;
+
+#[cfg(test)]
+impl AudioBackend for FakeBackend {
+    fn hosts(&self) -> Vec<HostInfo> {
+        vec![]
+    }
+    fn default_host(&self) -> HostInfo {
+        HostInfo {
+            name: "fake".to_string(),
+        }
+    }
+    fn input_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
+        Ok(vec![])
+    }
+    fn output_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
+        Ok(vec![])
+    }
+    fn input_configs(
+        &self,
+        _h: &HostInfo,
+        _d: &DeviceInfo,
+    ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
+        Ok(vec![SupportedConfigRange {
+            channels: 1,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: BufferSizeRange::Unknown,
+        }])
+    }
+    fn output_configs(
+        &self,
+        _h: &HostInfo,
+        _d: &DeviceInfo,
+    ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
+        Ok(vec![SupportedConfigRange {
+            channels: 2,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: BufferSizeRange::Unknown,
+        }])
+    }
+    fn supports_exclusive(
+        &self,
+        _host: &HostInfo,
+        device: &DeviceInfo,
+        _params: StreamParams,
+    ) -> ExclusiveModeOutcome {
+        if self.exclusive_devices.contains(&device.name) {
+            ExclusiveModeOutcome::Engaged
+        } else {
+            ExclusiveModeOutcome::Unsupported
+        }
+    }
+    fn build_input_stream(
+        &self,
+        _host: &HostInfo,
+        _device: &DeviceInfo,
+        params: StreamParams,
+        on_data: Box<dyn FnMut(&[f32]) + Send>,
+        _on_error: Box<dyn FnMut(StreamFailure) + Send>,
+        _timeout: Duration,
+    ) -> Result<Box<dyn AudioStream>, AudioIoError> {
+        self.asked_share_modes
+            .lock()
+            .unwrap()
+            .push((Direction::Input, params.share_mode));
+        *self.input_data.lock().unwrap() = Some(on_data);
+        Ok(Box::new(FakeStream))
+    }
+    fn build_output_stream(
+        &self,
+        _host: &HostInfo,
+        _device: &DeviceInfo,
+        params: StreamParams,
+        on_data: Box<dyn FnMut(&mut [f32]) + Send>,
+        _on_error: Box<dyn FnMut(StreamFailure) + Send>,
+        _timeout: Duration,
+    ) -> Result<Box<dyn AudioStream>, AudioIoError> {
+        self.asked_share_modes
+            .lock()
+            .unwrap()
+            .push((Direction::Output, params.share_mode));
+        *self.output_data.lock().unwrap() = Some(on_data);
+        Ok(Box::new(FakeStream))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_io::{AudioIoError, BufferSizeRange, SupportedConfigRange};
-    use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
 
-    /// A minimal in-process fake backend: no real device, just two channels connected through
-    /// nothing but this test's own direct calls into the callbacks it captures. Proves the
-    /// *wiring* (channel selection, chunking, xrun accounting) without any real audio hardware.
-    struct FakeStream;
-    impl AudioStream for FakeStream {
-        fn play(&self) -> Result<(), AudioIoError> {
-            Ok(())
-        }
-        fn pause(&self) -> Result<(), AudioIoError> {
-            Ok(())
-        }
-    }
-
-    type InputCallback = Box<dyn FnMut(&[f32]) + Send>;
-    type OutputCallback = Box<dyn FnMut(&mut [f32]) + Send>;
-
-    struct FakeBackend {
-        input_data: Mutex<Option<InputCallback>>,
-        output_data: Mutex<Option<OutputCallback>>,
-    }
-
-    impl AudioBackend for FakeBackend {
-        fn hosts(&self) -> Vec<HostInfo> {
-            vec![]
-        }
-        fn default_host(&self) -> HostInfo {
-            HostInfo {
-                name: "fake".to_string(),
-            }
-        }
-        fn input_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
-            Ok(vec![])
-        }
-        fn output_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
-            Ok(vec![])
-        }
-        fn input_configs(
-            &self,
-            _h: &HostInfo,
-            _d: &DeviceInfo,
-        ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-            Ok(vec![SupportedConfigRange {
-                channels: 1,
-                min_sample_rate_hz: 48_000,
-                max_sample_rate_hz: 48_000,
-                buffer_size: BufferSizeRange::Unknown,
-            }])
-        }
-        fn output_configs(
-            &self,
-            _h: &HostInfo,
-            _d: &DeviceInfo,
-        ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-            Ok(vec![SupportedConfigRange {
-                channels: 2,
-                min_sample_rate_hz: 48_000,
-                max_sample_rate_hz: 48_000,
-                buffer_size: BufferSizeRange::Unknown,
-            }])
-        }
-        fn build_input_stream(
-            &self,
-            _host: &HostInfo,
-            _device: &DeviceInfo,
-            _params: StreamParams,
-            on_data: Box<dyn FnMut(&[f32]) + Send>,
-            _on_error: Box<dyn FnMut(StreamFailure) + Send>,
-            _timeout: Duration,
-        ) -> Result<Box<dyn AudioStream>, AudioIoError> {
-            *self.input_data.lock().unwrap() = Some(on_data);
-            Ok(Box::new(FakeStream))
-        }
-        fn build_output_stream(
-            &self,
-            _host: &HostInfo,
-            _device: &DeviceInfo,
-            _params: StreamParams,
-            on_data: Box<dyn FnMut(&mut [f32]) + Send>,
-            _on_error: Box<dyn FnMut(StreamFailure) + Send>,
-            _timeout: Duration,
-        ) -> Result<Box<dyn AudioStream>, AudioIoError> {
-            *self.output_data.lock().unwrap() = Some(on_data);
-            Ok(Box::new(FakeStream))
-        }
-    }
-
     fn setup(backend: &FakeBackend, max_block_size: usize) -> StreamSetup<'_> {
+        setup_with_share_mode(backend, max_block_size, ShareMode::Shared)
+    }
+
+    fn setup_with_share_mode(
+        backend: &FakeBackend,
+        max_block_size: usize,
+        share_mode: ShareMode,
+    ) -> StreamSetup<'_> {
         StreamSetup {
             backend,
             input_host: HostInfo {
@@ -407,6 +494,7 @@ mod tests {
                 sample_rate_hz: 48_000,
                 buffer_frames: None,
                 channels: 1,
+                share_mode,
             },
             output_host: HostInfo {
                 name: "fake".to_string(),
@@ -419,6 +507,7 @@ mod tests {
                 sample_rate_hz: 48_000,
                 buffer_frames: None,
                 channels: 2,
+                share_mode,
             },
             channel_config: ChannelConfig::MonoToStereo,
             input_channel_index: 0,
@@ -445,10 +534,7 @@ mod tests {
     /// (`ChannelConfig::MonoToStereo`), with no crash and no underrun when supply matches demand.
     #[test]
     fn captured_input_reaches_the_output_buffer_duplicated_across_channels() {
-        let backend = FakeBackend {
-            input_data: Mutex::new(None),
-            output_data: Mutex::new(None),
-        };
+        let backend = FakeBackend::new();
         let xruns = Arc::new(XrunCounter::new());
         let failures = Arc::new(AtomicUsize::new(0));
         let failures_clone = Arc::clone(&failures);
@@ -490,10 +576,7 @@ mod tests {
     // uncovered: anywhere in the window; closes M9b
     #[test]
     fn an_output_pull_with_no_input_yet_counts_an_xrun() {
-        let backend = FakeBackend {
-            input_data: Mutex::new(None),
-            output_data: Mutex::new(None),
-        };
+        let backend = FakeBackend::new();
         let xruns = Arc::new(XrunCounter::new());
         let _streams = open(
             setup(&backend, 64),
@@ -514,10 +597,7 @@ mod tests {
     /// internal chunk rather than panicking (`StageIo::new`'s own assertion would trip otherwise).
     #[test]
     fn an_output_request_larger_than_max_block_size_is_chunked() {
-        let backend = FakeBackend {
-            input_data: Mutex::new(None),
-            output_data: Mutex::new(None),
-        };
+        let backend = FakeBackend::new();
         let xruns = Arc::new(XrunCounter::new());
         let _streams = open(
             setup(&backend, 32),
@@ -533,5 +613,25 @@ mod tests {
         input_cb(&[0.1f32; 100]);
         let mut out = [0.0f32; 200]; // 100 frames, over max_block_size (32)
         output_cb(&mut out); // must not panic
+    }
+
+    /// FR-IO-020: whatever share mode [`crate::app`] settled on reaches **both** backend opens
+    /// unchanged. This module does not renegotiate, downgrade or second-guess it — the whole
+    /// all-or-nothing rule (`crate::app::negotiate_share_mode`) would be undone by one direction
+    /// quietly opening shared.
+    #[test]
+    fn the_settled_share_mode_reaches_both_stream_opens_unchanged() {
+        for mode in [ShareMode::Shared, ShareMode::Exclusive] {
+            let backend = FakeBackend::new();
+            let _streams = open(
+                setup_with_share_mode(&backend, 64, mode),
+                engine(64),
+                Arc::new(XrunCounter::new()),
+                |_, _| {},
+            )
+            .unwrap();
+            assert_eq!(backend.share_mode_asked_for(Direction::Input), Some(mode));
+            assert_eq!(backend.share_mode_asked_for(Direction::Output), Some(mode));
+        }
     }
 }

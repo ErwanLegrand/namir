@@ -458,8 +458,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f77b11176c37874be37e8d691c946e31b2b8c357abce9526f6a99eb469e1028"
+source = "git+https://github.com/ErwanLegrand/cpal?rev=2edbacb44b10e56801e5dbfa251517fb2c9e2ef4#2edbacb44b10e56801e5dbfa251517fb2c9e2ef4"
 dependencies = [
  "alsa",
  "block2 0.6.2",
@@ -1094,6 +1093,7 @@ dependencies = [
 name = "namir-app"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "cpal",
  "namir-core",
  "namir-engine",

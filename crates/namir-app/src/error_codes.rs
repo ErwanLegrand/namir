@@ -14,6 +14,20 @@ pub const DEVICE_OPEN_FAILED: ErrorCode = ErrorCode {
     message_template: "Could not open audio device {device}: {reason}.",
 };
 
+/// FR-IO-020: exclusive mode was asked for (`crate::settings::AppSettings::exclusive_mode`) and at
+/// least one of the session's two devices could not provide it, so the session opens shared
+/// instead. **`Warning`, not `Error`, deliberately:** audio still runs, which is exactly the
+/// degradation `docs/02-architecture.md` D-13.4 requires ("the settings path must degrade to shared
+/// rather than leave the app with no audio"); reporting it at `Error` would put a working session
+/// next to [`DEVICE_OPEN_FAILED`], which means no audio at all. Reported once, at start-up, rather
+/// than silently — roadmap §18 asks for "the user told which mode they actually got", and the
+/// notice is the half of that a mode indicator alone cannot give (it says *why*).
+pub const EXCLUSIVE_MODE_UNAVAILABLE: ErrorCode = ErrorCode {
+    id: "app.audio_io.exclusive_mode_unavailable",
+    severity: Severity::Warning,
+    message_template: "Exclusive mode is not available for {device} ({reason}); using shared mode.",
+};
+
 /// FR-IO-070: a device that was open and in use disappeared (unplugged, disabled, reclaimed by
 /// the OS). The stream is stopped cleanly and the user is told which side (input/output) was
 /// lost.
@@ -67,11 +81,21 @@ mod tests {
     fn catalogue_ids_are_unique_and_non_empty() {
         namir_core::assert_unique_ids(&[
             DEVICE_OPEN_FAILED,
+            EXCLUSIVE_MODE_UNAVAILABLE,
             DEVICE_LOST,
             NO_SUPPORTED_CONFIG,
             REMEMBERED_DEVICE_UNAVAILABLE,
             SETTINGS_UNREADABLE,
             SETTINGS_UNWRITABLE,
         ]);
+    }
+
+    /// FR-IO-020's degradation is a `Warning`, not an `Error` — see the const's own doc comment.
+    /// Pinned as a test because the severity is the one thing about this entry a reader could
+    /// change without noticing it changes what the notice means (audio running vs. no audio).
+    #[test]
+    fn an_unavailable_exclusive_mode_is_a_warning_because_audio_still_runs() {
+        assert_eq!(EXCLUSIVE_MODE_UNAVAILABLE.severity, Severity::Warning);
+        assert_eq!(DEVICE_OPEN_FAILED.severity, Severity::Error);
     }
 }

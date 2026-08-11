@@ -35,7 +35,10 @@ use namir_core::ErrorCode;
 use namir_engine::{ParamChange, ParamId as EngineParamId, TelemetryEntry, TelemetryReader};
 use namir_params::REGISTRY;
 use namir_state::State;
-use namir_ui::{LibrarySnapshot, MeterReading, UiHost, UiIntent, UiNotice, UiSnapshot};
+use namir_ui::{
+    AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading, UiHost, UiIntent, UiNotice,
+    UiSnapshot,
+};
 use namir_worker::Target;
 use namir_worker::library::LibraryService;
 
@@ -109,6 +112,20 @@ const MAX_OUTPUT_CHANNELS_SCANNED: usize = 2;
 /// entries from its own drain being too small.
 const TELEMETRY_DRAIN_BATCH: usize = 64;
 
+/// The one-line conversion FR-IO-020's mode indicator needs across D-5.1's seam: `namir-ui` cannot
+/// depend on this crate, so it declares its own [`AudioShareMode`] and this crate maps onto it here
+/// — in the bridge module, alongside every other snapshot field's translation, rather than in
+/// [`crate::audio_io`], which is deliberately kept to the `cpal` boundary and knows nothing about a
+/// UI.
+impl From<crate::audio_io::ShareMode> for AudioShareMode {
+    fn from(mode: crate::audio_io::ShareMode) -> Self {
+        match mode {
+            crate::audio_io::ShareMode::Shared => Self::Shared,
+            crate::audio_io::ShareMode::Exclusive => Self::Exclusive,
+        }
+    }
+}
+
 fn basename(path_or_desc: &str) -> String {
     std::path::Path::new(path_or_desc)
         .file_name()
@@ -128,6 +145,12 @@ pub struct AppHost {
 
     loaded_model_name: Option<String>,
     loaded_ir_name: Option<String>,
+    /// FR-IO-020's mode indicator, settled once by [`crate::app::run`] before this host exists and
+    /// never changed afterwards — a share mode is fixed for the lifetime of the streams, so unlike
+    /// every other snapshot field this one is a constant handed in at construction rather than
+    /// something folded in from a worker event. `None` when there is no audio device at all
+    /// (`crate::app`'s `open_window_without_audio` path).
+    audio_mode: Option<AudioModeStatus>,
     input_meter: MeterReading,
     output_meter: MeterReading,
     scan_progress: Option<namir_library::ScanProgress>,
@@ -145,6 +168,7 @@ impl AppHost {
         telemetry: TelemetryReader,
         library: Arc<LibraryService>,
         state: Arc<Mutex<State>>,
+        audio_mode: Option<AudioModeStatus>,
     ) -> Self {
         let last_saved = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Self {
@@ -156,6 +180,7 @@ impl AppHost {
             last_saved,
             loaded_model_name: None,
             loaded_ir_name: None,
+            audio_mode,
             input_meter: MeterReading::default(),
             output_meter: MeterReading::default(),
             scan_progress: None,
@@ -358,6 +383,7 @@ impl UiHost for AppHost {
                 index,
                 scan: self.scan_progress,
             },
+            audio_mode: self.audio_mode.clone(),
             unsaved_changes,
             notices: self.notices.clone(),
         }
@@ -470,6 +496,13 @@ mod tests {
     /// mock `UiHost` needed, since this host's whole job is bridging to real, already-tested
     /// crates.
     fn build_host(dir: &std::path::Path) -> (AppHost, namir_engine::AudioEngine) {
+        build_host_with_audio_mode(dir, None)
+    }
+
+    fn build_host_with_audio_mode(
+        dir: &std::path::Path,
+        audio_mode: Option<AudioModeStatus>,
+    ) -> (AppHost, namir_engine::AudioEngine) {
         let c = ctx();
         let chain = build_default_chain(&c).unwrap();
         let (engine, endpoint) = split(chain, RingCapacities::default());
@@ -496,7 +529,7 @@ mod tests {
         };
         let worker = WorkerHandle::spawn(worker_ctx);
 
-        let host = AppHost::new(instance, worker, telemetry, library, state);
+        let host = AppHost::new(instance, worker, telemetry, library, state, audio_mode);
         (host, engine)
     }
 
@@ -509,9 +542,41 @@ mod tests {
         let snapshot = host.snapshot();
         assert!(snapshot.loaded_model_name.is_none());
         assert!(snapshot.loaded_ir_name.is_none());
+        assert!(snapshot.audio_mode.is_none());
         assert!(!snapshot.unsaved_changes);
         assert!(snapshot.notices.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FR-IO-020: the granted share mode reaches the screen. It is handed in at construction (a
+    /// share mode cannot change while streams are open) and must survive every subsequent snapshot,
+    /// not just the first -- the meters and library fields around it are rebuilt every frame.
+    #[test]
+    fn the_granted_share_mode_reaches_every_snapshot_not_only_the_first() {
+        let dir = temp_dir("audio_mode");
+        let granted = AudioModeStatus {
+            share_mode: AudioShareMode::Exclusive,
+            device_name: "Scarlett 2i2".to_string(),
+        };
+        let (mut host, _engine) = build_host_with_audio_mode(&dir, Some(granted.clone()));
+        assert_eq!(host.snapshot().audio_mode.as_ref(), Some(&granted));
+        assert_eq!(host.snapshot().audio_mode.as_ref(), Some(&granted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `namir-ui` mirror of `crate::audio_io::ShareMode` maps value for value -- a swap here
+    /// would make the indicator report the opposite of what was granted, which §18 of the roadmap
+    /// rules out explicitly.
+    #[test]
+    fn the_share_mode_conversion_across_the_ui_seam_preserves_which_mode_it_is() {
+        assert_eq!(
+            AudioShareMode::from(crate::audio_io::ShareMode::Exclusive),
+            AudioShareMode::Exclusive
+        );
+        assert_eq!(
+            AudioShareMode::from(crate::audio_io::ShareMode::Shared),
+            AudioShareMode::Shared
+        );
     }
 
     /// **The end-to-end proof of `crate::instance::SharedInstance`'s whole reason for existing:** a

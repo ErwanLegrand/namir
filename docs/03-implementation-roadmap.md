@@ -1825,7 +1825,7 @@ not adjudicate them further.
 | 5.8 PARAM | 5 | 0 | 5 | 0 |
 | 5.9 STATE | 7 | 2 | 5 | 0 |
 | 5.10 LIB | 5 | 1 | 4 | 0 |
-| 5.11 IO | 8 | 1 | 7 | 0 |
+| 5.11 IO | 8 | 2 | 6 | 0 |
 | 5.12 CLAP | 11 | 2 | 9 | 0 |
 | 5.13 UI | 7 | 1 | 6 | 0 |
 | 5.14 ERR | 6 | 1 | 4 | 1 |
@@ -1838,7 +1838,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 1 | 1 |
-| **Total** | **130** | **32** | **91** | **7** |
+| **Total** | **130** | **33** | **90** | **7** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -1998,17 +1998,35 @@ form, so the ledger and the source agree.
   (`crates/namir-library/src/scan.rs:423`, `:545`) but the third member of the requirement's own set,
   files that **are added** while Namir is running, is spanned by nothing;
   `crates/namir-fixtures/src/library.rs:590` was generated for exactly this trio and has no consumer.
-- **5.11 IO — 1 / 7 / 0.** *Done:* FR-IO-080 — all four enumerated members round-tripped
+- **5.11 IO — 2 / 6 / 0** (FR-IO-020's cell was moved at M11, 2026-08-11; every other cell in this
+  bullet is M9a's and untouched)**.** *Done:* FR-IO-080 — all four enumerated members round-tripped
   (`crates/namir-app/src/settings.rs:167`) plus the graceful-degrade clause
   (`crates/namir-app/src/device_state.rs:226`), with an executed PASS across all six steps
-  (`docs/manual-tests/fr-io-080-settings-persistence.md`). *Partial:* FR-IO-010 — enumeration and a
-  real opened stream PASS (`docs/manual-tests/fr-io-010-device-enumeration.md`), but "the user shall
-  be able to select" has no interactive surface at all; selection happens once at start-up
-  (`crates/namir-app/src/app.rs:95-133`). FR-IO-020 — documented **FAIL**
-  (`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`): exclusive mode is unreachable through
-  cpal 0.18.1 as pinned by D-13.1, and `crates/namir-app/src/settings.rs`'s `exclusive_mode` is read
-  by nothing. FR-IO-030 — **NOT EXECUTED** (`docs/manual-tests/fr-io-030-alsa-coreaudio.md`); no ALSA
-  or CoreAudio stream has ever been opened, the evidence being structural only. FR-IO-040 — the
+  (`docs/manual-tests/fr-io-080-settings-persistence.md`). FR-IO-020 — `Verify: M`, so under D-18.6
+  the manual document **is** the named artifact rather than a stand-in for one, and
+  `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` now records an **executed PASS** on the §2
+  reference machine (2026-08-11, PreSonus AudioBox 22VSL, fork `2edbacb`) against a written script,
+  which is the form repeatability takes for this code — steps 2-7 and 9 PASS. Both members of the
+  requirement's own set are spanned: **shared** by that document's step 9 and by
+  `docs/manual-tests/fr-io-010-device-enumeration.md`'s and `fr-io-080-settings-persistence.md`'s
+  executed runs, **exclusive** by steps 3-7, with exclusivity proved by Windows refusing a second
+  application rather than by Namir not erroring, and the setting finally read
+  (`crates/namir-app/src/app.rs`'s `negotiate_share_mode`, `crates/namir-app/src/audio_io.rs`'s
+  `supports_exclusive`). ASIO is the requirement's own **Should** clause, which FRS §1.5 rules does
+  not make the Must Partial. **Two caveats, named rather than left behind an unqualified pass, and
+  neither a clause of FR-IO-020's text:** the `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` retry path has
+  never executed anywhere, this endpoint's device period being a whole 144 frames at 48 kHz; and
+  shared-mode `I24` is unreachable from this product, `namir-app` restricting shared mode to `F32`
+  (`crates/namir-app/src/audio_io.rs:453`), so the fork's container-justification fix rests there on
+  the format contract rather than on measurement. At M9a this cell read a documented **FAIL** —
+  exclusive mode unreachable through cpal 0.18.1 as pinned by D-13.1, and `exclusive_mode` read by
+  nothing — and D-13.4's fork, built at M11 (§18's status), is what changed it. *Partial:* FR-IO-010
+  — enumeration and a real opened stream PASS
+  (`docs/manual-tests/fr-io-010-device-enumeration.md`), but "the user shall be able to select" has
+  no interactive surface at all; selection happens once at start-up
+  (`crates/namir-app/src/app.rs:95-133`). FR-IO-030 — **NOT EXECUTED**
+  (`docs/manual-tests/fr-io-030-alsa-coreaudio.md`); no ALSA or CoreAudio stream has ever been
+  opened, the evidence being structural only. FR-IO-040 — the
   negotiation logic is unit-tested (`crates/namir-app/src/device_state.rs`) but neither selection
   clause is built and "always displayed" is served by an `eprintln!`
   (`crates/namir-app/src/app.rs:283`). FR-IO-050 — recorded **PARTIAL** by its own document; the
@@ -2227,6 +2245,15 @@ moves only the cells its own evidence justifies."** Row becomes **6 / 7 / 0** (w
   in the source for exactly this reason, so **Partial** here agrees with the tag rather than
   overriding it. FR-NAM-100 (dBu-calibrated operating levels) is untouched and stays **Not
   started** — a distinct, Should-priority requirement this milestone did not scope.
+
+**M11 moves, 2026-08-11 — 5.11 IO only, one cell.** Row becomes **2 / 6 / 0** (was 1 / 7 / 0):
+FR-IO-020 **Partial → Done**, on the executed run
+`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` now carries. Unlike M10's move above, the
+evidence is written into the 5.11 IO bullet itself rather than restated here — FR-IO-020 is a
+`Verify: M` Must whose whole evidence is one document, so a second copy of the same citation would
+be the only thing a separate entry added. What that bullet replaces is quoted inside it, so the
+cell's age stays readable, and no other requirement's text in it moved. Nothing else in §14 changes:
+M11 produced evidence for FR-IO-020 and for nothing else.
 
 ---
 
@@ -3915,6 +3942,125 @@ inspection claim.
 **Acceptance:** FR-IO-020 closes, verified against real WASAPI hardware on the §2 reference machine,
 with its manual-test document updated from "no path forward" to an executed result; §14's 5.11 IO
 row is unblocked; D-13.4, the §17 register row and R-10 are all on the record.
+
+### M11 status — this session, 2026-08-11
+
+Every acceptance criterion above is met: FR-IO-020 closes on an executed run against the §2
+reference machine's real hardware, its manual-test document carries that run, §14's 5.11 IO row
+moves below, and D-13.4, §17's fork row and R-10 are all on the record with M11 notes. Recorded here
+with the two places this section predicted wrongly, in the shape M10's status subsection above uses.
+
+**Size: not M.** The fork alone is seven commits on upstream trunk `e0893c3` — **2867 insertions /
+144 deletions across 11 files** — and the Namir-side change measures **2396 insertions / 173
+deletions across 18 files** under `crates/`, `.github/`, `deny.toml` and `Cargo.lock`, against M10's
+merge commit `a81ead9`. Two things this section's deliverable list does not mention account for most
+of the Namir side: an integer sample-format converter
+(`crates/namir-app/src/audio_io/convert.rs`, 436 new lines) that had to be written because exclusive
+mode does no format conversion — the fork drops `AUTOCONVERTPCM`/`SRC_DEFAULT_QUALITY` there, WASAPI
+rejecting both — and a UI surface, the mode indicator (`crates/namir-ui/src/app.rs`,
+`crates/namir-ui/src/host.rs`), which "the user told which mode they actually got" implies but does
+not name. **L on this document's own scale**, calibrated against the neighbouring milestone rather
+than asserted: M10 is labelled L and lands 4212 insertions across 27 files, where M11 authored
+roughly 5300 insertions across 29 files counting both repositories. The fork's share of that is the
+substance of R-10's corrected rebase estimate rather than a scoping error here.
+
+**"Nothing else in this milestone can start without it" is false as written, and the milestone was
+built on it being false.** The entire Namir-side seam — `ShareMode` on `StreamParams`,
+`AudioBackend::supports_exclusive`, the catalogued `app.audio_io.exclusive_mode_unavailable`
+warning, the all-or-nothing rule in `crate::app::negotiate_share_mode`, and the mode indicator —
+was built and unit-tested green **against upstream `cpal` 0.18.1**, with
+`CpalBackend::supports_exclusive` returning `ExclusiveModeOutcome::Unsupported`, before the fork was
+pinned (commits `4c131d3` and `2bae30c`, both before `d1907ed`). What the fork was needed for was
+answering the question, not asking it. The ordering was deliberate and it worked: the seam's shape
+was settled against a backend that could only say no, so pinning the fork changed one method body
+(`1167db1`) rather than the design. Worth generalising — a fork that gates *nothing* until its answer
+is needed is a much smaller dependency than one everything waits on.
+
+**Two real defects were found only by running on real hardware, after every automated check had
+passed.** Both are upstream `cpal` bugs that exclusive mode exposed rather than caused, both
+independently upstreamable, and both are written up at D-13.4 in `docs/02-architecture.md`. (a)
+`config_to_waveformatextensible` sent `dwChannelMask = 0` for every format; a PreSonus AudioBox 22VSL
+refuses that in exclusive mode where Microsoft's own HD Audio driver accepts it, so the same machine's
+Realtek and HDMI endpoints hid the defect throughout. Fork commit `ab5f40a`. (b) WASAPI stores 24
+valid bits **left-justified** in a 32-bit container and `dasp_sample::I24` is right-aligned in the
+low 24; `cpal` wrote one as the other — render about 48 dB too quiet, capture 256x too large. Fork
+commit `2edbacb`.
+
+**Why that matters more than two bug fixes.** With both defects present: the conversion arithmetic
+was correct and exhaustively unit-tested at its boundaries, the `WAVEFORMATEXTENSIBLE` was
+hexdump-verified, the fork type-checked for `x86_64-pc-windows-msvc`, the workspace's **913 tests
+passed** and CI was green on all three platforms. The disagreements were about the container
+*conventions around* correct code, and both sides of each boundary agreed with themselves — so no
+in-process test could see either gap: one is observable only where the driver is, the other only by a
+person listening to a speaker. That is the concrete argument for FR-IO-020 carrying `Verify: M` and
+for D-18.6's rule that such a Must is traced by its manual document. It is also a caution for
+whoever rebases the fork: a rebase that compiles and passes CI is not evidence the Windows audio path
+still works, and `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` has to be re-run.
+
+**A third defect was found and deliberately not fixed: issue #15.** Step 7's fallback notice renders
+its template placeholders literally — `Exclusive mode is not available for {device} ({reason}); using
+shared mode.` reaches the user with the braces in it. `namir_ui::notices::notice_text`
+(`crates/namir-ui/src/notices.rs:43-47`) concatenates `{code.id}: {message_template} ({detail})` and
+nothing in the workspace ever substitutes into `message_template`, so this has held for every
+placeholder-bearing catalogue entry since the mechanism landed at M5 — the issue tallies 30 entries
+across seven crates. It is pre-existing, workspace-wide, and touches crates M11 has no business
+editing; M11's own new entry is left worded like its neighbours so the fix can be one consistent pass
+rather than one odd entry left behind. Its FR-UI-070 impact is presentation, not capability: the
+`detail` string does name the device, the reason and the fallback.
+
+**FR-IO-070 was offered and not taken.** This section's opportunistic item is declined explicitly:
+no device that can be made to fail on demand was available during this milestone's audio-path work,
+so per this section's own instruction it "stays open and is **not** back-filled with an inspection
+claim". **This resolves §15 item 17's FR-IO-070 limb in favour of M9b** — the annotation and the
+roadmap conflicted only while M11 might still have taken it, and M11 has now declined, leaving M9b as
+the sole claimant. The `// uncovered:` field at `crates/namir-app/src/device_state.rs:247-252` is
+therefore **left exactly as written**, not edited to fit; item 17's other two limbs (FR-CFG-030 and
+NFR-LIC-030) are untouched by this milestone and stay open.
+
+**§15 item 16 — the absent audio-device panel — gained real evidence rather than another opinion.**
+M11 took the mode *indicator* only, so the panel question is still open, and this milestone is not
+the one that settles it. But the milestone hit the gap **three separate times**, each requiring a
+hand-edit of `%APPDATA%\Namir\audio-settings.json` with the app closed: enabling exclusive mode at
+all, selecting a device, and driving step 7's fallback test by naming a device that refuses exclusive
+mode. Item 16's third answer — "keep the current silence" — now has a concrete cost attached: the
+only executed evidence FR-IO-020 has could not have been produced through the product's own
+interface. That is a practical finding for whoever settles item 16, not a theoretical one. Note what
+it is *not*: FR-IO-020 is not one of the five Musts §16's 2026-08-09 table lists as leaning on the
+panel, and it does not need one — it requires no chooser the way FR-IO-010 does, so a persisted
+setting satisfies its literal text. What M11 adds to item 16 is a demonstration of how thin a
+hand-edited JSON key is as the only mechanism a user has, not a sixth requirement on the list.
+
+**Known-unverified, in one place, so the PASS is not read as more than it is:**
+
+- **The `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` retry path has never executed** — not in a test, not on
+  hardware. The reference machine's device period is 3 ms = 144 frames at 48 kHz, a whole number, so
+  the error never arose; step 8 records that as the expected non-event it is, not as a pass.
+- **Shared-mode `I24` is unexercised and unreachable from this product.** `namir-app` restricts
+  shared mode to `F32` (`crates/namir-app/src/audio_io.rs:453`), so step 9 exercised the fork's
+  container-justification path returning a **zero** shift for a full container. The fix is correct
+  for shared-mode `I24` by the format contract, not by measurement.
+- **Packed 24-bit (a 3-byte container) cannot be expressed by `cpal` at all** — `SampleFormat::I24`'s
+  `sample_size()` is `size_of::<i32>()`, so every format this backend builds has a 32-bit container,
+  even though its parser maps a device-reported `wBitsPerSample == 24` to that same `I24`. A device
+  offering only packed 24-bit would have every candidate refused and fall back to shared. This
+  endpoint offers 24-in-32, so the case did not arise.
+- **The fork's rebase burden is higher than D-13.4 assumed.** `src/host/wasapi/device.rs` alone is
+  546 insertions against 130 deletions and will conflict; the cause is structural, a per-call
+  extension trait threading the share mode through every enumeration and build path. R-10 carries the
+  corrected estimate and D-13.4 records which of its own sentences is withdrawn.
+- **One machine, one third-party interface.** Both hardware-only defects were invisible on the same
+  machine's Microsoft HD Audio endpoints; a second vendor's interface would be worth more than a
+  second run on this one.
+
+### M11 close-out — §14's re-audit table, this session, 2026-08-11
+
+FR-IO-020 moves from **Partial** to **Done** in §14's `### M9a re-audit` table: the 5.11 IO row goes
+from `8 | 1 | 7 | 0` to `8 | 2 | 6 | 0`. The Must count is unchanged — `xtask traceability`
+machine-checks that column and it is not M11's to move — and only the hand-adjudicated verdict
+columns change. See that table's own per-row evidence bullet for the file-path evidence D-23.2
+requires, and for the two caveats named there rather than hidden behind an unqualified pass. No other
+requirement's verdict moves: M11 produced evidence for FR-IO-020 and for nothing else, and a cell
+nobody's evidence has touched stays where M9a left it.
 
 ---
 

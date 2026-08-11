@@ -71,5 +71,8 @@ mod meter;
 mod notices;
 
 pub use app::{NamirUi, ViewState, open_blocking, open_parented, render};
-pub use host::{LibrarySnapshot, MeterReading, UiHost, UiIntent, UiNotice, UiSnapshot};
+pub use host::{
+    AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading, UiHost, UiIntent, UiNotice,
+    UiSnapshot,
+};
 pub use library_view::{LibraryViewState, entry_label};

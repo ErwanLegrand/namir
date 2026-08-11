@@ -62,10 +62,6 @@ pub fn select_device(
     })
 }
 
-fn config_covers_rate(config: &SupportedConfigRange, hz: u32) -> bool {
-    hz >= config.min_sample_rate_hz && hz <= config.max_sample_rate_hz
-}
-
 /// FR-IO-040: picks a sample rate `configs` (the *selected* device's own reported ranges)
 /// supports. Prefers `remembered` if any config covers it; otherwise tries
 /// [`PREFERRED_SAMPLE_RATES_HZ`] in order; otherwise falls back to the highest rate any config
@@ -79,12 +75,12 @@ pub fn negotiate_sample_rate(
         return None;
     }
     if let Some(hz) = remembered
-        && configs.iter().any(|c| config_covers_rate(c, hz))
+        && configs.iter().any(|c| c.covers_rate(hz))
     {
         return Some(hz);
     }
     for &preferred in PREFERRED_SAMPLE_RATES_HZ {
-        if configs.iter().any(|c| config_covers_rate(c, preferred)) {
+        if configs.iter().any(|c| c.covers_rate(preferred)) {
             return Some(preferred);
         }
     }
@@ -100,7 +96,7 @@ fn configs_at_rate(
 ) -> impl Iterator<Item = &SupportedConfigRange> {
     configs
         .iter()
-        .filter(move |c| config_covers_rate(c, sample_rate_hz))
+        .filter(move |c| c.covers_rate(sample_rate_hz))
 }
 
 /// FR-IO-040: picks a buffer size, in frames, for `sample_rate_hz` from whichever of `configs`
@@ -173,13 +169,13 @@ pub fn negotiate_shared_sample_rate(
 ) -> Option<u32> {
     let from_input = negotiate_sample_rate(input_configs, remembered);
     if let Some(hz) = from_input
-        && output_configs.iter().any(|c| config_covers_rate(c, hz))
+        && output_configs.iter().any(|c| c.covers_rate(hz))
     {
         return Some(hz);
     }
     let from_output = negotiate_sample_rate(output_configs, remembered);
     if let Some(hz) = from_output
-        && input_configs.iter().any(|c| config_covers_rate(c, hz))
+        && input_configs.iter().any(|c| c.covers_rate(hz))
     {
         return Some(hz);
     }

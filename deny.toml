@@ -115,3 +115,16 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# D-13.4 (M11): the one non-registry source in the tree -- the Namir-maintained `cpal` fork that
+# adds WASAPI exclusive mode (FR-IO-020), consumed by `namir-app` and pinned by commit hash in
+# `crates/namir-app/Cargo.toml`. `unknown-git = "deny"` above is the default posture and is doing
+# its job, so this is a narrow, named allowance for exactly this repository rather than the blanket
+# `allow-git = []` relaxation D-13.4 rules out: any *other* git source still fails this gate.
+#
+# Risk R-10 is what this line costs. A git dependency weakens NFR-SEC-040's reproducible-build
+# ambition in a way a crates.io dependency does not, and a maintained fork has to be rebased as
+# upstream moves. The mitigations R-10 names are the commit pin (in the manifest, not here -- this
+# list allows the repository, not a revision) and, if the pin ever proves insufficient, vendoring
+# the fork into the tree. If the change is accepted upstream, D-13.4 reverts to a version bump and
+# this line is deleted along with it.
+allow-git = ["https://github.com/ErwanLegrand/cpal"]

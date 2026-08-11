@@ -31,9 +31,35 @@ namir-worker = { path = "../namir-worker" }
 namir-ui = { path = "../namir-ui" }
 
 # D-13.1: "Audio I/O for the standalone app uses cpal ... behind a Namir-owned trait so the engine
-# and UI never see cpal types." Pinned to the exact version D-13.1 verified (Apache-2.0,
-# 2026-06-07), matching docs/02-architecture.md §17's dependency register.
-cpal = "0.18.1"
+# and UI never see cpal types." Still the exact version D-13.1 verified (Apache-2.0, 2026-06-07),
+# matching docs/02-architecture.md §17's dependency register -- but no longer from crates.io.
+#
+# D-13.4 (M11): FR-IO-020's WASAPI *exclusive* mode is closed by a Namir-maintained fork of cpal,
+# because the share mode is not a parameter cpal exposes: it is a hardcoded AUDCLNT_SHAREMODE_SHARED
+# local at the IAudioClient::Initialize call in the middle of cpal's own stream construction, so
+# nothing outside cpal can reach it (see D-13.4's rationale, and crates/namir-app/src/audio_io.rs's
+# module doc comment for the M6 verification this rests on). The fork adds a share-mode-aware
+# extension trait and nothing else, so rebasing on upstream stays mechanical.
+#
+# Pinned by `rev` -- the full commit hash, never the branch. D-13.4 and risk R-10 both require
+# exactly that: a git dependency already weakens NFR-SEC-040's reproducible-build ambition, and a
+# branch pin would mean the build changes under us whenever the fork moves. Bumping this line is
+# therefore a reviewed, deliberate act. The matching narrow `[sources]` allowance lives in the
+# workspace `deny.toml`; the default policy there rejects every non-registry source, and that
+# rejection is doing its job, so the allowance names this one repository rather than relaxing it.
+#
+# Bumped to ab5f40a for the exclusive-mode channel-mask fix, measured on the §2 reference machine's
+# AudioBox 22VSL: cpal sent dwChannelMask = 0 for every format, which that USB driver refuses in
+# exclusive mode while Microsoft's HD Audio driver accepts it. Without this, exclusive mode was
+# unreachable on the one interface class this product is actually for.
+#
+# Bumped again to 2edbacb for the container-justification fix, also measured on that machine and
+# also invisible to every automated check on both sides of the boundary. WASAPI stores 24 valid bits
+# left-justified in a 32-bit container; `dasp_sample::I24` is right-aligned in the low 24. Writing
+# one as the other is a factor of 2^8 -- output ~48 dB too quiet, and capture 256x too large, which
+# pinned the input meter on anything above near-silence. Both directions confirmed by ear and by
+# meter before the fix; both are corrected in the fork, where the container layout is actually known.
+cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "2edbacb44b10e56801e5dbfa251517fb2c9e2ef4" }
 # The input-callback -> output-callback bridge (`bridge.rs`): the two cpal callbacks run on two
 # different OS-owned threads with no ordering relationship, so getting a captured block from the
 # input thread to the output thread needs its own wait-free SPSC ring, distinct from
@@ -51,3 +77,13 @@ serde_json = "1"
 
 [dev-dependencies]
 namir-fixtures = { path = "../namir-fixtures" }
+# D-7.5's RT-allocation test harness (see src/rt_harness.rs's module doc for why an external crate
+# is used rather than a hand-rolled `GlobalAlloc`: this crate's `unsafe_code = "forbid"` rules out
+# implementing that trait here). Added at M11 for `audio_io::convert`, the first arithmetic this
+# crate runs inside an audio callback on its own account rather than delegating to `namir-engine`.
+# A `#[global_allocator]` is one per binary, so this is declared per crate rather than shared --
+# the same duplication `namir-dsp`, `namir-engine`, `namir-ir`, `namir-nam` and `namir-worker`
+# already carry. Both `warn_*` features for the same reason those crates give: with `warn_debug`
+# alone, `rt_harness` fails to compile under `cargo test --release`. Dev-dependency only, so it is
+# never linked into a release build of this crate.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
