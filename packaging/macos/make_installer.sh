@@ -20,6 +20,7 @@
 #     LICENSE-MIT
 #     LICENSE-APACHE
 #     README.md
+#     TRADEMARK.md
 #
 # That list is `xtask/src/bundle.rs`'s `plan(Platform::MacOs)`, and it is deliberately the *only*
 # thing this script trusts: what ships is what `bundle --check` already asserted. `verify_staging`
@@ -130,9 +131,12 @@ readonly STANDALONE_BIN="namir"
 # Mach-O. See "Step 2a" below for why that is a correctness requirement rather than a Finder
 # nicety.
 readonly APP_ARTIFACT="Namir.app"
-# FR-PKG-040's enumerated set (`bundle.rs`'s LICENCE_DOCUMENTS), then README.md beside it.
+# FR-PKG-040's enumerated set (`bundle.rs`'s LICENCE_DOCUMENTS), then the two documents staged
+# beside them. TRADEMARK.md is not an FR-PKG-040 file -- that set is exactly three, named by the
+# requirement -- but the staged README's licence section points at it, and NFR-LIC-070 wants the
+# mark's terms stated wherever the mark travels. The shipped binaries carry the mark.
 readonly LICENCE_DOCUMENTS="THIRD-PARTY-NOTICES.md LICENSE-MIT LICENSE-APACHE"
-readonly STAGED_DOCUMENTS="${LICENCE_DOCUMENTS} README.md"
+readonly STAGED_DOCUMENTS="${LICENCE_DOCUMENTS} README.md TRADEMARK.md"
 
 readonly MIN_MACOS_VERSION="11.0"
 

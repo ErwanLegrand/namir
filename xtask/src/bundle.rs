@@ -179,10 +179,25 @@ pub const LICENCE_DOCUMENTS: [&str; 3] =
 /// no statement of what it is is a worse artifact than one with a redundant file in it.
 pub const README: &str = "README.md";
 
+/// Also staged beside [`LICENCE_DOCUMENTS`], and for a sharper reason than [`README`]'s.
+///
+/// The shipped binaries **carry the brand mark** — M12 embedded it, and `namir-ui` `include_bytes!`s
+/// the generated alpha blob — and **NFR-LIC-070** requires the terms on which the name and mark may
+/// be used to be stated explicitly, precisely because a permissive code licence beside an unstated
+/// trademark position is the combination that produces awkward conversations later. `README.md`'s
+/// licence section points at `TRADEMARK.md`; staging the README without it makes that pointer
+/// dangle in every distribution, which is the one way a distribution can be *worse* than no
+/// document at all: it names a file and then does not carry it.
+///
+/// It is deliberately **not** in [`LICENCE_DOCUMENTS`]. FR-PKG-040's set is exactly three, named by
+/// the requirement, and widening a requirement's own enumeration to hold a file it does not mention
+/// is how a set stops meaning anything.
+pub const TRADEMARK: &str = "TRADEMARK.md";
+
 /// Every document a staging tree carries, in staging order.
-pub fn staged_documents() -> [&'static str; 4] {
+pub fn staged_documents() -> [&'static str; 5] {
     let [notices, mit, apache] = LICENCE_DOCUMENTS;
-    [notices, mit, apache, README]
+    [notices, mit, apache, README, TRADEMARK]
 }
 
 /// The one remedy line every violation ends with, in one place so the check and its tests cannot
@@ -1060,6 +1075,7 @@ mod tests {
                 "LICENSE-MIT",
                 "LICENSE-APACHE",
                 "README.md",
+                "TRADEMARK.md",
             ]
         );
         assert_eq!(plan(Platform::MacOs), layout, "plan is deterministic");

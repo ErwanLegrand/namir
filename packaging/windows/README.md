@@ -30,6 +30,7 @@ From the repository root:
 
 ```powershell
 cargo build --release --workspace
+rcedit target\release\namir.exe --set-icon images\namir.ico   # FR-UI-110's executable icon
 cargo run -p xtask -- bundle                       # stages target\bundle\windows, then asserts it
 & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" `
     /DAppVersion=0.1.0 /DVersionInfoVersion=0.1.0.0 `
@@ -90,13 +91,17 @@ Written here, not built here — `release.yml` is another lane's file and this s
 contract it should implement for the Windows leg. In D-18.3's fixed order:
 
 1. `cargo build --release --workspace` on `windows-latest`.
-2. `cargo run -p xtask -- bundle` — stages and asserts `target\bundle\windows`.
-3. `iscc /DAppVersion=<tag-without-v> /DVersionInfoVersion=<a.b.c.0> packaging\windows\namir.iss`.
-4. The `Compress-Archive` block above.
-5. Hash both outputs (`Get-FileHash -Algorithm SHA256`) and publish the hashes with them —
+2. `rcedit target\release\namir.exe --set-icon images\namir.ico` — FR-UI-110's executable icon,
+   embedded **before** the bundle step so the staging tree, the installer payload and the ZIP all
+   carry the same binary. D-17.3 puts this in the packaging pipeline rather than in a build script
+   inside a shipped crate, which is why a plain `cargo build` produces an icon-less executable.
+3. `cargo run -p xtask -- bundle` — stages and asserts `target\bundle\windows`.
+4. `iscc /DAppVersion=<tag-without-v> /DVersionInfoVersion=<a.b.c.0> packaging\windows\namir.iss`.
+5. The `Compress-Archive` block above.
+6. Hash both outputs (`Get-FileHash -Algorithm SHA256`) and publish the hashes with them —
    NFR-SEC-040's "published hashes" half, which is worth having even where bit-for-bit
    reproducibility is not, and the roadmap asks for it explicitly.
-6. Upload `target\dist\*.exe`, `target\dist\*.zip` and the hash file to the GitHub Release.
+7. Upload `target\dist\*.exe`, `target\dist\*.zip` and the hash file to the GitHub Release.
 
 No step provisions Inno: it is preinstalled on the runner. Nothing in this leg is architecture-
 matrixed — the artifacts are x86-64 only.
@@ -201,12 +206,6 @@ Owned by other lanes; listed so they are not lost.
   FR-PKG-010 makes the release identity. If a `version` key is added later (D-18.4's hygiene bullet
   adds `version` to path dependencies for a different reason), the workflow can derive the define
   from it and cross-check the tag; nothing here needs changing for that.
-- **An application icon.** There is no `.ico` in the repository — `images/` holds `namir.png` and
-  `namir.svg` — so `SetupIconFile` is unset and both Setup and the installed `namir.exe` show
-  default icons. FR-UI-110's executable-icon clause was deferred to M13 by its own M12
-  `*Consequence*` note. Whoever closes it should produce the `.ico` alongside the existing brand
-  assets (`xtask identity` already owns brand-mark artifact freshness), after which `SetupIconFile`
-  is one line here.
 - **`TRADEMARK.md` is not staged by `xtask bundle`**, so it is in no distribution. The shipped
   binaries carry the brand mark (M12 embedded it), and NFR-LIC-070 requires the terms on which the
   name and mark may be used to be stated explicitly. `README.md`'s licence section points at
