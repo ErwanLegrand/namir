@@ -104,30 +104,75 @@ line switch. `PrivilegesRequired=lowest` alone does not offer a choice; the `.is
 `PrivilegesRequiredOverridesAllowed=dialog commandline` for exactly this clause, and step 2.1 is
 where you observe that the `dialog` half works.
 
-## Executed run
+## Executed run — as written (M13, 2026-08-11)
 
-**NOT EXECUTED as of this document's creation (M13, 2026-08-11).** The installer has never been
-compiled: Inno Setup is not present in the environment where `packaging/windows/namir.iss` was
-written, so no `iscc` run, no produced installer, no install and no uninstall have happened, in
-either scope. `namir.iss` is reasoned from Inno's documented behaviour of `{autocf}`,
-`PrivilegesRequired`, `PrivilegesRequiredOverridesAllowed` and
-`ArchitecturesInstallIn64BitMode` — not from a build.
+**Superseded in part by the run below**, and kept because it is why the `.iss` was reasoned rather
+than observed. As written, nothing here had been executed: Inno Setup was not present in the
+environment where `packaging/windows/namir.iss` was authored, so `namir.iss` rested entirely on
+Inno's documented behaviour of `{autocf}`, `PrivilegesRequired`,
+`PrivilegesRequiredOverridesAllowed` and `ArchitecturesInstallIn64BitMode`.
 
-Step 0 has likewise **not** been executed. It needs a real host on a Windows machine, and it is the
-one step of this script that could have been run before the installer existed.
+## Executed run — step 1, on Windows (M13, 2026-08-12)
 
-**FR-PKG-030 is therefore open.** Record the run below when it happens, per scope, including the
-verbatim preselected option from step 2.1 — and record a failure as a failure. This project's
-history has documented FAILs sitting in manual-test files for milestones at a time (see
-`fr-io-020-wasapi-exclusive-mode.md`'s own history section), which is the correct disposition for a
-requirement that does not hold yet.
+**Step 1 PASSES: the installer compiles and produces an installer.** Inno Setup was installed
+(`winget install JRSoftware.InnoSetup.7`) and the script compiled on the first attempt with no
+edit to it.
+
+```
+> ISCC.exe /DAppVersion=0.1.0 /DVersionInfoVersion=0.1.0.0 packaging\windows\namir.iss
+Creating setup files
+   Verification successful
+   Updating icons (Setup.exe)
+   Compressing: ...\target\bundle\windows\Namir.clap
+   Compressing: ...\target\bundle\windows\namir.exe
+   Compressing: ...\target\bundle\windows\THIRD-PARTY-NOTICES.md
+   Compressing: ...\target\bundle\windows\LICENSE-MIT
+   Compressing: ...\target\bundle\windows\LICENSE-APACHE
+   Compressing: ...\target\bundle\windows\README.md
+   Compressing: ...\target\bundle\windows\TRADEMARK.md
+Successful compile (2,625 sec). Resulting Setup program filename is:
+...\target\dist\namir-0.1.0-windows-x86_64-setup.exe
+```
+
+5 210 436 bytes. `Get-AuthenticodeSignature` reports **NotSigned**, as R-11 says it will.
+
+Four things this run establishes beyond "it compiled".
+
+- **All seven staged files are in the payload**, FR-PKG-040's three among them, and `TRADEMARK.md`
+  which M13 added. The `[Files]` list and `xtask bundle`'s staging tree agree in fact and not only
+  by intention.
+- **`SetupIconFile` works — "Updating icons (Setup.exe)"** — which is a second independent decoder
+  accepting `images/namir.ico` after `xtask identity` generated it, this one Inno's own resource
+  updater rather than Windows' imaging APIs.
+- **`ArchitecturesInstallIn64BitMode=x64compatible` compiles**, so the directive that keeps the
+  elevated install out of the 32-bit Common Files directory is accepted rather than merely believed
+  to exist.
+- **The version actually tested is Inno Setup 7.0.2, not 6.3.** This document, the `.iss` and
+  `packaging/windows/README.md` all state 6.3 as the floor, and that statement is *unchanged and
+  still correct* — `x64compatible` was introduced in 6.3 — but it remains **untested**: nothing has
+  ever compiled this script on a 6.x Inno. What has been demonstrated is that Inno 7 compiles it,
+  which is the more useful fact for anyone building today and the less useful one for anyone
+  relying on the stated floor. The release workflow uses whatever `windows-latest` preinstalls, so
+  that is a third version, also untested here.
+
+**Steps 0, 2, 3 and 4 remain NOT EXECUTED.** Nothing has been installed, in either scope, and no
+host has been asked whether it scans the per-user CLAP path. Note also that the `namir.exe` inside
+this installer has **not** been through `rcedit`, which is not installed locally — so the installed
+executable carries no icon even though Setup does, and FR-UI-110's executable clause is not
+observed by this run.
+
+**FR-PKG-030 is therefore still open**, on the four clauses that are actually about install scope.
+Record each below as it happens, including the verbatim preselected option from step 2.1 — and
+record a failure as a failure. This project's history has documented FAILs sitting in manual-test
+files for milestones at a time (see `fr-io-020-wasapi-exclusive-mode.md`'s own history section),
+which is the correct disposition for a requirement that does not hold yet.
 
 | Step | Verdict | Notes |
 |---|---|---|
-| 0. Per-user path is scanned by a real host | NOT EXECUTED | |
-| 1. Installer compiles | NOT EXECUTED | |
+| 0. Per-user path is scanned by a real host | NOT EXECUTED | D-18.3's standing precondition; needs no installer |
+| 1. Installer compiles | **PASS** (2026-08-12) | Inno 7.0.2; 5 210 436 bytes; unsigned; all seven files in the payload |
 | 2. Per-user scope, preselected by default | NOT EXECUTED | |
 | 3. System-wide scope, 64-bit Common Files | NOT EXECUTED | |
 | 4. Both scopes offered through the UI | NOT EXECUTED | |
 
-**Result: NOT EXECUTED.**
+**Result: INCOMPLETE — one step of five passes.**
