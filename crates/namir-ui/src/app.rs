@@ -38,6 +38,13 @@ pub fn render(
     Panel::top("namir_ui_top").show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.heading("Namir");
+            if let Some(mode) = &snapshot.audio_mode {
+                ui.label(audio_mode_label(mode)).on_hover_text(
+                    "The share mode the audio device is actually open in. Exclusive mode gives \
+                     this application sole use of the device; shared mode lets other applications \
+                     use it at the same time.",
+                );
+            }
             if snapshot.unsaved_changes {
                 ui.label("* unsaved changes").on_hover_text(
                     "The current settings differ from the last saved/recalled state.",
@@ -92,6 +99,23 @@ pub fn render(
                 render_single(ui, &GLOBAL_BYPASS, &snapshot.params, intents);
             });
     });
+}
+
+/// FR-IO-020's mode indicator as one line of text. Deliberately **not** routed through
+/// [`param_section`]: a share mode is not a `namir_params::REGISTRY` entry, and
+/// `every_registry_key_is_covered_by_a_section_prefix_or_a_named_single_control` (below) pins every
+/// registry key to a section prefix — a non-parameter status string belongs beside the
+/// "* unsaved changes" label, which is this crate's existing precedent for exactly that.
+///
+/// Names the granted mode unconditionally, including the ordinary shared case: the roadmap's §18
+/// rule is that the indicator must not lie, and an indicator that appears only when exclusive mode
+/// engaged would leave "shared" and "this build has no mode indicator" looking identical.
+fn audio_mode_label(mode: &crate::host::AudioModeStatus) -> String {
+    let name = match mode.share_mode {
+        crate::host::AudioShareMode::Shared => "Shared",
+        crate::host::AudioShareMode::Exclusive => "Exclusive",
+    };
+    format!("{name} mode — {}", mode.device_name)
 }
 
 /// One [`param_control`] for every `REGISTRY` entry whose key starts with `prefix`, under a
@@ -264,6 +288,43 @@ mod tests {
                 || named_singles.contains(&descriptor.key);
             assert!(covered, "{} is not rendered by any section", descriptor.key);
         }
+    }
+
+    /// FR-IO-020's indicator states the mode *and* the device, and says "Shared" out loud rather
+    /// than falling silent — see [`audio_mode_label`]'s own doc comment for why the ordinary case
+    /// is still labelled.
+    #[test]
+    fn the_audio_mode_label_names_both_the_granted_mode_and_the_device() {
+        let exclusive = audio_mode_label(&crate::host::AudioModeStatus {
+            share_mode: crate::host::AudioShareMode::Exclusive,
+            device_name: "Scarlett 2i2".to_string(),
+        });
+        assert!(exclusive.contains("Exclusive"), "{exclusive}");
+        assert!(exclusive.contains("Scarlett 2i2"), "{exclusive}");
+
+        let shared = audio_mode_label(&crate::host::AudioModeStatus {
+            share_mode: crate::host::AudioShareMode::Shared,
+            device_name: "Scarlett 2i2".to_string(),
+        });
+        assert!(shared.contains("Shared"), "{shared}");
+        assert!(!shared.contains("Exclusive"), "{shared}");
+    }
+
+    /// The top panel renders with an indicator present as well as absent -- the `Option` arm added
+    /// for FR-IO-020 is reached by a real frame, not only by [`audio_mode_label`] directly.
+    #[test]
+    fn rendering_with_an_audio_mode_indicator_present_does_not_panic() {
+        let mut view = ViewState::default();
+        let snapshot = UiSnapshot {
+            audio_mode: Some(crate::host::AudioModeStatus {
+                share_mode: crate::host::AudioShareMode::Exclusive,
+                device_name: "Scarlett 2i2".to_string(),
+            }),
+            ..UiSnapshot::default()
+        };
+        let mut intents = Vec::new();
+        headless_frame(&mut view, &snapshot, &mut intents);
+        assert!(intents.is_empty());
     }
 
     /// A minimal [`UiHost`] that counts `snapshot` calls (`Arc<AtomicU32>` rather than

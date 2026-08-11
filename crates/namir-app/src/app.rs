@@ -7,6 +7,14 @@
 //! why, and `docs/manual-tests/` records what to check by hand instead), so this module's job is
 //! to compose pieces that already have their own tests, not to introduce new untested logic of its
 //! own.
+//!
+//! One exception, added at M11 and kept honest by the second half of that sentence:
+//! [`negotiate_share_mode`] is real decision logic (FR-IO-020's all-or-nothing exclusive-mode rule)
+//! that has no lower-level home — [`crate::device_state`] is deliberately pure and takes no
+//! [`crate::audio_io::AudioBackend`], and this decision has to query one. It is therefore a
+//! separate, backend-generic function with its own unit tests at the foot of this file, driven by
+//! [`crate::stream::FakeBackend`], rather than logic inlined into [`run`] where nothing could reach
+//! it.
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -19,7 +27,10 @@ use namir_state::State;
 use namir_worker::pool::ThreadPool;
 use namir_worker::{EngineConfig, Instance, ResourceCache};
 
-use crate::audio_io::{AudioBackend, CpalBackend, DeviceInfo, HostInfo, StreamParams};
+use crate::audio_io::{
+    AudioBackend, AudioIoError, CpalBackend, DeviceInfo, ExclusiveModeOutcome, HostInfo, ShareMode,
+    StreamParams,
+};
 use crate::host::AppHost;
 use crate::instance::SharedInstance;
 use crate::settings::{self, AppSettings};
@@ -68,6 +79,91 @@ fn setup_direction(
         fell_back_from: selection.fell_back_from,
         configs,
     })
+}
+
+/// FR-IO-020's settled answer for one session: the share mode both streams open with, and — when
+/// exclusive mode was asked for and not granted — the notice detail explaining why the session is
+/// running shared instead.
+struct ShareModeDecision {
+    mode: ShareMode,
+    /// `None` whenever the answer needs no explanation: exclusive was never requested, or it was
+    /// requested and granted.
+    refusal_detail: Option<String>,
+}
+
+/// FR-IO-020: asks both devices whether they can provide exclusive mode and **ANDs the answers**,
+/// so a session runs exclusive on both directions or on neither.
+///
+/// The all-or-nothing rule is deliberate, not a simplification. `docs/03-implementation-roadmap.md`
+/// §18 rules out "a mode indicator that lies", and there is exactly one indicator
+/// ([`namir_ui::AudioModeStatus`]) for a duplex path: if the output engaged exclusive and the input
+/// did not, no single-valued indicator can be truthful, and a user who asked for exclusive mode to
+/// stop other applications sharing their interface has still not got it. Degrading both to shared
+/// is also what `docs/02-architecture.md` D-13.4 asks for — "degrade to shared rather than leave
+/// the app with no audio".
+///
+/// Asked before any stream is opened; see [`AudioBackend::supports_exclusive`] for why a pre-flight
+/// query rather than an open-and-retry.
+fn negotiate_share_mode(
+    backend: &dyn AudioBackend,
+    host: &HostInfo,
+    input_device: &DeviceInfo,
+    input_params: StreamParams,
+    output_device: &DeviceInfo,
+    output_params: StreamParams,
+    requested: bool,
+) -> ShareModeDecision {
+    if !requested {
+        // The device is never asked when nothing was requested: an untouched settings file
+        // (`AppSettings::default().exclusive_mode == false`) must change nothing about start-up,
+        // including making a query it has no use for.
+        return ShareModeDecision {
+            mode: ShareMode::Shared,
+            refusal_detail: None,
+        };
+    }
+
+    let ask = |device: &DeviceInfo, params: StreamParams| {
+        backend.supports_exclusive(
+            host,
+            device,
+            StreamParams {
+                share_mode: ShareMode::Exclusive,
+                ..params
+            },
+        )
+    };
+    let input = ask(input_device, input_params);
+    let output = ask(output_device, output_params);
+
+    if input == ExclusiveModeOutcome::Engaged && output == ExclusiveModeOutcome::Engaged {
+        return ShareModeDecision {
+            mode: ShareMode::Exclusive,
+            refusal_detail: None,
+        };
+    }
+
+    let mut refused = Vec::new();
+    if input != ExclusiveModeOutcome::Engaged {
+        refused.push(format!("input \"{}\"", input_device.name));
+    }
+    if output != ExclusiveModeOutcome::Engaged {
+        refused.push(format!("output \"{}\"", output_device.name));
+    }
+    // `ExclusiveModeOutcome::Unsupported` carries no diagnostic of its own, so this is as specific
+    // a reason as the seam can honestly give -- said once, here, rather than paraphrased at each
+    // call site.
+    let reason = AudioIoError::ExclusiveModeUnavailable(
+        "the audio backend reports no exclusive-mode support for this device and format"
+            .to_string(),
+    );
+    ShareModeDecision {
+        mode: ShareMode::Shared,
+        refusal_detail: Some(format!(
+            "{}; {reason}; continuing in shared mode",
+            refused.join(", ")
+        )),
+    }
 }
 
 /// `main`'s real body. Blocks until the window is closed.
@@ -134,7 +230,34 @@ pub fn run() {
     let output_channels =
         crate::device_state::negotiate_channels(&output.configs, sample_rate_hz, 2).unwrap_or(1);
 
-    let max_block_size = buffer_frames.unwrap_or(512).max(1) as usize;
+    // FR-IO-020, and the first read of `AppSettings::exclusive_mode` since M6 added the field: the
+    // share mode is settled here, once, before anything is opened -- both stream literals below and
+    // the mode indicator handed to `AppHost` all take their value from this one decision.
+    let mut input_params = StreamParams {
+        sample_rate_hz,
+        buffer_frames,
+        channels: input_channels,
+        share_mode: ShareMode::Shared,
+    };
+    let mut output_params = StreamParams {
+        sample_rate_hz,
+        buffer_frames,
+        channels: output_channels,
+        share_mode: ShareMode::Shared,
+    };
+    let share_mode = negotiate_share_mode(
+        &backend,
+        &host_info,
+        &input.device,
+        input_params,
+        &output.device,
+        output_params,
+        settings.exclusive_mode,
+    );
+    input_params.share_mode = share_mode.mode;
+    output_params.share_mode = share_mode.mode;
+
+    let max_block_size = crate::audio_io::block_frames(buffer_frames);
     let channel_config = if output_channels >= 2 {
         ChannelConfig::MonoToStereo
     } else {
@@ -192,7 +315,14 @@ pub fn run() {
     let worker = WorkerHandle::spawn(worker_ctx);
     let stream_event_sender = worker.event_sender();
 
-    let mut host = AppHost::new(instance, worker, telemetry, library, state);
+    // FR-IO-020's mode indicator: the mode actually granted, never the one requested. The output
+    // device names it -- see `namir_ui::AudioModeStatus::device_name` for why one name is enough
+    // when the mode is settled across both directions.
+    let audio_mode = Some(namir_ui::AudioModeStatus {
+        share_mode: share_mode.mode.into(),
+        device_name: output.device.name.clone(),
+    });
+    let mut host = AppHost::new(instance, worker, telemetry, library, state, audio_mode);
     if let Some(w) = settings_warning {
         host.report(w.code, w.detail);
     }
@@ -211,24 +341,19 @@ pub fn run() {
             format!("output \"{from}\", using \"{}\"", output.device.name),
         );
     }
+    if let Some(detail) = share_mode.refusal_detail {
+        host.report(crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE, detail);
+    }
 
     let xruns = Arc::new(XrunCounter::new());
     let stream_setup = StreamSetup {
         backend: &backend,
         input_host: host_info.clone(),
         input_device: input.device.clone(),
-        input_params: StreamParams {
-            sample_rate_hz,
-            buffer_frames,
-            channels: input_channels,
-        },
+        input_params,
         output_host: host_info.clone(),
         output_device: output.device.clone(),
-        output_params: StreamParams {
-            sample_rate_hz,
-            buffer_frames,
-            channels: output_channels,
-        },
+        output_params,
         channel_config,
         input_channel_index: settings.channel_mapping.input_channel.unwrap_or(0),
         output_channel_left: settings.channel_mapping.output_channel_left.unwrap_or(0),
@@ -333,7 +458,9 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
         state: Arc::clone(&state),
     };
     let worker = WorkerHandle::spawn(worker_ctx);
-    let mut host = AppHost::new(instance, worker, telemetry, library, state);
+    // No device was opened at all on this path, so there is no share mode to indicate -- `None`
+    // rather than a truthful-looking "Shared", which would claim a device this window does not have.
+    let mut host = AppHost::new(instance, worker, telemetry, library, state, None);
     host.report(
         crate::error_codes::NO_SUPPORTED_CONFIG,
         "no audio device could be opened; parameters can still be edited but nothing will be \
@@ -377,5 +504,127 @@ fn spawn_xrun_logger(counter: Arc<XrunCounter>) -> XrunLog {
     XrunLog {
         stop,
         thread: Some(thread),
+    }
+}
+
+/// The one piece of real logic this module owns rather than composes: FR-IO-020's share-mode
+/// negotiation. Everything else here is glue over already-tested pieces (see the module doc
+/// comment), so these tests deliberately cover [`negotiate_share_mode`] alone — `run` itself still
+/// needs a real window and real devices and is still verified by hand
+/// (`docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`).
+///
+/// Every test here runs with no audio device of any kind, through [`crate::stream::FakeBackend`].
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::FakeBackend;
+
+    const IN: &str = "fake in";
+    const OUT: &str = "fake out";
+
+    fn host() -> HostInfo {
+        HostInfo {
+            name: "fake".to_string(),
+        }
+    }
+
+    fn device(name: &str) -> DeviceInfo {
+        DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        }
+    }
+
+    fn params(channels: u16) -> StreamParams {
+        StreamParams {
+            sample_rate_hz: 48_000,
+            buffer_frames: Some(128),
+            channels,
+            share_mode: ShareMode::Shared,
+        }
+    }
+
+    fn negotiate(backend: &FakeBackend, requested: bool) -> ShareModeDecision {
+        negotiate_share_mode(
+            backend,
+            &host(),
+            &device(IN),
+            params(1),
+            &device(OUT),
+            params(2),
+            requested,
+        )
+    }
+
+    /// The untouched-settings case: `AppSettings::default().exclusive_mode` is `false`, so a first
+    /// run — or any run by a user who never asked for exclusive mode — settles on shared with
+    /// nothing to report, even on a backend that would have granted exclusive mode.
+    #[test]
+    fn a_session_that_never_asked_for_exclusive_mode_settles_on_shared_with_no_notice() {
+        let backend = FakeBackend::new()
+            .granting_exclusive_to(IN)
+            .granting_exclusive_to(OUT);
+        let decision = negotiate(&backend, false);
+        assert_eq!(decision.mode, ShareMode::Shared);
+        assert!(decision.refusal_detail.is_none());
+    }
+
+    /// The interim real-world case, and the one every non-Windows platform is in permanently: the
+    /// request is refused outright, so the session runs shared and says so.
+    #[test]
+    fn an_exclusive_request_the_backend_refuses_settles_the_session_on_shared() {
+        let backend = FakeBackend::new();
+        let decision = negotiate(&backend, true);
+        assert_eq!(decision.mode, ShareMode::Shared);
+        let detail = decision
+            .refusal_detail
+            .expect("a refused request must be explained, not settled silently");
+        assert!(detail.contains(IN), "{detail}");
+        assert!(detail.contains(OUT), "{detail}");
+    }
+
+    /// **The all-or-nothing rule.** One direction granting exclusive mode is not enough: the
+    /// session settles on shared for *both*, because a single mode indicator cannot truthfully
+    /// describe a half-exclusive duplex path (roadmap §18). Run in both directions so a future
+    /// short-circuit that only checks one side fails here.
+    #[test]
+    fn exclusive_granted_on_only_one_device_settles_both_on_shared() {
+        for granted in [IN, OUT] {
+            let backend = FakeBackend::new().granting_exclusive_to(granted);
+            let decision = negotiate(&backend, true);
+            assert_eq!(
+                decision.mode,
+                ShareMode::Shared,
+                "exclusive granted only on {granted} must not engage the session"
+            );
+            let detail = decision
+                .refusal_detail
+                .expect("a partial grant is a refusal");
+            let refusing = if granted == IN { OUT } else { IN };
+            assert!(detail.contains(refusing), "{detail}");
+        }
+    }
+
+    /// The path D-13.4's fork exists to reach: both devices grant it, so the session runs
+    /// exclusive and there is nothing to warn about.
+    #[test]
+    fn exclusive_granted_on_both_devices_settles_the_session_on_exclusive() {
+        let backend = FakeBackend::new()
+            .granting_exclusive_to(IN)
+            .granting_exclusive_to(OUT);
+        let decision = negotiate(&backend, true);
+        assert_eq!(decision.mode, ShareMode::Exclusive);
+        assert!(decision.refusal_detail.is_none());
+    }
+
+    /// The refusal detail is what `EXCLUSIVE_MODE_UNAVAILABLE`'s `{reason}` placeholder stands for,
+    /// so it must actually carry a reason and say what happened instead — FR-UI-070 wants a notice
+    /// to state what failed, which device it concerned, and where that leaves the user.
+    #[test]
+    fn the_refusal_detail_names_the_device_the_reason_and_the_fallback() {
+        let backend = FakeBackend::new();
+        let detail = negotiate(&backend, true).refusal_detail.unwrap();
+        assert!(detail.contains("exclusive mode is unavailable"), "{detail}");
+        assert!(detail.contains("shared mode"), "{detail}");
     }
 }

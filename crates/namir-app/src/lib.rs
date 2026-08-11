@@ -61,6 +61,8 @@ pub mod error_codes;
 pub mod host;
 pub mod instance;
 pub mod latency;
+#[cfg(test)]
+mod rt_harness;
 pub mod settings;
 pub mod stream;
 pub mod worker;
