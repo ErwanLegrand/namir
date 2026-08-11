@@ -139,27 +139,37 @@ pane (shown only when the build is actually unsigned — it is the one screen a 
 before the plugin silently fails to appear), and a warning printed at the end of every unsigned run.
 State it in the release notes too.
 
-## The `Namir.app` wrapper — a known stopgap
+## `Namir.app` — why the standalone is a bundle, and where that is now decided
 
-`xtask bundle`'s macOS layout stages the standalone as a **bare Mach-O executable named `namir`**,
-not as a `Namir.app`. D-18.3 says a release places "the standalone app under `/Applications`". Both
+This section recorded a stopgap when it was first written. **The stopgap is gone**; the reasoning
+is kept because it is the argument for a layout decision that would otherwise look decorative.
+
+`xtask bundle`'s macOS layout originally staged the standalone as a **bare Mach-O executable named
+`namir`**, while D-18.3 says a release places "the standalone app under `/Applications`". Both
 cannot hold:
 
 - a bare executable in `/Applications` is a Unix executable as far as Finder is concerned —
   double-clicking it opens Terminal;
-- and an unbundled process cannot declare `NSMicrophoneUsageDescription`, which macOS 10.14+
-  requires before a process may open an audio **input** device. Without it the standalone is denied
-  the microphone, which for an amplifier simulator is the whole product.
+- and, the load-bearing half, an unbundled process cannot declare `NSMicrophoneUsageDescription`,
+  which macOS 10.14+ requires before a process may open an audio **input** device. Without it the
+  standalone is denied its input, which for an instrument amplifier simulator is the whole product.
 
-So `assemble_standalone_app()` wraps the staged binary into a minimal `.app`. **That wrapper belongs
-in `xtask/src/bundle.rs`, not in a shell script**, because everything else that ships was asserted
-by `xtask bundle --check` and this one payload was not. The concrete change is three more `Entry`
-rows in `plan(Platform::MacOs)` — `Namir.app/Contents/Info.plist` (`Generated`),
-`Namir.app/Contents/PkgInfo` (`Generated`), `Namir.app/Contents/MacOS/namir` (`Build`) — after which
-`check` byte-compares that plist exactly as it already does the plugin's.
+So this script grew a wrapper, and said in its own comment that the wrapper belonged in
+`xtask/src/bundle.rs` rather than in a shell script — everything else that ships was asserted by
+`xtask bundle --check` and that one payload was not. **M13 moved it.**
+`plan(Platform::MacOs)` now stages `Namir.app/Contents/{Info.plist, PkgInfo, MacOS/namir}`,
+`check` byte-compares that plist exactly as it does the plugin's, and this script `ditto`s what
+was staged.
 
-The script is written so that lands cleanly: if the staging tree already contains a `Namir.app` it
-is used as-is and the generator is skipped, so `xtask` growing those rows needs **no change here**.
+The wrapper was **deleted rather than kept as a fallback**. A fallback would silently produce an
+unasserted bundle from a stale staging tree, which is worse than a loud failure; `verify_staging`
+now refuses such a tree by name and tells the reader to re-run `xtask bundle --target macos`.
+
+Two values that lived here now live at their constants in `xtask/src/bundle.rs`, where they are
+argued: the standalone's `CFBundleIdentifier` (`org.legrand.namir.standalone`, distinct from the
+plugin's because TCC keys the microphone grant on it) and `LSMinimumSystemVersion` (`11.0`,
+derived from `aarch64-apple-darwin`'s own floor since CI's macOS leg is Apple Silicon — an Intel
+or universal artifact reopens it).
 
 Two things the wrapper had to decide that properly belong in `docs/`:
 
