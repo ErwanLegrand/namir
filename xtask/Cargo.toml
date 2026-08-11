@@ -27,3 +27,10 @@ namir-nam = { path = "../crates/namir-nam" }
 # `nam-parity` reads WAV files (the probe input and the reference render) as plain f32 samples.
 # Pinned to the same "3.5" every other hound consumer in this workspace uses.
 hound = "3.5"
+# M12: `identity` decodes images/namir.png to regenerate namir-ui's brand-mark alpha blob. An
+# **xtask-only** dependency by design -- `xtask` is exempt from D-5.1's layering table and is in
+# neither shipped product's dependency graph, so no image decoder reaches `namir-app`/`namir-clap`
+# and THIRD-PARTY-NOTICES.md (which lists the `Normal`-kind closure of those two alone) is
+# unaffected. Verified after adding it: `cargo run -p xtask -- attribution` still reports the
+# notices file up to date, and `cargo tree -e normal -p namir-app -p namir-clap` has no `png` node.
+png = "0.17"
