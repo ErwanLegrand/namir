@@ -120,12 +120,26 @@ pub fn mark_image() -> ColorImage {
     ColorImage::new([width, height], pixels)
 }
 
+/// How many `TextStyle::Heading` rows tall the mark is drawn.
+///
+/// It stood at exactly one row until M12's manual test was executed on Windows, where the verdict
+/// on both shells was that the mark read as too small -- one heading row is ~25 logical pixels,
+/// which is a line of text rather than a logo.
+///
+/// Two is also the largest factor that costs nothing in sharpness. The blob is
+/// [`MARK_TARGET_HEIGHT`](../../../../xtask/src/identity.rs) = 96 rows, so at two heading rows
+/// (~50 logical pixels) a 2x HiDPI display asks for ~100 physical pixels against 96 stored -- a
+/// ~1.04x magnification, effectively 1:1 and the sharpest this asset can be drawn. Going higher
+/// magnifies a mask that has no more detail to give, and wants a taller blob instead.
+const MARK_HEIGHT_IN_HEADINGS: f32 = 2.0;
+
 /// Draws the mark into `ui`, uploading its texture through `cache` on the first frame only.
 ///
-/// Scaled to the height a `TextStyle::Heading` row would have occupied, so replacing the heading
-/// this mark stands in for moves nothing else in the top panel.
+/// Scaled to [`MARK_HEIGHT_IN_HEADINGS`] heading rows, so the top panel is taller than the
+/// `ui.heading("Namir")` this mark replaced -- deliberately, and nothing else in the panel moves
+/// relative to it.
 pub fn render(ui: &mut Ui, cache: &mut Option<TextureHandle>) {
-    let row_height = ui.text_style_height(&egui::TextStyle::Heading);
+    let row_height = ui.text_style_height(&egui::TextStyle::Heading) * MARK_HEIGHT_IN_HEADINGS;
     let texture = cache.get_or_insert_with(|| {
         ui.ctx()
             .load_texture("namir_brand_mark", mark_image(), MARK_TEXTURE_OPTIONS)
@@ -221,10 +235,14 @@ mod tests {
         );
     }
 
-    /// The mark occupies exactly the row height a `TextStyle::Heading` would have, so swapping the
-    /// heading for it moves nothing else in the top panel.
+    /// The mark occupies [`MARK_HEIGHT_IN_HEADINGS`] heading rows.
+    ///
+    /// Pinned as a test because the factor is not free to change: the blob is 96 rows, so two
+    /// heading rows is already ~1:1 against it at a 2x HiDPI scale factor. Raising this without
+    /// also raising `MARK_TARGET_HEIGHT` starts magnifying a mask with no more detail in it, and
+    /// M12's manual test is the reason the figure is 2.0 rather than the 1.0 it shipped at.
     #[test]
-    fn the_mark_is_drawn_at_the_heading_row_height() {
+    fn the_mark_is_drawn_at_two_heading_rows() {
         let ctx = egui::Context::default();
         let mut cache = None;
         let mut heading_height = 0.0;
@@ -238,9 +256,10 @@ mod tests {
         });
 
         assert!(heading_height > 0.0);
+        let expected = heading_height * MARK_HEIGHT_IN_HEADINGS;
         assert!(
-            (mark_rect.height() - heading_height).abs() < 1.0,
-            "the mark is {} px tall against a {heading_height} px heading row",
+            (mark_rect.height() - expected).abs() < 1.0,
+            "the mark is {} px tall against an expected {expected} px              ({MARK_HEIGHT_IN_HEADINGS} x a {heading_height} px heading row)",
             mark_rect.height()
         );
     }

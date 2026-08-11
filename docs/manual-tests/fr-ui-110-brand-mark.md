@@ -43,8 +43,10 @@ So this requirement stays **open** after M12. It is recorded here, not closed he
 
 ## Executed run (M12, 2026-08-10)
 
-**Steps 1-4: NOT EXECUTED. No display of any kind is available in this environment**, and the
-failure is in the windowing library rather than in anything M12 changed:
+Superseded by the run below, and kept because it is the reason the design notes it produced were
+written against an unobserved mark. **Steps 1-4 were NOT EXECUTED in the build environment**: no
+display of any kind exists there, and the failure is in the windowing library rather than in
+anything M12 changed:
 
 ```
 $ xvfb-run -a cargo run --example manual_window_smoke -p namir-ui
@@ -52,25 +54,53 @@ thread 'main' panicked at baseview-0.2.2/src/platform/x11/window.rs:111:27:
 called `Result::unwrap()` on an `Err` value: RecvError
 ```
 
-`cargo run -p namir-app` reaches further — it starts audio (`namir: audio stream started`,
-`48000 Hz, 256-frame buffer`) and then panics at the same `baseview` X11 call. A virtual framebuffer
-(`xvfb-run`) does not help: `baseview` 0.2.2's X11 path needs a GLX-capable display and `Xvfb`
-provides none here. There is no host in this environment either, so step 2 is equally unrun.
+`cargo run -p namir-app` reached further -- it started audio (`namir: audio stream started`,
+`48000 Hz, 256-frame buffer`) and then panicked at the same `baseview` X11 call. `xvfb-run` did not
+help: `baseview` 0.2.2's X11 path needs a GLX-capable display and `Xvfb` provides none. No CLAP host
+was available there either.
 
-**What was verified instead, and what that is worth.** The headless tests in
-`crates/namir-ui/src/brand/mod.rs` and `xtask/src/identity.rs` prove the blob decodes to the
-expected dimensions, that the tint produces `#ff6600` at full alpha, that the texture is uploaded
-once and reused rather than per frame, and that the checked-in blob is byte-identical to a fresh
-render of `images/namir.png`. `crates/namir-ui/src/app.rs`'s existing headless
-`egui::Context::run_ui` tests still pass with the mark in place of the heading. **None of that is a
-pixel on a screen**, which is the whole reason this requirement's method is `M` and not `U`.
+## Executed run on Windows (M12, 2026-08-11)
 
-**This document is therefore incomplete by design, and FR-UI-110 is not closed by M12.** The four
-steps above must be run on the §2 reference machine — which is the same Windows machine M13 needs
-anyway for the icon work and for its own install-scope test. Running them there, alongside the icon
-clauses, is the cheaper sequencing and is what M13 should do.
+Run by the author on Windows, which is the only platform where step 2 is possible at all --
+`namir-clap` declares Win32 embedded-only GUI support (`crates/namir-clap/src/gui.rs`), so there is
+no plugin GUI on Linux or macOS to check.
 
-*(That install-scope requirement is deliberately not named by id here: `xtask traceability` matches
-a `Verify: M` requirement against a manual-test document's **whole content**, so a bare prose
-mention of an unrelated id silently marks it covered. It did, in this document's first draft,
-until a review caught it.)*
+| Step | Verdict |
+|---|---|
+| 1. Standalone window shows the mark | **PASS** -- "the logo is visible in the standalone window" |
+| 2. Plugin shell shows the mark in a host | **PASS** -- "Namir logo is visible in CLAP plugin" |
+| 3. Appearance | **PARTIAL -- one defect found and fixed; see below** |
+| 4. Accessible name is "Namir" | **PASS** -- reported as "Namir" |
+
+**Step 3 found a real defect: the mark was too small in both shells.** It was drawn at exactly one
+`TextStyle::Heading` row -- about 25 logical pixels, which is the height of a line of text rather
+than of a logo. Fixed by `brand::MARK_HEIGHT_IN_HEADINGS = 2.0`, doubling it to ~50 logical pixels.
+Two is not an arbitrary choice: the embedded blob is 96 rows, so at ~50 logical pixels a 2x HiDPI
+display asks for ~100 physical pixels against 96 stored, which is ~1.04x and effectively 1:1 -- the
+sharpest this asset can be drawn without regenerating it taller. `MARK_TARGET_HEIGHT`'s doc comment
+in `xtask/src/identity.rs` is updated in the same change to record that its former ~2x margin is now
+spent, so a future size increase must raise it too.
+
+**The rest of step 3 is still open, and the fix above is unobserved.** The step also asks that the
+mark be *legible rather than aliased* at 1x and at a HiDPI scale factor. That was not reported
+either way, and it is the specific thing worth looking at: a review had already found the mark was
+being minified ~4-5x with `mipmap_mode: None`, which is the classic recipe for a thin wordmark
+shimmering, and mipmapping was enabled to address it. Doubling the drawn size halves that
+minification to ~2x, which should help again -- but **nobody has yet confirmed either fix
+visually**, and the enlarged mark has not been seen at all.
+
+## Status after this run
+
+**Steps 1, 2 and 4 are closed.** "The interface shall display the Namir brand mark" is satisfied and
+observed in both product shells, which is the clause M12 scoped.
+
+**FR-UI-110 as a whole remains open**, on two counts, neither of which M12 can close:
+
+1. **Step 3's legibility half**, plus a re-check of the enlarged mark. Cheap: it needs one person to
+   look at a window at 1x and at a 2x scale factor.
+2. **Both icon clauses** -- "the standalone application's window and executable shall carry the
+   application icon" -- deferred to M13 by `02-architecture.md` D-17.3. The executable icon needs a
+   build script that decision declines to admit to a shipped crate; the window icon has no route at
+   all through `baseview` 0.2.2, which has no icon field.
+
+Both want the same Windows machine, so M13 is where this document should be finished.

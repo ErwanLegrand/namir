@@ -56,15 +56,22 @@ pub const BLOB_PATH: &str = "crates/namir-ui/src/brand/namir_mark.alpha";
 
 /// Height, in pixels, the mark is reduced to.
 ///
-/// The mark is drawn at `TextStyle::Heading` row height, ~20-24 pt, and the blob is embedded once
-/// and never re-rendered per display — so it has to be dense enough for the *densest* case it
-/// will be drawn in, a 2x HiDPI scale factor, where that row is ~40-48 physical pixels. 96 rows
-/// keeps roughly a 2x margin over even that.
+/// The blob is embedded once and never re-rendered per display, so it has to be dense enough for
+/// the *densest* case it will be drawn in: a 2x HiDPI scale factor.
 ///
-/// The cost of the headroom is that the mark is always minified, ~4-5x at a 1x scale factor, and
-/// minification — not magnification — is the direction in which a plain bilinear sample
-/// undersamples and aliases. `namir-ui`'s `brand::render` therefore uploads the texture with
-/// mipmapping enabled; see `MARK_TEXTURE_OPTIONS` there.
+/// **This figure had roughly a 2x margin until M12's manual test, and now has none.** The mark was
+/// drawn at one `TextStyle::Heading` row (~25 logical pixels, ~50 physical at 2x); executing the
+/// test on Windows found it too small in both shells, and `namir-ui`'s
+/// `brand::MARK_HEIGHT_IN_HEADINGS` doubled it. At ~50 logical pixels a 2x display asks for ~100
+/// physical against the 96 stored here — ~1.04x magnification, effectively 1:1. That is the
+/// sharpest this asset can be drawn, and it means **any further increase in the drawn size needs
+/// this constant raised in the same change**, or the mark starts magnifying a mask with no more
+/// detail in it.
+///
+/// The mark is still minified at a 1x scale factor (~2x, down from ~4-5x), and minification — not
+/// magnification — is the direction in which a plain bilinear sample undersamples and aliases.
+/// `namir-ui`'s `brand::render` therefore uploads the texture with mipmapping enabled; see
+/// `MARK_TEXTURE_OPTIONS` there.
 pub const MARK_TARGET_HEIGHT: u32 = 96;
 
 /// The one colour `images/namir.png` is drawn in, and the colour `namir-ui`'s `brand::MARK_FILL`
