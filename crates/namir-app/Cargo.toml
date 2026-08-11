@@ -52,7 +52,14 @@ namir-ui = { path = "../namir-ui" }
 # AudioBox 22VSL: cpal sent dwChannelMask = 0 for every format, which that USB driver refuses in
 # exclusive mode while Microsoft's HD Audio driver accepts it. Without this, exclusive mode was
 # unreachable on the one interface class this product is actually for.
-cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "ab5f40ac3558306dafc66a9aca4a35b5908d8579" }
+#
+# Bumped again to 2edbacb for the container-justification fix, also measured on that machine and
+# also invisible to every automated check on both sides of the boundary. WASAPI stores 24 valid bits
+# left-justified in a 32-bit container; `dasp_sample::I24` is right-aligned in the low 24. Writing
+# one as the other is a factor of 2^8 -- output ~48 dB too quiet, and capture 256x too large, which
+# pinned the input meter on anything above near-silence. Both directions confirmed by ear and by
+# meter before the fix; both are corrected in the fork, where the container layout is actually known.
+cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "2edbacb44b10e56801e5dbfa251517fb2c9e2ef4" }
 # The input-callback -> output-callback bridge (`bridge.rs`): the two cpal callbacks run on two
 # different OS-owned threads with no ordering relationship, so getting a captured block from the
 # input thread to the output thread needs its own wait-free SPSC ring, distinct from
