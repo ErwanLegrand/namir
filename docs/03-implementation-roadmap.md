@@ -2427,7 +2427,7 @@ that happens to depend on them first.
    reduction with a Consequence note at FR-CLAP-030 itself; or keep the current silence, which is the
    one option M9 exists to stop doing. **Due before M8**, since 5.12 CLAP cannot be marked Done
    without it.
-10. **Whether `xtask traceability`'s scanned-file list gains `.github/workflows/release.yml` when M13
+10. ~~**Whether `xtask traceability`'s scanned-file list gains `.github/workflows/release.yml` when M13
     creates it.** Raised 2026-08-08 by M9's P0 decision pass. The list at `xtask/src/main.rs:205-216`
     is hard-coded to `ci.yml`, `fuzz.yml`, `Cargo.toml` and `deny.toml` — nothing derives it, so a
     new workflow is invisible to the check until someone edits that array. FR-PKG-010's `*Verify:*`
@@ -2436,7 +2436,23 @@ that happens to depend on them first.
     the list, and say plainly that a wider scan set is a wider surface for a tag that asserts nothing;
     or close FR-PKG-010 with an in-repo assertion instead, which is what §10's M8-planning note
     assumed before the rule that supersedes it existed. **Due before M13 (§20 below)** — deciding
-    late means meeting it as a red gate on the one milestone whose entire content is shipping.
+    late means meeting it as a red gate on the one milestone whose entire content is shipping.~~
+    **Resolved 2026-08-11, at M13's start: the second answer — an in-repo assertion, and the scanned
+    list is left alone.** FRS §10 admits "an annotated test **or** `xtask` subcommand", and a test
+    is the cheaper of the two here, so `release.yml` gains no `# trace:` tag and the hard-coded
+    arrays (now `xtask/src/main.rs:301-312`, not `:205-216` — the citation had already drifted) are
+    unchanged. Three things decided this rather than the elected-configuration route, which was
+    otherwise admissible. **A tag in a workflow asserts nothing a reader can check**, which is this
+    item's own stated cost, and FR-PKG-010 has four separable clauses — tag-triggered, from a tagged
+    *source tree*, on every tier-1 and tier-2 platform, and every published distribution an artifact
+    of that workflow — that a bare `# trace:` line would flatten into one unexamined claim.
+    **A test runs on every pull request; a workflow tag is inspected by nobody and the workflow
+    itself runs only on a tag**, so the elected-configuration route would have left FR-PKG-010's
+    evidence untouched between releases. And **the scan set stays narrow**, which matters beyond
+    this item: it is hard-coded precisely so that adding a file to it is a deliberate act, and M13
+    adds three packaging files (`.iss`, `install.sh`, a macOS script) that would each raise the same
+    question if the precedent were set here. See §20's M13 status for what the assertion actually
+    checks.
 11. ~~**`clap-validator`'s supply-chain shape, once FR-CLAP-020's gate is required.** It is not
     published on crates.io and must be installed from git — recorded in `02-architecture.md` §19 and
     restated in §16's own deliverables. Wiring it into CI makes that install a build input on every
@@ -2495,7 +2511,7 @@ that happens to depend on them first.
     decides whether this requirement closes with a repeatable benchmark, a one-time recorded figure,
     or both; D-2.4's "certified means the §2 reference machine and at least five repetitions" binds
     either way. **Due at M9b's start.**
-15. **How a `Verify: M` Must is matched to its manual-test document.** Raised 2026-08-09 by M9a's
+15. ~~**How a `Verify: M` Must is matched to its manual-test document.** Raised 2026-08-09 by M9a's
     set-quantification sweep. `build_report` credits a manual document to a `Verify: M` requirement
     if **either** the filename starts with the id's lowercase prefix **or** the file's text contains
     the id anywhere, taking the first match in directory order
@@ -2520,7 +2536,47 @@ that happens to depend on them first.
     everywhere else it has been offered. **Due before M13's close-out** — that is when D-18.5's
     zero-uncovered half becomes required, and a wrongly-credited document would let that gate certify
     a Must nothing verifies, on the one milestone whose flip is meant to make the ledger mean
-    something.
+    something.~~
+    **Resolved 2026-08-11 at M13's start: the first answer, built.** The content arm now reads the
+    document's `**Requirement (literal…):**` block rather than the whole file —
+    `declared_requirement_ids` in `xtask/src/traceability.rs`, called from `build_report`'s `'M'`
+    arm. The filename arm is unchanged, and so is its complementary weakness: a correctly-named
+    document recording "not executed, no hardware available" still credits its requirement
+    identically to one recording a clean pass. That half of this item is **not** fixed and is not
+    claimed to be; it is a different problem with a different answer, and conflating them is how a
+    resolution note over-claims.
+
+    Three things the work found that the item above did not predict, all of which make the fix
+    look better rather than worse.
+
+    - **The backfill it costed does not exist.** The item budgets "backfilling that line into the
+      seven of twenty-one documents lacking it". All **22** documents in `docs/manual-tests/` carry
+      the line today; the count was already stale when it was written or has been closed since. No
+      document was edited to land this.
+    - **The block is a paragraph, not a line**, and that distinction is load-bearing. Real
+      declarations wrap: `fr-io-010-device-enumeration.md` names FR-IO-010 on its first line and
+      FR-IO-040 on its third. A literal single-line read would have dropped the one legitimate
+      multi-requirement document in the tree while keeping every false positive — the exact inverse
+      of the intent. The reader takes the marker's paragraph, to the first blank line.
+    - **There was a third false positive, not one.** The item names FR-UI-020 → `fr-clap-030`; M12's
+      close-out had already found and reworded a fourth in `fr-ui-110-brand-mark.md` → FR-PKG-030.
+      Narrowing the arm also demoted **FR-UI-070**, which resolved to
+      `fr-ui-010-standalone-window-renders.md` because that script's step 1 says the canned snapshot
+      carries "one FR-UI-070 notice". FR-UI-070 requires errors to be surfaced non-modally, never
+      interrupt audio, and state what failed, which file or device, and what to do — verified
+      "against the error catalogue of FR-ERR-020". That script walks no catalogue. The credit was a
+      noun in a parenthesis.
+
+    **Effect on the ledger, stated because it goes the unpopular way.** `docs/03-test-plan.md` moves
+    exactly two rows, FR-UI-020 and FR-UI-070, from a manual-test filename to `**UNRESOLVED**`, and
+    the informational uncovered count goes **15 → 17**. Neither requirement lost any verification it
+    had; both lost a credit for verification that never happened. **No §14 cell moves**: M9a's
+    re-audit had already adjudicated both **Partial** by hand under §16's "Divergence 2", which is
+    the disposition this change makes the tool agree with. And per item 15's own deadline reasoning,
+    the due date travelled: D-18.5's zero-uncovered half now flips at **M9b's** close-out (see the
+    correction at §16's restated acceptance), so this was no longer due here. It was done here
+    anyway — M13 is the milestone that writes `fr-pkg-030-windows-install-scope.md`, and FR-PKG-030
+    is the requirement the bug hit last.
 16. **Whether 1.0 ships an audio-device panel in `namir-ui`, and if not, what FR-IO-010/-040/-050
     mean.** Raised 2026-08-09 by M9a's sweep, which found the surface absent rather than untested —
     `UiSnapshot` carries no host, device, sample-rate, buffer-size, latency or xrun field and
@@ -2538,7 +2594,7 @@ that happens to depend on them first.
     silence, in which three Musts read covered on manual documents describing a panel that does not
     exist. **Due before M9b's start**, and worth taking before M11 rather than after, since the
     second answer changes what M11 builds and the first changes where.
-17. **Which milestone closes FR-CFG-030, NFR-LIC-030 and FR-IO-070.** Raised 2026-08-09 by M9a's
+17. ~~**Which milestone closes FR-CFG-030, NFR-LIC-030 and FR-IO-070.** Raised 2026-08-09 by M9a's
     sweep, whose `// uncovered:` fields had to declare a closing milestone for each and, for these
     three alone of the 54, could not take one this document assigns. FR-CFG-030 and NFR-LIC-030 both
     name **M13**, which §20 does not claim either in — and NFR-LIC-030 additionally contradicts
@@ -2550,7 +2606,39 @@ that happens to depend on them first.
     defaulting this appendix exists to prevent. **Due before M10's start** — M9a is the phase that
     wrote the three fields, and leaving them unreconciled means the tool's printed owner attribution
     and its printed closing milestone disagree from the very next milestone onward, which is a
-    disagreement no exit status will ever surface.
+    disagreement no exit status will ever surface.~~
+    **Resolved 2026-08-11, at M13's start. Overdue by three milestones** — the deadline above was
+    "before M10's start" and M10, M11 and M12 all ran with the three fields unreconciled. Nothing
+    broke, which is the point R-13 makes about quiet failures rather than a defence of the delay.
+    Each leg separately, and one of the three answered itself by M11 simply running.
+
+    - **FR-CFG-030 → M13. The annotation was right and §20 was silent; §20 adopts it.** Its
+      `*Verify:* I` reads "each is installed alone into a clean environment and exercised", and
+      before this milestone there is nothing to install — the standalone is a `cargo build` output
+      and the plugin is a hand-copied `.dll`. M13 is the first milestone at which the sentence can
+      be executed at all, and a CI runner is a clean environment by construction. Recorded as scope
+      in §20's M13 status rather than by editing §20's deliverable list. What M13 does **not**
+      promise is that it closes in full: the requirement is two installations, each exercised, and
+      whether the exercising half reaches its `Verify: I` bar is settled by what actually runs, with
+      any residue staying a `trace-partial:` naming it.
+    - **NFR-LIC-030 → M13, and §14's M7-session bullet booking it closed (`:1690`) is the error.**
+      Both cannot stand, and the annotation is the one supported by the requirement's text. That
+      bullet says "NFR-LIC-030 closes: the attribution file (`THIRD-PARTY-NOTICES.md`, `xtask
+      attribution`) didn't exist before this session" — true of the file, and the requirement has
+      **two** clauses: "produced by the build" **and** "shipped with the binaries". M7 closed the
+      first. There were no binaries to ship anything with, so the second could not have closed and
+      was not examined. This is the same shape as M9a's other findings — a requirement counted Done
+      on the strength of the clause someone was working on — and it is left in place as historical
+      text per §14's own rule, with the correction here and the cell moving at M13's close-out, not
+      M7's.
+    - **FR-IO-070 → M9b, and the conflict dissolved on its own.** The item's difficulty was that
+      §18 named FR-IO-070 as M11's opportunistic item while the annotation booked it to M9b, with
+      M11 running first. **M11 has now run and did not take it**: its close-out states "M11 produced
+      evidence for FR-IO-020 and for nothing else, and a cell nobody's evidence has touched stays
+      where M9a left it." §18's own wording made this the expected outcome — the item was gated on
+      hardware and explicitly not to be back-filled with an inspection claim. So the annotation
+      stands unopposed and **M9b owns it**, by the milestone that could have claimed it declining
+      to, which is a better resolution than either reading argued for.
 18. **FR-CHAIN-070 cannot be satisfied as the chain is built: two of its three options are
     unreachable and there is no chooser at all.** Raised 2026-08-09 by the independent spot-check of
     §14's adjudication, verified at the sites named rather than inferred. The requirement says the
@@ -2809,6 +2897,25 @@ catch it — it runs `fmt` and `check` only, by design.
 - **NFR-QUAL-010 is not closed by M9, and M9 must not claim it is.** Its own *Verify* text requires a
   check that "fails on any uncovered **Must**" (FRS §6.4); under this restatement that is true only
   when the second half flips at M13's close. §12's exit checklist is unaffected — M8 runs last.
+
+**Correction (added M13, 2026-08-11) — the flip is at M9b's close-out, not M13's, and this
+restatement is where the error entered.** The bullets above are otherwise unamended; only the
+milestone named in the second and fifth changes. The reasoning that produced "M13" is directly
+above, at the attribution table: ten of the twenty-four uncovered Musts belong to M10, M12 and M13,
+so M13 was read as the milestone after which none remains. That counted one column. **M9's own share
+is fourteen**, and this same section's second deliverable puts those fourteen in **M9b**, which this
+same section then orders *after* M13. The two statements are on the same page and were never
+reconciled. Measured from the checked-in plan at M13's start rather than re-derived: **15**
+`**UNRESOLVED**` Must rows, five owned by M13 (FR-PKG-010, -020, -030, -040, NFR-PERF-030) and
+**ten** by M9b (FR-CFG-020; FR-CLAP-030, -040, -070, -080, -100, -130; FR-ERR-010; FR-NAM-060;
+NFR-PERF-040). Deleting `--allow-uncovered` at M13's close would make a required check red for ten
+requirements no milestone before M9b was ever asked to close — the permanently-red required check
+M7's argument, quoted two bullets above, exists to prevent. So: **M9b's close-out owns the flip**,
+NFR-QUAL-010 closes at **M9b** and no earlier milestone may record it closed, and §15 item 15's
+"due before M13's close-out" deadline follows the flip with it. `02-architecture.md` D-18.5 carries
+the same correction as its own dated consequence note, and §20's scope note carries it as an
+appended note there. M13 still lands every annotation §20's Acceptance names; what it does not do is
+flip a gate whose remaining gaps are not its to close.
 
 *An allowlist or exemption register is rejected, not overlooked.* The obvious way to make "zero
 uncovered Musts" pass today is a file of known-exempt ids the gate skips. Three reasons not to. The
@@ -4394,3 +4501,26 @@ The sentence above stands as written; what actually enforces the tags until the 
 milestone's own Acceptance paragraph**, which names them explicitly. **M13's close-out owns the
 flip** — delete `--allow-uncovered` from the required step, delete the informational step — and must
 record that it happened. M9's close-out must not claim it.
+
+### M13 scope note, second correction: the flip is M9b's, 2026-08-11
+
+**The paragraph immediately above is wrong in its last three sentences, and this note is the
+correction rather than an edit to them.** M13's close-out cannot own the flip, for a reason visible
+in §16 before this milestone started. §16's attribution table counts ten uncovered Musts owned by
+M10, M12 and M13 and concludes M13 is where the list runs out; it does not carry the *other*
+fourteen, which are M9's own and which §16's own second deliverable assigns to **M9b** — ordered
+**after** M13 by that same pass. Counted from the checked-in plan at this milestone's start:
+**15** `**UNRESOLVED**` Must rows, of which M13 owns five — FR-PKG-010, -020, -030, -040 and
+NFR-PERF-030 — and **ten** are M9b's. §16's own correction lists those ten by id, and this note
+deliberately does not repeat them: `xtask traceability` attributes an uncovered id to the last
+`## <n>. M<k>` section naming it, so spelling an M9b id out here would relabel it **M13** in the
+tool's printed output — which is how the first draft of this note was caught. Deleting
+`--allow-uncovered` here would turn a required check red on the day it became required and leave it
+red until M9b, which is exactly the failure mode D-18.5 split the gate to avoid.
+
+**M9b's close-out owns the flip.** Everything else in the paragraph above holds: the flip is still
+the deletion of the flag and of the informational step, still two lines; the required plan-diff half
+is unaffected; and **this milestone's Acceptance paragraph remains the only thing enforcing M13's
+own annotations**, which is what that paragraph was already saying. NFR-QUAL-010 therefore closes at
+**M9b**, and M13's close-out must not claim it any more than M9a's was allowed to. `02-architecture.md`
+D-18.5 and §16's restated acceptance carry the same correction, each as an appended note.
