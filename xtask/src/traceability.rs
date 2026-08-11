@@ -659,6 +659,52 @@ pub struct Report {
     pub partial_hits: HashMap<String, Vec<PartialHit>>,
 }
 
+/// The opening of a manual-test document's requirement declaration. Two spellings exist in the
+/// tree -- `**Requirement (literal):**` and `**Requirement (literal, Must):**` -- so the marker
+/// stops before the parenthesis's contents rather than trying to enumerate them.
+const DECLARATION_MARKER: &str = "**Requirement (literal";
+
+/// Every requirement id a manual-test document **declares** it verifies: the ids occurring in its
+/// `**Requirement (literal…):**` block, in order, deduplicated.
+///
+/// The block is the paragraph beginning with [`DECLARATION_MARKER`] and running to the first blank
+/// line, not the marker's own line. That matters -- these declarations routinely wrap across three
+/// or four lines, and `fr-io-010-device-enumeration.md`'s names FR-IO-010 on its first line and
+/// FR-IO-040 on its third, so a single-line read would drop the one legitimate multi-requirement
+/// document in the tree while keeping every false positive.
+///
+/// Only the **first** block is read. No document in the tree has two, and a rule that accumulated
+/// every block would drift back towards the whole-file match this function exists to replace.
+///
+/// A document with no declaration block declares nothing and returns empty. That is deliberately
+/// not an error: such a document can still resolve its own requirement by filename, which is the
+/// other arm of [`build_report`]'s `'M'` match, and turning a missing line into a hard error would
+/// make a documentation omission abort the whole gate. It does mean the filename arm's own
+/// weakness is untouched by this function -- a correctly-named document recording "not executed"
+/// credits its requirement identically to one recording a clean pass. Roadmap §15 item 15 names
+/// that separately and it is not what this narrowing fixes.
+pub fn declared_requirement_ids(content: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_block = false;
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if !in_block {
+            if !trimmed.starts_with(DECLARATION_MARKER) {
+                continue;
+            }
+            in_block = true;
+        } else if trimmed.is_empty() {
+            break;
+        }
+        for id in scan_requirement_ids(line) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
 /// Reconciles `requirements` against `manual_test_docs` (every real `(filename, content)` pair
 /// under `docs/manual-tests/`, e.g. `("fr-io-020-wasapi-exclusive-mode.md", "...")`), `source_hits`
 /// (every id this run found a `trace:` annotation or matching test-fn name for, already resolved
@@ -666,10 +712,21 @@ pub struct Report {
 /// `trace-partial:` annotations).
 ///
 /// A manual-test file matches a `Verify: M` requirement if either its filename starts with the
-/// id's lowercase prefix (the usual one-file-per-requirement case) *or* its content contains the
-/// literal id (a file documented as covering more than one requirement in its
-/// `**Requirement (literal):**` line, e.g. `fr-io-010-device-enumeration.md` also covering
-/// FR-IO-040, is real and must not be missed just because its filename only names the first one).
+/// id's lowercase prefix (the usual one-file-per-requirement case) *or* the id appears in the
+/// document's own `**Requirement (literal…):**` declaration block, as
+/// [`declared_requirement_ids`] reads it (a file documented as covering more than one requirement,
+/// e.g. `fr-io-010-device-enumeration.md` also covering FR-IO-040, is real and must not be missed
+/// just because its filename only names the first one).
+///
+/// The second arm read the **whole file** until M13 narrowed it, and that was a live defect rather
+/// than a theoretical one: any prose mention of an id credited that id in full. Roadmap §15 item 15
+/// caught FR-UI-020 resolving to `fr-clap-030-audio-ports-negotiation.md` on a parenthesis about
+/// watching a meter, M12's close-out caught `fr-ui-110-brand-mark.md` crediting FR-PKG-030 on a
+/// passing mention, and narrowing the arm turned up a third, FR-UI-070 resolving to
+/// `fr-ui-010-standalone-window-renders.md` because its script says the canned snapshot carries
+/// "one FR-UI-070 notice". None of the three documents verifies the requirement it was crediting.
+/// Reading the declaration block instead makes the credit something the document's author wrote
+/// deliberately, which is the whole of what this arm is for.
 pub fn build_report(
     requirements: &[Requirement],
     manual_test_docs: &[(String, String)],
@@ -690,7 +747,8 @@ pub fn build_report(
         if req.verify == 'M' {
             let prefix = format!("{}-", manual_test_prefix(&req.id));
             match manual_test_docs.iter().find(|(name, content)| {
-                name.to_lowercase().starts_with(&prefix) || content.contains(&req.id)
+                name.to_lowercase().starts_with(&prefix)
+                    || declared_requirement_ids(content).contains(&req.id)
             }) {
                 Some((file, _)) => {
                     manual_hits.insert(req.id.clone(), file.clone());
@@ -1645,9 +1703,10 @@ mod tests {
     }
 
     #[test]
-    fn build_report_resolves_a_manual_verified_requirement_named_only_in_content() {
-        // fr-io-010-device-enumeration.md's own filename only names FR-IO-010, but its content
-        // documents FR-IO-040 too -- a real file this project already has, so this must resolve.
+    fn build_report_resolves_a_manual_verified_requirement_declared_in_the_literal_block() {
+        // fr-io-010-device-enumeration.md's own filename only names FR-IO-010, but its
+        // `**Requirement (literal):**` block declares FR-IO-040 too -- a real file this project
+        // already has, and the one legitimate multi-requirement document in the tree.
         let reqs = vec![Requirement {
             id: "FR-IO-040".into(),
             verify: 'M',
@@ -1662,6 +1721,57 @@ mod tests {
         assert_eq!(
             report.manual_hits.get("FR-IO-040").unwrap(),
             "fr-io-010-device-enumeration.md"
+        );
+    }
+
+    #[test]
+    fn a_prose_mention_outside_the_literal_block_credits_nothing() {
+        // The defect roadmap §15 item 15 names, in the shape it actually had: FR-UI-020 resolving
+        // to the CLAP audio-port script because that script mentions it once, in a parenthesis
+        // about watching a meter. The document is a real one and the sentence is a reasonable
+        // sentence; it is simply not a claim to verify FR-UI-020.
+        let reqs = vec![Requirement {
+            id: "FR-UI-020".into(),
+            verify: 'M',
+            section: String::new(),
+        }];
+        let docs = vec![(
+            "fr-clap-030-audio-ports-negotiation.md".to_string(),
+            "**Requirement (literal):** the plugin shall declare audio port configurations\n\
+             corresponding to FR-CHAIN-060.\n\
+             \n\
+             ## Script\n\
+             1. Play a signal and watch the meter (FR-UI-020) on both output channels.\n"
+                .to_string(),
+        )];
+        let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
+        assert!(report.manual_hits.is_empty());
+        assert_eq!(report.missing.len(), 1, "{:?}", report.missing);
+        assert_eq!(report.missing[0].id, "FR-UI-020");
+    }
+
+    #[test]
+    fn a_declaration_block_wrapping_across_lines_is_read_whole() {
+        // The block ends at the first blank line, not at the end of the marker's own line. Real
+        // declarations wrap: fr-io-010's names its second id three lines in.
+        let ids = declared_requirement_ids(
+            "# heading\n\
+             \n\
+             **Requirement (literal):** FR-IO-010 -- \"the user shall be able to select an audio\n\
+             input device and an audio output device\" ... and FR-IO-040 -- \"the user shall be\n\
+             able to select sample rate and buffer size\".\n\
+             \n\
+             **Verify: M.** FR-IO-090 is mentioned here and must not be picked up.\n",
+        );
+        assert_eq!(ids, vec!["FR-IO-010", "FR-IO-040"]);
+    }
+
+    #[test]
+    fn a_document_with_no_declaration_block_declares_nothing() {
+        // Not an error -- such a document still resolves its own requirement by filename. The
+        // whole-file match this replaced would have credited every id in the prose below.
+        assert!(
+            declared_requirement_ids("# heading\n\nSee FR-UI-070 and FR-PKG-030.\n").is_empty()
         );
     }
 
