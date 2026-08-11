@@ -1829,7 +1829,7 @@ not adjudicate them further.
 | 5.12 CLAP | 11 | 2 | 9 | 0 |
 | 5.13 UI | 7 | 1 | 6 | 0 |
 | 5.14 ERR | 6 | 1 | 4 | 1 |
-| 5.15 PKG | 4 | 0 | 0 | 4 |
+| 5.15 PKG | 4 | 1 | 3 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
 | 6.2 PERF | 6 | 0 | 6 | 0 |
 | 6.3 PORT | 5 | 3 | 2 | 0 |
@@ -1838,7 +1838,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **34** | **91** | **5** |
+| **Total** | **130** | **35** | **94** | **1** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2278,6 +2278,65 @@ milestones write, had to be recomputed against the newer base.
   does*, and no substring check reaches whether the prose actually does either. The tag is
   `// trace-partial: NFR-DOC-040` with its mandatory `uncovered:` field naming that clause, and
   under D-23.2 a Partial is not Done. Closes M13.
+
+**M13 moves, 2026-08-11 — 5.15 PKG only, and it is the row's first movement since M0.** Row becomes
+**1 / 3 / 0** (was 0 / 0 / 4); **Total** becomes **35 / 94 / 1** (was 34 / 91 / 5). All four cells in
+the row move, because before this milestone nothing in FRS §5.15 had any artifact of any kind.
+Denominator unchanged at 4 — `xtask traceability` machine-checks that column and it is not M13's to
+move.
+
+- **FR-PKG-020: Not started → Done.** The only Done of the four, and the one where the method is
+  executed as written rather than approximated. `*Verify:* S` asks that "the packaging step asserts
+  the produced layout against the required form for the platform it targets, and fails the build on
+  any deviation", and `xtask/src/bundle.rs`'s `check` does exactly that — run by `bundle` itself
+  after materialising, not only by `bundle --check`, so the assertion is part of producing rather
+  than an optional second pass. The set the requirement quantifies over is three platforms and the
+  artifact spans all three: its test materialises a staging tree for each from a fake shared library
+  and checks the **produced** result, including the two negative cases the requirement exists for —
+  a plain file named `Namir.clap` on macOS (a renamed dylib, which no host loads) and a *directory*
+  named `Namir.clap` on Windows. That test runs on every CI runner rather than only on the macOS
+  leg, because `plan(Platform) -> Layout` is pure and never consults the host. Tagged plainly.
+- **FR-PKG-010: Not started → Partial.** `.github/workflows/release.yml` exists, is tag-triggered
+  and builds on all three runners, and `xtask/src/release_workflow.rs` asserts the `Verify: S`
+  method's three clauses separately — tag-triggered with no branch or dispatch trigger and no
+  pinned `ref` on any checkout; a job per platform parsed out of **FRS §1.4's own table** rather
+  than hard-coded, each uploading an artifact; and every published distribution being this
+  workflow's, via a single publish job that `needs` all three builds, checks nothing out, takes
+  `download-artifact` as its only input and runs no build command. Twelve mutation tests prove those
+  checks have teeth. What is unspanned is the requirement's own verb: **produce**. The workflow has
+  never run, and neither has `iscc`, `make_installer.sh` or the `tar` block anywhere. Promoting this
+  needs a tagged run, not a code change. Closes M13.
+- **FR-PKG-040: Not started → Partial.** `xtask bundle` stages `THIRD-PARTY-NOTICES.md`,
+  `LICENSE-MIT` and `LICENSE-APACHE` into every platform's tree and asserts their presence, and all
+  three packagers carry them into their outputs. But the requirement quantifies over "every
+  distribution, **installer and archive alike**", and the staging tree is the packager's *input*,
+  not a distribution: nothing asserts the three files inside a produced `.exe`, `.pkg`, `.dmg`,
+  `.zip` or `.tar.gz`. The macOS script does open its own three outputs and check them, but a shell
+  assertion inside an unrun script is not the in-process artifact a `Verify: S` traces. Closes M13.
+- **FR-PKG-030: Not started → Partial.** `packaging/windows/namir.iss` offers both scopes
+  (`PrivilegesRequiredOverridesAllowed=dialog commandline`), defaults to per-user
+  (`PrivilegesRequired=lowest`), and places the CLAP artifact at D-13.3's two Windows cells via
+  `{autocf}` with `ArchitecturesInstallIn64BitMode=x64compatible`. `Verify: M`, so
+  `docs/manual-tests/fr-pkg-030-windows-install-scope.md` is its whole evidence under D-18.6 — and
+  that document records **every step NOT EXECUTED**, including step 0, D-18.3's standing
+  precondition that a real host be observed to scan `%LOCALAPPDATA%\Programs\Common\CLAP`. Partial
+  rather than Done for that reason, on the M9a precedent that a `Verify: M` script recording NOT
+  EXECUTED is Partial and not Done. Note that the generated plan reads this requirement as
+  **covered**, purely because a correctly-named file now exists — the filename arm's known weakness,
+  which §15 item 15's fix deliberately did not address. §14 is where that reading is corrected, and
+  is the reason D-23.2 keeps these columns hand-adjudicated.
+
+**No other cell moves, and two near-misses are worth naming.** **6.2 PERF does not move**:
+NFR-PERF-030 gained a real benchmark that asserts its 3-second threshold, but its tag is
+`trace-partial` — "audible" is `play()` returning `Ok(())`, so a build that started its streams and
+produced silence would still be timed as audible — and under D-23.2 a Partial is not Done. M9a had
+already moved that cell Not started → Partial, so the row stays **6 / 0 / 6 / 0**. And **5.13 UI
+does not move** although this milestone changed what the tool reports for two of its requirements:
+FR-UI-020 and FR-UI-070 fell to `**UNRESOLVED**` when §15 item 15's fix stopped a prose mention from
+crediting a manual document. Neither lost verification it had — both lost credit for verification
+that never happened — and M9a had already adjudicated both **Partial** by hand under §16's
+"Divergence 2". This change makes the tool agree with a verdict that was already correct, which is
+not evidence for moving it.
 
 **One row deliberately not moved, recorded so its absence is not read as an oversight.** 6.7 BUILD
 stays **0 / 2 / 0**. M12 improved NFR-BUILD-020 — the README documents the build, run and test
@@ -4613,3 +4672,175 @@ one — a bare Mach-O named `Namir.app` is reported, with the microphone reason 
 because that test is where a produced macOS tree already exists to assert against, and its doc
 comment says in as many words which of its assertions the tag covers. No annotation moved, so
 `docs/03-test-plan.md` is unchanged; the uncovered count stays 15 and the partial count 60.
+
+### M13 status — the rest of the milestone, 2026-08-11
+
+The `xtask bundle` subsection above covers the first deliverable. This one covers the other six and
+the two that arrived by scope note. **Read the last paragraph first if you read nothing else: none
+of this has been executed end to end.**
+
+**Four decisions this milestone was meant to merely execute turned out to be wrong, and that is the
+most useful thing here.** Each is recorded as a dated consequence note at the decision rather than
+by editing it, and each was found by writing the thing rather than by reviewing the text.
+
+- **D-18.3, twice, on the Windows installer — either error alone would have failed FR-PKG-030.**
+  `PrivilegesRequired=lowest` *alone* offers **one** scope, not two: nothing in Inno lets the user
+  ask for the other unless `PrivilegesRequiredOverridesAllowed` is also set, so "shall offer both"
+  would have failed while every other clause passed. And **`{autocf}` when elevated is the 32-bit
+  Common Files directory** — `%CommonProgramFiles(x86)%`, not `%COMMONPROGRAMFILES%` and not a path
+  CLAP's `entry.h` lists — unless `ArchitecturesInstallIn64BitMode=x64compatible` is set. So
+  D-18.3's "D-13.3's Windows row, both cells, from one line in the `.iss`" is false as written, and
+  the failure it would have produced is exactly the silent one D-13.3's rationale exists to warn
+  about: installs cleanly, host never lists it, nothing anywhere says why. That directive is why
+  `packaging/windows/namir.iss` requires **Inno 6.3+**, which fails at compile time on an older
+  Inno rather than quietly landing in the wrong directory.
+- **D-13.3, on the Linux system-wide cell.** `/usr/lib/clap` is too narrow: Fedora, RHEL and
+  openSUSE use `/usr/lib64/clap`. `packaging/linux/install.sh` probes rather than assuming, and
+  probes properly — a bare `[ -d /usr/lib64 ]` is wrong twice, Debian having a real `/usr/lib64`
+  holding only the loader and Arch's being a symlink to `/usr/lib`.
+- **D-17.3, on the window icon.** M12 left "whether `baseview` 0.3.0 gained an icon field"
+  explicitly unchecked. It has not, and neither has any other version: 0.3.0 does not even have
+  `WindowOpenOptions`, and its Win32 window class registers `hIcon: null_mut()` byte-identically to
+  0.2.2. Published `egui-baseview` 0.6.0 requires `baseview` 0.2.2, so the pin is **forced rather
+  than conservative**.
+
+**`xtask bundle`'s macOS layout was wrong when first built, and the packaging lane caught it.** It
+staged the standalone as a bare Mach-O named `namir`. An unbundled process has no `Info.plist` and
+therefore cannot declare `NSMicrophoneUsageDescription`, which macOS 10.14+ requires before a
+process may open an audio **input** device — which, for an instrument amplifier simulator, is the
+whole product. `Namir.app/Contents/{Info.plist, PkgInfo, MacOS/namir}` is now staged too, with
+`CFBundlePackageType` `APPL` and `PkgInfo` `APPL????` (not the plugin bundle's `BNDL`), a
+`CFBundleIdentifier` distinct from the plugin's because macOS TCC keys the microphone grant on it,
+and `LSMinimumSystemVersion` **derived rather than guessed**: CI's macOS leg is `macos-latest`, so
+the artifact is `aarch64-apple-darwin`, whose own floor is macOS 11.0. An Intel or universal
+artifact reopens that number and the constant says so. The macOS script's stopgap wrapper was
+deleted rather than kept as a fallback — its own comment called it "the one payload
+`xtask bundle --check` never asserted", and a fallback that silently produces an unasserted bundle
+from a stale staging tree is worse than a loud failure.
+
+**The three packagers** (`packaging/{windows,macos,linux}/`) all consume `bundle`'s staging tree and
+nothing else, so what ships is what `bundle --check` asserted. macOS forces `BundleIsRelocatable`
+false — left true, `installer` Spotlight-relocates onto any stray `Namir.clap` and nothing reaches
+the CLAP path — and expresses D-13.3's two macOS cells through install domains, the counterpart of
+`{autocf}`. Signing is keyed on secrets with an empty-argument-array expansion so signed and
+unsigned runs take one code path.
+
+**`release.yml`** is four jobs in D-18.3's order, tag-triggered, with a single `publish` job that
+`needs` all three builds, checks nothing out, and takes `download-artifact` as its only input. That
+shape is not tidiness: FR-PKG-010's third clause — every published distribution being an artifact of
+the workflow rather than of a local build — is checkable only if the publishing step provably cannot
+obtain a file from anywhere else. `contents: write` lives on that job alone, and `ci.yml`'s
+workspace-wide `contents: read` comment, which justified itself on the grounds that nothing
+"touch[es] releases", is rescoped to `ci.yml` rather than left reading as a project-wide claim.
+
+**D-18.4 applied**, and its own prediction checked rather than restated: `publish = false` inherited
+from `[workspace.package]`, 59 path dependencies given `version = "0.1.0"`, and
+`cargo publish -p namir-core --dry-run` now stops on the policy instead of on a versionless path
+dependency. `Cargo.lock` is unchanged by the whole edit.
+
+**NFR-PERF-030 closes to a benchmark that asserts**, per D-23.1's rule that a `Verify: B` needs an
+in-process threshold assertion rather than a printed figure. The seam is one environment variable
+whose **value is the configuration directory** the probed launch uses — a shape that buys two
+things a bare on/off flag does not: "warm library index" becomes a precondition the harness
+*establishes* at a size it chose, and a measurement provably cannot write to the user's real config
+directory. **440–486 ms against a 3000 ms ceiling**, 25 launches over 4 runs on §2's reference
+machine with a warm 10 000-entry index; the index parse is roughly 150 ms of that, an empty-index
+launch taking 286 ms in-process. **Informational, not certified** — D-2.4 wants a quiet machine and
+this one had this session's own agent processes on it throughout.
+
+**FR-UI-110's executable icon** is `images/namir.ico`, generated from `images/namir.png` by
+`xtask identity` and byte-compared for freshness, embedded post-build by `rcedit` before
+`xtask bundle` so the staging tree, installer payload and ZIP carry the same binary. D-17.3's
+refusal of a build script in a shipped crate holds and its stated cost is now real. Two honest
+results: the **16×16 size reads as a smudge** (32 readable, 48 and 256 good), and a contrast-rescale
+written to fix that was measured, found to gain 1.05× against an already-243/255 peak alpha, and
+**deleted**, with a test pinning the number so it is not re-invented. The window-icon clause cannot
+close at all, above.
+
+**Two things added beyond the deliverable list.** `TRADEMARK.md` now ships in every distribution —
+the binaries carry the brand mark, NFR-LIC-070 requires the mark's terms stated, and the staged
+README's licence section pointed at a file no distribution contained. It is deliberately **not** in
+FR-PKG-040's set, which is exactly three and named by the requirement. And **R-16** records that
+`baseview` has no Wayland backend in any version: not new, but M13 is the milestone at which it
+stops being a developer's problem and becomes a user's, since before this the only way to run Namir
+on Linux was to build it and anyone building it already had the X11 headers.
+
+**Corrections to this document made in passing.** §20's scope note cites the
+`open_window_without_audio` call sites as `app.rs:116, :148, :155, :164, :309` and says five; M11
+had already moved them and there were **four**. They are now `:218, :277, :284, :293` with the
+definition at `:470`. The citation is left as written per this document's convention and corrected
+here.
+
+**What has never been executed — the paragraph to read before believing any of the above.** No
+`iscc` run, no `pkgbuild`, no `productbuild`, no `hdiutil`, no `install.sh`, no `tar` block, and no
+tagged workflow run. Inno Setup is not present here, there is no Mac and no Linux box, and a GitHub
+workflow cannot be run locally. `release.yml` was validated by two independent YAML parsers and by
+reading; both shell scripts pass `bash -n` and that is the whole of it. Each packaging README says
+so of itself in a "What is untested" section, so the statement travels with the code. **D-18.3's
+standing precondition is also still outstanding**: that a real host be *observed* to scan
+`%LOCALAPPDATA%\Programs\Common\CLAP` before the per-user default ships. The existing S-4 evidence
+is a **negative** result about `%APPDATA%\REAPER\UserPlugins\CLAP` and is not a confirmation of the
+per-user CLAP path. `docs/manual-tests/fr-pkg-030-windows-install-scope.md` carries it as step 0 and
+records every step NOT EXECUTED.
+
+### M13 close-out — §14's re-audit table, and what this milestone must not claim, 2026-08-11
+
+**§14's `### M9a re-audit` table moves one row, 5.15 PKG, from `0 / 0 / 4` to `1 / 3 / 0`, and the
+Total from 34 / 91 / 5 to **35 / 94 / 1**.** See that table's own appended `**M13 moves**` block for
+the per-cell evidence D-23.2 requires, including why 6.2 PERF and 5.13 UI deliberately do not move.
+One Done, three Partial: **FR-PKG-020** is the only requirement in this milestone whose `Verify:`
+method is executed as written rather than approximated.
+
+**One uncovered Must left in FRS §5.15's group, and it is not one of M13's.** The gate reports
+**12** uncovered Musts, down from 15 at this milestone's start. M13 closed four of its five
+(FR-PKG-010, -020, -030, -040 — the last as a plain-covered manual document, the middle two as
+partials) and NFR-PERF-030, and **added two**: FR-UI-020 and FR-UI-070, which §15 item 15's fix
+demoted by stopping a prose mention from crediting a manual document. Ten of the twelve are M9b's.
+The remaining two are now in exactly the state D-18.5's printed attribution exists to make visible —
+**gaps no milestone has claimed**, wearing an owner label the tool derives from whichever `## <n>.
+M<k>` section last mentions them. Whoever plans M9b should read that as work arriving, not as
+bookkeeping.
+
+**This close-out does not flip D-18.5's gate, and must not be read as having deferred the decision
+to do so.** §20's second scope note, written at this milestone's *start*, moved the flip to
+**M9b's close-out** because ten of the then-fifteen uncovered Musts belong to M9b and M9b runs after
+M13 — so deleting `--allow-uncovered` here would have turned a required check red on the day it
+became required. That reasoning is unchanged by anything this milestone built; the count is now
+twelve and ten of them are still M9b's. **NFR-QUAL-010 therefore does not close here either**, and
+this milestone does not record it as closed.
+
+**§20's Acceptance, clause by clause, as it now stands.** The paragraph asks for seven things and
+this milestone meets **two** of them outright.
+
+- *"A tagged commit produces, from CI alone, an installer and a plain archive for each of the three
+  platforms"* — **not met, and not close to met in the sense the clause means.** Everything needed
+  to produce them exists and is committed; nothing has produced one. No tag has been pushed, no
+  workflow run, no `iscc`, no `pkgbuild`, no `tar` block executed anywhere.
+- *"The macOS CLAP artifact is a valid bundle directory and loads in a host on a machine where
+  quarantine does not apply"* — **half met.** The bundle's structure is asserted in-process on every
+  runner, including the negative case, which is the strongest offline evidence available. It has
+  never been built on a Mac and no host has loaded it.
+- *"The Windows installer offers both scopes, defaults to per-user, and that per-user path has been
+  empirically confirmed as scanned by at least one real DAW"* — **not met**, and the last clause is
+  the one that matters most. D-18.3's standing precondition is still outstanding, and the existing
+  S-4 evidence is a *negative* result about a different path. This is also the only outstanding item
+  that could have been settled before any of this milestone's code existed.
+- *"Every distribution contains `THIRD-PARTY-NOTICES.md` and the licence texts"* — **met in the
+  staging tree and in every packager's own file list, not asserted inside a produced distribution.**
+  That is precisely what FR-PKG-040's partial says.
+- *"FR-PKG-010 through FR-PKG-040 each carry a traceability annotation or a manual-test document, so
+  `xtask traceability` stays green"* — **met.** Two plain-or-partial annotations, one manual-test
+  document, one plain tag; the required half of the gate exits 0.
+- *"FRS §5.15 closes"* — **not met.** One of four is Done.
+- The clause §20 does not contain but M12 handed forward: **FR-UI-110's icon clauses.** The
+  executable icon is built; the window icon **cannot be met through the pinned stack** and that is
+  now a finding rather than a deferral. FR-UI-110 stays open. It is a Should and sits in no §14 row.
+
+**What M13 actually is, stated plainly rather than scored.** It is a milestone that wrote every
+artifact needed to ship and shipped nothing, because the machines that could run them were not the
+machine it was written on. That is a legitimate state and this document has been here before — M6
+left FR-IO-020 as a documented FAIL for five milestones — but it should not be dressed up. **The
+next honest step is not more code.** It is a Windows machine executing
+`docs/manual-tests/fr-pkg-030-windows-install-scope.md`, starting at its step 0; a tag pushed to
+watch `release.yml` fail in whatever way it first fails; and a Mac and a Linux box for the other two
+legs. Four of the seven Acceptance clauses turn on those runs and on nothing else.
