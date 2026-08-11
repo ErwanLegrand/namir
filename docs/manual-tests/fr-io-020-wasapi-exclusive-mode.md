@@ -80,12 +80,23 @@ Measured on the §2 reference machine (Windows 11, PreSonus AudioBox 22VSL) with
 Record the actual outcome of each step, including failures. A step that could not be run is
 recorded as not run, with the reason.
 
-1. **Probe.** Run `cargo run --example wasapi_exclusive_probe` from the pinned fork. Confirm the
-   AudioBox blocks report `24-in-32 @ 48000` as `OK` under the positional mask. Paste the verdict
-   lines.
-2. **Namir's own view.** Run `cargo run --example list_devices -p namir-app`. The AudioBox should
-   now read `exclusive mode, 2 ch: engaged at [48000] Hz`. Before `ab5f40a` it read `unsupported at
-   any probed rate`.
+1. **Probe — the device's own answer, not Namir's.** Run
+   `cargo run --example wasapi_exclusive_probe` from the fork. Confirm the AudioBox blocks report
+   `24-in-32 @ 48000` as `OK` under the positional mask.
+
+   **This step cannot verify any Namir or `cpal` code, and must not be read as doing so.** The
+   example builds every `WAVEFORMATEXTENSIBLE` by hand and never calls
+   `config_to_waveformatextensible`, so its output is identical on every revision of the library —
+   it characterises the *endpoint*. It is step 2 that tests the fix. (This was got wrong once
+   already: the example asserted "cpal hard-codes mask 0, this is a cpal bug" for two commits after
+   that was fixed, and a run of it looked like confirmation. Corrected in fork commit `9970fb4`.)
+
+2. **Namir's own view — this is the step that tests the channel-mask fix.** Run
+   `cargo run --example list_devices -p namir-app`. The AudioBox should read
+   `exclusive mode, 2 ch: engaged at [48000] Hz`. Before fork commit `ab5f40a` it read
+   `unsupported at any probed rate`, because `cpal` sent `dwChannelMask = 0` and this endpoint
+   refuses that — leaving only `I16`, which `namir-app` excludes by policy. This path runs through
+   the real library, so a change here is real evidence.
 3. **The stream actually opens.** With `"exclusive_mode": true`, launch Namir. `IsFormatSupported`
    succeeding does not mean `Initialize` will. Confirm the window opens, stderr reports the audio
    stream started, and the mode indicator in the top panel reads **exclusive** and names the device.
