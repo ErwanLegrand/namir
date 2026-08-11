@@ -4571,3 +4571,45 @@ and still closes M13.
 `4 | 0 | 0 | 4`. Verdict cells move at the close-out of the milestone whose evidence moves them,
 and M13 has one deliverable of seven done; the row moves at M13's close-out, from that milestone's
 whole evidence, not incrementally from this one.
+
+**Amendment, same day: the macOS standalone is an application bundle, not a bare executable.** The
+first form of `plan(Platform::MacOs)` above staged the standalone as a bare Mach-O named `namir`.
+The macOS packaging lane found that while writing `packaging/macos/make_installer.sh`, and it is a
+**working-product defect, not a tidiness one**: from macOS 10.14 a process may not open an audio
+*input* device until the user has granted microphone access, a process that declares no
+`NSMicrophoneUsageDescription` is denied outright rather than prompted, and an **unbundled**
+Mach-O has no `Info.plist` to declare that key in. `namir-app` opens an input device on its
+ordinary path (`crates/namir-app/src/audio_io.rs`'s `input_devices`/`Direction::Input`) — it is an
+instrument-input amp simulator, so that is the entire product. A bare binary in `/Applications` is
+also not what D-18.3's "the standalone app under `/Applications`" can mean: Finder treats it as a
+Unix executable and double-clicking it opens Terminal.
+
+The macOS layout therefore gains three rows —
+`Namir.app/Contents/{Info.plist, PkgInfo, MacOS/namir}` — in the same shape as `Namir.clap`, and
+`check` asserts them the same way, `Info.plist` byte-compared and `Namir.app` required to be a
+directory. Windows and Linux are untouched: the standalone stays a plain executable on both, and a
+`Namir.app` appearing in either tree is now itself a violation. `make_installer.sh` anticipated
+this and needs no change — its `if [ -d "${STAGING}/${PRODUCT_NAME}.app" ]` branch takes its other
+arm, and its own stopgap wrapper (the one payload `bundle --check` never asserted) is now dead
+code that lane can delete.
+
+Two decisions, both recorded at the constant in `xtask/src/bundle.rs` rather than only here.
+**`APP_BUNDLE_IDENTIFIER` is `org.legrand.namir.standalone`**, deliberately not the plugin's
+`org.legrand.namir`: identifiers must be unique per bundle, and macOS TCC keys the microphone
+grant on this one, so sharing it would put the standalone's permission and the plugin's under one
+subject. **`LSMinimumSystemVersion` is `11.0`**, and it is derived rather than guessed — nothing in
+this repository states a macOS floor and neither `baseview` 0.2.2, `egui-baseview` 0.6.0 nor the
+pinned `cpal` fork states one, but CI's macOS leg runs on `macos-latest`, which is Apple Silicon,
+so the artifact is `aarch64-apple-darwin`, whose own Rust-target minimum is macOS 11.0 because no
+earlier macOS runs on that hardware. An Intel or universal artifact would have a lower floor
+(Rust's `x86_64-apple-darwin` baseline is 10.12) and is the thing that would reopen this. The
+packaging lane reached `11.0` independently; the two now agree by derivation rather than by
+coincidence.
+
+**FR-PKG-020's tag is unchanged and stays plain.** That requirement's text is about "the CLAP
+artifact" and nothing else, so the application bundle neither widens nor weakens what the tag
+claims. Its test grew the `Namir.app` assertions and a negative case mirroring the `Namir.clap`
+one — a bare Mach-O named `Namir.app` is reported, with the microphone reason in the message —
+because that test is where a produced macOS tree already exists to assert against, and its doc
+comment says in as many words which of its assertions the tag covers. No annotation moved, so
+`docs/03-test-plan.md` is unchanged; the uncovered count stays 15 and the partial count 60.
