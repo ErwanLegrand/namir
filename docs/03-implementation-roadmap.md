@@ -1829,7 +1829,7 @@ not adjudicate them further.
 | 5.12 CLAP | 11 | 2 | 9 | 0 |
 | 5.13 UI | 7 | 1 | 6 | 0 |
 | 5.14 ERR | 6 | 1 | 4 | 1 |
-| 5.15 PKG | 4 | 1 | 3 | 0 |
+| 5.15 PKG | 4 | 2 | 2 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
 | 6.2 PERF | 6 | 0 | 6 | 0 |
 | 6.3 PORT | 5 | 3 | 2 | 0 |
@@ -1838,7 +1838,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **35** | **94** | **1** |
+| **Total** | **130** | **36** | **93** | **1** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -4844,3 +4844,65 @@ next honest step is not more code.** It is a Windows machine executing
 `docs/manual-tests/fr-pkg-030-windows-install-scope.md`, starting at its step 0; a tag pushed to
 watch `release.yml` fail in whatever way it first fails; and a Mac and a Linux box for the other two
 legs. Four of the seven Acceptance clauses turn on those runs and on nothing else.
+
+### M13 addendum: the Windows manual run passed, and it found a bug in a different requirement, 2026-08-12
+
+**Supersedes the close-out's Acceptance scoring above**, which is left as written per this
+document's convention — it was true of the session that wrote it, and it is why that session's
+claims were hedged.
+
+**Inno Setup was installed and `packaging/windows/namir.iss` compiled on the first attempt, with no
+edit to it.** Version **7.0.2**, not the 6.3 this milestone's documents state as the floor. That
+floor is unchanged and still correct — `x64compatible` arrived in 6.3 — but it is **stated and
+untested**, and now demonstrably not the version anyone has actually used. `windows-latest` will be
+a third version, also untested. Worth knowing before treating "requires Inno 6.3+" as verified.
+
+**All five steps of `docs/manual-tests/fr-pkg-030-windows-install-scope.md` pass.** FR-PKG-030 moves
+**Partial → Done** in §14's re-audit table: 5.15 PKG becomes **2 / 2 / 0** (was 1 / 3 / 0), Total
+**36 / 93 / 1** (was 35 / 94 / 1). The denominator is untouched.
+
+**Step 0 is the one that matters beyond this requirement.** D-18.3's standing precondition — that a
+real host be *observed* to scan `%LOCALAPPDATA%\Programs\Common\CLAP` — is discharged. It had been
+outstanding since the decision was written, the close-out above named it as the single item that
+could have been settled before any of this milestone's code existed, and it is now settled. The
+per-user default is known-good rather than believed-good.
+
+**§20's Acceptance, rescored.** Three of the seven clauses that the close-out marked unmet or half
+met are now met: the Windows installer offers both scopes, defaults to per-user, and that per-user
+path is empirically confirmed as scanned by a real DAW. What remains unmet is unchanged and is
+entirely about **runs that have not happened**: no tagged commit has produced anything from CI, no
+macOS or Linux artifact has been built on its own platform or loaded in a host, and nothing asserts
+FR-PKG-040's three files inside a produced distribution. FRS §5.15 is now **2 of 4 Done**.
+
+**The manual run found a defect, and it is not in §5.15.** With the plugin installed and running in
+a host, the **output meter read full and never moved**, while the output level control worked
+normally. Cause: `crates/namir-clap/src/ui_host.rs`'s `drain_meters` updated the reading as
+`self.output_peak_db.max(entry.value)` — correct-looking as "the louder of the two output channels"
+until one notices the left-hand side is a struct field rather than a local, which made it a maximum
+over the plugin instance's whole lifetime. The meter climbed to the loudest peak ever seen and
+stayed. **Not a regression:** those lines are unchanged since M6 created the file, and the symptom
+only appears once a peak near 0 dBFS has occurred. `namir-app`'s `read_meters` has always had the
+correct shape — a local maximum, assigned — so the standalone was never affected, which is exactly
+what the reporter observed. Fixed on `claude/clap-output-meter-ratchet`, cherry-picked here, and
+**verified in a host**.
+
+**Why it survived seven milestones, which is the more useful half.** Every test in that module
+passed `telemetry: None`, so `drain_meters` returned at its first line and the only meter code in
+`namir-clap` was never executed by the suite at all. Five tests now cover it; two of them fail
+against the old code with precisely the reported symptom. A covering test existing is not the same
+as a requirement being met — this project already says so — and this is the complementary case: a
+module with tests, none of which reached the code that was wrong.
+
+**It is an FR-UI-020 defect, and the coincidence is worth recording rather than smoothing over.**
+FR-UI-020 requires "output meter and level" among the elements on one screen. It has **no
+manual-test document of its own**, and until this milestone it was credited to
+`docs/manual-tests/fr-clap-030-audio-ports-negotiation.md` — a CLAP audio-port script that names it
+once, in a parenthesis about watching a meter, and won only by sorting first among the files that
+mention it. §15 item 15's fix removed that credit at this milestone's start and FR-UI-020 went
+`**UNRESOLVED**`, which the close-out above records as one of two gaps no milestone has claimed. The
+requirement whose only evidence was a passing mention of a meter turned out to have a **broken
+meter**, in the very product shell whose document was crediting it, and nobody would have learned
+that from the ledger. It is the strongest argument this milestone produced for the fix that demoted
+it. **FR-UI-020 stays `**UNRESOLVED**`**: it still has no document of its own, and writing one now
+to absorb this observation would be creating a document to move a number, which is the defaulting
+§15 exists to prevent. It belongs to whoever gives FR-UI-020 a script.

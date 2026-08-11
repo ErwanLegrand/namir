@@ -169,10 +169,54 @@ which is the correct disposition for a requirement that does not hold yet.
 
 | Step | Verdict | Notes |
 |---|---|---|
-| 0. Per-user path is scanned by a real host | NOT EXECUTED | D-18.3's standing precondition; needs no installer |
+| 0. Per-user path is scanned by a real host | **PASS** (2026-08-12) | D-18.3's standing precondition, discharged |
 | 1. Installer compiles | **PASS** (2026-08-12) | Inno 7.0.2; 5 210 436 bytes; unsigned; all seven files in the payload |
-| 2. Per-user scope, preselected by default | NOT EXECUTED | |
-| 3. System-wide scope, 64-bit Common Files | NOT EXECUTED | |
-| 4. Both scopes offered through the UI | NOT EXECUTED | |
+| 2. Per-user scope, preselected by default | **PASS** (2026-08-12) | |
+| 3. System-wide scope, 64-bit Common Files | **PASS** (2026-08-12) | |
+| 4. Both scopes offered through the UI | **PASS** (2026-08-12) | |
 
-**Result: INCOMPLETE — one step of five passes.**
+**Result: PASS.**
+
+## Executed run — steps 0, 2, 3 and 4, on Windows (M13, 2026-08-12)
+
+Run by the author on the §2 reference machine, and **reported as passing in full**. The four
+clauses this requirement is actually about are therefore met in fact rather than argued from Inno's
+documentation, which is what the run above could not do.
+
+**Step 0 discharges D-18.3's standing precondition**, and that is the most consequential of the
+four. Until this run, the only empirical evidence about Windows CLAP paths was spike S-4's
+**negative** result — that Reaper does *not* scan `%APPDATA%\REAPER\UserPlugins\CLAP`. A negative
+about one path is not a confirmation of another, which is why D-18.3 required this specifically and
+why the roadmap carried it as outstanding through the whole milestone. The per-user default is now
+known-good rather than believed-good, and Dexed's precedent — shipping its per-user mode commented
+out because the DAW-side issues were never resolved — does not apply here.
+
+**Steps 2 and 3 confirm both scopes place the artifact where D-13.3's table says**, including
+step 3's specific check that the elevated install lands in `C:\Program Files\Common Files\CLAP` and
+not the `(x86)` directory. That is the one result that could not have been obtained by reading:
+`ArchitecturesInstallIn64BitMode=x64compatible` was added on Inno's documented behaviour, and the
+failure it prevents is silent by construction.
+
+**One thing this document does not record, and should have.** Step 2.1 asks for the **verbatim**
+wording of the option Inno's install-mode dialog preselects, because that preselection literally
+*is* "shall default to per-user" — an installer offering both scopes but preselecting system-wide
+passes every other clause and fails this one. The step is reported as passing; the string itself was
+not captured. The verdict stands on the runner's report, and this note records that the strongest
+form of the evidence is missing rather than pretending it is present. Worth capturing on the next
+run, which the release pipeline will force anyway.
+
+**Uninstall was exercised and worked**, in both scopes: after the run, neither
+`%LOCALAPPDATA%\Programs\Common\CLAP\Namir.clap` nor `%CommonProgramFiles%\CLAP\Namir.clap`
+existed. Checked directly rather than taken on report.
+
+**Not part of this requirement, found during the same session, and recorded here because this is
+where the trail starts.** With the plugin installed and running in a host, **the output meter read
+full and never moved** — a lifetime-maximum ratchet in `crates/namir-clap/src/ui_host.rs`'s
+`drain_meters`, unchanged since M6 and never covered by a test because every test in that module
+passed `telemetry: None`. Fixed on `claude/clap-output-meter-ratchet` and verified in the host. It
+is an **FR-UI-020** defect, not an FR-PKG-030 one, and the irony is worth keeping: FR-UI-020
+requires "output meter and level" on one screen, has no manual-test document of its own, and until
+this milestone was credited to `fr-clap-030-audio-ports-negotiation.md` on a single parenthesis
+about watching a meter. §15 item 15's fix removed that credit and FR-UI-020 went `**UNRESOLVED**`.
+The requirement whose only evidence was a passing mention of a meter turned out to have a broken
+meter, in the very shell whose document was crediting it.
