@@ -89,3 +89,11 @@ namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
 # alone, `rt_harness` fails to compile under `cargo test --release`. Dev-dependency only, so it is
 # never linked into a release build of this crate.
 assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
+
+# NFR-PERF-030 (M13): start-up to an audible state, measured by launching this crate's own `namir`
+# binary (`CARGO_BIN_EXE_namir`) under `startup_probe`'s seam and timing it to the marker. Asserts
+# the 3 s ceiling in-process; see the file's own doc comment for the D-2.4 run procedure, for why
+# it pins no core, and for what happens on a machine with no audio device.
+[[bench]]
+name = "startup_to_audible"
+harness = false

@@ -636,3 +636,45 @@ jobs:
         with:
           name: six-stage-chain-bench.txt
           path: six-stage-chain-bench.txt
+
+  # Covers `namir-app/benches/startup_to_audible.rs` (NFR-PERF-030, M13's §20 scope note): the
+  # standalone application's start-up to an audible state, measured by launching the real `namir`
+  # binary under `namir_app::startup_probe`'s seam.
+  #
+  # **This job can never certify NFR-PERF-030, and is not trying to.** A GitHub-hosted runner has no
+  # audio device, so `namir-app` diverts to `open_window_without_audio` and never becomes audible --
+  # which is precisely why §20's scope note moved this requirement out of M9 in the first place. The
+  # benchmark's default behaviour on such a machine is to *fail*, deliberately (a `Verify: B`
+  # artifact whose threshold quietly evaporates is the failure mode NFR-PERF-010's own bench is on
+  # record for), so this job sets NAMIR_STARTUP_ALLOW_NOT_AUDIBLE to turn that into an explicit,
+  # printed skip. Expect the uploaded output to say SKIPPED -- NOT MEASURED, NOTHING ASSERTED.
+  #
+  # What it therefore buys, stated plainly so nobody mistakes it for coverage: the not-audible
+  # branch of the seam is exercised end-to-end on every push -- a real `namir` process, spawned,
+  # reaching a decision and exiting rather than opening a window and hanging -- on the one machine
+  # class that can exercise it. The audible branch, and the 3 s ceiling itself, are a
+  # reference-machine matter (D-2.4, `docs/02-architecture.md` section 2) and stay one. Do not
+  # "fix" this job by removing the allow flag; that would fail the build on hardware this project
+  # has explicitly decided not to measure against.
+  nfr-perf-030-startup-bench:
+    name: NFR-PERF-030 start-up benchmark (informational, cannot certify)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ALSA development headers (for cpal's alsa-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo bench -p namir-app --bench startup_to_audible
+        env:
+          NAMIR_STARTUP_ALLOW_NOT_AUDIBLE: "1"
+        run: cargo bench -p namir-app --bench startup_to_audible | tee startup-to-audible-bench.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: startup-to-audible-bench.txt
+          path: startup-to-audible-bench.txt
