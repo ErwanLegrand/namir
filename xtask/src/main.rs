@@ -130,16 +130,19 @@ fn run_attribution(root: &Path, write: bool) -> bool {
     }
 }
 
-/// M12's product-identity gate (NFR-DOC-040, NFR-LIC-070, and the brand mark FR-UI-110 asks for):
-/// the checked-in alpha blob matches a fresh render of `images/namir.png`, and the two identity
+/// M12's product-identity gate (NFR-DOC-040, NFR-LIC-070, and the brand mark FR-UI-110 asks for),
+/// extended at M13 with FR-UI-110's application icon: the checked-in alpha blob and
+/// `images/namir.ico` each match a fresh render of `images/namir.png`, and the two identity
 /// documents carry the statements the two requirements name. Unlike `params-lock`/`attribution`,
-/// which have one artifact each and so one status line, this check has three and reports a list --
+/// which have one artifact each and so one status line, this check has four and reports a list --
 /// a missing README should not hide a stale blob.
 fn run_identity(root: &Path, write: bool) -> bool {
     if write {
-        return match identity::write_blob(root) {
-            Ok(message) => {
-                println!("identity: {message}");
+        return match identity::write_generated(root) {
+            Ok(messages) => {
+                for message in messages {
+                    println!("identity: {message}");
+                }
                 true
             }
             Err(e) => {
@@ -152,7 +155,7 @@ fn run_identity(root: &Path, write: bool) -> bool {
     match identity::check(root) {
         Ok(violations) if violations.is_empty() => {
             println!(
-                "identity: clean (brand mark up to date; README.md and TRADEMARK.md carry every required statement)"
+                "identity: clean (brand mark and application icon up to date; README.md and TRADEMARK.md carry every required statement)"
             );
             true
         }
