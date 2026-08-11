@@ -4,8 +4,9 @@
 //! on this step.
 //!
 //! It assembles a per-platform *staging tree* from artifacts a release build has already produced:
-//! the CLAP artifact in the form that platform's loader requires, the standalone executable, and
-//! the three documents FR-PKG-040 requires every distribution to carry (plus `README.md`). It
+//! the CLAP artifact in the form that platform's loader requires, the standalone (a plain
+//! executable on Windows and Linux, an application bundle on macOS — see below), and the three
+//! documents FR-PKG-040 requires every distribution to carry (plus `README.md`). It
 //! builds nothing, archives nothing and hashes nothing — the per-OS packagers consume this tree,
 //! and the archive/hash step is `release.yml`'s (D-18.3), not this subcommand's.
 //!
@@ -35,9 +36,20 @@
 //!
 //! §17's note on build tooling draws the line this module stays on the right side of: a non-cargo
 //! build tool needs no register row, a **cargo dependency** does (the `png` row `identity.rs` took
-//! is the precedent). A plist is XML with a fixed shape and four keys here, so [`info_plist`]
+//! is the precedent). A plist is XML with a fixed shape and a handful of keys here, so [`plist`]
 //! writes it directly and deterministically, in sorted-key order, rather than taking a plist crate
 //! for it. `PkgInfo` is eight literal bytes.
+//!
+//! # Two macOS bundles, not one
+//!
+//! macOS is the only platform where **both** shipped artifacts are bundles. `Namir.clap` is one
+//! because CLAP says so; `Namir.app` is one because an unbundled process cannot declare
+//! `NSMicrophoneUsageDescription`, without which macOS 10.14+ denies it the audio input device —
+//! and `namir-app` opens one on its ordinary path, this being an instrument-input amp simulator.
+//! A bare `namir` binary staged on macOS is therefore a *broken product*, not an untidy one; it is
+//! also what D-18.3's "the standalone app under `/Applications`" cannot mean, since a bare Mach-O
+//! double-clicked from there merely opens Terminal. Windows and Linux are unchanged: the
+//! standalone is a plain executable on both.
 //!
 //! # Argument parsing is strict
 //!
@@ -49,25 +61,113 @@
 
 use std::path::{Path, PathBuf};
 
-/// The bundle identifier the macOS `Info.plist` declares.
+/// The **plugin** bundle's `CFBundleIdentifier`.
 ///
 /// Deliberately the **same string** `namir-clap` already declares as its CLAP plugin id
-/// (`crates/namir-clap/src/lib.rs`'s `PLUGIN_ID`). One product, one reverse-DNS identity; inventing
-/// a second here would mean a host and the operating system disagreeing about what this artifact
-/// is. It is a second copy of the literal rather than an import because `xtask` is in neither
-/// shipped product's dependency graph — the same reason `identity.rs` re-states `MARK_FILL`.
-pub const BUNDLE_IDENTIFIER: &str = "org.legrand.namir";
+/// (`crates/namir-clap/src/lib.rs`'s `PLUGIN_ID`). One artifact, one reverse-DNS identity;
+/// inventing a second here would mean a host and the operating system disagreeing about what this
+/// artifact is. It is a second copy of the literal rather than an import because `xtask` is in
+/// neither shipped product's dependency graph — the same reason `identity.rs` re-states
+/// `MARK_FILL`.
+pub const PLUGIN_BUNDLE_IDENTIFIER: &str = "org.legrand.namir";
+
+/// The **application** bundle's `CFBundleIdentifier`, and *not* the same string as
+/// [`PLUGIN_BUNDLE_IDENTIFIER`].
+///
+/// **Decision, M13, recorded here because this is where the constant lives.** A bundle identifier
+/// must be unique per bundle — two bundles sharing one is a documented way to confuse
+/// LaunchServices about which of them a given identifier resolves to — and this identifier is not
+/// cosmetic on macOS: **TCC keys the microphone grant on it**. If the standalone and the plugin
+/// shared an identifier, the permission the user grants the standalone would be recorded against
+/// the same subject as the plugin bundle, and a revocation or a re-signing of either would move
+/// the other's grant with it. `.standalone` as the suffix, rather than `.app` (which reads as the
+/// bundle extension, not as a product) or a sibling like `org.legrand.namir-standalone` (which
+/// breaks the prefix relationship a reverse-DNS tree is for): it names what the artifact **is**,
+/// and it keeps the plugin's identifier as the product's root so a future third artifact extends
+/// the same tree.
+pub const APP_BUNDLE_IDENTIFIER: &str = "org.legrand.namir.standalone";
 
 /// `CFBundleName`, and the stem of the artifact every platform's loader looks for.
 pub const BUNDLE_NAME: &str = "Namir";
+
+/// `CFBundleShortVersionString` and `CFBundleVersion` for the application bundle.
+///
+/// A literal rather than a `cargo metadata` lookup, so that [`plan`] stays pure — and kept honest
+/// by `the_bundled_version_tracks_namir_apps_own`, which reads `crates/namir-app/Cargo.toml` and
+/// fails if the two ever disagree. `identity.rs`'s `MARK_FILL` plus
+/// `the_shipped_artwork_is_a_single_fill` is the same device: duplicate the constant, then assert
+/// the duplication against the real artifact rather than trusting it.
+///
+/// The two keys carry the same value deliberately. `CFBundleShortVersionString` is the
+/// user-visible release version and `CFBundleVersion` the build number; with no build-number
+/// scheme in this project (and none needed before signed, notarised releases exist), inventing a
+/// second sequence here would be a scheme nothing increments.
+pub const PRODUCT_VERSION: &str = "0.1.0";
+
+/// `LSMinimumSystemVersion` for the application bundle.
+///
+/// **Decision, M13, recorded here because this is where the constant lives.** This is *derived*,
+/// not guessed, but from the toolchain rather than from any statement in this repository — nothing
+/// in the FRS, the architecture document or any manifest states a macOS floor, and neither
+/// `baseview` 0.2.2, `egui-baseview` 0.6.0 nor the pinned `cpal` fork states one either (checked
+/// this pass: no `MACOSX_DEPLOYMENT_TARGET`, no documented minimum, and `baseview`'s macOS backend
+/// uses nothing newer than `NSOpenGLView`, which is ancient and merely deprecated).
+///
+/// The floor that *is* real comes from the target triple CI actually builds: `.github/workflows/
+/// ci.yml`'s macOS leg runs on `macos-latest`, which is Apple Silicon, so the artifact is
+/// `aarch64-apple-darwin` — a Rust tier-1 target whose own minimum is **macOS 11.0**, because
+/// Apple Silicon Macs shipped with Big Sur and no earlier macOS runs on them at all. An
+/// `x86_64-apple-darwin` build would have a lower floor (Rust's baseline there is 10.12), so if a
+/// universal or Intel-only artifact is ever published this constant is the thing to revisit — but
+/// declaring 11.0 for an arm64-only build understates nothing.
+///
+/// Two lower bounds sit under it and are both satisfied: `NSMicrophoneUsageDescription` is
+/// enforced from macOS 10.14, and the hardened-runtime/notarisation path R-11 defers is 10.14+
+/// too. So 11.0 is above every constraint this product actually has.
+pub const MINIMUM_MACOS_VERSION: &str = "11.0";
+
+/// `NSMicrophoneUsageDescription`: the sentence macOS shows the user in the permission prompt, in
+/// their own words rather than in the developer's.
+///
+/// **Not optional, and the reason this bundle exists at all.** From macOS 10.14 a process may not
+/// open an audio *input* device until the user has granted microphone access, and a process that
+/// declares no usage description is denied outright rather than prompted. `namir-app` opens an
+/// input device on its ordinary path (`crates/namir-app/src/audio_io.rs`'s `input_devices` /
+/// `Direction::Input`) — it is an instrument-input amp simulator, so that is the whole product —
+/// and an **unbundled** Mach-O has no `Info.plist` to declare this in. A bare `namir` binary
+/// therefore does not merely look unpolished on macOS: it cannot capture the instrument signal.
+///
+/// The plugin bundle deliberately does *not* declare this. A plugin does not open the device; the
+/// host process does, under the host's own grant, and a usage description in a loaded bundle's
+/// `Info.plist` is not what TCC consults.
+pub const MICROPHONE_USAGE_DESCRIPTION: &str = "Namir processes the live signal from your guitar or bass, so it needs access to the audio \
+     input device you select.";
 
 /// The CLAP artifact's name in every staging tree: a file on Windows and Linux, a bundle directory
 /// on macOS (see this module's header).
 pub const CLAP_ARTIFACT: &str = "Namir.clap";
 
-/// The exact contents of a macOS bundle's `PkgInfo`: an eight-byte type/creator pair, the type
-/// being `BNDL` and the creator unset (`????`). No trailing newline — the file is eight bytes.
-pub const PKG_INFO: &str = "BNDL????";
+/// The standalone application's name in a **macOS** staging tree, where it is an application
+/// bundle. On Windows and Linux the standalone stays a plain executable
+/// ([`Platform::standalone`]) and this constant is unused.
+pub const APP_ARTIFACT: &str = "Namir.app";
+
+/// `PkgInfo` is an eight-byte pair: the four-byte package type, then the four-byte creator code.
+/// It carries the same two values as `CFBundlePackageType` and `CFBundleSignature`, so the two must
+/// agree — a bundle whose `PkgInfo` and `Info.plist` disagree about its type is malformed. The
+/// creator code is `????`, the documented "unset" value: creator codes were retired with the
+/// Carbon-era registry and Apple's own templates have emitted `????` for years.
+///
+/// No trailing newline in either — each file is exactly eight bytes.
+///
+/// A **plugin** bundle is `BNDL` (a loadable bundle, `CFBundlePackageType` `BNDL`); an
+/// **application** bundle is `APPL`. This is the one place the two macOS artifacts this subcommand
+/// stages genuinely differ in kind, so they are separate constants rather than one with a
+/// substitution.
+pub const PLUGIN_PKG_INFO: &str = "BNDL????";
+
+/// See [`PLUGIN_PKG_INFO`]: an application is `APPL`, not `BNDL`.
+pub const APP_PKG_INFO: &str = "APPL????";
 
 /// FR-PKG-040's enumerated set, exactly: NFR-LIC-030's machine-generated attribution file, and the
 /// full text of both licences of NFR-LIC-010. Named as its own constant so the requirement's set is
@@ -204,30 +304,43 @@ pub fn plan(platform: Platform) -> Layout {
     let library = platform.clap_library();
     let mut entries = Vec::new();
 
+    let standalone = platform.standalone();
+
     if platform.clap_is_a_bundle() {
         entries.push(Entry {
             dest: format!("{CLAP_ARTIFACT}/Contents/Info.plist"),
-            source: Source::Generated(info_plist(library)),
+            source: Source::Generated(plugin_info_plist(library)),
         });
         entries.push(Entry {
             dest: format!("{CLAP_ARTIFACT}/Contents/PkgInfo"),
-            source: Source::Generated(PKG_INFO.to_string()),
+            source: Source::Generated(PLUGIN_PKG_INFO.to_string()),
         });
         entries.push(Entry {
             dest: format!("{CLAP_ARTIFACT}/Contents/MacOS/{library}"),
             source: Source::Build(library.to_string()),
+        });
+        entries.push(Entry {
+            dest: format!("{APP_ARTIFACT}/Contents/Info.plist"),
+            source: Source::Generated(app_info_plist(standalone)),
+        });
+        entries.push(Entry {
+            dest: format!("{APP_ARTIFACT}/Contents/PkgInfo"),
+            source: Source::Generated(APP_PKG_INFO.to_string()),
+        });
+        entries.push(Entry {
+            dest: format!("{APP_ARTIFACT}/Contents/MacOS/{standalone}"),
+            source: Source::Build(standalone.to_string()),
         });
     } else {
         entries.push(Entry {
             dest: CLAP_ARTIFACT.to_string(),
             source: Source::Build(library.to_string()),
         });
+        entries.push(Entry {
+            dest: standalone.to_string(),
+            source: Source::Build(standalone.to_string()),
+        });
     }
-
-    entries.push(Entry {
-        dest: platform.standalone().to_string(),
-        source: Source::Build(platform.standalone().to_string()),
-    });
     for document in staged_documents() {
         entries.push(Entry {
             dest: document.to_string(),
@@ -238,34 +351,124 @@ pub fn plan(platform: Platform) -> Layout {
     Layout { platform, entries }
 }
 
-/// The macOS bundle's `Info.plist`, as deterministic text.
+/// The **plugin** bundle's `Info.plist`.
 ///
 /// Four keys, which is what `docs/user-guide.md` specifies as the minimum and what a loader
 /// actually reads: `CFBundleExecutable` (the dylib inside `Contents/MacOS`), `CFBundleIdentifier`,
-/// `CFBundleName` and `CFBundlePackageType` (`BNDL`). Emitted in sorted-key order with tab
-/// indentation — `plutil`'s own output convention — so that two runs, on two machines, produce
-/// identical bytes and [`check`] can byte-compare rather than parse.
+/// `CFBundleName` and `CFBundlePackageType` (`BNDL`).
+///
+/// Deliberately **no** `NSMicrophoneUsageDescription` — see [`MICROPHONE_USAGE_DESCRIPTION`] for
+/// why a plugin neither needs nor could use one.
+pub fn plugin_info_plist(executable: &str) -> String {
+    plist(&[
+        ("CFBundleExecutable", PlistValue::Text(executable)),
+        (
+            "CFBundleIdentifier",
+            PlistValue::Text(PLUGIN_BUNDLE_IDENTIFIER),
+        ),
+        ("CFBundleName", PlistValue::Text(BUNDLE_NAME)),
+        ("CFBundlePackageType", PlistValue::Text("BNDL")),
+    ])
+}
+
+/// The **application** bundle's `Info.plist`.
+///
+/// Ten keys. Four are the same shape as the plugin's, with `CFBundlePackageType` **`APPL`** and its
+/// own [`APP_BUNDLE_IDENTIFIER`]; the rest are what an application needs and a loadable bundle does
+/// not: the two version keys, [`MINIMUM_MACOS_VERSION`], `CFBundleInfoDictionaryVersion` (`6.0`,
+/// what every Apple template carries), `NSHighResolutionCapable` (an egui window rendered at 1x and
+/// upscaled on a Retina display is visibly soft, and this key is the only way an artifact assembled
+/// outside Xcode declares otherwise), and [`MICROPHONE_USAGE_DESCRIPTION`] — the last of which is
+/// the reason this bundle exists at all.
+///
+/// The key set is a deliberate transcription of the stopgap `packaging/macos/make_installer.sh`
+/// wrote while `xtask bundle` staged a bare executable, whose own comment asked for exactly that
+/// ("a transcription rather than a redesign") so that its `if [ -d …Namir.app ]` branch takes its
+/// other arm with no change to that script. The one value that differs is the usage description,
+/// which is the sentence a user reads in a permission dialogue and is worth more than a stopgap's
+/// placeholder.
+///
+/// Not declared, and worth naming so its absence is a recorded choice rather than an oversight:
+/// **`CFBundleIconFile`**. There is no `.icns` in this repository — `images/namir.png` is the brand
+/// mark M12 shipped, and D-17.3 books the *Windows* `.exe` icon to M13's packaging pipeline. A
+/// plist key naming an icon file that is not in the bundle is worse than no key, so the icon lands
+/// with the icon deliverable, and this function gains an eleventh key then.
+pub fn app_info_plist(executable: &str) -> String {
+    plist(&[
+        ("CFBundleExecutable", PlistValue::Text(executable)),
+        (
+            "CFBundleIdentifier",
+            PlistValue::Text(APP_BUNDLE_IDENTIFIER),
+        ),
+        ("CFBundleInfoDictionaryVersion", PlistValue::Text("6.0")),
+        ("CFBundleName", PlistValue::Text(BUNDLE_NAME)),
+        ("CFBundlePackageType", PlistValue::Text("APPL")),
+        (
+            "CFBundleShortVersionString",
+            PlistValue::Text(PRODUCT_VERSION),
+        ),
+        ("CFBundleVersion", PlistValue::Text(PRODUCT_VERSION)),
+        (
+            "LSMinimumSystemVersion",
+            PlistValue::Text(MINIMUM_MACOS_VERSION),
+        ),
+        ("NSHighResolutionCapable", PlistValue::Boolean(true)),
+        (
+            "NSMicrophoneUsageDescription",
+            PlistValue::Text(MICROPHONE_USAGE_DESCRIPTION),
+        ),
+    ])
+}
+
+/// A plist value. Two variants because two are needed: `NSHighResolutionCapable` is a **boolean**,
+/// and `<string>true</string>` is not the same document as `<true/>` — a reader that type-checks
+/// (and `plutil -lint` does) is entitled to reject the former.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlistValue<'a> {
+    Text(&'a str),
+    Boolean(bool),
+}
+
+/// `entries` as a plist document, keys emitted in **sorted** order with tab indentation (`plutil`'s
+/// own output convention), so that two runs on two machines produce identical bytes and [`check`]
+/// can byte-compare rather than parse.
+///
+/// Sorted here rather than trusted from the caller: determinism is the property the byte comparison
+/// rests on, and a caller that listed two keys out of order would otherwise make a checked-in
+/// expectation depend on the order someone happened to type.
 ///
 /// The `DOCTYPE`'s URL is a public identifier in a fixed string, resolved by nothing at build or
-/// run time; it is what every `Info.plist` carries and no network access of any kind.
-pub fn info_plist(executable: &str) -> String {
-    format!(
+/// run time; it is what every `Info.plist` carries and is no network access of any kind.
+fn plist(entries: &[(&str, PlistValue)]) -> String {
+    let mut sorted: Vec<(&str, PlistValue)> = entries.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
          \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\">\n\
-         <dict>\n\
-         \t<key>CFBundleExecutable</key>\n\
-         \t<string>{executable}</string>\n\
-         \t<key>CFBundleIdentifier</key>\n\
-         \t<string>{BUNDLE_IDENTIFIER}</string>\n\
-         \t<key>CFBundleName</key>\n\
-         \t<string>{BUNDLE_NAME}</string>\n\
-         \t<key>CFBundlePackageType</key>\n\
-         \t<string>BNDL</string>\n\
-         </dict>\n\
-         </plist>\n"
-    )
+         <dict>\n",
+    );
+    for (key, value) in sorted {
+        let rendered = match value {
+            PlistValue::Text(text) => format!("<string>{}</string>", escape_xml(text)),
+            PlistValue::Boolean(true) => "<true/>".to_string(),
+            PlistValue::Boolean(false) => "<false/>".to_string(),
+        };
+        out.push_str(&format!("\t<key>{}</key>\n\t{rendered}\n", escape_xml(key)));
+    }
+    out.push_str("</dict>\n</plist>\n");
+    out
+}
+
+/// The three characters that cannot appear literally in XML character data. None of the values
+/// here contains one today; escaping anyway costs nothing and means a future usage description
+/// written with an `&` produces a valid plist rather than one `plutil` rejects at package time.
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// `<target>/release`, honouring `CARGO_TARGET_DIR` so a developer with a shared target directory
@@ -375,6 +578,7 @@ pub fn check(staging_root: &Path, layout: &Layout) -> Result<Vec<String>, String
     }
 
     let mut violations = check_clap_form(staging_root, layout.platform);
+    violations.extend(check_app_form(staging_root, layout.platform));
     for entry in &layout.entries {
         violations.extend(check_entry(staging_root, entry));
     }
@@ -416,6 +620,48 @@ fn check_clap_form(staging_root: &Path, platform: Platform) -> Vec<String> {
          found {found}. {BUNDLE_REMEDY}",
         path.display(),
         platform.name()
+    )]
+}
+
+/// The same structural check for the **application** bundle on macOS, and the mirror of it
+/// elsewhere: `Namir.app` is a directory on macOS and must not exist at all on Windows or Linux,
+/// where the standalone is a plain executable.
+///
+/// This one is **not** FR-PKG-020's: that requirement's text is about the CLAP artifact's form and
+/// nothing else. It is D-18.3's — a release "places the standalone app under `/Applications`",
+/// which a bare Mach-O does not satisfy — and, more concretely, it is what makes the standalone
+/// work at all on macOS: see [`MICROPHONE_USAGE_DESCRIPTION`].
+fn check_app_form(staging_root: &Path, platform: Platform) -> Vec<String> {
+    let path = staging_root.join(APP_ARTIFACT);
+    let (is_dir, is_file) = (path.is_dir(), path.is_file());
+
+    if !platform.clap_is_a_bundle() {
+        return if is_dir || is_file {
+            vec![format!(
+                "{}: an application bundle has no meaning on {} -- the standalone is the plain \
+                 executable `{}` there. {BUNDLE_REMEDY}",
+                path.display(),
+                platform.name(),
+                platform.standalone()
+            )]
+        } else {
+            Vec::new()
+        };
+    }
+
+    if is_dir {
+        return Vec::new();
+    }
+    let found = if is_file {
+        "a plain file -- an unbundled binary cannot declare NSMicrophoneUsageDescription, so macOS \
+         denies it the audio input device, and double-clicking it opens Terminal"
+    } else {
+        "nothing"
+    };
+    vec![format!(
+        "{}: on macOS the standalone must be an application bundle, found {found}. \
+         {BUNDLE_REMEDY}",
+        path.display()
     )]
 }
 
@@ -574,6 +820,15 @@ mod tests {
     /// macOS is reported as a violation.
     ///
     /// Runs on every host, on every runner, because [`plan`] never consults the host.
+    ///
+    /// **What the tag does and does not claim.** This test also asserts the macOS `Namir.app`
+    /// bundle and its own negative case, added when the packaging lane found the standalone staged
+    /// as a bare Mach-O. That is *not* part of FR-PKG-020, whose text is about "the CLAP artifact"
+    /// and nothing else — the application bundle answers D-18.3's `/Applications` payload and
+    /// [`MICROPHONE_USAGE_DESCRIPTION`]. The tag's claim is therefore unchanged and stays plain:
+    /// what it asserts about FR-PKG-020 — every platform, produced output, the requirement's own
+    /// `Verify: S` method — is exactly what it asserted before, and the extra assertions neither
+    /// widen nor weaken it.
     // trace: FR-PKG-020
     #[test]
     fn every_platforms_produced_layout_is_the_form_its_loader_requires() {
@@ -610,7 +865,7 @@ mod tests {
                 assert_eq!(
                     std::fs::read(contents.join("PkgInfo")).unwrap(),
                     b"BNDL????",
-                    "PkgInfo is exactly eight bytes"
+                    "a plugin bundle's PkgInfo is exactly eight bytes, and its type is BNDL"
                 );
                 let plist = std::fs::read_to_string(contents.join("Info.plist")).unwrap();
                 for key in [
@@ -635,7 +890,50 @@ mod tests {
                 );
             }
 
-            assert!(staging.join(platform.standalone()).is_file());
+            // The standalone: an application bundle on macOS, a plain executable elsewhere.
+            let app = staging.join(APP_ARTIFACT);
+            if platform.clap_is_a_bundle() {
+                assert!(app.is_dir(), "macOS: {APP_ARTIFACT} must be a directory");
+                let contents = app.join("Contents");
+                assert!(
+                    contents.join("MacOS").join(platform.standalone()).is_file(),
+                    "the executable must be inside Contents/MacOS"
+                );
+                assert!(
+                    !staging.join(platform.standalone()).exists(),
+                    "macOS stages no bare executable beside the bundle"
+                );
+                assert_eq!(
+                    std::fs::read(contents.join("PkgInfo")).unwrap(),
+                    b"APPL????",
+                    "an application's PkgInfo is APPL, not the plugin's BNDL"
+                );
+                let plist = std::fs::read_to_string(contents.join("Info.plist")).unwrap();
+                for key in [
+                    "CFBundleExecutable",
+                    "CFBundleIdentifier",
+                    "CFBundleName",
+                    "CFBundlePackageType",
+                    "CFBundleShortVersionString",
+                    "CFBundleVersion",
+                    "LSMinimumSystemVersion",
+                    "NSHighResolutionCapable",
+                    "NSMicrophoneUsageDescription",
+                ] {
+                    assert!(plist.contains(key), "Info.plist lacks {key}:\n{plist}");
+                }
+                assert!(
+                    plist.contains("<string>APPL</string>"),
+                    "an application is APPL, not BNDL:\n{plist}"
+                );
+            } else {
+                assert!(staging.join(platform.standalone()).is_file());
+                assert!(
+                    !app.exists(),
+                    "{}: an application bundle has no meaning here",
+                    platform.name()
+                );
+            }
         }
 
         // The negative case, and the whole reason FR-PKG-020 is a requirement: on macOS a renamed
@@ -655,6 +953,26 @@ mod tests {
             "the bundle's absent members must be reported too: {violations:#?}"
         );
 
+        // The mirror of that for the application bundle: a bare Mach-O named `Namir.app`. Not
+        // FR-PKG-020's subject -- that requirement is about the CLAP artifact -- but the same
+        // class of mistake, and the one that costs the user the audio input device.
+        std::fs::remove_dir_all(macos.join(APP_ARTIFACT)).unwrap();
+        std::fs::write(macos.join(APP_ARTIFACT), b"fake macos executable").unwrap();
+        let violations = check(&macos, &plan(Platform::MacOs)).unwrap();
+        assert!(
+            violations.iter().any(|v| {
+                v.contains("must be an application bundle")
+                    && v.contains("NSMicrophoneUsageDescription")
+            }),
+            "a bare executable named Namir.app must be reported, with the reason: {violations:#?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains(APP_ARTIFACT) && v.contains("PkgInfo")),
+            "the app bundle's absent members must be reported too: {violations:#?}"
+        );
+
         // And the mirror image: a *directory* named `Namir.clap` on Windows is equally wrong.
         let windows = repo.join("staging/windows");
         std::fs::remove_file(windows.join(CLAP_ARTIFACT)).unwrap();
@@ -664,6 +982,16 @@ mod tests {
             violations
                 .iter()
                 .any(|v| v.contains("renamed to `Namir.clap`") && v.contains("found a directory")),
+            "{violations:#?}"
+        );
+
+        // And a `Namir.app` that wandered into a Windows tree is reported rather than ignored.
+        std::fs::create_dir_all(windows.join(APP_ARTIFACT)).unwrap();
+        let violations = check(&windows, &plan(Platform::Windows)).unwrap();
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains(APP_ARTIFACT) && v.contains("no meaning on windows")),
             "{violations:#?}"
         );
 
@@ -725,7 +1053,9 @@ mod tests {
                 "Namir.clap/Contents/Info.plist",
                 "Namir.clap/Contents/PkgInfo",
                 "Namir.clap/Contents/MacOS/libnamir_clap.dylib",
-                "namir",
+                "Namir.app/Contents/Info.plist",
+                "Namir.app/Contents/PkgInfo",
+                "Namir.app/Contents/MacOS/namir",
                 "THIRD-PARTY-NOTICES.md",
                 "LICENSE-MIT",
                 "LICENSE-APACHE",
@@ -757,14 +1087,19 @@ mod tests {
                     .any(|e| matches!(e.source, Source::Generated(_))),
                 "only macOS generates anything"
             );
+            assert!(
+                !layout.entries.iter().any(|e| e.dest.contains(APP_ARTIFACT)),
+                "{}: the standalone is a plain executable, not an application bundle",
+                platform.name()
+            );
         }
     }
 
     #[test]
-    fn the_plist_declares_the_plugin_id_namir_clap_already_uses() {
-        // One product, one reverse-DNS identity: this literal and `namir-clap`'s own `PLUGIN_ID`
+    fn the_plugin_plist_declares_the_plugin_id_namir_clap_already_uses() {
+        // One artifact, one reverse-DNS identity: this literal and `namir-clap`'s own `PLUGIN_ID`
         // are the same string, and this test is the reminder of that when either is edited.
-        let plist = info_plist("libnamir_clap.dylib");
+        let plist = plugin_info_plist("libnamir_clap.dylib");
         assert!(
             plist.contains("<string>org.legrand.namir</string>"),
             "{plist}"
@@ -776,7 +1111,140 @@ mod tests {
             "CFBundleExecutable must name the dylib inside Contents/MacOS: {plist}"
         );
         assert!(plist.ends_with("</plist>\n"));
-        assert_eq!(info_plist("libnamir_clap.dylib"), plist, "deterministic");
+        assert_eq!(
+            plugin_info_plist("libnamir_clap.dylib"),
+            plist,
+            "deterministic"
+        );
+        assert!(
+            !plist.contains("NSMicrophoneUsageDescription"),
+            "a plugin declares no usage description -- the host holds the grant:\n{plist}"
+        );
+    }
+
+    /// The application bundle's own plist, key by key, because every one of the four keys the
+    /// plugin's does not carry is there for a stated reason and a silent drop would be invisible
+    /// until a user on macOS hit it.
+    #[test]
+    fn the_app_plist_carries_a_distinct_identifier_and_the_microphone_description() {
+        let plist = app_info_plist("namir");
+
+        // The identifier must differ from the plugin's: TCC keys the microphone grant on it.
+        assert_ne!(APP_BUNDLE_IDENTIFIER, PLUGIN_BUNDLE_IDENTIFIER);
+        assert!(
+            plist.contains("<string>org.legrand.namir.standalone</string>"),
+            "{plist}"
+        );
+        assert!(
+            !plist.contains("<string>org.legrand.namir</string>"),
+            "the app must not carry the plugin's identifier:\n{plist}"
+        );
+
+        // An application is APPL, never the plugin's BNDL.
+        assert!(plist.contains("<string>APPL</string>"), "{plist}");
+        assert!(!plist.contains("BNDL"), "{plist}");
+
+        assert!(
+            plist.contains("<key>NSMicrophoneUsageDescription</key>"),
+            "{plist}"
+        );
+        assert!(plist.contains(MICROPHONE_USAGE_DESCRIPTION), "{plist}");
+        assert!(
+            plist.contains(&format!(
+                "<key>LSMinimumSystemVersion</key>\n\t<string>{MINIMUM_MACOS_VERSION}</string>"
+            )),
+            "{plist}"
+        );
+        for key in [
+            "CFBundleShortVersionString",
+            "CFBundleVersion",
+            "CFBundleInfoDictionaryVersion",
+        ] {
+            assert!(plist.contains(&format!("<key>{key}</key>")), "{plist}");
+        }
+        assert!(
+            plist.contains("<key>NSHighResolutionCapable</key>\n\t<true/>"),
+            "a boolean key, not a string: {plist}"
+        );
+        assert_eq!(app_info_plist("namir"), plist, "deterministic");
+    }
+
+    #[test]
+    fn a_plist_emits_its_keys_in_sorted_order_whatever_order_it_was_given() {
+        let entry = |key, value| (key, PlistValue::Text(value));
+        let forward = plist(&[entry("Alpha", "1"), entry("Beta", "2"), entry("Gamma", "3")]);
+        let shuffled = plist(&[entry("Gamma", "3"), entry("Alpha", "1"), entry("Beta", "2")]);
+        assert_eq!(forward, shuffled, "key order must not reach the bytes");
+        let alpha = forward.find("Alpha").unwrap();
+        let beta = forward.find("Beta").unwrap();
+        assert!(alpha < beta && beta < forward.find("Gamma").unwrap());
+    }
+
+    #[test]
+    fn a_plist_escapes_the_three_characters_xml_reserves() {
+        let escaped = plist(&[("K", PlistValue::Text("guitar & bass <live>"))]);
+        assert!(
+            escaped.contains("<string>guitar &amp; bass &lt;live&gt;</string>"),
+            "{escaped}"
+        );
+    }
+
+    #[test]
+    fn a_boolean_is_a_plist_boolean_not_the_string_true() {
+        // `<string>true</string>` is a different document from `<true/>`, and `plutil -lint` is
+        // entitled to reject a boolean key carrying a string.
+        let rendered = plist(&[("Yes", PlistValue::Boolean(true))]);
+        assert!(
+            rendered.contains("<key>Yes</key>\n\t<true/>\n"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("<string>true</string>"), "{rendered}");
+        assert!(
+            plist(&[("No", PlistValue::Boolean(false))]).contains("<false/>"),
+            "both arms render"
+        );
+    }
+
+    #[test]
+    fn the_two_pkginfo_files_differ_in_type_and_are_eight_bytes_each() {
+        // Apple's definition: PkgInfo is the four-byte package type followed by the four-byte
+        // creator code, carrying the same two values as CFBundlePackageType and CFBundleSignature.
+        // A loadable bundle is BNDL; an application is APPL. `????` is the documented unset creator.
+        assert_eq!(PLUGIN_PKG_INFO.len(), 8);
+        assert_eq!(APP_PKG_INFO.len(), 8);
+        assert_eq!(&PLUGIN_PKG_INFO[..4], "BNDL");
+        assert_eq!(&APP_PKG_INFO[..4], "APPL");
+        assert_eq!(&PLUGIN_PKG_INFO[4..], "????");
+        assert_eq!(&APP_PKG_INFO[4..], "????");
+        // And each agrees with the CFBundlePackageType its own plist declares.
+        assert!(
+            plugin_info_plist("x").contains(&format!("<string>{}</string>", &PLUGIN_PKG_INFO[..4]))
+        );
+        assert!(app_info_plist("x").contains(&format!("<string>{}</string>", &APP_PKG_INFO[..4])));
+    }
+
+    /// [`PRODUCT_VERSION`] is a duplicate of `namir-app`'s manifest version, held here so [`plan`]
+    /// stays pure. A duplicate nothing checks is a duplicate that drifts, so check it.
+    #[test]
+    fn the_bundled_version_tracks_namir_apps_own() {
+        let manifest = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask/ has a parent")
+                .join("crates/namir-app/Cargo.toml"),
+        )
+        .expect("namir-app's manifest is checked in");
+
+        let declared = manifest
+            .lines()
+            .find_map(|line| line.strip_prefix("version = "))
+            .map(|value| value.trim().trim_matches('"').to_string())
+            .expect("namir-app declares a version");
+
+        assert_eq!(
+            declared, PRODUCT_VERSION,
+            "CFBundleShortVersionString/CFBundleVersion must track crates/namir-app/Cargo.toml"
+        );
     }
 
     #[test]
