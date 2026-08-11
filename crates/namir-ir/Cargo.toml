@@ -4,12 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
 hound = "3.5"
 rubato = "0.16"
 realfft = "3.5"
@@ -20,7 +22,7 @@ rustfft = "6.4"
 wide = "1.6"
 
 [dev-dependencies]
-namir-fixtures = { path = "../namir-fixtures" }
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
 # `warn_release` alongside `warn_debug`: pre-existing gap found during M3's verification pass --
 # with `warn_debug` alone, `rt_harness` fails to *compile* under `cargo test --release` (see the
 # identical fix and rationale in `namir-nam`'s Cargo.toml). Dev-dependency only, so enabling both

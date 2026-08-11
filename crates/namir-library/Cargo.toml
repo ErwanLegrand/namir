@@ -4,15 +4,17 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
-namir-nam = { path = "../namir-nam" }
-namir-ir = { path = "../namir-ir" }
-namir-state = { path = "../namir-state" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
+namir-nam = { path = "../namir-nam", version = "0.1.0" }
+namir-ir = { path = "../namir-ir", version = "0.1.0" }
+namir-state = { path = "../namir-state", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Deliberately absent, each a decision rather than an oversight:
@@ -31,7 +33,7 @@ serde_json = "1"
 #    them for this crate (`xtask layering`'s LAYERING_TABLE already carries this row).
 
 [dev-dependencies]
-namir-fixtures = { path = "../namir-fixtures" }
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
 # NFR-PERF-060's benchmark (benches/library_scan.rs) pins away from CPU 0/2, same reasoning and
 # same crate/version as every other D-2.1-pinned benchmark in this workspace.
 core_affinity = "0.8"

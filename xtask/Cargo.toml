@@ -10,20 +10,20 @@ publish = false
 workspace = true
 
 [dependencies]
-namir-params = { path = "../crates/namir-params" }
+namir-params = { path = "../crates/namir-params", version = "0.1.0" }
 # M5: `preset` subcommand writes a sample .namirpreset document for FR-STATE-040's and
 # NFR-DOC-010's manual tests (docs/manual-tests/) -- the same "tooling consuming a product crate's
 # public API, not a product edge" reasoning this crate's own doc comment already gives for
 # depending on namir-params.
-namir-core = { path = "../crates/namir-core" }
-namir-state = { path = "../crates/namir-state" }
+namir-core = { path = "../crates/namir-core", version = "0.1.0" }
+namir-state = { path = "../crates/namir-state", version = "0.1.0" }
 cargo_metadata = "0.19"
 walkdir = "2"
 # M10 Phase 4(a): `nam-parity` subcommand loads a real, locally-held `.nam` model through
 # namir-nam's own public API to compare it against a real reference render -- same "tooling
 # consuming a product crate's public API, not a product edge" reasoning as this crate's other
 # product-crate dependencies above.
-namir-nam = { path = "../crates/namir-nam" }
+namir-nam = { path = "../crates/namir-nam", version = "0.1.0" }
 # `nam-parity` reads WAV files (the probe input and the reference render) as plain f32 samples.
 # Pinned to the same "3.5" every other hound consumer in this workspace uses.
 hound = "3.5"
