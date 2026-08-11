@@ -4861,6 +4861,18 @@ a third version, also untested. Worth knowing before treating "requires Inno 6.3
 **Partial → Done** in §14's re-audit table: 5.15 PKG becomes **2 / 2 / 0** (was 1 / 3 / 0), Total
 **36 / 93 / 1** (was 35 / 94 / 1). The denominator is untouched.
 
+**Step 2.1 is recorded verbatim rather than as a general pass**, because it carries the whole
+"defaults to" half of the requirement on its own: an installer offering both scopes but
+preselecting system-wide passes every other clause and fails this one. The dialog preselects
+**"➔ Install only for me (recommended)"**. Two things follow that a bare "it defaulted correctly"
+would not have shown. `packaging/windows/namir.iss` has **no `[Messages]` section**, so this is
+Inno's own default text — the parenthesised "(recommended)" is *Inno* steering the user towards
+per-user, and it does so because `PrivilegesRequired=lowest` is set. That directive is therefore
+doing more than D-18.3 credited it with: it does not merely allow the per-user default, it makes
+the installer recommend it in as many words. And the string is not this project's to keep stable, so
+a reader who finds different wording on a later Inno should read that as an Inno change rather than
+a regression, and re-check the *preselection* instead of the text.
+
 **Step 0 is the one that matters beyond this requirement.** D-18.3's standing precondition — that a
 real host be *observed* to scan `%LOCALAPPDATA%\Programs\Common\CLAP` — is discharged. It had been
 outstanding since the decision was written, the close-out above named it as the single item that

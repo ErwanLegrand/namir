@@ -197,15 +197,26 @@ not the `(x86)` directory. That is the one result that could not have been obtai
 `ArchitecturesInstallIn64BitMode=x64compatible` was added on Inno's documented behaviour, and the
 failure it prevents is silent by construction.
 
-**Step 2.1 was re-confirmed on its own, because it is the clause that carries the whole "defaults
-to" half of this requirement.** An installer that offers both scopes but preselects system-wide
-passes every other clause and fails this one, so a general "everything passed" is not enough to
-rest it on. Asked specifically, the runner confirmed: **the installer defaults to per-user.**
+**Step 2.1, verbatim, because it is the clause that carries the whole "defaults to" half of this
+requirement.** An installer that offers both scopes but preselects system-wide passes every other
+clause and fails this one, so it is not something a general "everything passed" should rest on. The
+option the install-mode dialog preselects reads:
 
-What is still not in this document is the **verbatim** wording Inno's install-mode dialog shows for
-that preselected option. The behaviour is confirmed; the string is not recorded. That is a weaker
-form of the same evidence — a future reader cannot tell from this file what they should expect to
-see on screen — and it is noted rather than quietly upgraded. Capture it on the next run.
+> ➔ **Install only for me (recommended)**
+
+— a right-pointing arrow followed by that text. **FR-PKG-030's "shall default to per-user" is met,
+observed rather than inferred.**
+
+**Two things follow from that string that a bare "it defaulted correctly" would not have shown.**
+`packaging/windows/namir.iss` has **no `[Messages]` section and no custom wording anywhere**, so
+this is Inno's own default text — which means the parenthesised "(recommended)" is *Inno* marking
+the per-user option as recommended, and it does that because `PrivilegesRequired=lowest` is set.
+The directive is therefore doing more than making per-user reachable: it is what makes the
+installer actively steer a user towards the scope D-13.3 wants them in. And the wording is not
+ours to keep stable — a future Inno release could reword or drop the "(recommended)" marker without
+anything in this repository changing, so a reader finding different text on a later version should
+treat that as an Inno change and not as a regression, and re-check the *preselection* rather than
+the string.
 
 **Uninstall was exercised and worked**, in both scopes: after the run, neither
 `%LOCALAPPDATA%\Programs\Common\CLAP\Namir.clap` nor `%CommonProgramFiles%\CLAP\Namir.clap`
