@@ -820,6 +820,23 @@ the milestone that closes the requirement moves. `docs/manual-tests/fr-ui-110-br
 what was and was not executed, including that no display was available to execute the brand-mark
 half either.
 
+*Consequence (added M13, 2026-08-11)* — the **executable** icon clause is built; the **window** icon
+clause **cannot be met through the pinned stack**, which is a finding rather than a further
+deferral. `images/namir.ico` is generated from `images/namir.png` by `xtask identity` and gated for
+freshness the same way M12's brand-mark blob is, and `rcedit` embeds it into `namir.exe` in the
+packaging pipeline, so `02-architecture.md` **D-17.3**'s refusal of a build script in a shipped
+crate holds and its stated cost is now real: a plain `cargo build` produces an icon-less executable.
+The window clause is a different matter. M12 left "whether `baseview` 0.3.0 gained an icon field"
+explicitly unchecked; M13 checked, and **no published `baseview` version has ever exposed an icon on
+any backend** — 0.3.0 does not even have `WindowOpenOptions`, and its Win32 window class registers
+`hIcon: null_mut()` byte-identically to 0.2.2. The upgrade is unreachable regardless, published
+`egui-baseview` 0.6.0 requiring `baseview` 0.2.2. The only in-process route is `WM_SETICON`, which
+D-17.3 priced at a fourth `#![allow(unsafe_code)]` file for a cosmetic feature and declined. What
+remains untested is whether the shell's own executable-icon fallback gives the window, the taskbar
+button and Alt-Tab an icon anyway; `docs/manual-tests/fr-ui-110-brand-mark.md` carries those as
+three separate unexecuted steps, because they need not agree. This note changes no text, priority or
+`*Verify:*` line above. **FR-UI-110 remains open**, on the window clause and on those observations.
+
 ### 5.14 Diagnostics and error handling (ERR)
 
 **FR-ERR-010 (Must)** — Namir shall write a log to a per-user location, with a configurable
