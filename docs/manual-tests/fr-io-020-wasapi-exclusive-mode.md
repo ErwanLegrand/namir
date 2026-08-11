@@ -112,10 +112,23 @@ recorded as not run, with the reason.
 6. **Capture works at all.** Confirm the input meter moves. This is the silent-failure path: if the
    `GetNextPacketSize` bypass is wrong, there is no error anywhere, the output is simply silent and
    the input meter dead.
-7. **Fallback, and an honest indicator.** Select a device that refuses exclusive mode — the webcam
-   microphone, or force 44.1 kHz where this interface refuses every format. Confirm: a notice
-   appears naming the device and the reason, the indicator reads **shared**, and audio still works.
-   Roadmap §18 forbids "a mode indicator that lies", and this is the only test of that claim.
+7. **Fallback, and an honest indicator.** There is no device-selection surface either — the same
+   §15 item 16 gap — so this is driven from the settings file. With Namir closed, set
+   `"input_device_name"` to a device that refuses exclusive mode, keeping `"exclusive_mode": true`:
+
+   ```json
+   "input_device_name": "Microphone (Trust 1080p HD Webcam)",
+   ```
+
+   `device_state::select_device` matches on **exact string equality** and silently falls back to the
+   default device on any mismatch, so the name must be copied verbatim from `list_devices` — a typo
+   tests nothing and looks like a pass. Forcing a rate instead does **not** work: this interface
+   reports only 48 kHz in shared mode, so `negotiate_sample_rate` never offers anything else.
+
+   Confirm: a notice appears naming the refusing device and the reason, the indicator reads
+   **shared**, and audio still works. Roadmap §18 forbids "a mode indicator that lies", and this is
+   the only test of that claim — an all-or-nothing session where one endpoint accepts exclusive and
+   the other does not is exactly where an indicator would be tempted to lie.
 8. **Buffer alignment.** Note whether `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` appeared at any point. On
    this device it is expected **not** to, per the baseline above. If it does not appear, that retry
    path remains unexercised and must be recorded as untested — a green run here is not evidence it
