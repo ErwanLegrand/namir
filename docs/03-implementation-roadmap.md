@@ -4524,3 +4524,50 @@ is unaffected; and **this milestone's Acceptance paragraph remains the only thin
 own annotations**, which is what that paragraph was already saying. NFR-QUAL-010 therefore closes at
 **M9b**, and M13's close-out must not claim it any more than M9a's was allowed to. `02-architecture.md`
 D-18.5 and §16's restated acceptance carry the same correction, each as an appended note.
+
+### M13 status — `xtask bundle`, 2026-08-11
+
+The first deliverable, and the one everything else in this milestone waits on, is built:
+`cargo run -p xtask -- bundle [--target <windows|macos|linux>] [--check|--plan]`
+(`xtask/src/bundle.rs`, wired at `xtask/src/main.rs`'s `run_bundle`). It stages one platform's
+already-built release artifacts under `target/bundle/<platform>` — the CLAP artifact in the form
+that platform's loader requires, the standalone `namir`/`namir.exe`, and
+`THIRD-PARTY-NOTICES.md`, `LICENSE-MIT`, `LICENSE-APACHE` and `README.md` — then asserts what it
+produced and fails on any deviation, so FR-PKG-020's "the packaging step asserts the produced
+layout" is true of `bundle` itself and not only of `bundle --check`. It builds nothing, archives
+nothing and hashes nothing: those stay `release.yml`'s, per D-18.3's fixed order.
+
+Three things worth recording rather than leaving to be re-derived.
+
+**The layout planner is pure and host-independent.** `plan(Platform) -> Layout` reads nothing and
+never consults the host, so the macOS bundle layout — `Namir.clap/Contents/{Info.plist, PkgInfo,
+MacOS/libnamir_clap.dylib}` — is computed, asserted and (given macOS artifacts) materialised from a
+Windows or Linux machine. That is what lets FR-PKG-020's `Verify: S` assertion be an ordinary test
+running on **every** CI runner rather than only on the macOS leg of a release job, which would
+leave the one platform whose layout is easy to get wrong checked only where the check is hardest to
+reach. `Info.plist` is emitted as deterministic text and `PkgInfo` as its eight literal bytes, so
+this took **no new cargo dependency** and §17's register is unchanged (that note's own line: a
+non-cargo build tool needs no row, a cargo dependency does).
+
+**The two annotations, and why one of them is partial.** `// trace: FR-PKG-020` is plain: its test
+materialises a staging tree for all three platforms from a fake shared library, runs `check` over
+the *produced* result, and asserts both negative cases — a plain file named `Namir.clap` on macOS,
+and a directory named `Namir.clap` on Windows. `// trace-partial: FR-PKG-040` is not: that
+requirement quantifies over "every distribution, installer and archive alike", and the staging tree
+is the packager's *input*, not a distribution. The Windows installer, the macOS `.pkg`/`.dmg` and
+the plain archives are later deliverables of this milestone, so its `uncovered:` field names them
+and closes M13. FR-PKG-010 and FR-PKG-030 are untagged and stay `**UNRESOLVED**`, which is the
+correct disposition for a requirement whose deliverable has not run. Uncovered Musts fell from 17
+to 15; partials rose from 59 to 60.
+
+**One ledger entry corrected in passing.** `xtask/src/attribution.rs`'s `// uncovered:` field for
+NFR-LIC-030 said the "shipped with the binaries" clause "has no artifact of any kind … packaged
+with nothing", which this change makes false — the attribution file is now staged beside the
+binaries and its presence asserted. The field is reworded to say exactly that and to keep the half
+that is still open (no release workflow, no installer, no archive); the tag stays `trace-partial:`
+and still closes M13.
+
+**§14's `### M9a re-audit` table is deliberately untouched.** Its 5.15 PKG row still reads
+`4 | 0 | 0 | 4`. Verdict cells move at the close-out of the milestone whose evidence moves them,
+and M13 has one deliverable of seven done; the row moves at M13's close-out, from that milestone's
+whole evidence, not incrementally from this one.

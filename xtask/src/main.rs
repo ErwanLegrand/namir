@@ -6,6 +6,7 @@
 //! D-5.1's layering table (see `layering.rs`'s module doc).
 
 mod attribution;
+mod bundle;
 mod cargo_meta;
 mod identity;
 mod layering;
@@ -164,6 +165,59 @@ fn run_identity(root: &Path, write: bool) -> bool {
         }
         Err(e) => {
             println!("identity: could not run check: {e}");
+            false
+        }
+    }
+}
+
+/// M13's packaging primitive (D-18.3): stage one platform's release artifacts in the form
+/// FR-PKG-020 requires, with FR-PKG-040's three documents beside them.
+///
+/// Reports a **list** of violations, like `run_identity` and for the same reason. A materialising
+/// run asserts its own output before returning, so that "the packaging step asserts the produced
+/// layout against the required form for the platform it targets, and fails the build on any
+/// deviation" (FR-PKG-020's `Verify:` method) is true of `bundle` itself, not only of
+/// `bundle --check`.
+fn run_bundle(root: &Path, args: &bundle::BundleArgs) -> bool {
+    let layout = bundle::plan(args.platform);
+    let staging_root = bundle::staging_root(root, args.platform);
+
+    for line in bundle::describe(&layout) {
+        println!("{line}");
+    }
+    if args.mode == bundle::Mode::Plan {
+        return true;
+    }
+
+    if args.mode == bundle::Mode::Materialise {
+        match bundle::materialise(root, &bundle::build_dir(root), &staging_root, &layout) {
+            Ok(message) => println!("bundle: {message}"),
+            Err(e) => {
+                println!("bundle: {e}");
+                return false;
+            }
+        }
+    }
+
+    match bundle::check(&staging_root, &layout) {
+        Ok(violations) if violations.is_empty() => {
+            println!(
+                "bundle: {} is the form the {} plugin loader requires, and carries the attribution \
+                 file and both licence texts",
+                staging_root.display(),
+                args.platform.name()
+            );
+            true
+        }
+        Ok(violations) => {
+            println!("bundle: {} violation(s) found:", violations.len());
+            for v in &violations {
+                println!("  - {v}");
+            }
+            false
+        }
+        Err(e) => {
+            println!("bundle: could not run check: {e}");
             false
         }
     }
@@ -646,7 +700,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>>"
+        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
     );
 }
 
@@ -680,6 +734,18 @@ fn main() {
             }
         },
         Some("preset") => preset::run(&args[1..]),
+        // Strict, for the same reason `traceability` and `nam-parity` are: `--check`/`--plan`
+        // select between materialising, asserting and describing, and `--target` between three
+        // platforms' layouts, so a typo silently falling back to "materialise for the host" would
+        // be the worst of the four outcomes.
+        Some("bundle") => match bundle::parse_args(&args[1..]) {
+            Ok(parsed) => run_bundle(&root, &parsed),
+            Err(e) => {
+                println!("{e}");
+                print_usage();
+                std::process::exit(2);
+            }
+        },
         // Strict, like `traceability`'s own parse: see nam_parity's module comment for why an
         // unrecognised flag here should be loud rather than silently ignored.
         Some("nam-parity") => match nam_parity::parse_args(&args[1..]) {
