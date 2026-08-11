@@ -62,6 +62,18 @@ const MAX_DRAIN_BATCHES: usize = 8;
 pub(crate) struct ClapUiHost {
     inner: Arc<SharedInner>,
     telemetry: Option<TelemetryReader>,
+    /// The last reading [`ClapUiHost::drain_meters`] actually saw, held so that a GUI frame which
+    /// drains no telemetry shows the previous value rather than dropping to silence.
+    ///
+    /// **These are held, not accumulated**, and the distinction is the whole of what went wrong
+    /// here once: `output_peak_db` used to be updated as `self.output_peak_db.max(entry.value)`,
+    /// which reads correctly as "the louder of the two output channels" until you notice that the
+    /// left-hand side is a field that outlives the drain. That made it a maximum over the
+    /// *instance's whole lifetime*, so the output meter climbed to the loudest peak the plugin had
+    /// ever seen and then never moved again — full and stuck, from the first transient that
+    /// reached 0 dBFS onwards. Any cross-channel maximum belongs to one drain and must be local to
+    /// it; see [`ClapUiHost::drain_meters`], and `namir-app`'s `read_meters`, which has always had
+    /// this shape.
     input_peak_db: f32,
     output_peak_db: f32,
 }
@@ -76,6 +88,15 @@ impl ClapUiHost {
         }
     }
 
+    /// Reads whatever the engine has published since the last GUI frame and replaces the held
+    /// readings with it.
+    ///
+    /// Both maxima are **local to this call**, deliberately: they combine what arrived within one
+    /// drain — the two output channels, and any repeat entries from several blocks — and then
+    /// *replace* the stored reading. Accumulating into the field instead is the ratchet described
+    /// on [`ClapUiHost::output_peak_db`]. The assignment is guarded by `Option` rather than
+    /// unconditional so that a frame which drained nothing holds the previous reading instead of
+    /// flashing to silence; that is also why the fields cannot simply be reset at the top.
     fn drain_meters(&mut self) {
         let Some(reader) = self.telemetry.as_mut() else {
             return;
@@ -83,18 +104,27 @@ impl ClapUiHost {
         let input_id = telemetry_input_peak_id();
         let output_ids = [telemetry_output_peak_id(0), telemetry_output_peak_id(1)];
         let mut buf = [TelemetryEntry { id: 0, value: 0.0 }; 64];
+        let mut input_peak: Option<f32> = None;
+        let mut output_peak: Option<f32> = None;
         for _ in 0..MAX_DRAIN_BATCHES {
             let drain = reader.drain(&mut buf);
             for entry in &buf[..drain.read] {
                 if entry.id == input_id {
-                    self.input_peak_db = entry.value;
+                    input_peak = Some(entry.value);
                 } else if output_ids.contains(&entry.id) {
-                    self.output_peak_db = self.output_peak_db.max(entry.value);
+                    output_peak =
+                        Some(output_peak.map_or(entry.value, |held: f32| held.max(entry.value)));
                 }
             }
             if drain.read < buf.len() {
                 break;
             }
+        }
+        if let Some(peak) = input_peak {
+            self.input_peak_db = peak;
+        }
+        if let Some(peak) = output_peak {
+            self.output_peak_db = peak;
         }
     }
 }
@@ -181,6 +211,91 @@ mod tests {
 
     fn host() -> ClapUiHost {
         ClapUiHost::new(Arc::new(SharedInner::new()), None)
+    }
+
+    /// A host wired to a real telemetry ring, plus the producer end to publish into it.
+    ///
+    /// Every test above this point passes `None` for the reader, which is exactly why the ratchet
+    /// below survived from M6 to M13: `drain_meters` returned at its first line in every test that
+    /// existed, so the only meter code in this crate was never executed by the suite at all.
+    fn host_with_telemetry() -> (ClapUiHost, namir_engine::TelemetryProducer) {
+        let (producer, reader) = namir_engine::telemetry_ring(256);
+        (
+            ClapUiHost::new(Arc::new(SharedInner::new()), Some(reader)),
+            producer,
+        )
+    }
+
+    fn publish(producer: &mut namir_engine::TelemetryProducer, id: u32, value: f32) {
+        producer.push(TelemetryEntry { id, value });
+    }
+
+    #[test]
+    fn the_output_meter_follows_the_signal_down_as_well_as_up() {
+        // The reported bug, as its symptom: a loud transient followed by a quiet passage. Before
+        // the fix the meter kept the transient's value for the life of the plugin instance, so it
+        // read full and never moved again.
+        let (mut h, mut p) = host_with_telemetry();
+        let out0 = telemetry_output_peak_id(0);
+
+        publish(&mut p, out0, -0.5);
+        assert_eq!(h.snapshot().output_meter.peak_db, -0.5);
+
+        publish(&mut p, out0, -42.0);
+        assert_eq!(
+            h.snapshot().output_meter.peak_db,
+            -42.0,
+            "the output meter must fall when the signal does, not hold its loudest ever reading"
+        );
+    }
+
+    #[test]
+    fn the_output_meter_takes_the_louder_channel_within_one_drain() {
+        // The behaviour the ratchet was reaching for, and which must survive the fix: two channels
+        // reported in the same drain collapse to the louder one.
+        let (mut h, mut p) = host_with_telemetry();
+        publish(&mut p, telemetry_output_peak_id(0), -30.0);
+        publish(&mut p, telemetry_output_peak_id(1), -12.0);
+        assert_eq!(h.snapshot().output_meter.peak_db, -12.0);
+
+        // ...and that maximum does not leak into the next frame.
+        publish(&mut p, telemetry_output_peak_id(0), -30.0);
+        publish(&mut p, telemetry_output_peak_id(1), -31.0);
+        assert_eq!(h.snapshot().output_meter.peak_db, -30.0);
+    }
+
+    #[test]
+    fn the_input_meter_follows_the_signal_down_too() {
+        // The input path was assigned rather than accumulated and so never had the bug; asserted
+        // anyway, because the fix rewrote both branches and a regression here would be silent.
+        let (mut h, mut p) = host_with_telemetry();
+        let input = telemetry_input_peak_id();
+        publish(&mut p, input, -3.0);
+        assert_eq!(h.snapshot().input_meter.peak_db, -3.0);
+        publish(&mut p, input, -55.0);
+        assert_eq!(h.snapshot().input_meter.peak_db, -55.0);
+    }
+
+    #[test]
+    fn a_frame_that_drains_nothing_holds_the_previous_reading() {
+        // Why the assignment is guarded by `Option` rather than the fields being reset at the top
+        // of the drain: a GUI frame can easily run between two engine blocks, and a meter that
+        // flashed to silence on every such frame would be worse than one that lags by a frame.
+        let (mut h, mut p) = host_with_telemetry();
+        publish(&mut p, telemetry_output_peak_id(0), -9.0);
+        publish(&mut p, telemetry_input_peak_id(), -6.0);
+        assert_eq!(h.snapshot().output_meter.peak_db, -9.0);
+
+        let snap = h.snapshot();
+        assert_eq!(snap.output_meter.peak_db, -9.0);
+        assert_eq!(snap.input_meter.peak_db, -6.0);
+    }
+
+    #[test]
+    fn a_host_with_no_telemetry_reads_silent_forever() {
+        let mut h = host();
+        assert_eq!(h.snapshot().output_meter.peak_db, f32::NEG_INFINITY);
+        assert_eq!(h.snapshot().input_meter.peak_db, f32::NEG_INFINITY);
     }
 
     #[test]
