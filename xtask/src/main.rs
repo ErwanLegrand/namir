@@ -7,6 +7,7 @@
 
 mod attribution;
 mod cargo_meta;
+mod identity;
 mod layering;
 mod milestones;
 mod nam_parity;
@@ -123,6 +124,46 @@ fn run_attribution(root: &Path, write: bool) -> bool {
         }
         Err(e) => {
             println!("attribution: could not run check: {e}");
+            false
+        }
+    }
+}
+
+/// M12's product-identity gate (NFR-DOC-040, NFR-LIC-070, and the brand mark FR-UI-110 asks for):
+/// the checked-in alpha blob matches a fresh render of `images/namir.png`, and the two identity
+/// documents carry the statements the two requirements name. Unlike `params-lock`/`attribution`,
+/// which have one artifact each and so one status line, this check has three and reports a list --
+/// a missing README should not hide a stale blob.
+fn run_identity(root: &Path, write: bool) -> bool {
+    if write {
+        return match identity::write_blob(root) {
+            Ok(message) => {
+                println!("identity: {message}");
+                true
+            }
+            Err(e) => {
+                println!("identity: could not run check: {e}");
+                false
+            }
+        };
+    }
+
+    match identity::check(root) {
+        Ok(violations) if violations.is_empty() => {
+            println!(
+                "identity: clean (brand mark up to date; README.md and TRADEMARK.md carry every required statement)"
+            );
+            true
+        }
+        Ok(violations) => {
+            println!("identity: {} violation(s) found:", violations.len());
+            for v in &violations {
+                println!("  - {v}");
+            }
+            false
+        }
+        Err(e) => {
+            println!("identity: could not run check: {e}");
             false
         }
     }
@@ -605,7 +646,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>>"
+        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>>"
     );
 }
 
@@ -622,6 +663,10 @@ fn main() {
         Some("attribution") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_attribution(&root, write)
+        }
+        Some("identity") => {
+            let write = args.iter().skip(1).any(|a| a == "--write");
+            run_identity(&root, write)
         }
         // The one subcommand that parses strictly rather than by `any(|a| a == "--write")`: its
         // flag selects between a required and an informational gate (D-18.5), so a typo must be

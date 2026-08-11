@@ -1834,11 +1834,11 @@ not adjudicate them further.
 | 6.2 PERF | 6 | 0 | 6 | 0 |
 | 6.3 PORT | 5 | 3 | 2 | 0 |
 | 6.4 QUAL | 6 | 2 | 4 | 0 |
-| 6.5 LIC | 6 | 2 | 3 | 1 |
+| 6.5 LIC | 6 | 3 | 3 | 0 |
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
-| 6.8 DOC | 3 | 1 | 1 | 1 |
-| **Total** | **130** | **33** | **90** | **7** |
+| 6.8 DOC | 3 | 1 | 2 | 0 |
+| **Total** | **130** | **34** | **91** | **5** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2255,6 +2255,39 @@ be the only thing a separate entry added. What that bullet replaces is quoted in
 cell's age stays readable, and no other requirement's text in it moved. Nothing else in §14 changes:
 M11 produced evidence for FR-IO-020 and for nothing else.
 
+**M12 moves, 2026-08-10 — two rows, two cells, appended per D-23.2's "every later milestone moves
+only the cells its own evidence justifies."** 6.5 LIC becomes **3 / 3 / 0** (was 2 / 3 / 1); 6.8 DOC
+becomes **1 / 2 / 0** (was 1 / 1 / 1); **Total** becomes **34 / 91 / 5** (was 33 / 90 / 7,
+M11's move having landed first). **M12 was built before M11 and rebased onto it**, so its own
+deltas are unchanged — two cells, both in rows M11 never touched — and only the Total, which both
+milestones write, had to be recomputed against the newer base.
+
+- **NFR-LIC-070: Not started → Done.** The M9a bullet above named the gap exactly — "no
+  TRADEMARK/BRAND file or brand-asset licensing statement exists". `TRADEMARK.md` now exists at the
+  repository root and takes the position the requirement asks to be explicit: the code licence
+  covers the code and not the name "Namir" or the mark, and the assets under `images/` are all
+  rights reserved. The `Verify: S` method is executed rather than asserted —
+  `xtask/src/identity.rs`'s `TRADEMARK_REQUIRED` check fails if the document or any required
+  statement goes missing, run on every push by `.github/workflows/ci.yml`'s `xtask identity` step.
+  Tagged plainly, because a build-time check asserting the document exists and states the terms is
+  that method as written.
+- **NFR-DOC-040: Not started → Partial**, one column and not two. `README.md` now exists at the root
+  and carries what the requirement enumerates — the product, its licence, and the commands to build,
+  run and test it — with `xtask/src/identity.rs`'s `README_REQUIRED` check asserting each of those
+  substrings is present. But the requirement also says the README shall *identify the product* and *state what it
+  does*, and no substring check reaches whether the prose actually does either. The tag is
+  `// trace-partial: NFR-DOC-040` with its mandatory `uncovered:` field naming that clause, and
+  under D-23.2 a Partial is not Done. Closes M13.
+
+**One row deliberately not moved, recorded so its absence is not read as an oversight.** 6.7 BUILD
+stays **0 / 2 / 0**. M12 improved NFR-BUILD-020 — the README documents the build, run and test
+commands, and `xtask identity` pins those exact strings, so the document can no longer drift
+silently from what CI runs — but the requirement's "exercised by CI" clause is still unmet: nothing
+executes a command *as documented*. That tag's `uncovered:` field is rewritten to say so and its
+closing milestone moved from M12 to M13, which is a correction to a claim M12 would otherwise have
+been recorded as meeting. **FR-UI-110 appears in no row here**: it is a Should, and §14 counts Musts
+only. It stays open after M12 — see `docs/manual-tests/fr-ui-110-brand-mark.md`.
+
 ---
 
 ## 15. Appendix: open decisions to make, not build
@@ -2344,7 +2377,7 @@ that happens to depend on them first.
    it does *not* cost — `AppSettings::exclusive_mode` already exists as a persisted field, so no
    settings migration is needed and the trait boundary this item worried about is extended rather
    than redrawn, exactly as hoped. **Built in M11 (§18 below).**
-7. **Whether Namir accepts a build script in a shipped crate, in order to embed the Windows `.exe`
+7. ~~**Whether Namir accepts a build script in a shipped crate, in order to embed the Windows `.exe`
    icon.** Raised 2026-08-08 while planning M12. Embedding an icon resource into a Windows
    executable needs a build script, and this project's dependency-adoption bar treats build scripts
    as a real cost rather than a neutral convenience — `02-architecture.md` §17 records `libc` as
@@ -2356,7 +2389,13 @@ that happens to depend on them first.
    icon outside the build, as a post-build step in M13's packaging pipeline, which keeps the crate
    build-script-free but means a `cargo build` and a released binary differ in a user-visible way.
    **Due before M12 (§19 below)**, and worth deciding deliberately rather than discovering
-   mid-implementation, since the third option silently moves work from M12 into M13.
+   mid-implementation, since the third option silently moves work from M12 into M13.~~
+   **Resolved 2026-08-10: `02-architecture.md` D-17.3** — the third of the three answers. The bar
+   holds: `namir-app` takes no build script, and M13's packaging pipeline embeds the icon. The
+   decision records what that costs — a `cargo build` and a released binary differ in a user-visible
+   way until M13 — and one thing this item did not know: FR-UI-110's *window* icon is blocked in M12
+   as well, `baseview` 0.2.2's `WindowOpenOptions` having no icon field at all, so the two clauses
+   defer together rather than one moving and one landing. **Deferred to M13 (§20 below).**
 8. **Whether the plugin configuration ever gets a persisted verbosity setting, or stays
    environment-variable-only.** Raised 2026-08-08 by M9's P0 decision pass while settling
    `02-architecture.md` **D-16.5**. D-16.4 says FR-ERR-010's verbosity is "configurable from
@@ -4090,6 +4129,15 @@ requirement and by REUSE compliance respectively.
   a text heading standing in for a mark. One thing to know before starting: this UI is
   **egui-on-baseview, not eframe**, so the usual `eframe` window-icon recipe does not apply and the
   window icon has to be set through baseview's own window options instead.
+
+  *Correction (added M12, 2026-08-10):* **the last clause is wrong and cannot be followed.**
+  `baseview` 0.2.2's `WindowOpenOptions` is `#[non_exhaustive]` and carries exactly `title`, `size`
+  and `scale` plus an `opengl`-gated `gl_config` — there is no icon field of any kind, so there are
+  no "baseview's own window options" to set one through. `02-architecture.md` **D-17.3**'s second
+  consequence note records the finding and its effect: the window icon defers to M13 alongside the
+  executable icon, rather than being the half of FR-UI-110 that lands here. §17's register row for
+  `baseview` said `0.3.0` when this was written and the tree has always pinned 0.2.2; that row is
+  corrected in the same pass, and whether 0.3.0 gained an icon field is unchecked.
 - **The Windows `.exe` icon**, which needs a build script to embed the resource. Flagged rather
   than waved through: build scripts sit awkwardly with this project's dependency-adoption bar, and
   `libc` is already on record as the one knowing exception to it. Decide this one deliberately,
@@ -4104,6 +4152,129 @@ requirement and by REUSE compliance respectively.
 instructions have actually been followed on a clean clone rather than assumed correct; the brand
 mark renders in both product shells; the standalone window and executable carry the icon on
 Windows; the brand-asset licensing statement is in the repository.
+
+### M12 status — this session, 2026-08-10
+
+Built **before M11**, which §19's own header permits ("**Depends on:** nothing technical") and
+which M11's state made the sensible order: M11's one prerequisite is a forked `cpal` that does not
+exist, `crates/namir-app/Cargo.toml` still pinning `cpal = "0.18.1"` from crates.io. Nothing
+downstream waits on M11 — §20's M13 depends on M12 and M9, not on M11 — so the reordering costs
+nothing and unblocks M13.
+
+**The first deliverable was already done before it was written.** "Track `images/` in git. It is
+currently **untracked** … Do this first; every other item here depends on it" is stale:
+`images/namir.png` and `images/namir.svg` were committed in `9c1c698`, the same commit that wrote
+that sentence. No action was needed.
+
+**The brand mark ships with no image decoder in either product, and no build script.** The artwork
+is a single fill on a transparent background, which makes an 8-bit alpha mask a *colour*-lossless
+re-encoding — the colour is constant and every bit of shape and anti-aliasing lives in alpha. So
+`xtask identity` decodes `images/namir.png` with an `xtask`-only `png` dependency and emits a 34
+376-byte blob (358x96 plus an 8-byte header) that `namir-ui` `include_bytes!`s and tints at upload.
+`cargo tree -e normal` reaches `png` from neither product and `xtask attribution` is unchanged.
+Generation is integer-only so the blob cannot depend on which machine ran `--write`. The 24x
+downsample from 1767x474 is a deliberate, separate loss, not covered by "lossless".
+
+**Both icon clauses moved to M13, one of them for a reason this section got wrong.** §15 item 7 is
+resolved by **D-17.3** against admitting a build script to a shipped crate for a cosmetic feature.
+The window icon then turned out to be blocked independently: `baseview` 0.2.2's `WindowOpenOptions`
+has no icon field at all, so this section's instruction to set it "through baseview's own window
+options" cannot be followed — corrected by an appended note at that bullet. §17's register row
+compounded it by recording `baseview` 0.3.0, a version the tree has never used; that row is fixed
+in place and whether 0.3.0 gained an icon field is left explicitly unchecked for M13.
+
+**What the requirements actually did.** NFR-LIC-070 closes (plain tag). **NFR-DOC-040 closes only
+partially** — a substring check cannot reach its "stating what it does" clause — so §14's 6.8 DOC
+cell moves one column, not two. **FR-UI-110 does not close at all**; only its brand-mark clause was
+in scope and even that is unobserved, below.
+
+**One correction against this milestone's own scoreboard.** `ci.yml`'s NFR-BUILD-020 partial
+declared `closes M12`. M12 gives it a README carrying the build, run and test commands with `xtask
+identity` asserting those strings are present — but nothing executes a command *as documented*, and
+the README and CI are already apart (`cargo build --workspace` against `cargo build --workspace
+--all-targets`). The field is rewritten to claim only what holds and moved to `closes M13`.
+
+**An adversarial review found a defect this milestone introduced into the gate itself, and it is
+the most useful thing in this section.** The FR-UI-110 manual-test document mentioned `FR-PKG-030`
+in passing prose. `xtask traceability` resolves a `Verify: M` requirement against a manual-test
+file's **whole content** (`xtask/src/traceability.rs`'s `build_report`), so that bare mention
+marked an unrelated Must — the Windows installer's per-user/system-wide scope — as covered in
+checked-in `docs/03-test-plan.md`, and dropped the informational uncovered count from 15 to 14.
+Reworded; the count is 15 again. **The durable fix is not made**: the whole-content match should be
+narrowed to a declared-ids line, which is left for M9b or M13 as a note here rather than done in a
+milestone that had no other business in that tool. Three further over-claims the same review caught
+are fixed and recorded in `02-architecture.md`'s changelog 0.24.
+
+**What was verified, and what was not.** From a genuine clean clone of this branch: `cargo build
+--workspace` finished in 1m26s, `cargo test --workspace` ran 41 suites with no failures, and
+`identity`, `layering` and `attribution` were all clean — so §19's "followed on a clean clone
+rather than assumed correct" is met for the *source tree*. It is **not** met for a cold machine:
+this sandbox already had Rust 1.97 and `libasound2-dev` installed before the clone, so the README's
+prerequisite list is still untested against a fresh environment.
+
+**The brand mark has never been seen.** No display exists here — `cargo run -p namir-app` starts
+audio and then panics in `baseview`'s X11 window open, and `xvfb-run` does not help, `baseview`
+0.2.2 needing a GLX-capable display. No host was available for the plugin shell either. So this
+section's Acceptance clause "the brand mark renders in both product shells" is met in code and
+**unverified in fact**, and `docs/manual-tests/fr-ui-110-brand-mark.md` records all four of its
+steps as not executed. The same applies to the mipmapping added after review found the mark is
+minified ~4-5x without it: a reasoned fix to a problem nobody has observed, asserted by a test that
+reads the texture options back rather than by looking.
+
+### M12 close-out — §14's re-audit table, this session, 2026-08-10
+
+**NFR-LIC-070** moves to **Done** and **NFR-DOC-040** to **Partial** in §14's `### M9a re-audit`
+table; 6.5 LIC becomes 3 / 3 / 0, 6.8 DOC becomes 1 / 2 / 0, Total 32 / 91 / 7 → 33 / 92 / 5. See
+that table's own appended `**M12 moves**` block for the file-path evidence D-23.2 requires,
+including why 6.7 BUILD deliberately does not move. **FR-UI-110 stays open** — it is a Should, so
+it sits in no §14 row, and its remaining work is the four manual steps plus both icon clauses, all
+of which need the Windows machine M13 requires anyway.
+
+### M12 addendum: the manual test ran on Windows, and found the mark too small, 2026-08-11
+
+**Supersedes the status subsection's "The brand mark has never been seen" paragraph**, which is
+left as written per this document's convention -- it was true of the session that wrote it, and it
+is why that session's design notes were reasoned rather than observed.
+
+FR-UI-110's manual test was executed on Windows, the only platform where its step 2 is possible at
+all (`namir-clap` declares Win32 embedded-only GUI support). **Steps 1, 2 and 4 pass**: the mark is
+visible in the standalone window, visible in the CLAP plugin inside a host, and its accessible name
+reads "Namir", so FR-UI-030 did not regress when an image replaced a text heading. The Acceptance
+clause "the brand mark renders in both product shells" is now met **in fact** and not only in code.
+
+**Step 3 found a real defect: the mark was too small in both shells.** It was drawn at one
+`TextStyle::Heading` row -- ~25 logical pixels, the height of a line of text rather than of a logo.
+`brand::MARK_HEIGHT_IN_HEADINGS` now doubles it to ~50. That factor is the largest one free of
+cost: the blob is 96 rows, so ~50 logical pixels is ~100 physical at 2x HiDPI against 96 stored,
+which is effectively 1:1 and the sharpest this asset can be drawn. **The consequence is that the
+blob's former ~2x resolution margin is now spent**, recorded at `MARK_TARGET_HEIGHT`'s own doc
+comment in `xtask/src/identity.rs`: any further increase in the drawn size has to raise that
+constant in the same change, or the mark magnifies a mask with no more detail in it.
+
+**What is still open, and it is smaller than it was.** Step 3's other half -- that the mark be
+legible rather than aliased at 1x and at a HiDPI scale factor -- was not reported either way, and
+the enlarged mark has not been seen at all. That half matters because two fixes now ride on it
+unobserved: the mipmapping added when a review found the mark minified ~4-5x with `mipmap_mode:
+None`, and this size change, which halves that minification to ~2x. Both are reasoned from the
+pinned sources; neither has been looked at. **FR-UI-110 therefore stays open**, on that half plus
+both icon clauses, which D-17.3 defers to M13. No §14 cell moves -- FR-UI-110 is a Should and sits
+in no row.
+
+**Closed later the same day, superseding the paragraph above.** The enlarged mark was inspected and
+reported to read fine, so **step 3's legibility half passes too and all four steps of the manual
+test now pass**. That also confirms the two fixes the paragraph above flagged as riding on it
+unobserved -- the mipmapping and the size increase -- in the only way they could be confirmed.
+**FR-UI-110's brand-mark clause is closed**: observed in both product shells, and legible. The
+requirement stays open on **both icon clauses only**, which D-17.3 defers to M13. Still no §14 cell
+moves; it is a Should and sits in no row.
+
+**§19's Acceptance, clause by clause, as it now stands.** `images/` is tracked, and already was.
+The README exists and its build/run/test instructions were followed on a clean clone -- though not
+on a cold machine, so its prerequisite list is still untested. The brand mark renders in both
+product shells, now verified rather than argued. The brand-asset licensing statement is in the
+repository. **The one clause not met is the icon**, deliberately, on the record, and carried to M13
+with the rest of that work.
+
 
 ---
 
