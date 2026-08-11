@@ -2273,8 +2273,8 @@ milestones write, had to be recomputed against the newer base.
   that method as written.
 - **NFR-DOC-040: Not started → Partial**, one column and not two. `README.md` now exists at the root
   and carries what the requirement enumerates — the product, its licence, and the commands to build,
-  run and test it — with `xtask/src/identity.rs`'s `README_REQUIRED` check asserting each of those substrings is
-  present. But the requirement also says the README shall *identify the product* and *state what it
+  run and test it — with `xtask/src/identity.rs`'s `README_REQUIRED` check asserting each of those
+  substrings is present. But the requirement also says the README shall *identify the product* and *state what it
   does*, and no substring check reaches whether the prose actually does either. The tag is
   `// trace-partial: NFR-DOC-040` with its mandatory `uncovered:` field naming that clause, and
   under D-23.2 a Partial is not Done. Closes M13.
@@ -4259,6 +4259,22 @@ None`, and this size change, which halves that minification to ~2x. Both are rea
 pinned sources; neither has been looked at. **FR-UI-110 therefore stays open**, on that half plus
 both icon clauses, which D-17.3 defers to M13. No §14 cell moves -- FR-UI-110 is a Should and sits
 in no row.
+
+**Closed later the same day, superseding the paragraph above.** The enlarged mark was inspected and
+reported to read fine, so **step 3's legibility half passes too and all four steps of the manual
+test now pass**. That also confirms the two fixes the paragraph above flagged as riding on it
+unobserved -- the mipmapping and the size increase -- in the only way they could be confirmed.
+**FR-UI-110's brand-mark clause is closed**: observed in both product shells, and legible. The
+requirement stays open on **both icon clauses only**, which D-17.3 defers to M13. Still no §14 cell
+moves; it is a Should and sits in no row.
+
+**§19's Acceptance, clause by clause, as it now stands.** `images/` is tracked, and already was.
+The README exists and its build/run/test instructions were followed on a clean clone -- though not
+on a cold machine, so its prerequisite list is still untested. The brand mark renders in both
+product shells, now verified rather than argued. The brand-asset licensing statement is in the
+repository. **The one clause not met is the icon**, deliberately, on the record, and carried to M13
+with the rest of that work.
+
 
 ---
 

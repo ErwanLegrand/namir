@@ -69,7 +69,7 @@ no plugin GUI on Linux or macOS to check.
 |---|---|
 | 1. Standalone window shows the mark | **PASS** -- "the logo is visible in the standalone window" |
 | 2. Plugin shell shows the mark in a host | **PASS** -- "Namir logo is visible in CLAP plugin" |
-| 3. Appearance | **PARTIAL -- one defect found and fixed; see below** |
+| 3. Appearance | **PASS**, after one defect found and fixed; see below |
 | 4. Accessible name is "Namir" | **PASS** -- reported as "Namir" |
 
 **Step 3 found a real defect: the mark was too small in both shells.** It was drawn at exactly one
@@ -81,26 +81,24 @@ sharpest this asset can be drawn without regenerating it taller. `MARK_TARGET_HE
 in `xtask/src/identity.rs` is updated in the same change to record that its former ~2x margin is now
 spent, so a future size increase must raise it too.
 
-**The rest of step 3 is still open, and the fix above is unobserved.** The step also asks that the
-mark be *legible rather than aliased* at 1x and at a HiDPI scale factor. That was not reported
-either way, and it is the specific thing worth looking at: a review had already found the mark was
-being minified ~4-5x with `mipmap_mode: None`, which is the classic recipe for a thin wordmark
-shimmering, and mipmapping was enabled to address it. Doubling the drawn size halves that
-minification to ~2x, which should help again -- but **nobody has yet confirmed either fix
-visually**, and the enlarged mark has not been seen at all.
+**Step 3's legibility half also passes, and it is the half that was carrying the most risk.** The
+step asks that the mark be *legible rather than aliased*; the enlarged mark was inspected and
+reported to read fine. That closes two fixes that until now were reasoned from the pinned sources
+and never looked at: the mipmapping enabled after a review found the mark being minified ~4-5x with
+`mipmap_mode: None` -- the classic recipe for a thin wordmark shimmering -- and the size increase
+above, which halves that minification to ~2x. Both are now confirmed in the only way they could be.
 
 ## Status after this run
 
 **Steps 1, 2 and 4 are closed.** "The interface shall display the Namir brand mark" is satisfied and
 observed in both product shells, which is the clause M12 scoped.
 
-**FR-UI-110 as a whole remains open**, on two counts, neither of which M12 can close:
+**All four steps pass. The brand-mark clause of FR-UI-110 is closed** -- "the interface shall
+display the Namir brand mark" is satisfied, observed in both product shells, and legible.
 
-1. **Step 3's legibility half**, plus a re-check of the enlarged mark. Cheap: it needs one person to
-   look at a window at 1x and at a 2x scale factor.
-2. **Both icon clauses** -- "the standalone application's window and executable shall carry the
-   application icon" -- deferred to M13 by `02-architecture.md` D-17.3. The executable icon needs a
-   build script that decision declines to admit to a shipped crate; the window icon has no route at
-   all through `baseview` 0.2.2, which has no icon field.
-
-Both want the same Windows machine, so M13 is where this document should be finished.
+**FR-UI-110 as a whole remains open on exactly one count**, which M12 cannot close: **both icon
+clauses** -- "the standalone application's window and executable shall carry the application icon"
+-- deferred to M13 by `02-architecture.md` D-17.3. The executable icon needs a build script that
+decision declines to admit to a shipped crate; the window icon has no route at all through
+`baseview` 0.2.2, which has no icon field. M13 is where this document should be finished, on the
+Windows machine it needs anyway.
