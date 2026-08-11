@@ -102,3 +102,139 @@ clauses** -- "the standalone application's window and executable shall carry the
 decision declines to admit to a shipped crate; the window icon has no route at all through
 `baseview` 0.2.2, which has no icon field. M13 is where this document should be finished, on the
 Windows machine it needs anyway.
+
+## M13, 2026-08-11: the two icon clauses
+
+The two clauses came into M13 for independent reasons and they leave it with different verdicts.
+Written before either has been looked at on a screen, and the sections below say plainly which
+statements are measurements and which are arguments.
+
+### The `.ico` exists and is generated, not checked in by hand
+
+`images/namir.ico` is produced from `images/namir.png` by `cargo run -p xtask -- identity --write`
+and byte-compared by `cargo run -p xtask -- identity`, the same generate-and-diff gate M12 built for
+the brand-mark blob (`xtask/src/identity.rs`). The alternative -- a binary `.ico` committed once and
+regenerable by nobody -- was rejected for the reason that gate exists: it would be the only artwork
+in the repository with no stated derivation from the source PNG, so a change to the artwork would
+leave it silently stale.
+
+Three things about it that are decisions rather than details:
+
+- **It is the leopard head, not the whole mark.** The source is a 3.73:1 wordmark; an icon is
+  square. `icon_crop` takes the rightmost `height x height` square, which is the head, and
+  `check_icon_gutter` refuses artwork whose wordmark reaches into that square rather than trusting
+  the layout. Measured on the shipped artwork: the column at the crop's left edge carries ink in 9
+  of 474 rows, against 77 for the `r`'s stem seventeen columns further left.
+- **It carries 16, 32, 48 and 256 pixel sizes, uncompressed.** A PNG-compressed 256 entry would take
+  the file from 285 478 bytes to roughly 10 KiB and would make a byte-compared artifact depend on a
+  third-party deflate implementation's heuristics, which is the one property `identity`'s design
+  note says its generated artifacts must not have.
+- **The small sizes are weak, and no code change fixes that.** A contrast rescale was written,
+  measured and deleted: the 16x16 tile's peak alpha is already 243 of 255, so rescaling would gain
+  1.05x and change nothing visible. The 16x16 is a 29.6x reduction of line art and reads as a
+  smudge; 32 is readable, 48 and 256 are good. If the smallest size matters, the fix is a
+  simplified icon-specific piece of artwork, which is an artwork decision.
+
+**What has actually been observed, in this session, on this machine.** The generated file was
+decoded by Windows itself, not only by the code that wrote it: `System.Windows.Media.Imaging`
+(WIC -- the decoder the shell uses) reports four frames, `256x256 Bgra32`, `48x48`, `32x32`,
+`16x16`; `System.Drawing.Icon` loads the 48 px entry as 48x48; `Icon.ExtractAssociatedIcon`
+succeeds. Each size was rendered to a PNG and looked at. So "the file is a valid Windows icon and
+shows the leopard head" is a measurement. Everything below about it appearing *on* an executable is
+not.
+
+### What still has to embed it, and where that leaves the executable clause
+
+D-17.3 puts the embedding in the packaging pipeline rather than in a build script, so nothing a
+`cargo build` produces carries the icon and nothing here changes that. Two edits outside this lane
+complete the clause, both one line:
+
+- `packaging/windows/namir.iss` -- `SetupIconFile=..\..\images\namir.ico`, replacing the comment
+  that currently records the absence. This is the **Setup executable's** icon.
+- `packaging/windows/README.md` -- an `rcedit target\release\namir.exe --set-icon images\namir.ico`
+  step between `cargo build --release --workspace` and `cargo run -p xtask -- bundle`, so that the
+  installed `namir.exe` and the plain archive's copy both carry it and both stay inside the tree
+  `bundle` asserts. This is the **application's** icon and is the half `SetupIconFile` does not
+  reach.
+
+`rcedit` is a single-file MIT tool that runs on the packaging machine and puts nothing of its own
+into the artifact, so `02-architecture.md` §17's own note excludes it from the dependency register
+for the same reason Inno Setup, `pkgbuild` and `notarytool` are excluded. Nothing here adds a cargo
+dependency.
+
+**So the executable clause is built but not closed**: the artifact exists and is gated, the two
+embedding lines are not yet written, and no `namir.exe` has been seen carrying an icon.
+
+### The window clause cannot close through the pinned stack, and `baseview` 0.3.0 does not change that
+
+M12 left one thing explicitly unchecked -- whether `baseview` 0.3.0 gained an icon field. Checked
+this session against the published source rather than a changelog. It did not, and the position is
+worse than "not yet":
+
+- `WindowOpenOptions` **does not exist in 0.3.0**. `https://docs.rs/baseview/0.3.0/baseview/struct.WindowOpenOptions.html`
+  is a 404, and the published `baseview-0.3.0.crate` tarball contains no occurrence of the name; the
+  struct was renamed and reshaped to `WindowSettings` in `src/settings.rs`.
+- `WindowSettings` carries `title`, `size`, `parent`, `wait_for_parent`, `fallback_scale_factor` and
+  an `opengl`-gated `gl_config`. It is still `#[non_exhaustive]`, and there is **no icon field**.
+- Searching the whole 0.3.0 tarball for "icon" returns six hits: five are mouse-cursor naming, and
+  the sixth is `src/wrappers/win32/window/window_class.rs`, which registers baseview's own window
+  class with `hIcon: null_mut(), // Default icon`. 0.2.2 has the identical line. **No version of
+  `baseview` has ever had an icon API on any backend**, and the class it registers offers no seam to
+  override.
+
+The upgrade is also not reachable even if it helped: the newest published `egui-baseview` is 0.6.0,
+the version pinned here, and its own manifest requires `baseview = "0.2.2"`. Moving to 0.3.0 would
+mean moving off published `egui-baseview` entirely, onto a breaking rename (`WindowOpenOptions` ->
+`WindowSettings`, `scale: WindowScalePolicy` -> `fallback_scale_factor: Option<f64>`), against a
+stack D-15.1/D-15.2 pinned to exactly what the spikes validated -- for no icon field at either end
+of the move. That cost is not worth paying for a Should, and it is not paid.
+
+**FR-UI-110's window-icon clause therefore cannot close through the pinned stack**, and this is a
+finding rather than a deferral: it is not blocked on a version that has not landed. The routes that
+remain are a `WM_SETICON` against the HWND, which D-17.3 already priced at a fourth
+`#![allow(unsafe_code)]` file in `namir-platform` for a cosmetic feature, and the shell's own
+fallback -- with `hIcon` null and no `WM_SETICON`, Windows may use the process executable's icon for
+the taskbar button and Alt-Tab, which would make the window clause a free consequence of the
+executable one. D-17.3 says in as many words that this "is **not** asserted here" and must be
+verified on real Windows. It is still not asserted, and step 7 below is what would settle it.
+
+## M13 script -- the icon steps
+
+Steps 1-4 above are closed and are not re-run. These are additional, and **none of them has been
+executed**.
+
+5. **The `.ico` is what the packaging pipeline embeds.** With the two one-line edits above applied,
+   from a repository-root PowerShell:
+   ```powershell
+   cargo build --release --workspace
+   rcedit target\release\namir.exe --set-icon images\namir.ico
+   cargo run -p xtask -- bundle
+   & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DAppVersion=0.1.0 /DVersionInfoVersion=0.1.0.0 packaging\windows\namir.iss
+   ```
+   Confirm `target\bundle\windows\namir.exe` shows the leopard head in Explorer, and that the
+   produced `target\dist\namir-0.1.0-windows-x86_64-setup.exe` does too.
+6. **Every size renders.** In Explorer, view the installed `namir.exe` at Small, Medium, Large and
+   Extra Large icons. Record whether the 16 px form is acceptable in the details view and on the
+   taskbar; it is the one this session expects to be weak, and a "no" here is an artwork item, not a
+   code defect.
+7. **The window icon, which is the open question.** Run the installed `namir.exe` and look at three
+   places: the window's own title bar, its taskbar button, and Alt-Tab. Record each separately --
+   they do not have to agree. A leopard head in the taskbar button with a generic icon in the title
+   bar is a perfectly possible outcome and is the one that would tell us the shell's executable
+   fallback is doing the work. If all three show a generic icon, the window clause is unmet through
+   this route as well and the only remaining option is the `WM_SETICON` D-17.3 priced.
+8. **The plugin shell is out of scope for both clauses.** The requirement names "the standalone
+   application's window and executable"; `Namir.clap` has neither, and its window is the host's.
+
+## Status after M13
+
+**Brand-mark clause: closed** (M12, observed).
+
+**Executable-icon clause: the artifact is built, generated, gated and validated as a Windows icon;
+the two one-line embedding edits and steps 5-6 remain.** No executable has been seen carrying it.
+
+**Window-icon clause: cannot close through the pinned stack**, on evidence rather than on a
+deferral. Whether the executable icon supplies it for free is step 7 and is unknown.
+
+FR-UI-110 is a **Should**, so none of this moves a `03-implementation-roadmap.md` §14 cell or a
+`03-test-plan.md` row; the requirement's whole record is this document.
