@@ -137,10 +137,122 @@ recorded as not run, with the reason.
    before and the indicator reads shared. The fork changes the shared path's channel mask nowhere,
    but this is the check that says so from outside.
 
-## Executed run
+## Executed run — reported by the repository owner, 2026-08-11
 
-*Not yet executed. To be filled in from a run on the `docs/02-architecture.md` §2 reference
-machine — and from nowhere else: per AGENTS.md a sandbox or dev-machine result is informational
-only and is never the evidence that closes a requirement.*
+Run on the `docs/02-architecture.md` §2 reference machine (Windows 11 Pro build 26200), against a
+**PreSonus AudioBox 22VSL** — a 2-in/2-out, 24-bit USB interface — with the fork at its pinned
+revision `2edbacb`. Every step was performed; step 8's condition never arose, so the path that step
+exists to observe is recorded as unexercised rather than as passing. Nothing here was measured
+anywhere else: per AGENTS.md a sandbox or dev-machine result is informational only and is never the
+evidence that closes a requirement.
 
-**Result: NOT EXECUTED.**
+**The "What is under test, and what is genuinely unproven" section above was written before this run
+and is superseded by it rather than deleted.** Of the three pieces it names as carrying most of the
+risk: the integer sample-format converter was exercised and was **wrong** until fork commit
+`2edbacb`; exclusive capture was exercised and was broken until that same fix, though **not for the
+reason that section predicted** — the `GetNextPacketSize` bypass was fine and the container
+convention was not; and the `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` retry **still has never executed**,
+see step 8. Two of the three carried a real defect. Guessing *where* the risk sat was worth doing;
+guessing *what* it would be was not, which is an argument for the script's per-step observations
+rather than for its predictions.
+
+**Step 1 — probe. Executed.** The AudioBox accepts `24-in-32 @ 48 kHz stereo` in exclusive mode
+**only with a positional `dwChannelMask`** (`0x3`, `FL|FR`); with `dwChannelMask = 0` the same format
+answers `AUDCLNT_E_UNSUPPORTED_FORMAT`, every other field identical. `I16` is accepted at 48 kHz
+under **either** mask — which is why the pre-`ab5f40a` library saw a device that appeared to support
+exclusive mode only in the one format `namir-app` excludes by policy, rather than one that refused
+outright. **Nothing at all** is accepted at 44100, 88200 or 96000 Hz: this interface is 48 kHz-only
+in exclusive mode. `GetDevicePeriod`'s minimum is 3 ms = **144 frames at 48 kHz, a whole number**.
+Realtek Digital Output and an AMD HDMI endpoint on the same machine engaged exclusive mode even with
+mask 0. These readings are the ones the baseline section above already records, unchanged — which is
+what that section's own warning predicts, the example building its formats by hand and so
+characterising the endpoint rather than any revision of the library.
+
+**Step 2 — `list_devices`. PASS.** Both AudioBox endpoints read `exclusive mode, 2 ch: engaged at
+[48000] Hz`. Before fork commit `ab5f40a` the same command read `unsupported at any probed rate`.
+This is the step that puts the channel-mask fix through the real library, and it is the one that
+moved.
+
+**Step 3 — the stream opens. PASS.** With `"exclusive_mode": true` the window opened and the mode
+indicator in the top panel read `Namir Exclusive mode — Haut-parleurs (AudioBox 22VSL)`
+(`namir_ui::app::audio_mode_label`, beside the heading).
+
+**Step 4 — exclusivity itself. PASS.** Firefox could not play audio while Namir held the device.
+This is the defining observable, not the indicator: Windows refusing the second application is what
+says `AUDCLNT_SHAREMODE_EXCLUSIVE` actually reached `Initialize`.
+
+**Step 5 — audio correct through the converter. PASS, after fork commit `2edbacb`.** Before that
+commit the output was audible only at high volume — roughly 48 dB down, i.e. a factor of 2^8, from
+24 valid bits being written right-aligned into a container WASAPI reads left-justified. After the
+fix: plausible level, clean peaks, no periodic clicking, correct channels, comparable with the same
+signal in shared mode.
+
+**Step 6 — capture. PASS, after `2edbacb`.** Before it, the same defect ran the other way: the input
+meter moved only on near-silent input and pinned on anything meaningful — 256x too large. The
+`GetNextPacketSize` bypass this step was written to catch was not the problem; the container
+convention was. After the fix the input meter tracks the instrument normally.
+
+**Step 7 — fallback, and an honest indicator. PASS, with a defect found in the notice text.** With
+`"input_device_name"` set to the webcam microphone — which refuses exclusive mode — and
+`"exclusive_mode"` still `true`, the all-or-nothing rule (`crate::app::negotiate_share_mode`)
+refused exclusive for the whole session rather than running half-exclusive: the indicator read
+`Namir Shared mode — Haut-parleurs (AudioBox 22VSL)`, a notice appeared naming the refusing device,
+and audio worked. §18's "not a mode indicator that lies" holds.
+
+**But the notice rendered its template placeholders literally:**
+
+```
+app.audio_io.exclusive_mode_unavailable: Exclusive mode is not available for {device} ({reason});
+using shared mode. (input "Microphone (Trust 1080p HD Webcam)"; the audio backend reports no
+exclusive-mode support for this device and format; continuing in shared mode)
+```
+
+`{device}` and `{reason}` reach the user unsubstituted. `namir_ui::notices::notice_text`
+(`crates/namir-ui/src/notices.rs:43-47`) formats `{code.id}: {message_template} ({detail})` and
+nothing in the workspace substitutes into `message_template` at all, so this has been true of every
+placeholder-bearing catalogue entry since the mechanism landed at M5. Filed as **issue #15**, which
+tallies 30 such entries across seven crates. It is pre-existing, workspace-wide, not caused by M11
+and **deliberately not fixed here** — M11's own new entry is left worded like its neighbours so all
+of them can be reworded in one consistent pass. The information a notice is required to state — what
+failed, which device it concerned, and where that leaves the user — is present: the `detail` string
+carries all three. What is wrong is the presentation. (That requirement is named in issue #15 rather
+than by identifier here, deliberately: `xtask traceability` resolves a `Verify: M` Must to the first
+`docs/manual-tests/*.md` in filename order that names it, so an id mentioned in passing in this file
+re-points another requirement's evidence at this document. Verified by doing it accidentally while
+writing this section.)
+
+**Step 8 — buffer alignment. NOT EXERCISED.** `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` never appeared at
+any point, exactly as step 1's whole-number device period predicts. **The retry path in the fork
+therefore remains code that has never executed anywhere — not in a test, not on hardware.** Recorded
+as untested, not as passing; a green run here is the expected non-event this step was written to
+name, and is not evidence the path works.
+
+**Step 9 — shared mode unregressed. PASS.** With `"exclusive_mode": false` the app behaves as it did
+before the fork and the indicator reads shared. **The limit of what that proves, precisely:**
+`namir-app` restricts shared mode to `F32` (`crates/namir-app/src/audio_io.rs:453`), so what this
+exercised is the fork's `container_shift`/`padding_bits` path returning **zero** for a container that
+is exactly full. **Shared-mode `I24` remains unexercised, and Namir cannot reach it** — no setting in
+this product asks shared mode for an integer format. The fork's container-justification fix is
+correct for shared-mode `I24` by the format contract (`wBitsPerSample` vs `wValidBitsPerSample`, read
+off the `WAVEFORMATEXTENSIBLE` handed to `Initialize` rather than off the `SampleFormat`), and by
+that alone — not by measurement.
+
+**Result: PASS.** WASAPI is supported in **both** shared and exclusive mode on real hardware on the
+§2 reference machine: exclusive mode opens, is genuinely exclusive, carries correct audio in both
+directions through the integer converter, falls back to shared with a truthful indicator when a
+device refuses it, and leaves shared mode unchanged. That is the whole of FR-IO-020's Must clause;
+ASIO is the requirement's Should and is not built (see the scope note at the top).
+
+**Carried forward as unverified, so nobody reads more into this PASS than it holds:**
+
+- **The alignment-retry path** (step 8) has never run. It closes when a device with a fractional
+  device period is available, or when a test can drive `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` directly.
+- **Shared-mode `I24`** (step 9) is unreachable from this product and rests on the format contract.
+- **Packed 24-bit (a 3-byte container) cannot be expressed by `cpal` at all** —
+  `SampleFormat::I24`'s `sample_size()` is `size_of::<i32>()`, so every format this backend *builds*
+  has a 32-bit container even though its parser maps a device-reported `wBitsPerSample == 24` to the
+  same `I24`. A device offering only packed 24-bit would have every candidate refused and would fall
+  back to shared. This endpoint offers 24-in-32, so the case did not arise here.
+- **One machine, one third-party interface.** The two defects this run found were both invisible on
+  the Microsoft HD Audio endpoints of the same machine; a second interface from a different vendor
+  would be worth more than a second run on this one.
