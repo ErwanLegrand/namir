@@ -18,9 +18,14 @@ on:
     branches: [trunk]
 
 # Principle of least privilege for the GITHUB_TOKEN (flagged by CodeQL's "Workflow does not
-# contain permissions" check): every job here only checks out the repo, builds, and reads --
-# none needs to write to the repo, open a PR comment, or touch releases -- so a workflow-wide
-# `contents: read` covers all of them, with no per-job override needed.
+# contain permissions" check): every job **in this workflow** only checks out the repo, builds, and
+# reads -- none of them needs to write to the repo, open a PR comment, or touch releases -- so a
+# workflow-wide `contents: read` covers all of them, with no per-job override needed.
+#
+# M13: this was written as a claim about the project and is now scoped to this file, because it
+# stopped being true of the project the moment `release.yml` landed. That workflow creates a GitHub
+# Release and therefore needs `contents: write` -- granted there to the one job that publishes, over
+# the same workflow-wide `contents: read` default this file uses. Nothing about *this* file changes.
 permissions:
   contents: read
 

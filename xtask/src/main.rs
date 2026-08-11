@@ -14,6 +14,15 @@ mod milestones;
 mod nam_parity;
 mod params_lock;
 mod preset;
+// M13: FR-PKG-010's in-repo assertion over `.github/workflows/release.yml`
+// (`docs/03-implementation-roadmap.md` §15 item 10, resolved at M13's start). `#[cfg(test)]`
+// because it is exactly a test and nothing else: it adds no subcommand -- FRS §10 admits "an
+// annotated test **or** `xtask` subcommand" and a test is the cheaper of the two here -- so
+// compiling its checks into the shipped `xtask` binary would leave dead code behind a `-D warnings`
+// gate for no gain. `xtask traceability` scans files, not compiled items, so the annotation in it
+// resolves either way.
+#[cfg(test)]
+mod release_workflow;
 mod traceability;
 
 use std::collections::HashMap;
