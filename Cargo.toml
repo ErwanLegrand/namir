@@ -27,6 +27,23 @@ edition = "2024"
 # uncovered: checks SPDX headers, which only two tracked files under crates/ carry;
 # uncovered: closes M9b
 license = "MIT OR Apache-2.0"
+# D-18.4 (M13): Namir publishes **nothing** to crates.io. Twelve of the fourteen crates are
+# implementation details of one product, `namir-clap` is a cdylib nothing can depend on as a
+# library even in principle, and `namir-fixtures` is test tooling for this repository's own
+# fixtures -- fourteen public maintenance obligations serving zero users. Set here and inherited
+# per crate (`publish.workspace = true`) so the policy has one home rather than fourteen.
+#
+# This does not change what `cargo publish` does today, it changes *why* it fails. Before M13 no
+# path dependency carried a `version`, which `cargo publish` rejects on its own; that was an
+# incidental blocker that would have vanished the moment someone added versions for an unrelated
+# reason. M13 adds those versions deliberately (see any crate's path dependencies), which makes
+# this line the thing actually holding the policy -- and keeps reversing it a one-key change per
+# manifest rather than an audit, because a policy decision should stay revisitable.
+#
+# Accepted costs, stated: no docs.rs, and no `cargo install namir`. D-18.3's installers and
+# archives are the distribution channel instead, which is the right one for an application with a
+# GUI and a plugin artifact anyway.
+publish = false
 # NFR-PORT-010: MSRV stated in the manifest and enforced in CI (the CI job itself is the next
 # stage of M1, not built here). Pinned to the toolchain actually in use rather than an old floor:
 # this is a brand-new project with zero external users yet, and edition 2024 already forces a

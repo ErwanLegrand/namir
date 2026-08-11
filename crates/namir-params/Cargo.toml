@@ -4,9 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
+namir-core = { path = "../namir-core", version = "0.1.0" }

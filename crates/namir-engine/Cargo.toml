@@ -4,15 +4,17 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
-namir-params = { path = "../namir-params" }
-namir-dsp = { path = "../namir-dsp" }
-namir-nam = { path = "../namir-nam" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
+namir-params = { path = "../namir-params", version = "0.1.0" }
+namir-dsp = { path = "../namir-dsp", version = "0.1.0" }
+namir-nam = { path = "../namir-nam", version = "0.1.0" }
 # D-9.2/9.3: the Nam stage wraps `namir-nam`'s model with a block-based resampler around it, per
 # this crate's own layering (D-5.1: namir-engine may depend on nam but nam may not depend on an
 # external resampler itself -- resampling is a stage concern, not a model-inference concern).
@@ -20,7 +22,7 @@ rubato = "0.16"
 # The Ir stage wraps `namir-ir`'s convolver (`namir-ir` did not exist yet when this crate's
 # dependency list was last edited -- added here as this M2 wave's one exception to "only touch
 # your own stage file").
-namir-ir = { path = "../namir-ir" }
+namir-ir = { path = "../namir-ir", version = "0.1.0" }
 # M4: D-7.2's SPSC command ring and D-8.1's return ring (see src/ring.rs's module doc for the full
 # Decision/Rationale block). Same composition move src/rt_harness.rs documents for
 # `assert_no_alloc`: this crate's `unsafe_code = "forbid"` (D-5.3, workspace lint) cannot be
@@ -51,7 +53,7 @@ hound = "3.5"
 # `namir-nam`'s/`namir-ir`'s identical dev-only use of this crate for their own R-4/R-8 benches
 # -- `namir-fixtures` is test/bench tooling (`xtask`'s layering table exempts it entirely), never
 # a normal dependency.
-namir-fixtures = { path = "../namir-fixtures" }
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
 # Pins `benches/six_stage_chain.rs` to one core (D-2.1), same crate and version
 # `namir-nam`'s/`namir-ir`'s own D-2.1-pinned benches use.
 core_affinity = "0.8"
@@ -64,7 +66,7 @@ core_affinity = "0.8"
 # `namir-fixtures` already relies on for its own parity tests. Dev-dependency only, so this is
 # never linked into a release build of this crate, and `cargo run -p xtask -- layering` does not
 # see this edge at all.
-namir-platform = { path = "../namir-platform" }
+namir-platform = { path = "../namir-platform", version = "0.1.0" }
 
 [[bench]]
 name = "six_stage_chain"

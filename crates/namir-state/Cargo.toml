@@ -4,13 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
-namir-params = { path = "../namir-params" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
+namir-params = { path = "../namir-params", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # FR-STATE-080's embedded model/IR data (base64 inside the JSON document, D-11.1's format).
@@ -32,4 +34,4 @@ base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 #    stable key ordering free rather than something this crate has to implement.
 
 [dev-dependencies]
-namir-fixtures = { path = "../namir-fixtures" }
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }

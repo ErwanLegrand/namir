@@ -4,6 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 # D-5.3: this crate is NOT on the unsafe carve-out list (namir-platform, namir-clap, SIMD kernel
 # modules), so it takes the workspace lints unchanged -- `unsafe_code = "forbid"`. `cpal`'s own
@@ -21,14 +23,14 @@ name = "namir"
 path = "src/main.rs"
 
 [dependencies]
-namir-core = { path = "../namir-core" }
-namir-params = { path = "../namir-params" }
-namir-engine = { path = "../namir-engine" }
-namir-state = { path = "../namir-state" }
-namir-library = { path = "../namir-library" }
-namir-platform = { path = "../namir-platform" }
-namir-worker = { path = "../namir-worker" }
-namir-ui = { path = "../namir-ui" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
+namir-params = { path = "../namir-params", version = "0.1.0" }
+namir-engine = { path = "../namir-engine", version = "0.1.0" }
+namir-state = { path = "../namir-state", version = "0.1.0" }
+namir-library = { path = "../namir-library", version = "0.1.0" }
+namir-platform = { path = "../namir-platform", version = "0.1.0" }
+namir-worker = { path = "../namir-worker", version = "0.1.0" }
+namir-ui = { path = "../namir-ui", version = "0.1.0" }
 
 # D-13.1: "Audio I/O for the standalone app uses cpal ... behind a Namir-owned trait so the engine
 # and UI never see cpal types." Still the exact version D-13.1 verified (Apache-2.0, 2026-06-07),
@@ -76,7 +78,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-namir-fixtures = { path = "../namir-fixtures" }
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
 # D-7.5's RT-allocation test harness (see src/rt_harness.rs's module doc for why an external crate
 # is used rather than a hand-rolled `GlobalAlloc`: this crate's `unsafe_code = "forbid"` rules out
 # implementing that trait here). Added at M11 for `audio_io::convert`, the first arithmetic this

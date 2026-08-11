@@ -2193,6 +2193,25 @@ static site, is the substitute), and no `cargo install namir` (D-18.3's installe
 the distribution channel instead — which is the right channel for an audio application with a GUI
 and a plugin artifact anyway).
 
+*Consequence (added M13, 2026-08-11) — applied, and the mechanism is inheritance rather than
+fourteen copies.* `publish = false` sits in the root `Cargo.toml`'s `[workspace.package]` and each
+of the fourteen crates takes it with `publish.workspace = true`, so the policy has one home and
+reversing it is one key rather than an audit — which is what "keeping the reversal cheap is
+deliberate" above asks for. `xtask` keeps its own literal `publish = false`, which predates this
+decision and says the same thing; it is left as it is rather than churned for uniformity. All
+**59** path dependencies across the workspace gained `version = "0.1.0"`, including
+dev-dependencies on `namir-fixtures`, which `cargo publish` does not require but which this
+decision's hygiene argument covers equally.
+
+*Consequence (added M13, 2026-08-11) — the claimed change in failure mode is real, and was
+checked rather than assumed.* `cargo publish -p namir-core --dry-run` now stops at
+``error: `namir-core` cannot be published. `package.publish` must be set to `true` or a non-empty
+list in Cargo.toml to publish.`` — the policy, refusing before any packaging work happens. Before
+this change it would have failed further in, on a path dependency carrying no `version`. That is
+exactly the substitution this decision predicted: an incidental blocker replaced by a stated one.
+`Cargo.lock` is unchanged by the whole edit, which is the other thing worth recording — adding a
+`version` beside a `path` alters nothing about resolution inside a workspace.
+
 **Decision D-18.5 (added M9's P0 decision pass, 2026-08-08)** — NFR-QUAL-010's traceability check is
 gated in **two halves with different flip dates**. The plan-diff half — `docs/03-test-plan.md`
 matches what `xtask traceability` generates — is a **required** check from **M9a** onward. The
