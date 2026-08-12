@@ -103,6 +103,18 @@ fn chunked_processing_matches_monolithic_processing_for_a2() {
     }
 }
 
+/// Length of the in-house A2 parity probe, in samples: 20 000, or ~417 ms at 48 kHz.
+///
+/// Chosen against the real A2 shapes' **6 346-sample receptive field** (6 331 through
+/// `a2_core_layer_array`'s 23 dilated layers — kernels 6/15, dilations to 239 — plus 15 for the
+/// 16-tap head), which the previous 4 000-sample probe was *shorter* than. At 3.15× the field,
+/// ~68 % of the compared samples are fully settled, so a defect that only manifests once the
+/// dilation-239 layers have real history to convolve is now inside what this test measures.
+/// Not raised further because the cost is real: `reference_infer_a2` is a deliberately naive
+/// from-scratch walk and this test runs it over three shapes in an unoptimised test build. The
+/// settled-output evidence at full scale is the golden pair in `tests/golden_reference.rs`.
+const A2_PARITY_PROBE_SAMPLES: usize = 20_000;
+
 /// FR-NAM-150 (Must): "Namir shall load and run NAM Architecture 2 (A2) models in the A2-Full and
 /// A2-Lite configurations, to the accuracy of FR-NAM-030." `Verify: U — cross-implementation
 /// parity against an independent reference implementation, per NFR-QUAL-030.`
@@ -134,14 +146,30 @@ fn chunked_processing_matches_monolithic_processing_for_a2() {
 /// zero-padded startup history on both sides, so the figure this test asserts is measured entirely
 /// inside the startup transient and never over settled output. Closing it needs a longer probe of
 /// the specified material — roadmap §21 Phase 4b, issue #37.
-// trace-partial: FR-NAM-150
-// uncovered: FR-NAM-150 — the "to the accuracy of FR-NAM-030" clause. Both named configurations
-// uncovered: are spanned and the in-house reference is what this requirement's own Verify line
-// uncovered: elects, so neither is a gap, but the probe is deterministic_signal(99, 4_000):
-// uncovered: ~83 ms of 110 Hz sine plus low noise, not FR-NAM-030's specified 10-second
-// uncovered: clean/transient/saturated signal, and shorter than the real A2 shapes' ~6 346-sample
-// uncovered: receptive field, so every compared sample still depends on zero-padded startup
-// uncovered: history and the asserted figure never leaves the startup transient; closes M14
+///
+/// **Both halves of that gap were addressed at M14 Phase 4b, and the tag moved rather than being
+/// promoted here** (2026-08-12; everything above is kept as the record).
+///
+/// - *The probe is no longer shorter than the receptive field.* It is
+///   [`A2_PARITY_PROBE_SAMPLES`] = 20 000 samples, 3.15× the 6 346-sample field, so roughly 68 % of
+///   the compared samples depend on no zero-padded startup history and the asserted figure is no
+///   longer measured entirely inside the startup transient.
+/// - *The specified-signal half is not closed here, and could not honestly be.* 20 000 samples of
+///   110 Hz sine plus low noise is still not FR-NAM-030's 10-second clean/transient/saturated
+///   signal. That signal is committed as `tests/golden/input_10s.wav`, and FR-NAM-150's tag now
+///   lives on the two tests in `tests/golden_reference.rs` that run it — against
+///   `NeuralAmpModelerCore` itself, which is a *stronger* reading of this requirement's own
+///   `Verify:` line ("an independent reference implementation, per NFR-QUAL-030", and NFR-QUAL-030
+///   says golden reference audio held in the repository) than an in-house port is. See
+///   `a2_full_matches_the_real_reference_implementation`'s doc comment for what that pair does and
+///   does not settle.
+///
+/// This test is therefore **untagged, and deliberately kept**. It is the independent-*port*
+/// evidence — R-9's original mitigation, written without reading this crate's A2 code — it is the
+/// only A2 check that covers `BottleneckProbe` (`bottleneck != channels`, which neither real shape
+/// and therefore neither golden exercises), and it is the one that runs in seconds rather than
+/// minutes when someone is iterating on `wavenet.rs`. Deleting it because a stronger artifact
+/// exists would trade breadth for depth; the two answer different questions.
 #[test]
 fn numeric_parity_against_an_independent_reference_implementation_for_a2() {
     for (shape, name) in A2_SHAPES {
@@ -149,7 +177,7 @@ fn numeric_parity_against_an_independent_reference_implementation_for_a2() {
         let bytes = model.to_json_bytes();
         let prepared = namir_nam::load(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
 
-        let probe = deterministic_signal(99, 4_000);
+        let probe = deterministic_signal(99, A2_PARITY_PROBE_SAMPLES);
 
         let reference = nam::reference_infer_a2(&model, &probe);
         let mut state = prepared.new_state(probe.len());
