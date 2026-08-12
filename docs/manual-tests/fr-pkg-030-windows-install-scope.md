@@ -155,6 +155,14 @@ Four things this run establishes beyond "it compiled".
   relying on the stated floor. The release workflow uses whatever `windows-latest` preinstalls, so
   that is a third version, also untested here.
 
+> **The two paragraphs immediately below are SUPERSEDED and kept as written** (M14, 2026-08-12).
+> They record the state after step 1 only, and the verdict table beneath them — added when steps 0,
+> 2, 3 and 4 were executed later the same day — contradicts them directly. The table and its
+> `Result: PASS.` are what hold. They were edited *into* this section rather than appended after it,
+> against this project's own convention; the fix is this marker, not deleting the superseded text.
+> One clause of the superseded text still stands and is not superseded: the `rcedit` note, which no
+> later run has changed.
+
 **Steps 0, 2, 3 and 4 remain NOT EXECUTED.** Nothing has been installed, in either scope, and no
 host has been asked whether it scans the per-user CLAP path. Note also that the `namir.exe` inside
 this installer has **not** been through `rcedit`, which is not installed locally — so the installed
