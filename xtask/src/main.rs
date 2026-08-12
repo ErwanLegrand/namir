@@ -580,7 +580,10 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
             report.missing.len()
         );
         for req in &report.missing {
-            println!("{}", uncovered_line(req, &owners));
+            println!(
+                "{}",
+                uncovered_line(req, &owners, report.manual_unexecuted.get(&req.id))
+            );
         }
         // Mandatory rather than decorative: without it a derived label reads as a curated ownership
         // register, which is the artifact D-18.5 rejects in every form it can take.
@@ -617,11 +620,23 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
 /// owning milestone appended. An id no milestone section names renders `[unattributed]` and is
 /// printed with exactly the same weight, and counts identically toward the total, as one whose
 /// milestone derives -- the attribution never removes, reorders or suppresses an entry.
-fn uncovered_line(req: &traceability::Requirement, owners: &HashMap<String, String>) -> String {
+/// `manual` is the `(filename, reason)` pair a `Verify: M` Must carries when its script exists but
+/// records no clean pass (issue #34). Appended so the reader is not left hunting for a document
+/// that is right there: an id printed with nothing after it means no document at all, which is a
+/// materially different thing to fix.
+fn uncovered_line(
+    req: &traceability::Requirement,
+    owners: &HashMap<String, String>,
+    manual: Option<&(String, String)>,
+) -> String {
     let owner = owners
         .get(&req.id)
         .map_or(milestones::UNATTRIBUTED, String::as_str);
-    format!("  - {} (Verify: {}) [{owner}]", req.id, req.verify)
+    let mut line = format!("  - {} (Verify: {}) [{owner}]", req.id, req.verify);
+    if let Some((file, reason)) = manual {
+        line.push_str(&format!(" -- docs/manual-tests/{file} {reason}"));
+    }
+    line
 }
 
 /// §22's **R-13** mitigation (d): "the ordinary run prints the partial count on **every**
@@ -905,7 +920,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
-            "executed, passed\n",
+            "**Result: PASS.** Executed this session.\n",
         )
         .unwrap();
         std::fs::write(
@@ -973,7 +988,7 @@ mod tests {
         if covered {
             std::fs::write(
                 dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
-                "executed, passed\n",
+                "**Result: PASS.** Executed this session.\n",
             )
             .unwrap();
         }
@@ -1076,8 +1091,29 @@ mod tests {
         let mut owners = HashMap::new();
         owners.insert("FR-CFG-020".to_string(), "M9".to_string());
         assert_eq!(
-            uncovered_line(&req, &owners),
+            uncovered_line(&req, &owners, None),
             "  - FR-CFG-020 (Verify: G) [M9]"
+        );
+    }
+
+    #[test]
+    fn an_uncovered_manual_must_names_the_document_and_what_it_records() {
+        // Issue #34: a `Verify: M` Must whose script exists but has not been run is uncovered, and
+        // the line has to say which of the two it is -- "no document" and "a document saying NOT
+        // EXECUTED" are different pieces of work.
+        let req = traceability::Requirement {
+            id: "FR-UI-020".into(),
+            verify: 'M',
+            section: "5.13".into(),
+        };
+        let manual = (
+            "fr-ui-020-single-screen-elements.md".to_string(),
+            "records `NOT EXECUTED.`".to_string(),
+        );
+        assert_eq!(
+            uncovered_line(&req, &HashMap::new(), Some(&manual)),
+            "  - FR-UI-020 (Verify: M) [unattributed] -- \
+             docs/manual-tests/fr-ui-020-single-screen-elements.md records `NOT EXECUTED.`"
         );
     }
 
@@ -1089,7 +1125,7 @@ mod tests {
             section: "9.9".into(),
         };
         assert_eq!(
-            uncovered_line(&req, &HashMap::new()),
+            uncovered_line(&req, &HashMap::new(), None),
             "  - FR-XXXX-010 (Verify: U) [unattributed]"
         );
     }
@@ -1170,7 +1206,7 @@ mod tests {
         if verify == "M" {
             std::fs::write(
                 dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
-                "executed, passed\n",
+                "**Result: PASS.** Executed this session.\n",
             )
             .unwrap();
         }
@@ -1399,6 +1435,7 @@ mod tests {
         let report = traceability::Report {
             missing: Vec::new(),
             manual_hits: HashMap::new(),
+            manual_unexecuted: HashMap::new(),
             source_hits: HashMap::new(),
             partial_hits,
         };
