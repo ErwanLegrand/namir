@@ -62,8 +62,15 @@ fn run_layering(root: &Path) -> bool {
     }
 }
 
-/// Walks every `.rs` file under every `crates/*/src`, excluding
-/// `crates/namir-platform/src` (D-5.1's one carve-out), for D-5.2(b)'s platform-cfg lint.
+/// Walks every `.rs` file under every crate — **not** `crates/*/src` alone — plus every crate's
+/// own `Cargo.toml` and the workspace root manifest, excluding `crates/namir-platform` (D-5.1's one
+/// carve-out), for D-5.2(b)'s platform-cfg lint.
+///
+/// M14 widened the scanned set with the pattern set (`layering::scan_platform_cfg`). Restricting it
+/// to `src` exempted every test, bench and example in the tree from a Must-level portability lint,
+/// and `[target.'cfg(...)']` manifest tables — a platform conditional expressed in TOML — were
+/// outside it entirely. `target/` is skipped by name rather than filtered afterwards, for the same
+/// reason `walk_rs_files` skips it.
 fn scan_repo_for_platform_cfg(root: &Path) -> Vec<String> {
     let crates_dir = root.join("crates");
     let mut violations = Vec::new();
@@ -75,22 +82,21 @@ fn scan_repo_for_platform_cfg(root: &Path) -> Vec<String> {
         }
     };
 
+    let mut manifests = vec![root.join("Cargo.toml")];
+
     for entry in entries.flatten() {
         let crate_dir = entry.path();
         if !crate_dir.is_dir() {
             continue;
         }
-        let crate_name = entry.file_name();
-        if crate_name == layering::PLATFORM_CFG_EXEMPT_CRATE {
+        if entry.file_name() == layering::PLATFORM_CFG_EXEMPT_CRATE {
             continue;
         }
-        let src_dir = crate_dir.join("src");
-        if !src_dir.is_dir() {
-            continue;
-        }
+        manifests.push(crate_dir.join("Cargo.toml"));
 
-        for file in walkdir::WalkDir::new(&src_dir)
+        for file in walkdir::WalkDir::new(&crate_dir)
             .into_iter()
+            .filter_entry(|e| e.file_name() != "target")
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
         {
@@ -102,12 +108,26 @@ fn scan_repo_for_platform_cfg(root: &Path) -> Vec<String> {
                     continue;
                 }
             };
-            for (line, pattern) in layering::scan_platform_cfg(&content) {
+            for (line, key) in layering::scan_platform_cfg(&content) {
                 violations.push(format!(
-                    "{}:{line}: contains '{pattern}' (only namir-platform may carry platform cfg)",
+                    "{}:{line}: names the platform cfg predicate '{key}' (only namir-platform may \
+                     carry platform conditionals)",
                     path.display()
                 ));
             }
+        }
+    }
+
+    for manifest in manifests {
+        let Ok(content) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        for (line, header) in layering::scan_cargo_target_tables(&content) {
+            violations.push(format!(
+                "{}:{line}: declares '{header}' (only namir-platform may take a \
+                 platform-conditional dependency)",
+                manifest.display()
+            ));
         }
     }
 
@@ -850,6 +870,96 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- NFR-PORT-020 / D-5.2(b): the platform-cfg lint, wired to the real tree -----------------
+
+    /// The lint as CI runs it, over the whole scanned set — every `.rs` file under every crate bar
+    /// `namir-platform`, plus every manifest. Tests, benches and examples are inside that set since
+    /// M14; before then only `crates/*/src` was.
+    // trace: NFR-PORT-020
+    #[test]
+    fn the_real_tree_carries_no_platform_conditional_outside_namir_platform() {
+        assert!(scan_repo_for_platform_cfg(&repo_root()).is_empty());
+    }
+
+    #[test]
+    fn a_planted_conditional_outside_src_fails_the_lint() {
+        // The negative control, and specifically for the part of the scanned set M14 added: a
+        // conditional in a crate's `tests/` directory, which the `crates/*/src` walk could not see.
+        // Every real crate file is left alone -- the scratch root holds one crate and one file.
+        let dir = std::env::temp_dir().join(format!("xtask-port-020-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-engine/tests")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-engine/tests/probe.rs"),
+            "fn a() {}\n",
+        )
+        .unwrap();
+        assert!(
+            scan_repo_for_platform_cfg(&dir).is_empty(),
+            "the scratch tree must start clean"
+        );
+
+        std::fs::write(
+            dir.join("crates/namir-engine/tests/probe.rs"),
+            "#[cfg(not(windows))]\nfn a() {}\n",
+        )
+        .unwrap();
+        let violations = scan_repo_for_platform_cfg(&dir);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(
+            violations[0].contains("tests/probe.rs:1"),
+            "{violations:#?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_planted_target_table_in_a_crate_manifest_fails_the_lint() {
+        // The manifest half: a platform conditional expressed in TOML, which no source-level scan
+        // can see because the conditional is not in the source.
+        let dir = std::env::temp_dir().join(format!("xtask-port-020-toml-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-engine/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-engine/Cargo.toml"),
+            "[package]\nname = \"namir-engine\"\n\n\
+             [target.'cfg(windows)'.dependencies]\nwindows-sys = \"0.59\"\n",
+        )
+        .unwrap();
+
+        let violations = scan_repo_for_platform_cfg(&dir);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].contains("Cargo.toml:4"), "{violations:#?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn namir_platforms_own_conditionals_stay_exempt() {
+        // D-5.1's one carve-out, over the widened scanned set: `namir-platform`'s manifest carries
+        // the tree's only legitimate `[target.'cfg(...)']` table and its `src` the only legitimate
+        // `#[cfg(target_os)]` attributes. Both must remain invisible to this lint.
+        let dir =
+            std::env::temp_dir().join(format!("xtask-port-020-exempt-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-platform/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-platform/src/paths.rs"),
+            "#[cfg(target_os = \"windows\")]\nfn a() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("crates/namir-platform/Cargo.toml"),
+            "[package]\nname = \"namir-platform\"\n\n\
+             [target.'cfg(any(target_os = \"linux\"))'.dependencies]\nalsa = \"0.9\"\n",
+        )
+        .unwrap();
+
+        assert!(scan_repo_for_platform_cfg(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     // --- FR-ERR-030: the audio-thread logging ban, wired to the real tree --------------------------
 
