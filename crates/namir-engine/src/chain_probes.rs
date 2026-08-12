@@ -20,10 +20,13 @@ use namir_fixtures::nam::WaveNetShape;
 use namir_params::stages::{eq, gate, ir, nam, out, trim};
 
 use crate::chain::Chain;
+use crate::param::ParamChange;
 use crate::prepare::PrepareContext;
 use crate::probe::{self, BLOCK, SR};
 use crate::stage::{Stage, StagePrep};
+use crate::stage_io::StageIo;
 use crate::stages::{self, build_default_chain};
+use crate::telemetry::TelemetrySink;
 
 // ---------------------------------------------------------------------------------------------
 // Chain assembly under test, and the orderings a probe is measured against.
@@ -531,6 +534,141 @@ fn fr_chain_060_every_configuration_runs_with_a_real_ir_in_its_ir_stage() {
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// FR-CHAIN-080 — a NaN in each stage's own state.
+// ---------------------------------------------------------------------------------------------
+
+/// Writes a NaN into every channel's first sample on one nominated `process` call and never
+/// again. Spliced in *before* a product stage in an otherwise-product chain, it puts a NaN into
+/// that stage's own state — its filter registers, its envelope follower, its gain ramp, its
+/// convolution ring, its model history — which is what FR-CHAIN-080's method asks for and what no
+/// test in this crate had ever done. `chain.rs`'s own `NanOnce` writes into an *output* buffer at
+/// the end of a chain of one, reaching no product stage's state at all.
+struct NanOnBlock {
+    block: usize,
+    seen: usize,
+}
+
+impl Stage for NanOnBlock {
+    fn process(&mut self, io: &mut StageIo<'_>) {
+        if self.seen == self.block {
+            for channel in io.channels_mut() {
+                if let Some(first) = channel.first_mut() {
+                    *first = f32::NAN;
+                }
+            }
+        }
+        self.seen += 1;
+    }
+    fn reset(&mut self) {}
+    fn latency_samples(&self) -> u32 {
+        0
+    }
+    fn tail_samples(&self) -> u32 {
+        0
+    }
+    fn apply(&mut self, _change: ParamChange) {}
+    fn telemetry(&self, _out: &mut TelemetrySink<'_>) {}
+}
+
+/// **FR-CHAIN-080's `Verify: U` method, executed against all six product stages.** "Inject a NaN
+/// into each stage's state and assert output finiteness."
+///
+/// Seven runs. In run *i* the six product stages are prepared exactly as `build_default_chain`
+/// prepares them, with a [`NanOnBlock`] spliced in immediately before stage *i*, so the NaN enters
+/// that stage's input and from there its state. The seventh feeds the NaN straight into
+/// `build_default_chain`'s own input buffer, which is the literal "through build_default_chain"
+/// case the requirement's `uncovered:` field named.
+///
+/// Each run asserts all three of the requirement's clauses: the affected block is replaced with
+/// silence, the fault indicator is set, and no sample the chain ever emits is non-finite.
+///
+/// **One thing this measures and deliberately does not assert.** Once a NaN is in an IIR stage's
+/// state — the EQ's biquads, Trim's DC blocker, the gate's envelope follower — it is *sticky*: the
+/// stage keeps producing NaN and the chain keeps silencing the block, block after block. Output
+/// finiteness, which is the property this requirement's `Verify:` method names and the property
+/// its Rationale is about ("a NaN escaping into a DAW's mix bus"), holds throughout — which is why
+/// this test passes as written. Whether "continue processing subsequent blocks" should additionally
+/// mean "recover audio" is a question about the requirement's text, not about this test, and
+/// `Stage::reset` could not deliver it today in any case: neither `NamState`'s history nor
+/// `IrState`'s convolution ring has an allocation-free reset (`stages/nam.rs`'s and
+/// `stages/ir.rs`'s own `reset` doc comments each record that gap). Written down here so the
+/// behaviour is on the record rather than rediscovered.
+// trace: FR-CHAIN-080
+#[test]
+fn fr_chain_080_a_nan_in_any_stages_state_is_contained_and_flagged() {
+    /// Index of the block the NaN lands in: well after both handover crossfades have settled.
+    const NAN_BLOCK: usize = 12;
+    const BLOCKS: usize = 40;
+    const FRAMES: usize = BLOCKS * BLOCK;
+
+    let ctx = probe::ctx(ChannelConfig::Mono);
+    let model = probe::nam_model(WaveNetShape::Nano, 31, SR);
+    let cabinet = probe::mono_ir(37, 512, SR, BLOCK);
+    let clean = probe::duplicated(&probe::sine(FRAMES, 220.0, SR, 0.3), 1);
+
+    // `None` is the no-injector run: the NaN arrives in `build_default_chain`'s own input buffer.
+    for position in [
+        None,
+        Some(0usize),
+        Some(1),
+        Some(2),
+        Some(3),
+        Some(4),
+        Some(5),
+    ] {
+        let mut chain = match position {
+            None => build_default_chain(&ctx).unwrap(),
+            Some(position) => {
+                let mut built = build_stage_list(&FRS_ORDER[..position], &ctx);
+                built.push(Box::new(NanOnBlock {
+                    block: NAN_BLOCK,
+                    seen: 0,
+                }));
+                built.extend(build_stage_list(&FRS_ORDER[position..], &ctx));
+                let mut chain = Chain::new(built);
+                chain.prepare_crosscutting(&ctx);
+                chain
+            }
+        };
+
+        probe::set_param(&mut chain, gate::THRESHOLD_DB.id, -60.0);
+        probe::set_param(&mut chain, out::GAIN_DB.id, -12.0);
+        probe::load_nam(&mut chain, model.clone(), &ctx);
+        probe::load_ir(&mut chain, cabinet.clone(), &ctx);
+
+        let mut input = clean.clone();
+        if position.is_none() {
+            input[0][NAN_BLOCK * BLOCK] = f32::NAN;
+        }
+        let out = probe::run(&mut chain, &input, BLOCK);
+
+        let label = match position {
+            None => "build_default_chain's own input".to_string(),
+            Some(position) => format!("{:?}'s state", FRS_ORDER[position]),
+        };
+
+        assert!(
+            out[0].iter().all(|s| s.is_finite()),
+            "a NaN injected into {label} reached the chain's output"
+        );
+        let affected = &out[0][NAN_BLOCK * BLOCK..(NAN_BLOCK + 1) * BLOCK];
+        assert!(
+            affected.iter().all(|s| *s == 0.0),
+            "a NaN injected into {label} did not replace its whole block with silence"
+        );
+        assert!(
+            chain.fault_count() > 0,
+            "a NaN injected into {label} did not set the fault indicator"
+        );
+        // Non-vacuous: the run really was carrying signal before the injection.
+        assert!(
+            probe::peak(&out[0][..NAN_BLOCK * BLOCK]) > 1e-3,
+            "the {label} run produced no signal to be faulted out of"
+        );
     }
 }
 
