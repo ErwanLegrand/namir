@@ -2530,6 +2530,18 @@ that happens to depend on them first.
    still carries a live "Needed by: Before shipping factory presets". **Still due before M8**,
    unchanged. Recorded here because M9's brief is verification truth-up, and a register item that
    looks resolved while half of it is open is the same species of drift §14's table has.
+
+   **Still open at M14's Phase 0, 2026-08-12, and deliberately not taken here.** Both answers this
+   item leads to — obtain written permission to redistribute the standard reamp signal, or record a
+   self-licensed one — cost a capture session with real hardware, so neither is a decision a
+   documentation pass can make. No factory preset exists anywhere in the tree, so the permitted
+   route is unbuilt work whichever answer is chosen. **§21's Phase 0 names a third resolution this
+   item does not list, and it is recorded rather than performed:** FR-STATE-090 is a **Should**, §13
+   says no Should gates M8, and yet M8's exit checklist gates on "Factory presets ship (post AQ-4)".
+   Those two cannot both stand. Striking that bullet is cheaper than either answer above and is the
+   only disposition consistent with §13 — it changes what M8 gates, not what Namir ships. It is not
+   struck here because editing M8's exit checklist is a decision about the 1.0 gate. Carried as a
+   `*Consequence*` note at FR-STATE-090 as well, so it is visible from the requirement.
 4. ~~**Whether `namir-nam`'s FR-NAM-030 parity claim should be re-anchored against
    `NeuralAmpModelerCore` from inside the product workspace**, rather than relying on the
    already-excluded `spikes/s1-nam-inference`'s one-time -131 dB measurement. The cross-implementation
@@ -2885,6 +2897,20 @@ that happens to depend on them first.
     silence, in which three Musts read covered on manual documents describing a panel that does not
     exist. **Due before M9b's start**, and worth taking before M11 rather than after, since the
     second answer changes what M11 builds and the first changes where.
+    **Still open at M14's Phase 0, 2026-08-12, and deliberately not taken here — now overdue by two
+    milestones.** The deadline above was "before M9b's start"; M9b and M14's Phase 0 have both run
+    without it. §21 named it "the single decision with the largest effect on this milestone's size,
+    and it must be first", and Phase 0 is nonetheless declining it, so the reason is stated rather
+    than left as a lapse: the two live answers differ by **a whole UI feature phase**, which is a
+    product-scope decision about what the user sees and an owner's to take, not a disposition a
+    documents-only pass can record. Neither of the two is unavailable for want of analysis; what is
+    missing is the call. **The scope this fixes for M14:** the milestone's automated half does **no
+    device work of any kind** — no device panel, no `UiSnapshot` host, device, rate, buffer, latency
+    or xrun fields, no `UiIntent` device variant — and **FR-IO-060 and FR-IO-070 therefore stay
+    Partial through M14**, with `*Consequence*` notes at both recording that, and recording that
+    M14's silence is not the item answered in the negative. FR-IO-010, -040 and -050 are unmoved for
+    the same reason. Answer 3 — keeping the current silence — is what this note refuses on the
+    item's behalf: the item stays open and dated, which is not the same thing.
 17. ~~**Which milestone closes FR-CFG-030, NFR-LIC-030 and FR-IO-070.** Raised 2026-08-09 by M9a's
     sweep, whose `// uncovered:` fields had to declare a closing milestone for each and, for these
     three alone of the 54, could not take one this document assigns. FR-CFG-030 and NFR-LIC-030 both
@@ -2930,7 +2956,7 @@ that happens to depend on them first.
       hardware and explicitly not to be back-filled with an inspection claim. So the annotation
       stands unopposed and **M9b owns it**, by the milestone that could have claimed it declining
       to, which is a better resolution than either reading argued for.
-18. **FR-CHAIN-070 cannot be satisfied as the chain is built: two of its three options are
+18. ~~**FR-CHAIN-070 cannot be satisfied as the chain is built: two of its three options are
     unreachable and there is no chooser at all.** Raised 2026-08-09 by the independent spot-check of
     §14's adjudication, verified at the sites named rather than inferred. The requirement says the
     user "shall be able to choose whether the core is fed the left channel, the right channel, or the
@@ -2965,33 +2991,61 @@ that happens to depend on them first.
     declaring one port configuration where FR-CHAIN-060 names three — and is a different question
     (what the plugin *tells a host*, not what the chain *does with two channels*); this item does not
     reopen it. §15 item 16's audio-device panel is unrelated: it is about FR-IO-010/-040/-050's
-    missing settings surface, not about channel routing.
-19. **NFR-PORT-030's `*Verify:*` method may be too weak for its own text.** Raised 2026-08-09 by the
-    spot-check of §14's adjudication, which argued the cell to Partial and was **rejected** — the
-    verdict stays **Done**, and this item is where the unrebutted half of that argument goes. The
-    requirement's text enumerates five design constraints: no assumption of a file-system-wide path
-    namespace, no assumption of a mouse, no assumption that the process can spawn unlimited threads,
-    no blocking dialog on the path of any audio-affecting operation, and no dependency on a
-    desktop-only windowing model (`docs/01-functional-requirements.md:964-968`). Its `*Verify:*` line
-    elects one check for all five — "S — the engine and its supporting crates shall build for
+    missing settings surface, not about channel routing.~~
+    **Resolved 2026-08-12, at M14's Phase 0: the Should is dropped for 1.0.** Namir ships the left
+    channel only, with no chooser, recorded as a `*Consequence*` note at FR-CHAIN-070 itself
+    (`docs/01-functional-requirements.md`) rather than by amending the requirement — lowering a
+    requirement to match what was built erases the gap instead of recording it, which is
+    FR-CLAP-030's own precedent from M9b. **The item said it was recorded without a recommendation,
+    and its own cost analysis nevertheless pointed one way, which this resolution follows.**
+    Reordering reopens `02-architecture.md` D-9.8 after M9a re-affirmed it, and moves a **Must**'s
+    behaviour to serve a **Should**. Teaching `GateStage` to preserve channels needs a seam
+    `namir_dsp::NoiseGate` does not expose, in a milestone already carrying ~35 Musts of test debt,
+    for a requirement §13 says cannot gate M8. Dropping it costs no Must: FR-CHAIN-060's Stereo row
+    admits L-only in words. Two residues are carried into the note rather than left here: the −6 dB
+    sum is reachable only by switching the gate off, which is a side effect and not the *choice* the
+    requirement asks for, so it does not partially satisfy it; and the stale
+    `crates/namir-engine/src/stages/trim.rs:19-21` comment M9a identified is still uncorrected,
+    which is a source change M14's Phase 0 does not make.
+19. ~~**NFR-PORT-030's `*Verify:*` method may be too weak for its own text.** Raised 2026-08-09 by
+    the spot-check of §14's adjudication, which argued the cell to Partial and was **rejected** —
+    the verdict stays **Done**, and this item is where the unrebutted half of that argument goes.
+    The requirement's text enumerates five design constraints: no assumption of a file-system-wide
+    path namespace, no assumption of a mouse, no assumption that the process can spawn unlimited
+    threads, no blocking dialog on the path of any audio-affecting operation, and no dependency on a
+    desktop-only windowing model (`docs/01-functional-requirements.md:964-968`). Its `*Verify:*`
+    line elects one check for all five — "S — the engine and its supporting crates shall build for
     `aarch64-linux-android` and `aarch64-apple-ios` in CI" (`:971-972`) — and both jobs run green
     (`.github/workflows/ci.yml:478-545`, plain-tagged at `:478`). **A cross-build proves none of the
-    five.** A crate that assumes a mouse, blocks on a dialog or spawns a thread per scan job compiles
-    for `aarch64-linux-android` exactly as well as one that does not. The verdict is Done because
-    D-23.2 adjudicates against the requirement's **own stated method** and that method is executed as
-    written; the gap here is between the requirement's *text* and its *method*, not between the
-    method and its artifact, and a verdict cell is not the instrument for closing it. Amending the
-    `*Verify:*` line is an FRS change and needs its own decision — the same shape as FR-CHAIN-010's
-    resolution earlier in M9a, where a requirement and the product disagreed and the FRS's owner
-    moved the document rather than a cell moving quietly. Three answers: amend the method to name
-    per-constraint checks that can actually fail (a lint for blocking calls on the audio-affecting
-    path, a bound on spawned threads, the absence of pointer-only input handling in `namir-ui`),
-    which is the only one that makes the Done cell mean the text; keep the method and add a
-    `*Consequence*` note at NFR-PORT-030 recording that the cross-build is a door-open check rather
-    than a compliance check, so no later reader mistakes green CI for the five constraints holding;
-    or leave it, which is the option this appendix exists to stop taking silently. **Due before M8**,
-    since 6.3 PORT's row feeds M8's exit checklist and this is the one cell in it whose method and
-    text are known to disagree.
+    five.** A crate that assumes a mouse, blocks on a dialog or spawns a thread per scan job
+    compiles for `aarch64-linux-android` exactly as well as one that does not. The verdict is Done
+    because D-23.2 adjudicates against the requirement's **own stated method** and that method is
+    executed as written; the gap here is between the requirement's *text* and its *method*, not
+    between the method and its artifact, and a verdict cell is not the instrument for closing it.
+    Amending the `*Verify:*` line is an FRS change and needs its own decision — the same shape as
+    FR-CHAIN-010's resolution earlier in M9a, where a requirement and the product disagreed and the
+    FRS's owner moved the document rather than a cell moving quietly. Three answers: amend the
+    method to name per-constraint checks that can actually fail (a lint for blocking calls on the
+    audio-affecting path, a bound on spawned threads, the absence of pointer-only input handling in
+    `namir-ui`), which is the only one that makes the Done cell mean the text; keep the method and
+    add a `*Consequence*` note at NFR-PORT-030 recording that the cross-build is a door-open check
+    rather than a compliance check, so no later reader mistakes green CI for the five constraints
+    holding; or leave it, which is the option this appendix exists to stop taking silently. **Due
+    before M8**, since 6.3 PORT's row feeds M8's exit checklist and this is the one cell in it whose
+    method and text are known to disagree.~~
+    **Resolved 2026-08-12, at M14's Phase 0: answer 2 — the method stands, and a `*Consequence*`
+    note at NFR-PORT-030 records that the cross-build is a door-open check rather than a compliance
+    check.** The item's argument that a cross-build proves none of the five constraints is
+    unrebutted and is adopted in full; what was open was the disposition, not the analysis. Answer 1
+    was declined on proportion, not on principle: it needs five new static analyses that do not
+    exist — a blocking-call lint over the audio-affecting path, a bound on spawned threads, a check
+    for pointer-only input handling in `namir-ui`, and two more — each with its own false-positive
+    surface, built for a platform FRS §1.4 calls **Prospective** and RD-4 defers past 1.0. Answer 3,
+    leaving it silent, is what this appendix exists to prevent. **The 6.3 PORT cell stays Done** —
+    D-23.2 adjudicates against a requirement's own stated method and that method is executed — and
+    the note fixes how the cell is to be read: *the door is open at compile time*, not *the five
+    constraints hold*. `xtask rt-logging` is named in the note as the working template for a
+    per-constraint check, if that work is ever taken post-1.0.
 20. **Whether 1.0 ships a CLAP plugin with no interface on two of its three supported platforms.**
     Raised 2026-08-12 by M13, by loading the plugin in Reaper on a Mac — the first time anyone had.
     `crates/namir-clap/src/gui.rs`'s `is_api_supported` returns true only for `GuiApiType::WIN32`,
@@ -3016,7 +3070,16 @@ that happens to depend on them first.
     honest without pretending the limitation is smaller than it is. **Due before M8**, since
     FR-CLAP-100 feeds 5.12 CLAP's row and M8's exit gate reads every row Done. Tracked as a GitHub
     issue so it is visible outside this appendix.
-21. **`xtask traceability` keeps only the first code of a compound `Verify:` method, and for one
+    **Still open at M14's Phase 0, 2026-08-12, and deliberately not taken here.** All three answers
+    turn on the same question — whether "supported platform" means the same thing for the plugin as
+    for the standalone — and that is a product-positioning commitment, the owner's to make. **What
+    M14 does settle is that answer 2 is not this milestone's work:** Cocoa and X11 window embedding
+    is a second and third `#![allow(unsafe_code)]` surface under D-5.3, on window-handle paths this
+    project has never exercised, and §21 lists it among what M14 deliberately does not build. So
+    FR-CLAP-100 stays `**UNRESOLVED**` and unmet on two of three platforms through M14. One stale
+    detail found while writing this and recorded rather than fixed: the requirement's ledger entry
+    still books it to **M9b**, a milestone that has run, so whoever takes the decision re-books it.
+21. ~~**`xtask traceability` keeps only the first code of a compound `Verify:` method, and for one
     requirement that silently hides an unexecuted half.** Raised 2026-08-12 at M9b, found while
     building FR-ERR-030's static check. **Six** Musts state a compound method: FR-STATE-040
     (`M plus S (schema check)`), FR-CLAP-090 (`I plus B`), FR-CLAP-130 (`S plus I`), FR-ERR-030
@@ -3041,7 +3104,24 @@ that happens to depend on them first.
     author evidently wanted. **Due before M8**, since M8's exit gate reads §14 and 5.9 STATE's row
     depends on it. **Recorded rather than acted on at M9b by decision**, and M9b's close-out states
     the caveat plainly rather than letting NFR-QUAL-010's first-ever closure be read as stronger
-    than it is.
+    than it is.~~
+    **Resolved 2026-08-12, at M14's Phase 0: the general fix first, the instance second, and the FRS
+    line is not narrowed.** Recorded as a `*Consequence*` note at FR-STATE-040 itself. **Narrowing
+    the FRS line is refused** on FR-CLAP-030's precedent — editing a method to match what was built
+    gives up a check the requirement's author wanted, and this appendix exists to stop exactly that
+    being done quietly. **Building only the schema check is refused as insufficient**: it closes
+    this instance and leaves the class open, so the next compound method written repeats the failure
+    in silence. So: **teach the parser compound `*Verify:*` methods**, so every code a requirement
+    states has to resolve, and **then** build FR-STATE-040's schema check. The item's objection that
+    the FRS does not say what the schema is holds against the FRS and not against the project —
+    `docs/04-state-and-preset-format.md` §§3–7 document the top-level structure, `format_version`,
+    `global`, `parameters` and `references`, which is the schema. Two consequences are carried into
+    the note rather than discovered later: **the parser change will demote rows and reopen
+    adjudications**, which is the fix working and is why it belongs in a milestone that expects it
+    rather than in M8; and **until it lands, FR-STATE-040 must not be counted Done by hand for §14
+    or M8's exit checklist whatever `xtask traceability` prints**, because what the tool prints for
+    it is a filename match and structurally cannot be anything else. The parser change is §21 Phase
+    3 work (issue #27) and is not done by this Phase 0 pass, which writes no code.
 
 ---
 
@@ -5887,3 +5967,148 @@ accessibility platform adapter (issue #35, unless Phase 0 says otherwise), a Coc
 editor (issue #18), a BS.1770 loudness meter, a memory benchmark, or a self-hosted benchmark runner.
 Each is recorded as an accepted limitation in Phase 0 rather than carried as an open partial into the
 1.0 gate.
+
+### M14 Phase 0 — decisions, 2026-08-12
+
+Appended per this document's convention; nothing above is edited. **This subsection is Phase 0's
+output and nothing else.** It writes no code, touches no annotation and moves no §14 cell. Every
+decision below lands as a `*Consequence (added M14, 2026-08-12)*` note at its own requirement or
+risk row, and this subsection is the index to them plus the scope statement Phase 0 owes the phases
+that follow.
+
+**The acceptance criterion Phase 0 was given is met: the decisions are recorded before any Phase 1–6
+commit lands.** What follows is also honest about the four items Phase 0 was *not* able to close,
+because a recorded open question is a correct outcome here and an invented decision is not.
+
+#### What was decided
+
+*Three ratifications.*
+
+- **R-13's fired condition** (`02-architecture.md` §22). The row predicted that a partial count not
+  falling by M12 means the mechanism is being used as a bypass. It has run, and the count went
+  **56 → 68**. The reinterpretation is written down at the row itself with its arithmetic: M9a's
+  twenty *uncovered* Musts are now **zero**, M9b converted twelve of them and then demoted two of
+  its own plain tags on finding they over-claimed, and M14's A2 pass demoted two more. Every
+  movement made the ledger weaker and truer, which is the opposite of the predicted failure. The
+  count is **demoted from a test to an indicator**; the uncovered count and the per-milestone
+  re-reading of `uncovered:` fields are named as the replacement tests; and **the row stays open at
+  Medium** rather than being declared mitigated, because nobody has designed a cheap mechanical
+  discriminator between a partial that records honest scope and a partial that avoids work.
+- **The sub-40 kHz clause**, at FR-NAM-060 with an importing note at FR-IR-030. "0.1 dB up to
+  20 kHz or the Nyquist frequency, whichever is lower" has a transition band only while 20 kHz is
+  the lower of the two, so below a 40 kHz rate it is arithmetically unsatisfiable rather than
+  merely unmet — §15 item 12's branch 1 is *empty* here, not expensive, which is why this is branch
+  2 taken on an audible justification rather than on what the implementation achieves. Namir's
+  supported **engine** sample-rate range is stated as **44.1 kHz to 192 kHz** for both products, the
+  range FR-CLAP-080 already gives the plugin, which puts every FR-NAM-050 conversion inside the
+  satisfiable region at no cost to the NAM stage. The one path that reaches below it is FR-IR-030,
+  through FR-IR-010's 8 kHz IR-file floor, and there the bar is restated proportionally — 0.1 dB to
+  0.45 × the lower rate, 100 dB from 0.5 × the lower rate up, the same relative transition band the
+  worst standard pair already lives with. Two things are said rather than assumed: those restated
+  figures are **unmeasured**, and the bound is **not executable** — `SampleRate::new` takes any
+  nonzero `u32` and nothing rejects an out-of-range rate today.
+- **NFR-PERF-030's stronger audible marker** — the earlier rejection is **ratified, not reopened**.
+  It was declined because it needs an observable inside `crate::stream`'s audio callback added
+  purely to enable a measurement, a probe on the one path NFR-RT-010 protects. That reasoning is
+  good; M14 takes no fresh view of the trade and records that the view was taken.
+
+*Three §15 items closed.*
+
+- **Item 18 — FR-CHAIN-070's stereo source: the Should is dropped for 1.0.** Left-only ships, no
+  chooser. It costs no Must, and the alternatives reopen D-9.8 (which M9a re-affirmed) or need a new
+  `namir_dsp::NoiseGate` seam for a Should that §13 says cannot gate M8.
+- **Item 19 — NFR-PORT-030: the method stands, and its Done cell is re-read.** The cross-build is a
+  **door-open check, not a compliance check**. Per-constraint checks are recorded as post-1.0 work,
+  with `xtask rt-logging` named as the working template.
+- **Item 21 / issue #27 — compound `Verify:` methods: the general fix first, and the FRS line is
+  not narrowed.** The parser is to learn compound methods, and FR-STATE-040's schema check follows,
+  against the format `04-state-and-preset-format.md` §§3–7 already documents. **Until that lands,
+  FR-STATE-040 is not counted Done by hand whatever `xtask traceability` prints** — for it, the tool
+  prints a filename match and structurally cannot print anything else.
+
+*Six accepted limitations outright, plus two deliberate splits — eight requirements in all.*
+Recorded at their own requirements rather than carried into the 1.0 gate as open partials:
+**NFR-DOC-040**'s "stating what it does";
+**NFR-PERF-010**'s CI regression gate (the figure passes with 34.4–41.8% headroom on §2's machine
+and closing the method as written needs a self-hosted runner on it); **NFR-PERF-030**'s audible
+marker, above; **FR-CLAP-030**'s `audio-ports-config`, ratifying M9b's reduction and closing it to
+re-triage; **FR-NAM-090**'s true BS.1770 meter; **FR-CLAP-090**'s memory benchmark. The two splits
+exist because a single `uncovered:` field could not say that two halves of one method have different
+answers. **NFR-LIC-010**: its SPDX-header clause is accepted as NFR-LIC-060's work — a **Should**,
+which §13 says does not gate M8, and verifying a Must's clause by doing a Should's work is the wrong
+way round — while its **licence-files-present clause is refused acceptance and stays booked**,
+because deleting `LICENSE-MIT` would today go unnoticed by every gate here and the check is a
+handful of lines in `xtask identity`. **FR-CFG-030**: the standalone's "exercised" clause is
+accepted as needing a device no runner has, while installing each product alone into a clean
+environment and exercising the *plugin* there stay Phase 5 work and are not excused by it.
+
+#### What was deliberately left open
+
+Four items are owner decisions and Phase 0 declined all four rather than inventing an answer. Each
+now carries a dated note stating what M14 does and does not do around it.
+
+- **§15 item 16 — the audio-device panel.** §21 called this "the single decision with the largest
+  effect on this milestone's size, and it must be first", and it is nonetheless not taken: the two
+  live answers differ by a whole UI feature phase, which is a product-scope call. It is now overdue
+  by two milestones. **Consequence for this milestone, stated as scope: M14 does no device work of
+  any kind, and FR-IO-060 and FR-IO-070 stay Partial through it.**
+- **§15 item 3 / AQ-4 — factory presets.** Both listed answers cost a capture session with real
+  hardware. §21's third resolution is recorded at FR-STATE-090 and here, and not performed: striking
+  M8's "Factory presets ship" bullet is cheaper than either, and is the only reading consistent with
+  §13 — but editing M8's exit checklist is a decision about the 1.0 gate.
+- **§15 item 20 / issue #18 — the plugin's missing editor on macOS and Linux.** Not decided; what is
+  settled is that building the two backends is not M14's work, being a second and third `unsafe`
+  surface under D-5.3.
+- **Issue #35 — FR-UI-030's accessibility.** Its script cannot be closed by running it:
+  `egui-baseview` wires no `accesskit` platform adapter, so nothing is announced to a screen reader
+  and the script would fail. §21 permitted Phase 0 to say otherwise; it does not. The adapter is not
+  built here.
+
+**R-11 / issue #23 — signing** is recorded as still open at its own risk row for the same reason:
+issue #23 turns on whether 1.0 is a public release, and the signed CI path is unbuilt either way.
+
+#### What the automated half of M14 will and will not attempt
+
+Stated plainly, because Phase 0's job is to size the phases that follow it.
+
+- **All of §21 Phase 1 is deferred.** The nine Musts whose *product* half was never built —
+  FR-STATE-030, FR-LIB-010, FR-STATE-070 (its "locate it manually" clause, and the
+  `library_relative: None` finding underneath it), FR-NAM-080, FR-IN-020, FR-IN-030, FR-OUT-020,
+  FR-IO-060 and FR-IO-070 — need `UiIntent` variants, `UiSnapshot` fields and both `UiHost` bridges,
+  and several of them are gated on item 16, which is unanswered. FR-GATE-040,
+  the Should that was to ride along, is deferred with them. **This is the largest single deferral
+  Phase 0 makes and it is a deferral, not a re-scoping**: those requirements stay Musts, stay
+  Partial, and stay M14's to close whenever its human-dependent half runs.
+- **No device work.** Per item 16, above.
+- **This milestone will not reach D-18.5's flip or NFR-QUAL-010's closure**, and the reason is
+  M9b's unchanged one rather than a new one. FR-UI-020 and FR-UI-070 are `Verify: M`; both manual
+  documents read `NOT EXECUTED`; and no headless runner can execute them. **R-16 carries the
+  mechanism**: an Xvfb display *is* GLX-capable — Mesa 25.2.8 / llvmpipe reports direct rendering, a
+  4.5 core profile and 320 GLXFBConfigs — but **none of those 320 is sRGB-capable**, and
+  `egui-baseview`'s default `GlConfig` asks for one, so `glXChooseFBConfig` matches nothing and
+  `baseview` panics on its own `.expect`. No Mesa configuration tried produces an sRGB config.
+  Deleting `--allow-uncovered` while those two documents read `NOT EXECUTED` would make the required
+  check green on evidence nobody has produced, which is the precise inversion of what D-18.5's split
+  was for. **The flip waits on a human at a screen, and so does NFR-QUAL-010.** §21's Acceptance
+  bullet placing both "here" is therefore met only by M14's Phase 6, not by its automated half.
+
+#### Two things this pass found wrong or contradictory, recorded rather than quietly fixed
+
+- **§21's own partial counts are stale by two.** This section was written naming "66 `**PARTIAL**`
+  rows" and "the count went 56 → 66". The figure is **68**: M14's own A2 pass, in the same session
+  and after this section was drafted, demoted FR-NAM-030 and FR-NAM-150 on finding no A2 model has
+  ever been compared against `NeuralAmpModelerCore` (see **R-9**, reopened, and §21's Phase 4b).
+  §12's `*Consequence (added M14)*` note carries the same "66" for the same reason. Neither is
+  edited, per this document's convention; the number to trust is what `cargo run -p xtask --
+  traceability` prints, and today it prints 68.
+- **"Accepted limitation" does not make a §14 row Done, and §21's closing paragraph can be read as
+  though it does.** That paragraph says each such item is "recorded as an accepted limitation in
+  Phase 0 rather than carried as an open partial into the 1.0 gate". Under **D-23.2** a Partial is
+  not **Done** for §14 or for M8's exit checklist, and an acceptance note changes none of that: the
+  tag stays `trace-partial:`, the row stays Partial, and M8's "every row reads **Done**" bullet
+  still cannot pass on it. **What an acceptance actually buys is that the gap stops being
+  re-litigated, not that it stops counting.** Three dispositions could reconcile this — re-read M8's
+  bullet as "Done, or carrying an accepted-limitation note"; amend the requirements the acceptances
+  sit under; or let M8 fail on them — and **Phase 0 takes none of them**, because all three are
+  decisions about the 1.0 gate and belong to whoever owns M8. It is recorded here so M8 does not
+  discover it, which is the failure §21 exists to prevent one level up.
