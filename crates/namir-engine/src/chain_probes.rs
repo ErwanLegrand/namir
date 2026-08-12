@@ -243,11 +243,7 @@ fn fr_chain_010_a_probe_signal_pins_every_position_in_the_shipped_chain() {
 /// - and the flip is click-free, measured as a first-difference against the untoggled run's own
 ///   steady-state roughness (FR-CHAIN-020's `I for click-freedom` limb, the self-calibrating shape
 ///   `engine.rs`'s handover tests use).
-// trace-partial: FR-CHAIN-020
-// uncovered: FR-CHAIN-020 — the chain-level half is closed here, but the "U per stage" limb is
-// uncovered: still unmet for two of the four stages: nam.rs:1080 and ir.rs:1151 both apply
-// uncovered: ENABLED=0 before any processing and then assert steady-state passthrough, so
-// uncovered: neither stage's own unit test toggles its bypass mid-signal; closes M14
+// trace: FR-CHAIN-020
 #[test]
 fn fr_chain_020_toggling_one_stages_bypass_mid_signal_leaves_the_others_undisturbed() {
     const TOGGLE_BLOCK: usize = 300; // ~400 ms in, long after every ramp has settled.
@@ -369,11 +365,7 @@ fn downmix_scale() -> f32 {
 /// 3. **Non-vacuous**, twice over: the output is not silence, and a `Stereo` run whose right
 ///    channel carries a tone the left does not is *not* the run that tone alone would produce —
 ///    which is what makes assertion 2 a statement about the core's input rather than an accident.
-// trace-partial: FR-CHAIN-050
-// uncovered: FR-CHAIN-050 — the mono-core-then-duplicate behaviour is asserted here for the
-// uncovered: assembled chain in every channel configuration, including with a model loaded, but
-// uncovered: NamStage still has no multi-channel content assertion of its own in nam.rs and
-// uncovered: ChannelConfig::MonoToStereo still appears in no gate.rs or nam.rs test; closes M14
+// trace: FR-CHAIN-050
 #[test]
 fn fr_chain_050_every_configuration_duplicates_one_mono_core_result() {
     const FRAMES: usize = 24_000;
