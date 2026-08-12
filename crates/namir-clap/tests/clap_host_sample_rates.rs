@@ -219,14 +219,13 @@ fn assert_report_is_correct(rate: f64, report: &RateReport, reference_rms: f32) 
 // trace-partial: FR-CLAP-080
 // uncovered: FR-CLAP-080 — swept at 154 rates (both endpoints, the six standard rates, a 1 kHz
 // uncovered: grid and one fractional value), not every rate the requirement's range admits:
-// uncovered: `src/audio.rs:125` rounds the host's rate to an integer, so the set a host can
-// uncovered: present collapses onto ~147 900 distinct `SampleRate` values, of which this file
-// uncovered: reaches 154. And nothing is loaded at any of them — this file never touches
-// uncovered: `PluginState`, so no model and no IR are present and D-9.2's `SlotResampler`, the
-// uncovered: one rate-dependent subsystem in the chain and the one this milestone found broken
-// uncovered: at 192 kHz, never runs at any rate here, the mid-session limb included, which
-// uncovered: asserts only a 1 kHz tone's RMS within 0.05 dB of the 48 kHz reading through a
-// uncovered: pass-through chain; closes M8
+// uncovered: `src/audio.rs` rounds the host's rate to an integer, so the set a host can present
+// uncovered: collapses onto ~147 900 distinct `SampleRate` values, of which this file reaches
+// uncovered: 154. The resource-loaded limb `loaded` adds — where D-9.2's `SlotResampler`, the one
+// uncovered: rate-dependent subsystem in the chain, is actually engaged — is narrower still: 8 of
+// uncovered: those 154, the two endpoints, the six standard rates and two off-grid values, since
+// uncovered: a rate there costs a model load and real inference rather than a pass-through
+// uncovered: block; closes M8
 #[test]
 fn every_presentable_sample_rate_and_a_mid_session_change_are_handled() {
     let (_entry, mut instance) = instantiate_default();
@@ -286,4 +285,292 @@ fn a_mid_session_round_trip_returns_the_engine_to_its_original_behaviour() {
     );
 
     drop(instance); // `clap_plugin.destroy`
+}
+
+/// The limb of FR-CLAP-080 that reaches the chain's one rate-dependent subsystem: the same sweep,
+/// with a real `.nam` model loaded, so D-9.2's `SlotResampler` is constructed and run at every rate
+/// rather than left as `None`.
+///
+/// # Why this exists as its own module (M14)
+///
+/// The sweep above loads nothing at any of its 154 rates. Every stage in a resource-free chain is
+/// either rate-independent or a biquad whose coefficients the existing RMS check does exercise —
+/// but `NamStage`'s resampler, the piece that only exists when a model's declared rate differs from
+/// the engine's, and **the one M9b found broken at 192 kHz**, was reached by nothing in this file.
+/// A rate sweep that cannot see the rate-dependent code is the shape of gap M9b's own close-out
+/// warns about.
+///
+/// # The model's declared rate is chosen per session rate, deliberately
+///
+/// `NamSlot::resample` is `None` when the two rates match, which is exactly the configuration this
+/// module is not interested in. So the model is re-declared at 44.1 kHz for every session rate
+/// except 44.1 kHz itself, where it is re-declared at 48 kHz — the resampler is therefore engaged
+/// at *every* swept rate, and the plugin's own reported latency, which is non-zero only when it is,
+/// is a sound install detector at all of them. `namir-fixtures` always stamps 48 kHz on a generated
+/// fixture; overwriting the one field is what turns "a model is loaded" into "the resampler is
+/// running", the same device `clap_host_block_sizes.rs`'s loaded limb uses.
+///
+/// # Why the rate set is 8 and not 154
+///
+/// Each rate here costs an activation, a document load, a handover and real Nano inference; the
+/// resource-free sweep costs a pass-through block. Both endpoints, all six standard rates and two
+/// off-grid values is what buys the most structure per second — and the `uncovered:` field on the
+/// sweep above says so rather than implying this limb spans the range.
+#[cfg(feature = "host-ext-tests")]
+mod loaded {
+    use std::time::Duration;
+
+    use clack_extensions::latency::PluginLatency;
+    use clack_extensions::state::PluginState;
+    use clack_host::prelude::PluginInstance;
+    use namir_core::ContentHash;
+    use namir_fixtures::nam::{WaveNetShape, generate};
+    use namir_state::{Document, EmbeddedRef, FileRef, State};
+
+    use super::support::{
+        CHANNELS, SINE_FREQ_HZ, StereoBuffers, TestHost, activate, all_finite, audio_section,
+        config, fill_sine, instantiate_default, main_thread_handle, peak, require_plugin_extension,
+    };
+    use super::{AMPLITUDE, BLOCK, level_difference_db};
+
+    /// Seeds the generated model. Fixed, so a failure reproduces exactly (D-19.1).
+    const MODEL_SEED: u64 = 0x0C1A_9080_4A11_0000;
+
+    /// The rate the model declares at every session rate but one. See this module's doc comment.
+    const MODEL_RATE_HZ: u32 = 44_100;
+
+    /// The rate it declares when the session is already at [`MODEL_RATE_HZ`].
+    const ALTERNATE_MODEL_RATE_HZ: u32 = 48_000;
+
+    /// Discarded before measuring. Long enough to cover the handover crossfade's tail, the
+    /// resampler's FIFO fill and every `GainLike` ramp; expressed in milliseconds so it means the
+    /// same thing at 44.1 kHz and at 192 kHz.
+    const WARMUP_MS: f64 = 40.0;
+
+    /// Measured. Ten whole cycles of the 1 kHz probe at every rate.
+    const MEASURE_MS: f64 = 10.0;
+
+    /// How far a rate's measured RMS may sit from the 48 kHz reading, in decibels.
+    ///
+    /// Far looser than the resource-free sweep's 0.05 dB, and for a real reason rather than
+    /// caution: the signal the model sees has been resampled to its own declared rate by a
+    /// polyphase filter whose passband ripple and transition band genuinely differ between a
+    /// 192→44.1 kHz ratio and a 48→44.1 kHz one, and the model is a *nonlinearity*, so a small
+    /// input-level difference does not come out as the same small output-level difference. What
+    /// the bound has to be tight enough to catch is a coefficient or time constant computed
+    /// against the wrong rate, which moves the level by whole decibels or produces silence.
+    ///
+    /// **Measured rather than guessed**: across this rate set the spread peaks at **0.52 dB**, at
+    /// 45.1 kHz — the rate whose ratio to the model's 44.1 kHz is closest to, but not, unity — with
+    /// 44.1 kHz itself (where the model is re-declared at 48 kHz) at 0.11 dB and both endpoints
+    /// well inside that. The bound is a little under three times the observed worst case. Bisected
+    /// by running this test with the constant lowered until it failed, so the figure is this
+    /// machine's own reading and not an inherited one.
+    const RMS_TOLERANCE_DB: f32 = 1.5;
+
+    /// Blocks pumped waiting for the handover to complete before the warm-up starts. At 512 frames
+    /// and a 20 ms crossfade this is reached in two or three; the rest is headroom for a loaded
+    /// machine. Exhausting it means the model never arrived, which the panic says.
+    const LANDING_LIMIT: usize = 64;
+
+    /// Slept between landing polls, so the worker actually gets to run on a small box.
+    const LANDING_POLL: Duration = Duration::from_millis(10);
+
+    /// The rate set. Both endpoints, the six standard rates, and two values off every grid.
+    const RATES: [f64; 8] = [
+        44_100.0, 45_100.0, 48_000.0, 88_200.0, 96_000.0, 176_400.0, 191_100.0, 192_000.0,
+    ];
+
+    /// A generated Nano WaveNet re-declared at `rate_hz`, as the `.nam` bytes a real one arrives
+    /// as. Everything numeric about it — topology, weights, the RMS calibration that keeps its
+    /// output neither silent nor exploding — is the generator's, untouched.
+    fn model_bytes(rate_hz: u32) -> Vec<u8> {
+        let mut model =
+            generate(WaveNetShape::Nano, MODEL_SEED).expect("the WaveNet fixture must generate");
+        model.sample_rate = rate_hz;
+        model.to_json_bytes()
+    }
+
+    /// A document naming that model by FR-STATE-080's embedded form alone: no absolute path and no
+    /// library-relative candidate, so nothing is read from or written to disk and the developer's
+    /// library is neither consulted nor modified.
+    fn document_bytes(rate_hz: u32) -> Vec<u8> {
+        let data = model_bytes(rate_hz);
+        let mut state = State::defaults();
+        state.nam = Some(FileRef {
+            hash: ContentHash::of(&data),
+            library_relative: None,
+            absolute: None,
+            display_name: format!("fr-clap-080-{rate_hz}.nam"),
+            embedded: Some(EmbeddedRef {
+                media_type: "application/vnd.namir.nam+json".to_string(),
+                data,
+            }),
+        });
+        state.write_onto(&Document::empty()).to_pretty_bytes()
+    }
+
+    /// What one loaded activation at one rate produced.
+    struct LoadedReport {
+        /// RMS of channel 0 over the measurement window.
+        rms: f32,
+        /// Peak absolute sample of channel 0 over the measurement window.
+        peak: f32,
+        /// The latency the plugin reported once the model was installed and warm.
+        latency: u32,
+    }
+
+    /// Activates `instance` at `rate`, loads a model declared at a rate that is *not* `rate`, waits
+    /// for the handover, then measures a 1 kHz tone through the loaded chain.
+    ///
+    /// Leaves the instance deactivated, so the caller may call this again at another rate.
+    fn run_loaded_at_rate(
+        instance: &mut PluginInstance<TestHost>,
+        bufs: &mut StereoBuffers,
+        rate: f64,
+    ) -> LoadedReport {
+        let model_rate = if rate.round() as u32 == MODEL_RATE_HZ {
+            ALTERNATE_MODEL_RATE_HZ
+        } else {
+            MODEL_RATE_HZ
+        };
+        let state_ext = require_plugin_extension::<PluginState>(instance);
+        let latency_ext = require_plugin_extension::<PluginLatency>(instance);
+
+        let stopped = activate(instance, config(rate, 1, BLOCK));
+        let mut processor = stopped
+            .start_processing()
+            .unwrap_or_else(|e| panic!("processing must start at {rate} Hz: {e}"));
+
+        let document = document_bytes(model_rate);
+        let mut reader = &document[..];
+        state_ext
+            .load(&mut main_thread_handle(instance), &mut reader)
+            .unwrap_or_else(|e| {
+                panic!("the host-driven state load must succeed at {rate} Hz: {e}")
+            });
+
+        // Wait for the install by watching the figure that only moves when the resampler exists.
+        bufs.silence_input();
+        let mut landed = false;
+        for _ in 0..LANDING_LIMIT {
+            audio_section(|| bufs.process_block(&mut processor, BLOCK))
+                .unwrap_or_else(|e| panic!("a landing block at {rate} Hz must process: {e}"));
+            if latency_ext.get(&mut main_thread_handle(instance)) != 0 {
+                landed = true;
+                break;
+            }
+            std::thread::sleep(LANDING_POLL);
+        }
+        assert!(
+            landed,
+            "at {rate} Hz the model declared at {model_rate} Hz never reached the engine -- the \
+             plugin still reports zero latency after {LANDING_LIMIT} blocks, so D-9.2's \
+             SlotResampler was never built and this rate proves nothing"
+        );
+
+        let warmup_frames = (WARMUP_MS / 1000.0 * rate).ceil() as u64;
+        let measure_frames = (MEASURE_MS / 1000.0 * rate).ceil() as u64;
+        let total_frames = warmup_frames + measure_frames;
+
+        let mut measured: Vec<f32> = Vec::with_capacity(measure_frames as usize);
+        let mut done: u64 = 0;
+        while done < total_frames {
+            let frames = BLOCK.min((total_frames - done) as u32);
+            for channel in 0..CHANNELS {
+                fill_sine(
+                    &mut bufs.input_mut(channel)[..frames as usize],
+                    SINE_FREQ_HZ,
+                    rate,
+                    AMPLITUDE,
+                    done,
+                );
+            }
+            bufs.poison_output(f32::NAN);
+            audio_section(|| bufs.process_block(&mut processor, frames)).unwrap_or_else(|e| {
+                panic!("a {frames}-frame block at {rate} Hz must process: {e}")
+            });
+
+            for channel in 0..CHANNELS {
+                let written = &bufs.output(channel)[..frames as usize];
+                assert!(
+                    all_finite(written),
+                    "at {rate} Hz with a model loaded, channel {channel} of a {frames}-frame \
+                     block is not finite"
+                );
+            }
+
+            let block_start = done;
+            if block_start + u64::from(frames) > warmup_frames {
+                let from = warmup_frames.saturating_sub(block_start) as usize;
+                measured.extend_from_slice(&bufs.output(0)[from..frames as usize]);
+            }
+            done += u64::from(frames);
+        }
+
+        let latency = latency_ext.get(&mut main_thread_handle(instance));
+        let stopped = processor.stop_processing();
+        instance.deactivate(stopped);
+
+        let sum_sq: f64 = measured.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
+        LoadedReport {
+            rms: (sum_sq / measured.len() as f64).sqrt() as f32,
+            peak: peak(&measured),
+            latency,
+        }
+    }
+
+    /// The loaded sweep itself, across both endpoints, the six standard rates and two off-grid
+    /// values, one live instance taken through all of them in turn — so the last rate is also a
+    /// mid-session change from the first, with a fresh model install at each.
+    ///
+    /// Carries no tag of its own: FR-CLAP-080's `trace-partial:` lives on the resource-free sweep
+    /// above, whose `uncovered:` field names both this limb's rate count and the sweep's own.
+    #[test]
+    fn a_loaded_chain_resamples_correctly_at_every_swept_rate() {
+        let (_entry, mut instance) = instantiate_default();
+        let mut bufs = StereoBuffers::new(BLOCK as usize);
+
+        let reference = run_loaded_at_rate(&mut instance, &mut bufs, 48_000.0);
+        assert!(
+            reference.rms > 0.0,
+            "the 48 kHz loaded reference must be a real signal, not silence"
+        );
+        assert!(
+            reference.latency > 0,
+            "the 48 kHz reference must have the resampler engaged (a 44.1 kHz model)"
+        );
+
+        for rate in RATES {
+            let report = run_loaded_at_rate(&mut instance, &mut bufs, rate);
+
+            assert!(
+                report.latency > 0,
+                "at {rate} Hz the plugin reports zero latency with a model declared at another \
+                 rate loaded -- D-9.2's resampler is not in the chain"
+            );
+            assert!(
+                report.peak > 0.0,
+                "at {rate} Hz the loaded chain produced digital silence from a -12 dBFS tone"
+            );
+
+            let difference = level_difference_db(report.rms, reference.rms).unwrap_or_else(|| {
+                panic!(
+                    "at {rate} Hz the loaded RMS ({}) or the 48 kHz reference ({}) is not a \
+                     positive level",
+                    report.rms, reference.rms
+                )
+            });
+            assert!(
+                difference.abs() <= RMS_TOLERANCE_DB,
+                "at {rate} Hz the 1 kHz probe came out {difference:+.3} dB from its 48 kHz level \
+                 through the *loaded* chain (rms {} vs {}), beyond the {RMS_TOLERANCE_DB} dB \
+                 tolerance -- the resampler or a rate-derived coefficient is wrong at this rate",
+                report.rms,
+                reference.rms
+            );
+        }
+
+        drop(instance); // `clap_plugin.destroy`
+    }
 }

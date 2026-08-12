@@ -25,6 +25,32 @@
 //! [`crate::param_mirror::ParamMirror`] so the GUI reflects host automation, not only its own
 //! dispatches.
 //!
+//! # FR-CLAP-060: the block is split at each event's own frame (M14, issue #30)
+//!
+//! Every `clap_event_param_value` carries a `header().time()`: the frame, relative to the start of
+//! this `process()` call, at which the host means the change to take effect. Until M14 this module
+//! never read it. It applied the whole event list once, before running the chain, so every
+//! automation point in a block landed on that block's *first* frame — **~10.7 ms of quantisation at
+//! 48 kHz/512 and ~85 ms at 4096**, on a plugin whose primary user class automates a bypass and a
+//! gain in time with a performance.
+//!
+//! [`NamirAudioProcessor::process`] now walks the event list once, keeping a `cursor` frame:
+//! everything from `cursor` up to the next event's time is rendered
+//! ([`NamirAudioProcessor::process_segment`]) before that event is applied, and the remainder of
+//! the block is rendered after the last one. A block with no automation in it therefore takes
+//! exactly the path it always did — one segment, the whole block — and one with *k* events takes at
+//! most *k + 1*. Nothing about it allocates or loops unboundedly (NFR-RT-010): the segment count is
+//! bounded by the host's own event list, and each segment reuses the same buffers, sub-sliced.
+//!
+//! The per-segment dry-into-wet copy and output-silencing live in [`prepare_channel`], which takes
+//! the segment's range for exactly this reason — doing either over the whole block would have a
+//! later segment overwrite what an earlier one produced.
+//!
+//! **The click-free half of FR-CLAP-060 is not this module's to close.** `namir_engine::Chain`'s
+//! global bypass is a `bool` flip with no crossfade, where FR-CHAIN-020's *per-stage* bypass fades
+//! over 15 ms; sample-accurate delivery is what makes that step land where the host asked, not what
+//! smooths it. `tests/clap_host_automation.rs` measures the step and books the gap.
+//!
 //! # FR-CLAP-040: latency reporting, and the restart CLAP's own contract requires
 //!
 //! Every block, this processor reads `AudioEngine::chain().latency_samples()` and publishes it to
@@ -44,6 +70,7 @@
 //! still holds for every model swap that does *not* change latency, which is the common case. See
 //! `docs/manual-tests/fr-clap-040-latency-restart.md`.
 
+use clack_plugin::events::Event;
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::host::HostAudioProcessorHandle;
 use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
@@ -73,15 +100,23 @@ pub struct NamirAudioProcessor<'a> {
 }
 
 impl<'a> NamirAudioProcessor<'a> {
-    /// Applies every `ParamValue` automation event in this block, before running the chain — see
-    /// this module's doc comment for why this goes through `apply_param_direct`, not the ring.
-    fn apply_automation(&mut self, events: &Events) {
-        for event in events.input.iter() {
-            if let Some(CoreEventSpace::ParamValue(ev)) = event.as_core_event()
-                && let Some(id) = ev.param_id()
-            {
-                self.apply_direct_and_mirror(ParamId(id.get()), ev.value() as f32);
-            }
+    /// Runs `audio`'s frames `[start, end)` through the engine — see [`process_port_pair`] for the
+    /// per-port channel plumbing. Called once per segment of [`Self::process`]'s event split, so a
+    /// block with no automation in it reaches this exactly once, with the whole block.
+    fn process_segment(&mut self, audio: &mut Audio, start: u32, end: u32) {
+        for mut port_pair in &mut *audio {
+            let Ok(channels) = port_pair.channels() else {
+                continue;
+            };
+            let Some(mut channels) = channels.into_f32() else {
+                continue;
+            };
+            process_port_pair(
+                &mut self.engine,
+                &mut channels,
+                start as usize,
+                end as usize,
+            );
         }
     }
 
@@ -202,16 +237,34 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
             self.priority_elevated = true;
         }
 
-        self.apply_automation(&events);
-
-        for mut port_pair in &mut audio {
-            let Ok(channels) = port_pair.channels() else {
-                continue;
-            };
-            let Some(mut channels) = channels.into_f32() else {
-                continue;
-            };
-            process_port_pair(&mut self.engine, &mut channels);
+        // FR-CLAP-060's sample-accuracy limb: split the block at each automation event's own
+        // `header().time()` rather than applying the whole event list before it. See this module's
+        // doc comment for the full argument; `tests/clap_host_automation.rs` is what asserts it.
+        //
+        // Allocation-free and bounded: one pass over the event list, and at most one
+        // `process_segment` call per event plus one for the tail.
+        let frames = audio.frames_count();
+        let mut cursor: u32 = 0;
+        for event in events.input.iter() {
+            if let Some(CoreEventSpace::ParamValue(ev)) = event.as_core_event()
+                && let Some(id) = ev.param_id()
+            {
+                // Clamped twice, and both clamps are about a host that does not hold up its end.
+                // CLAP requires `time < frames_count` and requires the list to be sorted by time;
+                // an event past the end is taken as belonging to the last frame, and one that
+                // would move the cursor backwards is applied where the cursor already is. Neither
+                // can produce an empty or reversed range, which is what `StageIo::new` would
+                // panic on.
+                let at = ev.header().time().min(frames).max(cursor);
+                if at > cursor {
+                    self.process_segment(&mut audio, cursor, at);
+                    cursor = at;
+                }
+                self.apply_direct_and_mirror(ParamId(id.get()), ev.value() as f32);
+            }
+        }
+        if cursor < frames {
+            self.process_segment(&mut audio, cursor, frames);
         }
 
         self.publish_latency();
@@ -234,12 +287,27 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
     }
 }
 
-/// Builds the up-to-two channel mutable slices a `StageIo` needs from one port pair, and runs the
-/// engine over them. Declared free (not a method) so its generic-lifetime signature stays simple;
-/// see this module's doc comment section on channel handling for the FR-CLAP-030 stereo-only
-/// scope this round declares.
-fn process_port_pair(engine: &mut AudioEngine, channels: &mut PairedChannels<'_, f32>) {
-    let frames = channels.frames_count() as usize;
+/// Builds the up-to-two channel mutable slices a `StageIo` needs from one port pair's frames
+/// `[start, end)`, and runs the engine over them. Declared free (not a method) so its
+/// generic-lifetime signature stays simple; see this module's doc comment section on channel
+/// handling for the FR-CLAP-030 stereo-only scope this round declares.
+///
+/// `end` is clamped to this port's own frame count, so a host whose ports disagree with
+/// `Audio::frames_count` degrades to "process what this port actually has" rather than panicking
+/// (P8). An empty range after that clamp is a no-op — in particular, nothing is copied dry-to-wet
+/// and nothing is silenced, which matters because a later segment of the same block will do both
+/// for its own range.
+fn process_port_pair(
+    engine: &mut AudioEngine,
+    channels: &mut PairedChannels<'_, f32>,
+    start: usize,
+    end: usize,
+) {
+    let end = end.min(channels.frames_count() as usize);
+    if start >= end {
+        return;
+    }
+    let frames = end - start;
     let count = channels.channel_pair_count();
     if count == 0 {
         return;
@@ -251,7 +319,7 @@ fn process_port_pair(engine: &mut AudioEngine, channels: &mut PairedChannels<'_,
     let mut bufs: [Option<&mut [f32]>; 2] = [None, None];
     for (i, slot) in bufs.iter_mut().enumerate().take(count.min(2)) {
         if let Some(pair) = channels.channel_pair(i) {
-            *slot = prepare_channel(pair);
+            *slot = prepare_channel(pair, start, end);
         }
     }
     let [Some(a), Some(b)] = bufs else {
@@ -262,20 +330,34 @@ fn process_port_pair(engine: &mut AudioEngine, channels: &mut PairedChannels<'_,
     engine.process(&mut io);
 }
 
-/// One channel's mutable "to be processed in place" buffer, from whatever shape the host handed
-/// this pair — see `clack_plugin::process::Audio`'s own doc comment for the four `ChannelPair`
-/// cases. `InputOutput` is copied dry-into-wet first (the chain processes in place, exactly as
-/// `AudioEngine::process`'s existing tests already exercise via `StageIo`); `OutputOnly` is
-/// silenced first, matching `spikes/s4-clack-clap`'s own rule that the host must never read
-/// uninitialised memory.
-fn prepare_channel<'a>(pair: ChannelPair<'a, f32>) -> Option<&'a mut [f32]> {
+/// One channel's mutable "to be processed in place" buffer for frames `[start, end)`, from
+/// whatever shape the host handed this pair — see `clack_plugin::process::Audio`'s own doc comment
+/// for the four `ChannelPair` cases. `InputOutput` is copied dry-into-wet first (the chain
+/// processes in place, exactly as `AudioEngine::process`'s existing tests already exercise via
+/// `StageIo`); `OutputOnly` is silenced first, matching `spikes/s4-clack-clap`'s own rule that the
+/// host must never read uninitialised memory.
+///
+/// Both of those are done **per segment**, over `[start, end)` alone, which is what makes
+/// [`NamirAudioProcessor::process`]'s event split safe to run over the same buffers repeatedly: a
+/// later segment can neither re-copy nor re-silence a range an earlier one already processed.
+///
+/// Returns `None` if either side is shorter than `end` — a host contradicting its own
+/// `frames_count` — rather than slicing out of bounds; the caller then leaves this port alone (P8).
+fn prepare_channel<'a>(
+    pair: ChannelPair<'a, f32>,
+    start: usize,
+    end: usize,
+) -> Option<&'a mut [f32]> {
     match pair {
         ChannelPair::InputOutput(input, output) => {
+            let input = input.get(start..end)?;
+            let output = output.get_mut(start..end)?;
             output.copy_from_slice(input);
             Some(output)
         }
-        ChannelPair::InPlace(buf) => Some(buf),
+        ChannelPair::InPlace(buf) => buf.get_mut(start..end),
         ChannelPair::OutputOnly(buf) => {
+            let buf = buf.get_mut(start..end)?;
             buf.fill(0.0);
             Some(buf)
         }
