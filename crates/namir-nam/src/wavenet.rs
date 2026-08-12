@@ -2090,7 +2090,7 @@ mod tests {
     // uncovered: literal 0 and assert it equals 0, so they would pass unchanged if inference did
     // uncovered: introduce delay, and the one path that reports a nonzero figure — NamStage's
     // uncovered: resampler latency — is asserted only as > 0 and is documented as not
-    // uncovered: sample-exact; closes M9b
+    // uncovered: sample-exact; closes M8
     #[test]
     fn latency_samples_is_zero() {
         let prepared = PreparedWaveNet::from_file(&minimal_valid_file()).unwrap();

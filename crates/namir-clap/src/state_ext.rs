@@ -79,7 +79,7 @@ mod tests {
     // uncovered: are called by no test, the tagged artifact bypassing them and the
     // uncovered: clap_istream/clap_ostream adapters to exercise the pure logic directly, so load's
     // uncovered: own sequel work — set_last_document, push_notice on parse warnings,
-    // uncovered: notify_params_changed and spawn_recall — runs nowhere; closes M9b
+    // uncovered: notify_params_changed and spawn_recall — runs nowhere; closes M8
     #[test]
     fn a_snapshot_round_trips_through_bytes_and_adopt_state() {
         let a = crate::shared::SharedInner::new();

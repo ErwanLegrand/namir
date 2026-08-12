@@ -82,14 +82,14 @@ mod tests {
     // uncovered: FR-CHAIN-010 — the Verify: I method's "measure stage interaction against a
     // uncovered: specified probe signal" is unexecuted: the tagged test fills every channel with
     // uncovered: 0.0 and asserts 0.0 out with nothing loaded, which cannot distinguish any
-    // uncovered: ordering of any stages from an empty chain; closes M9b
+    // uncovered: ordering of any stages from an empty chain; closes M8
     #[test]
     fn builds_and_runs_silently_for_every_channel_config() {
         // trace-partial: FR-CHAIN-060
         // uncovered: FR-CHAIN-060 — of the table's three rows the "I per configuration"
         // uncovered: method names, the Mono→stereo row's IR-stage cell ("stereo IR, or dual mono
         // uncovered: IR") is exercised by nothing: no test loads any IR into an IrStage prepared
-        // uncovered: with ChannelConfig::MonoToStereo; closes M9b
+        // uncovered: with ChannelConfig::MonoToStereo; closes M8
         for channel_config in [
             ChannelConfig::Mono,
             ChannelConfig::MonoToStereo,
@@ -118,7 +118,7 @@ mod tests {
     // uncovered: what it reports, is measured nowhere: no test compares a chain's actual group
     // uncovered: delay against latency_samples() for any configuration where that value is
     // uncovered: nonzero, and the tagged test asserts 0 with nothing loaded, where every stage's
-    // uncovered: own latency_samples() is 0 by construction; closes M9b
+    // uncovered: own latency_samples() is 0 by construction; closes M8
     #[test]
     fn reports_a_nonzero_latency_only_from_stages_that_declare_one() {
         let ctx = ctx(ChannelConfig::Mono);

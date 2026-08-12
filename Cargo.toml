@@ -25,7 +25,7 @@ edition = "2024"
 # uncovered: NFR-LIC-010 — two of the method's three named checks have no artifact: nothing checks
 # uncovered: that the licence files are present, so their removal would go unnoticed, and nothing
 # uncovered: checks SPDX headers, which only two tracked files under crates/ carry;
-# uncovered: closes M9b
+# uncovered: closes M8
 license = "MIT OR Apache-2.0"
 # D-18.4 (M13): Namir publishes **nothing** to crates.io. Twelve of the fourteen crates are
 # implementation details of one product, `namir-clap` is a cdylib nothing can depend on as a

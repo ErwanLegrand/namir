@@ -397,7 +397,7 @@ mod tests {
     // uncovered: FR-IN-030 — the "resettable by the user" clause is unbuilt as well as
     // uncovered: unverified: Meter::reset_clip has no caller outside its own unit test, TrimStage
     // uncovered: exposes no clip-reset parameter and its Stage::reset is the transport-stop path,
-    // uncovered: and UiIntent carries no reset-clip variant; closes M9b
+    // uncovered: and UiIntent carries no reset-clip variant; closes M8
     #[test]
     fn clip_latches_and_is_reported_via_telemetry() {
         let mut stage = stage(ChannelConfig::Mono);

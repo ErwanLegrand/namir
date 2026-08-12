@@ -304,7 +304,7 @@ struct AudioRun {
 // uncovered: actions only model loading and preset recall are driven for real, library scanning
 // uncovered: standing in as a worker job that reads, hashes and parses a multi-megabyte file while
 // uncovered: holding the same instance mutex a scan's jobs take, because starting a real scan
-// uncovered: would erase the developer's own library index; closes M9b
+// uncovered: would erase the developer's own library index; closes M8
 #[test]
 fn fr_clap_130_no_block_waits_on_a_preset_recall_a_model_load_or_the_host() {
     let dir = scratch_dir();

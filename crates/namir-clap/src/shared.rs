@@ -421,7 +421,7 @@ mod tests {
     // uncovered: FR-CLAP-090 — the B half of "I plus B", that N instances of one model use
     // uncovered: materially less memory than N separate copies, is measured by nothing: namir-clap
     // uncovered: has no benches directory and no memory benchmark exists anywhere in the workspace;
-    // uncovered: closes M9b
+    // uncovered: closes M8
     #[test]
     fn two_shared_inners_resolve_to_the_same_process_global_cache() {
         let a = SharedInner::new();

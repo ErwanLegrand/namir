@@ -330,7 +330,7 @@ mod tests {
     // uncovered: scanner, the state save/load path, settings I/O, the resource cache or the GUI
     // uncovered: thread, and the plugin-configuration clause "continue passing audio, degraded if
     // uncovered: necessary" is asserted by nothing, the tagged test running no audio at all;
-    // uncovered: closes M9b
+    // uncovered: closes M8
     #[test]
     fn a_panicking_job_is_contained_and_the_pool_keeps_serving() {
         let previous = std::panic::take_hook();

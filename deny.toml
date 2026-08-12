@@ -64,7 +64,7 @@ confidence-threshold = 0.8
 # uncovered: FR-ERR-060 — the method's "build-time check that no network-capable dependency is
 # uncovered: linked" is a by-name deny list its own comment calls deliberately non-exhaustive, and
 # uncovered: nothing detects direct std::net use in a first-party crate, which would open an
-# uncovered: outbound connection with Cargo.lock untouched and the gate green; closes M9b
+# uncovered: outbound connection with Cargo.lock untouched and the gate green; closes M8
 [bans]
 multiple-versions = "warn"
 # Default ("allow", matching `cargo deny init`'s own template): this workspace's own crates

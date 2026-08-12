@@ -188,7 +188,7 @@ fn check_recall_outcome(nam: &ResourceRecall, ir: &ResourceRecall, uncatalogued:
 // uncovered: callback: #[global_allocator] AllocDisabler is installed in namir-dsp, namir-engine,
 // uncovered: namir-ir, namir-nam and namir-worker only, and namir-clap's process() and
 // uncovered: namir-app's cpal callback are exercised under no assert_no_alloc or audio_section
-// uncovered: anywhere; closes M9b
+// uncovered: anywhere; closes M8
 #[test]
 fn nfr_rt_010_three_axes_run_concurrently_with_zero_audio_thread_allocation() {
     let c = ctx();
