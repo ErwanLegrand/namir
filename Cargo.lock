@@ -308,6 +308,7 @@ checksum = "6d97d8b4cab1975314c053b9ec35575c5cccd8c7b3db37b21cbe435be6174416"
 dependencies = [
  "bitflags 2.13.1",
  "clack-common",
+ "clack-host",
  "clack-plugin",
  "clap-sys",
  "raw-window-handle",
@@ -1157,6 +1158,7 @@ dependencies = [
 name = "namir-clap"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "baseview",
  "clack-extensions",
  "clack-host",

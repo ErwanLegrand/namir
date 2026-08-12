@@ -101,6 +101,19 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace
 
+      # M9b (D-18.7). `namir-clap`'s `host-ext-tests` feature is **non-default**, so the step above
+      # does not compile the tests behind it -- the in-process CLAP host tests that observe the
+      # plugin's audio-ports/params/state/latency extensions through `clack-extensions`' host
+      # halves. Without this step those tests are dead weight nothing ever runs, so it is required,
+      # not `continue-on-error`.
+      #
+      # It must stay a named, single-feature invocation. **Never `--all-features`**: that would
+      # switch the feature on for the shipped `cdylib` too, linking `clack-host` into the plugin
+      # and desynchronising THIRD-PARTY-NOTICES.md from the artifact (risk R-17). The feature is
+      # deliberately invisible to `xtask attribution`, which walks the default-feature resolve.
+      - name: cargo test -p namir-clap --features host-ext-tests (D-18.7)
+        run: cargo test -p namir-clap --features host-ext-tests
+
   # Covers D-18.1's "the layering lint" (D-5.2) and "the params.lock diff" (FR-PARAM-020).
   # Pure static checks over the dependency graph and a checked-in manifest -- not
   # platform-dependent, so one OS is enough.
