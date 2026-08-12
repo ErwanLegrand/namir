@@ -4218,11 +4218,47 @@ uncovered **Must**", and by the tool's rules that will be true — but one Must'
 than its stated method, and the closure should be recorded with that said rather than left to be
 discovered. §15 item 21 carries the analysis and the three candidate fixes.
 
-**The performance figures are not certified.** NFR-PERF-040's 163.8 ms and NFR-PERF-050's 149 ms were
-measured on §2's reference machine but **not a quiet one** — this session's own tooling was compiling
-throughout — which D-2.4 condition 2 disqualifies. Both requirements' dispositions rest on their
-benchmarks *asserting in-process*, per D-2.6 for the first, not on a certified figure. Re-taking them
-on an idle machine is owed before either number is quoted as certified.
+**The performance figures, re-taken on an idle machine, 2026-08-12.** The first set was measured
+while this session's own tooling compiled throughout, which D-2.4 condition 2 disqualifies. All three
+benchmarks were re-run after the build work finished, on §2's reference machine with nothing else
+this session was running. **Every arm passes**, and each benchmark's own output still declines to
+call itself certified — `six_stage_chain` prints, in as many words, that a certified figure is one
+measured on that machine *quiet* and that its own PASS line "is not by itself evidence that it was".
+That caution is warranted and is not boilerplate: see the discarded repetitions below.
+
+| Requirement | Ceiling | Measured (worst of the runs below) | Headroom |
+|---|---|---|---|
+| **NFR-PERF-040**, empty library index | 200 ms | **229 µs** | ~99.9% |
+| **NFR-PERF-040**, 10 000-entry index, 48 kHz / 512 | 200 ms | **181.2 ms** | 9.4% |
+| **NFR-PERF-040**, 10 000-entry index, 192 kHz / 4096 | 200 ms | **187.5 ms** | **6.2%** |
+| **NFR-PERF-050**, ~50 MB model from a real path | 500 ms | **152.5 ms** | 69.5% |
+| **NFR-PERF-050**, ~50 MB payload already in memory | 500 ms | **129.6 ms** | 74.1% |
+| **NFR-PERF-010**, schedule's own worst block (estimator) | 25% of one core | **14.56%** | 41.8% |
+| **NFR-PERF-010**, raw p99.9 over quotable repetitions | 25% of one core | **16.39%** | 34.4% |
+
+NFR-PERF-040: 5 runs × 20 repetitions per arm. NFR-PERF-050: 5 runs. NFR-PERF-010: 3 runs × 5
+repetitions, all 15 reported individually by the harness.
+
+**Three things these numbers say that the pass/fail does not.**
+
+*NFR-PERF-040's margin is not Namir's.* The harness reports the create and activate halves
+separately, and `activate` — constructing the entire six-stage chain — is **6 µs** on the empty arm
+and **147 µs** at 192 kHz with 4096-frame blocks. Everything else in the 187.5 ms is parsing
+`library-index.json`. The idle re-run *tightened* the medians (161–165 ms) and *worsened* the tail,
+leaving 6.2% headroom on the worst arm, which strengthens **R-18** rather than softening it: a user
+whose library passes roughly 12 000 entries breaches a Must requirement with no code change at all.
+
+*NFR-PERF-050's file arm costs about 23 ms over its byte arm* on a 49.6 MiB model (152.5 vs
+129.6 ms), so even reading 50 MB from a warm page cache, **~85% of what a user waits for is parse and
+prepare, not I/O**. D-2.5's page-cache condition is stated by the harness at runtime: these are warm
+reads, so that delta is a floor on cold-read cost.
+
+*D-2.4's validity check earned its place on this very run.* One NFR-PERF-010 repetition set
+discarded **2 of its 5** repetitions — p99.9 of 24.35% and 24.54%, one with a `max` of **76.09%** —
+while the contamination-immune estimator across those same repetitions read 14.38%, moving by
+hundredths of a point. An idle machine is not a quiet one, the difference is measurable, and the
+estimator is the figure to trust when they disagree. That is the argument for asserting on it, made
+by the instrument rather than about it.
 
 ---
 
