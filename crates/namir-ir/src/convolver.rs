@@ -445,14 +445,32 @@ fn fft_stage_process_sample(
     stage
         .r2c
         .process(&mut state.time_scratch, &mut state.freq_scratch)
-        .expect("r2c");
+        .expect("r2c: buffer lengths are this stage's own, fixed at construction");
     for (f, h) in state.freq_scratch.iter_mut().zip(stage.h_spectrum.iter()) {
         *f *= h;
     }
-    stage
+    // **`c2r` fails on a *value*, not only on a length — and this is the audio thread.**
+    // `realfft`'s inverse transform rejects a spectrum whose first and last bins carry a non-zero
+    // imaginary part, which is exactly what a single non-finite input sample produces: one NaN in
+    // `in_buf` makes every bin of `freq_scratch` NaN, `NaN != 0.0` holds, and the transform
+    // returns `Err`. This used to be `.expect("c2r")`, so a NaN reaching an IR-loaded chain
+    // panicked inside `Stage::process` — D-16.3's no-panic-on-the-RT-path rule, and FR-CHAIN-080's
+    // "replace the affected block with silence, set a fault indicator, and continue processing
+    // subsequent blocks", both broken by the same line. Found at M14 by FR-CHAIN-080's own
+    // `Verify:` method ("inject a NaN into each stage's state"), which nothing had ever run.
+    //
+    // Degrading to silence is the correct handling and not merely the convenient one: this
+    // trigger's overlap-add contribution is unrecoverable either way, and the caller does not lose
+    // the fault — `namir-engine`'s Ir stage blends its own captured dry signal back in, so the NaN
+    // still reaches `Chain::process`'s scan, which silences the block and increments the fault
+    // counter as the requirement says. What is removed here is only the crash.
+    if stage
         .c2r
         .process(&mut state.freq_scratch, &mut state.time_scratch)
-        .expect("c2r");
+        .is_err()
+    {
+        state.time_scratch.fill(0.0);
+    }
 
     let start_abs: i64 = t_abs as i64 + 1 - stage.size as i64 + stage.offset as i64;
     let valid_len = stage.size + stage.actual_len - 1;
@@ -1353,6 +1371,53 @@ mod tests {
         let direct = direct_convolve(&h, &x);
         let err = rms_error_db(&direct, &y).unwrap();
         assert!(err < -100.0, "error too high: {err} dB");
+    }
+
+    /// **A non-finite input sample must not panic the convolver** (M14; D-16.3, and FR-CHAIN-080's
+    /// "continue processing subsequent blocks").
+    ///
+    /// One NaN in the stream makes every bin of that partition's spectrum NaN, and `realfft`'s
+    /// inverse transform *rejects* a spectrum whose first and last bins carry a non-zero imaginary
+    /// part — `NaN != 0.0`. Until M14 that `Err` was an `.expect("c2r")`, so a NaN reaching an
+    /// IR-loaded chain aborted the audio thread. Found by `namir-engine`'s FR-CHAIN-080 probe,
+    /// which was the first thing ever to inject one into a real stage's state.
+    ///
+    /// The block containing the NaN is not required to be clean — the caller's own fault handling
+    /// owns that (FR-CHAIN-080 replaces the whole block with silence). What is required is that
+    /// this returns at all, and keeps returning: the run continues to the end and produces finite,
+    /// non-silent output once the poisoned windows have cycled out of the partition buffers.
+    #[test]
+    fn a_non_finite_input_sample_does_not_panic_the_convolver() {
+        let h = decaying_noise(1_024, 9, 128.0);
+        let bytes = write_mono_wav(48_000, &h);
+        let engine_rate = SampleRate::new(48_000).unwrap();
+        let prepared = PreparedIr::from_wav_bytes(&bytes, engine_rate, 64).unwrap();
+
+        let mut x = white_noise(16_384, 13);
+        x[1_000] = f32::NAN;
+        x[1_001] = f32::INFINITY;
+
+        let mut y = vec![0f32; x.len()];
+        let mut state = prepared.new_state();
+        for chunk_start in (0..x.len()).step_by(64) {
+            let end = (chunk_start + 64).min(x.len());
+            let mut out_slice = &mut y[chunk_start..end];
+            prepared.process_block(
+                &mut state,
+                &x[chunk_start..end],
+                std::slice::from_mut(&mut out_slice),
+            );
+        }
+
+        let tail = &y[x.len() - 4_096..];
+        assert!(
+            tail.iter().all(|s| s.is_finite()),
+            "the convolver never recovered from a non-finite input sample"
+        );
+        assert!(
+            tail.iter().fold(0f32, |m, s| m.max(s.abs())) > 1e-4,
+            "the convolver went permanently silent after a non-finite input sample"
+        );
     }
 
     #[test]

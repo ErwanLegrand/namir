@@ -571,13 +571,15 @@ mod tests {
     }
 
     /// **FR-IR-060: "the same no-glitch, crossfaded changeover requirement as FR-NAM-070."** Same
-    /// test body and same self-calibrating threshold, against the Ir stage.
-    // trace-partial: FR-IR-060
-    // uncovered: FR-IR-060 — the no-dropout half of the FR-NAM-070 method this requirement
-    // uncovered: imports is absent: the test asserts the discontinuity bound and the retire ring
-    // uncovered: only, and a changeover that faded both slots to silence and back would lower
-    // uncovered: that bound and pass; rt_stress.rs's dropout assertion never has an IR handover
-    // uncovered: in flight, submitting Target::Nam alone; closes M8
+    /// test body, same self-calibrating threshold and — since M14 — the same *two* assertions,
+    /// against the Ir stage.
+    ///
+    /// The no-dropout half used to be missing here while its Nam sibling had it, and its absence
+    /// was not cosmetic: a changeover that faded both slots to silence and back would *lower* the
+    /// discontinuity figure this test bounds and pass more comfortably the worse it got. Nothing
+    /// else covered it either — `rt_stress.rs`'s own dropout assertion submits `Target::Nam` alone,
+    /// so it never has an IR handover in flight.
+    // trace: FR-IR-060
     #[test]
     fn fr_ir_060_swapping_irs_under_a_sine_has_no_discontinuity_or_dropout() {
         const DISCONTINUITY_FACTOR: f32 = 3.0;
@@ -613,6 +615,19 @@ mod tests {
             "IR swap introduced a discontinuity of {swap_jump} against a no-swap baseline of \
              {baseline_jump} (allowed {DISCONTINUITY_FACTOR}x)"
         );
+
+        // No dropout, the other half of FR-NAM-070's method that this requirement imports: the
+        // outgoing IR keeps convolving until the incoming one has faded in, so nothing across the
+        // changeover may go silent. Identical window and floor to the Nam test above.
+        let post = &swapped[SWAP_AT * BLOCK..];
+        for (i, window) in post.chunks(32).enumerate() {
+            let peak = window.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            assert!(
+                peak > 1e-4,
+                "window {i} after the IR swap went silent (peak {peak}): a dropout"
+            );
+        }
+
         assert!(
             worker.retire.try_pop().is_some(),
             "the outgoing IR slot should have arrived on the return ring"
