@@ -389,11 +389,31 @@ codesign_payloads() {
 # `BundleIsRelocatable` false on every bundle in every component. Left true (the default),
 # `installer` looks for an existing copy of the bundle anywhere on the volume via Spotlight and
 # installs *over that* instead of at the stated install-location -- so a developer with a
-# `Namir.clap` in a scratch directory gets the release written into their scratch directory and
-# nothing at the CLAP path at all. This is the single best-known `pkgbuild` trap and the reason
+# `Namir.app` in a scratch directory gets the release written into their scratch directory and
+# nothing at `/Applications` at all. This is the single best-known `pkgbuild` trap and the reason
 # `--analyze` exists.
-component_pkg_with_bundles() {
-	local root="$1" identifier="$2" install_location="$3" out="$4"
+#
+# **`pkgbuild` does not consider `Namir.clap` a bundle, and that was found by running it** (the
+# first tagged pipeline run, v0.1.0-rc1, 2026-08-12): `--analyze` over the plugin root wrote a
+# component plist with **no entries at all**, even though `Namir.clap/Contents/{Info.plist, PkgInfo,
+# MacOS/<dylib>}` is a bundle by structure and is exactly what CLAP's `entry.h` requires. The
+# reason is that `--analyze` recognises bundles by *extension* against a set macOS knows -- `.app`,
+# `.framework`, `.bundle`, `.plugin`, `.kext` and so on -- and `.clap` is not on it. The extension
+# rule is the standard explanation; the empty plist is the observation.
+#
+# **The consequence is the useful part, and it cuts the other way from how it first reads.** If
+# `pkgbuild` never records the `.clap` as a bundle component, `installer` has no bundle to
+# Spotlight-relocate, so the trap this whole function exists to disarm **cannot occur for the
+# plugin payload**. The guard is not being weakened here; it is being applied where it can bite.
+# `Namir.app` *is* a recognised bundle, its `--analyze` does produce an entry, and
+# `BundleIsRelocatable false` on that entry is doing real work -- which is why `app` passes
+# `required` below and `plugin` passes `none`.
+#
+# The `none` case therefore builds with no `--component-plist` at all, which is what the documents
+# root has always done for the same reason: a component with no bundles has nothing for a component
+# plist to say.
+component_pkg() {
+	local root="$1" identifier="$2" install_location="$3" out="$4" bundles="$5"
 	local plist="${WORK_DIR}/$(basename "$out").component.plist"
 
 	pkgbuild --analyze --root "$root" "$plist"
@@ -403,7 +423,22 @@ component_pkg_with_bundles() {
 		/usr/libexec/PlistBuddy -c "Set :${i}:BundleIsRelocatable false" "$plist"
 		i=$((i + 1))
 	done
-	[ "$i" -gt 0 ] || die "pkgbuild --analyze found no bundle under ${root}"
+
+	if [ "$i" -eq 0 ]; then
+		[ "$bundles" = "none" ] || die "pkgbuild --analyze found no bundle under ${root}, and this\
+ component requires one -- a bundle that stopped being recognised is a silent relocation hazard"
+		log "no bundle component under ${root} (expected -- see the .clap note above)"
+		pkgbuild \
+			--root "$root" \
+			--identifier "$identifier" \
+			--version "$VERSION" \
+			--install-location "$install_location" \
+			"$out"
+		return 0
+	fi
+
+	[ "$bundles" != "none" ] || die "pkgbuild --analyze found ${i} bundle(s) under ${root}, which\
+ this component did not expect -- re-check the note above before relaxing this"
 
 	pkgbuild \
 		--root "$root" \
@@ -417,13 +452,13 @@ component_pkg_with_bundles() {
 build_component_pkgs() {
 	step "building component packages"
 
-	component_pkg_with_bundles \
+	component_pkg \
 		"${WORK_DIR}/roots/plugin" "$PKG_ID_PLUGIN" "$INSTALL_LOCATION_PLUGIN" \
-		"${WORK_DIR}/pkgs/plugin.pkg"
+		"${WORK_DIR}/pkgs/plugin.pkg" none
 
-	component_pkg_with_bundles \
+	component_pkg \
 		"${WORK_DIR}/roots/app" "$PKG_ID_APP" "$INSTALL_LOCATION_APP" \
-		"${WORK_DIR}/pkgs/app.pkg"
+		"${WORK_DIR}/pkgs/app.pkg" required
 
 	# No component plist for the documents: there is no bundle in that root, so `--analyze` would
 	# produce an empty array and `BundleIsRelocatable` has nothing to apply to.
