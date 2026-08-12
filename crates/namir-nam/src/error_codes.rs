@@ -12,11 +12,11 @@
 use namir_core::{ErrorCode, Severity};
 
 /// The bytes handed to `NamFile::parse` are not valid JSON at all (FR-NAM-040: "malformed").
-pub const MALFORMED_JSON: ErrorCode = ErrorCode {
-    id: "nam.load.malformed_json",
-    severity: Severity::Error,
-    message_template: "The model file is not valid JSON.",
-};
+pub const MALFORMED_JSON: ErrorCode = ErrorCode::new(
+    "nam.load.malformed_json",
+    Severity::Error,
+    "The model file is not valid JSON.",
+);
 
 /// `architecture` is neither `"WaveNet"` nor `"LSTM"` (FR-NAM-040: "of an unknown architecture")
 /// — the two names `model::load`'s dispatch and each architecture module's own `from_file` check
@@ -25,91 +25,91 @@ pub const MALFORMED_JSON: ErrorCode = ErrorCode {
 /// expected name (e.g. an `LstmFile` sniffed as `"LSTM"` but whose `config` was somehow parsed
 /// with `architecture: "WaveNet"` still set) — one catalogue entry for "this isn't the
 /// architecture I was asked to load," not one per architecture module.
-pub const UNSUPPORTED_ARCHITECTURE: ErrorCode = ErrorCode {
-    id: "nam.load.unsupported_architecture",
-    severity: Severity::Error,
-    message_template: "This model's architecture is not supported by this build of Namir.",
-};
+pub const UNSUPPORTED_ARCHITECTURE: ErrorCode = ErrorCode::new(
+    "nam.load.unsupported_architecture",
+    Severity::Error,
+    "This model's architecture is not supported by this build of Namir.",
+);
 
 /// `config.head` is present (non-null). Ordinary exported WaveNet models leave it null; a
 /// populated post-stack head config is a real NAM feature this crate does not implement, ported
 /// as a scope limit directly from the S-1 spike (see `spikes/s1-nam-inference/src/lib.rs`).
-pub const UNSUPPORTED_HEAD_CONFIG: ErrorCode = ErrorCode {
-    id: "nam.load.unsupported_head_config",
-    severity: Severity::Error,
-    message_template: "This model uses a post-stack head configuration, which is not supported.",
-};
+pub const UNSUPPORTED_HEAD_CONFIG: ErrorCode = ErrorCode::new(
+    "nam.load.unsupported_head_config",
+    Severity::Error,
+    "This model uses a post-stack head configuration, which is not supported.",
+);
 
 /// A layer array's `activation` string is not one of `Tanh`, `ReLU`, `Sigmoid`, `Identity`.
-pub const UNSUPPORTED_ACTIVATION: ErrorCode = ErrorCode {
-    id: "nam.load.unsupported_activation",
-    severity: Severity::Error,
-    message_template: "This model uses an activation function that is not supported.",
-};
+pub const UNSUPPORTED_ACTIVATION: ErrorCode = ErrorCode::new(
+    "nam.load.unsupported_activation",
+    Severity::Error,
+    "This model uses an activation function that is not supported.",
+);
 
 /// `config.layers` is empty — there is no WaveNet stack to build at all.
-pub const EMPTY_LAYER_ARRAYS: ErrorCode = ErrorCode {
-    id: "nam.load.empty_layer_arrays",
-    severity: Severity::Error,
-    message_template: "This model declares no WaveNet layer arrays.",
-};
+pub const EMPTY_LAYER_ARRAYS: ErrorCode = ErrorCode::new(
+    "nam.load.empty_layer_arrays",
+    Severity::Error,
+    "This model declares no WaveNet layer arrays.",
+);
 
 /// A layer array's `condition_size != 1`. This implementation always feeds the raw mono input as
 /// the sole conditioning signal (matching every real WaveNet export); a different declared
 /// condition size isn't representable by this code and must be rejected cleanly rather than
 /// silently misinterpreted (e.g. by reading past the intended condition data).
-pub const UNSUPPORTED_CONDITION_SIZE: ErrorCode = ErrorCode {
-    id: "nam.load.unsupported_condition_size",
-    severity: Severity::Error,
-    message_template: "This model's conditioning signal size is not supported.",
-};
+pub const UNSUPPORTED_CONDITION_SIZE: ErrorCode = ErrorCode::new(
+    "nam.load.unsupported_condition_size",
+    Severity::Error,
+    "This model's conditioning signal size is not supported.",
+);
 
 /// The flat `weights` array's length doesn't match what the declared config implies (FR-NAM-040:
 /// "whose declared configuration is inconsistent with its weight count"), accounting for the
 /// trailing `head_scale` float that may or may not be present as an extra element.
-pub const WEIGHT_COUNT_MISMATCH: ErrorCode = ErrorCode {
-    id: "nam.load.weight_count_mismatch",
-    severity: Severity::Error,
-    message_template: "This model's weight count does not match its declared configuration.",
-};
+pub const WEIGHT_COUNT_MISMATCH: ErrorCode = ErrorCode::new(
+    "nam.load.weight_count_mismatch",
+    Severity::Error,
+    "This model's weight count does not match its declared configuration.",
+);
 
 /// Adjacent layer arrays' `head_size`/`channels`/`input_size` don't chain correctly (see the S-1
 /// spike's confirmed reading of `NeuralAmpModelerCore`'s `WaveNet`/`LayerArray` construction).
-pub const LAYER_ARRAY_CHAINING_MISMATCH: ErrorCode = ErrorCode {
-    id: "nam.load.layer_array_chaining_mismatch",
-    severity: Severity::Error,
-    message_template: "This model's layer arrays do not chain together correctly.",
-};
+pub const LAYER_ARRAY_CHAINING_MISMATCH: ErrorCode = ErrorCode::new(
+    "nam.load.layer_array_chaining_mismatch",
+    Severity::Error,
+    "This model's layer arrays do not chain together correctly.",
+);
 
 /// A declared dimension (channels, head_size, input_size, condition_size, kernel_size,
 /// dilations-per-array, layer array count, or total weight count) exceeds this crate's documented
 /// ceiling (NFR-SEC-020). Checked *before* any arithmetic or allocation is derived from the
 /// dimension, so a hostile file that declares e.g. `channels: 4_000_000_000` is rejected instantly
 /// instead of causing a multi-gigabyte or overflowing allocation attempt.
-pub const DIMENSION_LIMIT_EXCEEDED: ErrorCode = ErrorCode {
-    id: "nam.load.dimension_limit_exceeded",
-    severity: Severity::Error,
-    message_template: "This model declares a dimension larger than Namir's supported limit.",
-};
+pub const DIMENSION_LIMIT_EXCEEDED: ErrorCode = ErrorCode::new(
+    "nam.load.dimension_limit_exceeded",
+    Severity::Error,
+    "This model declares a dimension larger than Namir's supported limit.",
+);
 
 /// `sample_rate` is present but zero. Distinct from `WEIGHT_COUNT_MISMATCH`: this is a
 /// self-contained field-level problem, not a cross-field consistency problem.
-pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode {
-    id: "nam.load.invalid_sample_rate",
-    severity: Severity::Error,
-    message_template: "This model declares a sample rate of 0 Hz, which is not valid.",
-};
+pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode::new(
+    "nam.load.invalid_sample_rate",
+    Severity::Error,
+    "This model declares a sample rate of 0 Hz, which is not valid.",
+);
 
 /// An LSTM model's `input_size`, `in_channels`, or `out_channels` is not `1` — this
 /// implementation always feeds the raw mono signal as the sole input and produces a single mono
 /// output (matching every real non-parametric LSTM export), mirroring `UNSUPPORTED_CONDITION_SIZE`
 /// for WaveNet: a different declared width isn't representable by this code and must be rejected
 /// cleanly rather than silently misinterpreted (e.g. by reading past the intended input width).
-pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode {
-    id: "nam.load.unsupported_lstm_channels",
-    severity: Severity::Error,
-    message_template: "This LSTM model's input/output channel configuration is not supported.",
-};
+pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode::new(
+    "nam.load.unsupported_lstm_channels",
+    Severity::Error,
+    "This LSTM model's input/output channel configuration is not supported.",
+);
 
 /// FR-NAM-140: the file is well-formed and its `architecture` is supported, but its `config` uses
 /// a feature this build does not implement (D-9.12's core-A2 scope boundary): `condition_dsp`,
@@ -120,11 +120,11 @@ pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode {
 /// construction**: reaching this code means `serde` already accepted the document as a `NamFile`,
 /// so "not valid JSON" was never a true statement about it. This is FR-NAM-140's *configuration*
 /// clause; `UNSUPPORTED_ARCHITECTURE` above remains its *architecture* clause.
-pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode {
-    id: "nam.load.unsupported_configuration",
-    severity: Severity::Error,
-    message_template: "This model uses a configuration option that this build of Namir does not support.",
-};
+pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode::new(
+    "nam.load.unsupported_configuration",
+    Severity::Error,
+    "This model uses a configuration option that this build of Namir does not support.",
+);
 
 /// The file is well-formed and every feature it uses is one this build supports, but its declared
 /// configuration contradicts itself: both or neither of `kernel_size`/`kernel_sizes` present; a
@@ -134,11 +134,11 @@ pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode {
 /// file that is simply self-contradictory, not one that names a real, unimplemented feature. Not
 /// required by FR-NAM-140's own text — added for message truthfulness, recorded here rather than
 /// left implicit so a reviewer doesn't have to rediscover the reasoning.
-pub const INCONSISTENT_CONFIGURATION: ErrorCode = ErrorCode {
-    id: "nam.load.inconsistent_configuration",
-    severity: Severity::Error,
-    message_template: "This model's declared configuration is internally inconsistent.",
-};
+pub const INCONSISTENT_CONFIGURATION: ErrorCode = ErrorCode::new(
+    "nam.load.inconsistent_configuration",
+    Severity::Error,
+    "This model's declared configuration is internally inconsistent.",
+);
 
 /// Carries a `namir_core::ErrorCode` (D-16.1) plus a `detail` string naming the specific reason
 /// (FR-NAM-040 requires the rejection message to name "the specific reason"). This crate only

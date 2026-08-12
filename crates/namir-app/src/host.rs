@@ -50,37 +50,44 @@ use crate::worker::{AppCommand, AppEvent, LoadOutcomeSummary, WorkerHandle};
 mod local_error_codes {
     use namir_core::{ErrorCode, Severity};
 
-    pub const LOAD_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.load_failed",
-        severity: Severity::Error,
-        message_template: "Could not load {source}: {reason}.",
-    };
-    pub const LOAD_NOT_DELIVERED: ErrorCode = ErrorCode {
-        id: "app.host.load_not_delivered",
-        severity: Severity::Error,
-        message_template: "{source} was prepared but could not be handed to the audio engine in \
+    pub const LOAD_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.load_failed",
+        Severity::Error,
+        "Could not load {source}: {reason}.",
+    );
+    pub const LOAD_NOT_DELIVERED: ErrorCode = ErrorCode::new(
+        "app.host.load_not_delivered",
+        Severity::Error,
+        "{source} was prepared but could not be handed to the audio engine in \
                             time.",
-    };
-    pub const SCAN_SAVE_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.scan_save_failed",
-        severity: Severity::Warning,
-        message_template: "The library scan finished but its results could not be saved: {reason}.",
-    };
-    pub const STATE_SAVE_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.state_save_failed",
-        severity: Severity::Error,
-        message_template: "Could not save {path}: {reason}.",
-    };
-    pub const STATE_LOAD_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.state_load_failed",
-        severity: Severity::Error,
-        message_template: "Could not load {path}: {reason}.",
-    };
-    pub const REFERENCE_MISSING: ErrorCode = ErrorCode {
-        id: "app.host.reference_missing",
-        severity: Severity::Warning,
-        message_template: "{name} could not be found and was left unloaded.",
-    };
+    );
+    pub const SCAN_SAVE_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.scan_save_failed",
+        Severity::Warning,
+        "The library scan finished but its results could not be saved: {reason}.",
+    );
+    pub const STATE_SAVE_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.state_save_failed",
+        Severity::Error,
+        "Could not save {path}: {reason}.",
+    );
+    pub const STATE_LOAD_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.state_load_failed",
+        Severity::Error,
+        "Could not load {path}: {reason}.",
+    );
+    pub const REFERENCE_MISSING: ErrorCode = ErrorCode::new(
+        "app.host.reference_missing",
+        Severity::Warning,
+        "{name} could not be found and was left unloaded.",
+    );
+    /// M14: the id `AppHost::handle` used to build inline, in the middle of its `push_notice`
+    /// call, for each warning a finished library scan reports. It was a real, user-visible error
+    /// path whose code belonged to no catalogue and would have appeared in no enumeration of one —
+    /// FR-ERR-020's second conjunct, failing in the product rather than in theory. Moved here
+    /// unchanged: same id, same severity, same template.
+    pub const SCAN_WARNING: ErrorCode =
+        ErrorCode::new("app.host.scan_warning", Severity::Warning, "{detail}");
 
     /// FR-IO-070: which catalogue entry a [`crate::stream::Direction`]-tagged stream failure maps
     /// to. Both directions use `crate::error_codes::DEVICE_LOST` today (the input/output
@@ -231,14 +238,7 @@ impl AppHost {
             AppEvent::ScanFinished(outcome) => {
                 self.scan_progress = None;
                 for warning in outcome.warnings {
-                    self.push_notice(
-                        namir_core::ErrorCode {
-                            id: "app.host.scan_warning",
-                            severity: namir_core::Severity::Warning,
-                            message_template: "{detail}",
-                        },
-                        warning,
-                    );
+                    self.push_notice(local_error_codes::SCAN_WARNING, warning);
                 }
                 if let Some(reason) = outcome.save_error {
                     self.push_notice(local_error_codes::SCAN_SAVE_FAILED, reason);
