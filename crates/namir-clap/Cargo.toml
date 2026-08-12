@@ -4,6 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 # Not `[lints] workspace = true`, deliberately -- same shape as `namir-platform`'s own
 # `Cargo.toml` (see that file's comment for the full argument). The workspace's
@@ -26,14 +28,14 @@ missing_docs = "warn"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-namir-core = { path = "../namir-core" }
-namir-params = { path = "../namir-params" }
-namir-state = { path = "../namir-state" }
-namir-library = { path = "../namir-library" }
-namir-platform = { path = "../namir-platform" }
-namir-engine = { path = "../namir-engine" }
-namir-worker = { path = "../namir-worker" }
-namir-ui = { path = "../namir-ui" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
+namir-params = { path = "../namir-params", version = "0.1.0" }
+namir-state = { path = "../namir-state", version = "0.1.0" }
+namir-library = { path = "../namir-library", version = "0.1.0" }
+namir-platform = { path = "../namir-platform", version = "0.1.0" }
+namir-engine = { path = "../namir-engine", version = "0.1.0" }
+namir-worker = { path = "../namir-worker", version = "0.1.0" }
+namir-ui = { path = "../namir-ui", version = "0.1.0" }
 
 # D-14.2's decision, S-4-validated (`docs/02-architecture.md` §19: clap-validator 15/15, loads
 # and runs in Reaper, GUI extension confirmed). Exact versions pinned to what

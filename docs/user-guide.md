@@ -249,6 +249,22 @@ Recorded here plainly rather than glossed over, since these are genuine, current
   currently the only way to run Namir. On macOS this is a sharper limitation than elsewhere,
   because the `.clap` bundle described above has to be assembled by hand; a build step that
   produces it automatically is planned but not yet written.
+- **The CLAP plugin has no Namir interface on macOS or Linux — only on Windows.** The plugin itself
+  works everywhere: it loads, processes audio, and responds to parameter changes and automation. But
+  its embedded editor is implemented for Windows only, so on macOS and Linux your host will show
+  **its own generic parameter panel** instead of Namir's screen — a list of sliders, with no brand
+  mark and no meters. That is the host's fallback, not a broken install, and it is why the
+  standalone application looks right on the same machine where the plugin does not: the standalone
+  opens its own window and does not use the plugin GUI mechanism at all. If you want Namir's
+  interface on macOS or Linux today, use the standalone. Whether this changes before 1.0 is an open
+  question rather than a settled "no".
+- **On Linux, Namir's window needs X11 — a Wayland-only session will not open one.** Both the
+  standalone and the plugin's interface draw through a windowing library whose only Unix backend is
+  X11, so on a Wayland desktop they rely on XWayland, which most distributions install by default.
+  If XWayland is absent, the standalone starts audio and then fails to open its window. There is no
+  workaround from Namir's side today; installing your distribution's XWayland package is the fix.
+  A machine with no display at all — a headless build server, or a terminal-only session — cannot
+  run either product for the same reason.
 
 An earlier revision of this guide told macOS users to rename `libnamir_clap.dylib` to `Namir.clap`,
 which does not work — that instruction was wrong and has been corrected above.

@@ -4,12 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # R-4: vectorizes the WaveNet's AXPY-shaped inner loops (see wavenet.rs's Decision/Rationale
@@ -18,7 +20,7 @@ serde_json = "1"
 wide = "1.6"
 
 [dev-dependencies]
-namir-fixtures = { path = "../namir-fixtures" }
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
 # M10: reads the committed golden-reference WAV pairs (`tests/golden/`) FR-NAM-030's real-C++-
 # reference comparison needs -- see `tests/golden_reference.rs`. Pinned to the same "3.5" every
 # other hound consumer in this workspace uses (namir-fixtures, namir-ir, namir-worker), so there

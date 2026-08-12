@@ -50,6 +50,9 @@
 //! - [`worker`] — the dedicated background thread every blocking operation (load, scan, save) runs
 //!   on, so the UI thread and the audio thread are never blocked by one.
 //! - [`stream`] — builds and owns the real `cpal` streams.
+//! - [`startup_probe`] — NFR-PERF-030's measurement seam: one environment variable that makes
+//!   [`app::run`] mark the instant it becomes audible and then exit instead of opening the window,
+//!   so `benches/startup_to_audible.rs` can time a real launch. Inert in every ordinary launch.
 //! - [`app`] — top-level wiring: `main`'s actual body, factored out so it is unit-testable without
 //!   a real window.
 
@@ -64,6 +67,7 @@ pub mod latency;
 #[cfg(test)]
 mod rt_harness;
 pub mod settings;
+pub mod startup_probe;
 pub mod stream;
 pub mod worker;
 pub mod xrun;

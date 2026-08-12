@@ -180,7 +180,7 @@ argument; see `namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for th
 applies a package's `[lints]` table to bench and integration-test targets too, so a `namir-clap`
 bench *could* carry `#![allow(unsafe_code)]` — it may not, and nothing mechanical would catch it:
 `xtask`'s subcommands are `layering`, `params-lock`, `attribution`, `traceability`, `preset`,
-`nam-parity` (added M10) and `identity` (added M12),
+`nam-parity` (added M10), `identity` (added M12) and `bundle` (added M13),
 none of which reads for `unsafe`. When a harness looks like it needs `unsafe`, the answer this
 project has reached every time is to take the capability from a dependency whose own `unsafe` is
 already audited, or to move the tested logic to a seam that takes plain types: `assert_no_alloc`

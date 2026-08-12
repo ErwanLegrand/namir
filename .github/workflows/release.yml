@@ -1,0 +1,414 @@
+# The release pipeline: `docs/02-architecture.md` **D-18.3**'s fixed order -- **build -> `xtask
+# bundle` -> per-OS package -> GitHub Release** -- tag-triggered, on all three runners. Everything
+# this file calls already exists and was written by the lane that owns that platform; each of those
+# lanes wrote down the contract this workflow implements, and where the two could disagree, theirs
+# wins:
+#
+#   * `packaging/windows/README.md` -- "What the release workflow will do", a seven-step list, plus
+#     the `Compress-Archive` block that is FR-PKG-050's ZIP.
+#   * `packaging/macos/README.md`   -- how `make_installer.sh` is invoked and the signing variables
+#     it reads (all optional; an absent secret is the unsigned path, not a failure).
+#   * `packaging/linux/README.md`   -- the deterministic `tar` invocation, and what `install.sh`
+#     expects to find beside it.
+#
+# **Requirements this file carries.** FR-PKG-010 (an installable distribution per platform, built by
+# CI from a tagged source tree), FR-PKG-050 (a plain archive alongside each installer) and
+# NFR-SEC-040's published-hashes half. FR-PKG-020 and FR-PKG-040 are `xtask bundle`'s, asserted
+# offline in `xtask/src/bundle.rs` and merely *used* here; FR-PKG-030 is `Verify: M` and closes
+# through `docs/manual-tests/`.
+#
+# **This file carries no `# trace:` annotation, deliberately.** `xtask traceability` scans a
+# hard-coded list of files (`xtask/src/main.rs`) that contains `ci.yml` and `fuzz.yml` and not this
+# one, and `docs/03-implementation-roadmap.md` §15 item 10 was resolved at M13's start by leaving
+# that list alone: FR-PKG-010 closes through an **in-repo assertion** instead, `xtask/src/
+# release_workflow.rs`, which parses this file and checks the three clauses of the requirement's own
+# `Verify:` method separately. A tag here would resolve nothing and assert nothing a reader could
+# check; that test can be read, and it runs on every pull request rather than only on a tag.
+#
+# **Nothing in this file has ever been executed** -- no tag has been pushed, no runner has run these
+# steps, and the three packaging entry points it calls (`iscc`, `make_installer.sh`, the `tar`
+# block) have not been run anywhere either, as each packaging README says of itself. Treat the first
+# tagged run as the test, and expect it to find something.
+#
+# **NFR-SEC-040, honestly split.** The requirement has two halves and this pipeline meets one of
+# them. *Published hashes:* met -- every artifact is published with a `.sha256` beside it, produced
+# on the runner that produced the artifact. *Bit-for-bit reproducibility:* **not** met, and not
+# claimed. `crates/namir-app/Cargo.toml:62` takes `cpal` from a git fork (D-13.4, R-10), so the
+# build's inputs are not a set of immutable registry tarballs; the toolchain is `@stable`, which is
+# whatever stable was on the day the tag was pushed; and no runner image is pinned. The Linux
+# tarball is nevertheless assembled with deterministic `tar`/`gzip` flags and `SOURCE_DATE_EPOCH`
+# taken from the tagged commit, because a *packaging* step that adds fresh nondeterminism on top of
+# a non-reproducible build would be gratuitous. A hash a user can check is worth having even where
+# bit-for-bit reproducibility is not on offer, which is the roadmap's own framing (§20).
+#
+# **Risk R-11 -- the binaries are unsigned.** SmartScreen warns on every Windows release and Smart
+# App Control blocks outright; on macOS an unsigned, quarantined *plugin* fails to load in a DAW
+# with no user-visible override at all. The release notes this workflow writes say so, because a
+# user discovering it is worse. macOS signing turns on by adding secrets, with no change here.
+
+name: Release
+
+# FR-PKG-010's first clause: **a tag, and only a tag.** No `branches:`, and no `workflow_dispatch`
+# -- a manual dispatch would let a release be cut from an arbitrary ref, which is the thing "built
+# by CI from a tagged source tree" exists to rule out. `actions/checkout@v4` with no `ref:` input
+# checks out the pushed tag's own commit, so the tagged source tree is what every job builds.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Least privilege, as in `ci.yml`: the default for every job is read-only, and exactly one job --
+# `publish`, which creates the GitHub Release -- overrides it with `contents: write`. The three
+# build jobs cannot write to the repository even if a step in them tried to.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # Windows: Inno Setup installer + plain ZIP. `packaging/windows/README.md`'s seven steps, in
+  # order. Inno Setup 6 is preinstalled on `windows-latest`, so nothing provisions it; `rcedit` is
+  # not, which is the one toolchain this workflow installs (see that step's comment).
+  #
+  # Deliberately no `Swatinem/rust-cache` on any of the three build jobs, unlike `ci.yml`. A release
+  # artifact should be a function of the tagged source tree and the toolchain, not of what a
+  # previous run happened to leave in a cache; NFR-SEC-040 is already conceding enough (above)
+  # without adding a mutable, run-to-run input to the list. The cost is a cold build per release,
+  # which is minutes, once per tag.
+  # ---------------------------------------------------------------------------------------------
+  windows:
+    name: windows x86-64 distribution
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The tag is the release identity (`packaging/windows/README.md`, "Version metadata"): the
+      # workspace has no `[workspace.package] version`, so there is nothing to cross-check against
+      # and nothing to keep in sync. Two forms are needed. `AppVersion` is the tag without its `v`
+      # and may carry a prerelease suffix; `VersionInfoVersion` fills Win32's `VERSIONINFO`
+      # resource, which must be numeric `a.b.c.d`, so the suffix is dropped and the tuple padded.
+      - name: Derive the version from the tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${env:GITHUB_REF_NAME}"
+          if ($tag -notmatch '^v[0-9]') {
+            Write-Error "::error::tag '$tag' is not of the form v<major>.<minor>.<patch>[-suffix]"
+            exit 1
+          }
+          $version = $tag.Substring(1)
+          $numeric = ($version -split '[-+]')[0]
+          $parts = @($numeric -split '\.')
+          while ($parts.Count -lt 4) { $parts += '0' }
+          $info = ($parts[0..3] -join '.')
+          Write-Host "AppVersion=$version VersionInfoVersion=$info"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "info=$info" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
+
+      # FR-UI-110's executable icon. **`rcedit` is not preinstalled on `windows-latest`**, and this
+      # is the only toolchain this workflow installs. What it costs, stated rather than discovered:
+      #
+      #   * It is a third-party build input on the Windows release leg, from the Chocolatey
+      #     community repository. `deny.toml`'s `[sources]` policy governs cargo dependencies and
+      #     cannot see a CI-installed tool at all -- the same class of exposure as `ci.yml`'s
+      #     git-installed `clap-validator` and D-13.4's forked `cpal`, tracked by **R-10**.
+      #   * It is pinned **by version**, which is one level less direct than `clap-validator`'s
+      #     commit pin: what the version pins is a Chocolatey package whose own manifest carries the
+      #     upstream checksum, not the upstream binary itself. The stronger form -- download
+      #     `rcedit-x64.exe` from the pinned upstream release and verify a recorded SHA-256 -- is
+      #     available and is worth taking the moment somebody can record that hash from a machine
+      #     with network access. This one was written offline and would have had to invent it.
+      #   * Neither the package version's existence nor the shim's name has been verified from this
+      #     machine. If either is wrong the step fails loudly on the first tagged run, which is the
+      #     correct failure: the alternative is a release whose executable silently has no icon.
+      #   * ~30 s per release run, uncached.
+      #
+      # Why it is needed at all: **D-17.3** keeps icon embedding out of a build script in a shipped
+      # crate, so `cargo build` produces an icon-less `namir.exe` by design and the packaging
+      # pipeline is what embeds one. `images/namir.ico` is generated and freshness-gated by `xtask
+      # identity` in `ci.yml`, so the icon this step embeds is already checked to match the artwork.
+      - name: Install rcedit (pinned; the only toolchain this workflow provisions)
+        run: choco install rcedit --version=2.0.0 --yes --no-progress
+
+      # **Before `xtask bundle`, and that ordering is the point** (`packaging/windows/README.md`
+      # step 2): the staging tree, the installer payload and the ZIP then all carry the *same*
+      # binary, icon included. Embedding after bundling would ship an icon in neither.
+      - name: Embed the executable icon (FR-UI-110), before bundling
+        shell: pwsh
+        run: |
+          $rcedit = Get-Command rcedit -ErrorAction SilentlyContinue
+          if ($null -eq $rcedit) {
+            Write-Error '::error::rcedit is not on PATH after choco install rcedit'
+            exit 1
+          }
+          & $rcedit.Source target\release\namir.exe --set-icon images\namir.ico
+
+      # Stages `target\bundle\windows` and asserts what it staged (FR-PKG-020, FR-PKG-040). Every
+      # file the installer and the ZIP ship has been through this check; `namir.iss` reads that
+      # tree and nothing else.
+      - name: xtask bundle (stage and assert target\bundle\windows)
+        run: cargo run -p xtask -- bundle --target windows
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\iscc.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Error "::error::Inno Setup 6 was not found at $iscc (it is preinstalled on windows-latest)"
+            exit 1
+          }
+          & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" `
+                  "/DVersionInfoVersion=${{ steps.version.outputs.info }}" `
+                  packaging\windows\namir.iss
+
+      # FR-PKG-050's plain archive, verbatim from `packaging/windows/README.md`. The copy exists to
+      # give the archive a top-level folder named after the release rather than `windows` or six
+      # loose files at the archive root; the bytes are the staging tree's, unchanged, so the ZIP's
+      # contents are exactly the installer's.
+      - name: Build the plain ZIP (FR-PKG-050)
+        shell: pwsh
+        run: |
+          $Version = "${{ steps.version.outputs.version }}"
+          $Name  = "namir-$Version-windows-x86_64"
+          $Stage = "target\dist\$Name"
+          Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path target\dist | Out-Null
+          Copy-Item -Recurse "target\bundle\windows" $Stage
+          Compress-Archive -Path $Stage -DestinationPath "target\dist\$Name.zip" -Force
+
+      # NFR-SEC-040's published-hashes half. Written in `sha256sum`'s own two-space format so a
+      # Linux or macOS user can check a Windows artifact with `sha256sum -c` without reformatting.
+      - name: Publish SHA-256 hashes (NFR-SEC-040)
+        shell: pwsh
+        run: |
+          Get-ChildItem target\dist\* -Include *.exe,*.zip -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Out-File -FilePath "$($_.FullName).sha256" -Encoding ascii
+            Write-Host "$hash  $($_.Name)"
+          }
+
+      # `if-no-files-found: error` on every upload in this file: an empty artifact that publishes
+      # successfully is the one failure mode a release pipeline must not have.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: namir-windows-x86_64
+          if-no-files-found: error
+          path: |
+            target/dist/*.exe
+            target/dist/*.zip
+            target/dist/*.sha256
+
+  # ---------------------------------------------------------------------------------------------
+  # macOS: `.pkg` inside a `.dmg`, plus FR-PKG-050's `.zip`, all three produced by
+  # `packaging/macos/make_installer.sh`, which also writes each artifact's `.sha256` and verifies
+  # FR-PKG-040's three files *inside* the produced `.pkg`, `.dmg` and `.zip`.
+  #
+  # `macos-latest` is Apple Silicon, so this is the `aarch64-apple-darwin` artifact -- which is
+  # exactly the architecture the FRS's §1.4 table names for the macOS row, and which
+  # `xtask/src/bundle.rs`'s `LSMinimumSystemVersion = 11.0` is derived from.
+  # ---------------------------------------------------------------------------------------------
+  macos:
+    name: macos aarch64 distribution
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Derive the version from the tag
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            v[0-9]*) ;;
+            *) echo "::error::tag '$GITHUB_REF_NAME' is not of the form v<major>.<minor>.<patch>[-suffix]"; exit 1 ;;
+          esac
+          echo "NAMIR_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
+
+      # Stages `target/bundle/macos` and asserts it: the `.clap` **bundle directory** CLAP's
+      # `entry.h` requires, and `Namir.app` with the `NSMicrophoneUsageDescription` the standalone
+      # cannot open an input device without. `make_installer.sh` consumes exactly this tree and
+      # refuses one that predates the `Namir.app` layout rather than wrapping a bare Mach-O itself.
+      - name: xtask bundle (stage and assert target/bundle/macos)
+        run: cargo run -p xtask -- bundle --target macos
+
+      # Signing is conditional on a secret being present, per D-18.3 and the script's own design:
+      # every variable below is optional, an unset one takes the unsigned path, and the run goes
+      # down the identical sequence either way. So this step is written once and needs no `if:`.
+      #
+      # Two things a reader should not have to discover from a failed release. (1) The script's
+      # documented `NAMIR_NOTARY_PROFILE` is a `notarytool store-credentials` **keychain profile**,
+      # which a fresh runner does not have -- hence the Apple-ID trio here, which is the script's
+      # own documented alternative. (2) An identity *string* is not an identity: `codesign` needs
+      # the certificate present in a keychain on the runner, and importing one (a `.p12` secret plus
+      # `security create-keychain`/`import`) is a step this workflow does not have, because no
+      # signing identity exists yet (R-11). With the secrets unset -- today's state -- none of that
+      # matters and the artifacts are simply unsigned. Whoever adds the first identity adds the
+      # keychain-import step here at the same time; it is not an oversight, it is unbuilt.
+      - name: Package (.pkg inside .dmg, plus FR-PKG-050's .zip and NFR-SEC-040's hashes)
+        env:
+          NAMIR_CODESIGN_IDENTITY: ${{ secrets.NAMIR_CODESIGN_IDENTITY }}
+          NAMIR_INSTALLER_IDENTITY: ${{ secrets.NAMIR_INSTALLER_IDENTITY }}
+          NAMIR_NOTARY_APPLE_ID: ${{ secrets.NAMIR_NOTARY_APPLE_ID }}
+          NAMIR_NOTARY_TEAM_ID: ${{ secrets.NAMIR_NOTARY_TEAM_ID }}
+          NAMIR_NOTARY_PASSWORD: ${{ secrets.NAMIR_NOTARY_PASSWORD }}
+        run: bash packaging/macos/make_installer.sh --version "$NAMIR_VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: namir-macos-aarch64
+          if-no-files-found: error
+          path: |
+            target/packaging/macos/*.dmg
+            target/packaging/macos/*.pkg
+            target/packaging/macos/*.zip
+            target/packaging/macos/*.sha256
+
+  # ---------------------------------------------------------------------------------------------
+  # Linux: one `.tar.gz`, and it is *both* FR-PKG-010's installable distribution (it carries
+  # `install.sh`) and FR-PKG-050's plain archive. That is D-18.3's decision, not an omission --
+  # there is no distro package and no second artifact to invent here.
+  # ---------------------------------------------------------------------------------------------
+  linux:
+    name: linux x86-64 distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `cpal`'s ALSA backend (`alsa-sys`) needs real ALSA development headers at build time; see
+      # `ci.yml`'s identical step. The *installed* product needs only `libasound.so.2` at run time,
+      # which is what `packaging/linux/README.md` is at pains to distinguish.
+      - name: Install ALSA development headers (for cpal's alsa-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
+
+      - name: xtask bundle (stage and assert target/bundle/linux)
+        run: cargo run -p xtask -- bundle --target linux
+
+      # Verbatim from `packaging/linux/README.md`'s "Building the tarball" block, plus
+      # `SOURCE_DATE_EPOCH` from the tagged commit itself (that block says it "should be set from
+      # the tagged commit's date" and leaves the sourcing to whoever writes this file).
+      #
+      # The archive is assembled in its own directory rather than in the staging tree: `xtask
+      # bundle` clears and rebuilds `target/bundle/linux` on every run, so anything added there
+      # would be wiped by the next bundle and `bundle --check` would stop describing the tree it
+      # asserted.
+      - name: Build the tarball (FR-PKG-010 and FR-PKG-050 in one artifact) and its hash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCH="$(uname -m)"
+          PKG="namir-${VERSION}-linux-${ARCH}"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+
+          mkdir -p "target/package/${PKG}"
+          cp -R target/bundle/linux/. "target/package/${PKG}/"
+          cp packaging/linux/install.sh "target/package/${PKG}/install.sh"
+          cp packaging/linux/README.md  "target/package/${PKG}/INSTALL.md"
+          chmod 755 "target/package/${PKG}/install.sh" \
+                    "target/package/${PKG}/namir" \
+                    "target/package/${PKG}/Namir.clap"
+
+          tar --create \
+              --directory target/package \
+              --format=gnu \
+              --sort=name \
+              --owner=0 --group=0 --numeric-owner \
+              --mtime="@${SOURCE_DATE_EPOCH}" \
+              --file - "${PKG}" \
+            | gzip -9 -n > "target/package/${PKG}.tar.gz"
+
+          ( cd target/package && sha256sum "${PKG}.tar.gz" > "${PKG}.tar.gz.sha256" )
+          cat "target/package/${PKG}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: namir-linux-x86_64
+          if-no-files-found: error
+          path: |
+            target/package/*.tar.gz
+            target/package/*.tar.gz.sha256
+
+  # ---------------------------------------------------------------------------------------------
+  # The GitHub Release. FR-PKG-010's third clause -- "every published distribution is an artifact of
+  # that workflow rather than of a local build" -- is a property of *this* job's shape, so the shape
+  # is deliberate and `xtask/src/release_workflow.rs` asserts it:
+  #
+  #   * it `needs` all three build jobs, so nothing is published unless every platform built;
+  #   * it **checks out nothing**, so there is no source tree here to build from and no repository
+  #     file that could be published by accident;
+  #   * its only input is `actions/download-artifact@v4` with no `run-id`, `repository` or
+  #     `github-token` -- inputs that would let it pull artifacts from *another* run or repository.
+  #     Without them the action can only see artifacts this run produced;
+  #   * it runs no build or packaging command of its own; and
+  #   * every file it publishes comes from the download directory.
+  #
+  # `gh` rather than a third-party release action: it is preinstalled on every runner, it needs no
+  # new pinned supply-chain input on the one job that holds `contents: write`, and the token it uses
+  # is the workflow's own.
+  # ---------------------------------------------------------------------------------------------
+  publish:
+    name: GitHub Release
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download every platform job's artifacts (this run only)
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List what will be published
+        run: ls -l dist
+
+      - name: Create the GitHub Release from this run's artifacts only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no artifacts were downloaded -- nothing to publish"
+            exit 1
+          fi
+
+          # A tag carrying a prerelease suffix (v0.2.0-rc1) is published as a prerelease.
+          prerelease=()
+          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+
+          cat > release-notes.md <<'NOTES'
+          ## Namir
+
+          Each artifact is published with a `.sha256` file beside it. Verify before installing:
+
+              sha256sum -c namir-<version>-<platform>.<ext>.sha256
+
+          **These binaries are unsigned.** On Windows, SmartScreen warns on every download and Smart
+          App Control blocks the installer outright. On macOS, an unsigned plugin extracted from the
+          `.zip` is quarantined and a DAW will fail to load it with no user-visible override --
+          install from the `.pkg` inside the `.dmg`, which avoids quarantine. Signing identities are
+          not yet in place; this is a known limitation, not a defect in a particular download.
+
+          Hashes are published, but the build is **not** bit-for-bit reproducible: one dependency is
+          taken from a git fork and the toolchain is whatever `stable` was when the tag was pushed.
+          NOTES
+
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Namir $GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            "${prerelease[@]}" \
+            "${files[@]}"

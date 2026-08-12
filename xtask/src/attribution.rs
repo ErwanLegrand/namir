@@ -12,10 +12,10 @@
 //! this file does not claim to close that half.
 
 // trace-partial: NFR-LIC-030
-// uncovered: NFR-LIC-030 — the "produced by the build and shipped with the binaries" clause has
-// uncovered: no artifact of any kind: there is no release workflow, so THIRD-PARTY-NOTICES.md is
-// uncovered: generated and freshness-checked but packaged with nothing, and no check asserts its
-// uncovered: presence in a distributed artifact; closes M13
+// uncovered: NFR-LIC-030 — the "shipped with the binaries" clause is half closed as of M13's
+// uncovered: `xtask bundle`, which stages THIRD-PARTY-NOTICES.md beside the built artifacts and
+// uncovered: asserts it is there; but there is still no release workflow, no installer and no
+// uncovered: archive, so no check asserts its presence in a distributed artifact; closes M13
 
 use std::path::Path;
 
