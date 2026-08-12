@@ -1217,9 +1217,10 @@ mod tests {
     /// states it for**: its first sentence is about *gain-affecting* parameters, and
     /// `eq.low_shelf_gain_db`, `eq.mid_gain_db` and `eq.high_shelf_gain_db` measure 0.97, 0.99 and
     /// 1.01 times the bound. Its second sentence holds *frequency-affecting* parameters to "the
-    /// same audible standard" without restating the number, and the nine remaining rows — the four
-    /// frequencies, the Q, and the three bypass/defeat toggles, which are stepped rather than
-    /// continuous — exceed it, most of them mildly and **three of them materially**:
+    /// same audible standard" without restating the number, and of the nine remaining rows — the
+    /// five frequencies, the Q, and the three bypass/defeat toggles, which are stepped rather than
+    /// continuous — eight exceed it, most mildly and **three materially**, with the ninth
+    /// (`eq.low_shelf_freq_hz`, at 0.96) sitting just inside it:
     ///
     /// | Parameter | × the bound | transient peak ÷ settled range |
     /// |---|---|---|
@@ -1231,7 +1232,7 @@ mod tests {
     /// | `eq.mid_q` | 1.4 | 1.45 |
     /// | `eq.high_pass_enabled` | 1.2 | 1.01 |
     /// | `eq.low_pass_enabled` | 1.1 | 1.32 |
-    /// | `eq.low_shelf_freq_hz` | 1.0 | 1.00 |
+    /// | `eq.low_shelf_freq_hz` | 0.96 | 1.00 |
     ///
     /// The cause is D-9.9's mechanism rather than its duration: linear interpolation *of
     /// coefficients* does not produce an intermediate *response*, and between a 100 Hz shelf and
@@ -1250,7 +1251,7 @@ mod tests {
     /// annotated with what is known to be exceeded, and a regression past that still fails.
     // trace-partial: FR-EQ-030
     // uncovered: FR-EQ-030 — all twelve of EqStage's parameters are now driven and measured
-    // uncovered: against FR-PARAM-040's 20 ms-linear-ramp bound, and nine of them exceed it: the
+    // uncovered: against FR-PARAM-040's 20 ms-linear-ramp bound, and eight of them exceed it: the
     // uncovered: bypass/defeat toggles and the frequency-like parameters, whose smoothing
     // uncovered: FR-PARAM-040 states only as "the same audible standard". eq.enabled is 16.8x the
     // uncovered: bound with a transient 1.40x the settled range, eq.mid_freq_hz 3.4x, and
