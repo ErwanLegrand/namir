@@ -1829,7 +1829,7 @@ not adjudicate them further.
 | 5.12 CLAP | 11 | 2 | 9 | 0 |
 | 5.13 UI | 7 | 1 | 6 | 0 |
 | 5.14 ERR | 6 | 1 | 4 | 1 |
-| 5.15 PKG | 4 | 2 | 2 | 0 |
+| 5.15 PKG | 4 | 3 | 1 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
 | 6.2 PERF | 6 | 0 | 6 | 0 |
 | 6.3 PORT | 5 | 3 | 2 | 0 |
@@ -1838,7 +1838,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **36** | **93** | **1** |
+| **Total** | **130** | **37** | **92** | **1** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -4942,3 +4942,108 @@ that from the ledger. It is the strongest argument this milestone produced for t
 it. **FR-UI-020 stays `**UNRESOLVED**`**: it still has no document of its own, and writing one now
 to absorb this observation would be creating a document to move a number, which is the defaulting
 §15 exists to prevent. It belongs to whoever gives FR-UI-020 a script.
+
+### M13 addendum: the macOS pipeline runs, on a real Mac, and two of this milestone's own findings were wrong, 2026-08-12
+
+**Supersedes the close-out's "no macOS or Linux artifact has been built on its own platform"**, which
+was true of the session that wrote it. `packaging/macos/make_installer.sh` now runs end to end on
+Apple hardware and produces all three artifacts, and both cells of D-13.3's macOS row are confirmed
+by installing them.
+
+**What ran.** `cargo build --release --workspace` → `xtask bundle --target macos` →
+`bundle --target macos --check` → `make_installer.sh`. Output: `Namir-0.1.0-rc2.pkg`,
+`Namir-0.1.0-rc2-macos.dmg` and `Namir-0.1.0-rc2-macos.zip`, each with a SHA-256, and each opened
+again by the script's own `verify_outputs` — `pkgutil --expand-full`, `hdiutil attach`, `ditto -x` —
+which asserted the licence documents and the bundle-as-directory inside all three. Four steps that
+had never executed anywhere before this: `pkgbuild`, `productbuild`, `hdiutil` and that
+verification.
+
+**D-13.3's macOS row is confirmed in both cells, by installing rather than by reading.**
+`sudo installer -target /` placed the plugin at `/Library/Audio/Plug-Ins/CLAP/Namir.clap`, and
+`installer -target CurrentUserHomeDirectory` reported `Upgrading at base path /Users/<user>` and
+placed `~/Library/Audio/Plug-Ins/CLAP/Namir.clap` and `~/Applications/Namir.app`. So the
+`<domains enable_currentUserHome="true"/>` mechanism works — one `--install-location` per component,
+re-rooted by the chosen domain, which is the macOS counterpart of Inno's `{autocf}`. That mechanism
+was this script's largest unverified assumption, carrying "two separate product archives" as its
+fallback; the fallback is not needed.
+
+**The plugin loads in Reaper on macOS**, which is §20's "loads in a host on a machine where
+quarantine does not apply" — locally built and `installer`-placed files carry no quarantine, so the
+clause is met in the only way it can be until signing exists. What that run *also* found is that
+the plugin has **no editor at all** on macOS, which is §15 item 20 and GitHub issue #18, not a
+packaging defect.
+
+**Two findings this milestone made and then had to retract. Both are recorded because the retraction
+is the useful part.**
+
+- **"`pkgbuild` does not consider a `.clap` a bundle" was wrong.** The first CI run died at
+  `pkgbuild --analyze found no bundle under roots/plugin`, and the conclusion drawn — that `.clap`
+  is not one of the extensions macOS recognises, so no bundle component exists and relocation
+  cannot apply — was plausible, was written into the script as a `none`/`required` special case, and
+  was **disproved by the first run on a real Mac**. `--analyze` emits exactly one entry, carrying
+  `RootRelativeBundlePath = Namir.clap`. What it omits is `BundleIsRelocatable`, which it writes
+  only for bundle types that *can* relocate — and the loop probed for that key, so it read "a bundle
+  that cannot relocate" as "no bundle". The built `PackageInfo` settles it:
+  `<bundle id="org.legrand.namir" path="./Namir.clap"/>` present, `relocatable="false"`, empty
+  `<relocate/>`. Detection is now by `RootRelativeBundlePath`, both roots are handled identically,
+  and the special case is gone. **The artifact never changed** — `pkgbuild` defaults a `.clap` to
+  non-relocatable on its own — so what the fix bought is that the script *asserts* the property
+  instead of inheriting it. The installed-to-the-stated-path result above is the dynamic half of the
+  same evidence.
+- **A comment broke the build twice over, and neither fault was visible from reading the file.** The
+  heredoc that writes `distribution.xml` is unquoted, which is intended for `${...}` but also makes
+  backticks command substitutions: the comment above the `pkg-ref` block contained `` `#` `` and
+  `` `--synthesize` ``, so the shell ran them, producing `--synthesize: command not found` and
+  silently deleting both words from the generated XML. What was left then failed XML parsing for an
+  independent second reason — the same comment said `--package-path`, and XML forbids a double
+  hyphen inside a comment. `productbuild` rejected the whole document. The comment now warns the
+  next editor about both traps, since only running the script reveals either.
+
+**What this does not change.** FR-PKG-040 stays **Partial**: the macOS script does verify its three
+produced distributions, but a shell assertion inside a packaging script is not the in-process
+artifact a `Verify: S` traces, and the Windows and Linux distributions are still unverified for
+contents. No §14 cell moves on this run. And the honest limit of all of it: this is one Mac, Apple
+Silicon, unsigned, with no notarisation — R-11 is untouched, and `installer` has no uninstaller,
+which the macOS README should say and currently does not.
+
+### M13 addendum: the release pipeline runs green on all three platforms, 2026-08-12
+
+**This supersedes every "no tagged commit has produced anything from CI" statement above**, each of
+which was true when written. Tag **`v0.1.0-rc2`** ran `release.yml` to completion: all three build
+jobs and the publish job succeeded, and the prerelease carries twelve assets — an installer, a plain
+archive and a SHA-256 for each of the three platforms.
+
+| Platform | Installer | Plain archive (FR-PKG-050) |
+|---|---|---|
+| Windows | `namir-0.1.0-rc2-windows-x86_64-setup.exe` | `namir-0.1.0-rc2-windows-x86_64.zip` |
+| macOS | `Namir-0.1.0-rc2.pkg` and `Namir-0.1.0-rc2-macos.dmg` | `Namir-0.1.0-rc2-macos.zip` |
+| Linux | `namir-0.1.0-rc2-linux-x86_64.tar.gz` (both roles — see the close-out) | same file |
+
+**§20's first Acceptance clause is met**: "a tagged commit produces, from CI alone, an installer and
+a plain archive for each of the three platforms."
+
+**FR-PKG-010 is promoted from `trace-partial:` to a plain tag, and §14's 5.15 PKG row moves to
+`3 / 1 / 0`** (Total **37 / 92 / 1**). The promotion follows D-23.1's rule — close the gap the
+`uncovered:` field names, *then* promote — rather than deleting the field. That field named two
+things: that no tagged run had ever executed the workflow, and that none of the packaging entry
+points had run anywhere. Both are now false, and the concern the partial existed for — that a
+structurally valid workflow might not be a working one — is what the run retires. The tag's own
+comment records the promotion and its evidence, so a reader meets the reasoning at the artifact
+rather than only here. **FR-PKG-040 remains the row's one Partial**, unchanged: nothing in-process
+asserts the three licence documents *inside* a produced distribution.
+
+**The first run, and what it cost, because two runs is the whole story.** `v0.1.0-rc1` failed:
+Linux and Windows produced artifacts on the first attempt, macOS died in `pkgbuild`, and the publish
+job **skipped** — which is the design working, since it `needs` all three and a partial run must
+publish nothing. Between the two tags the macOS script was fixed three times, twice for faults that
+only running it could reveal (see the macOS addendum above), and each fix was verified on a real Mac
+before the second tag rather than by pushing another tag and waiting.
+
+**What a green pipeline does not establish, stated because a release page is persuasive.** No
+artifact from this run has been installed by anyone — the macOS evidence above comes from a *local*
+build on the same commit, not from these files. The binaries are unsigned, so R-11 applies in full:
+SmartScreen warns on every Windows download, Smart App Control blocks outright, and the macOS
+artifacts are developer-only until a signing identity exists. NFR-SEC-040's two halves remain split
+— hashes are published, bit-for-bit reproducibility is not claimed and is weakened by M11's git
+dependency. And the Linux tarball has never been unpacked by `install.sh` on any distribution, so
+the platform whose CI leg passed first is the one with the least evidence behind it.
