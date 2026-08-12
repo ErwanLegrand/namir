@@ -49,21 +49,42 @@
 //! # Measured at M9b on the §2 reference machine, with the file arms in place
 //!
 //! Five runs of this binary, pinned to core 4 on `docs/02-architecture.md` §2's machine (NTFS,
-//! `%TEMP%` on the system volume; this session's own agent tooling running, so not a quiet
-//! machine). Worst repetition of each run, against the 500 ms ceiling:
+//! `%TEMP%` on the system volume), **re-taken on an idle machine** after this milestone's build
+//! work had finished. Worst repetition across the runs, against the 500 ms ceiling:
+//!
+//! | arm | `bytes` | `file` |
+//! |---|---|---|
+//! | ~50 MB oversized (52,012,406 B) | **129.6 ms** | **152.5 ms** |
+//!
+//! Headroom on the 500 ms ceiling: 74.1% on the `bytes` arm, 69.5% on the `file` arm. **Every arm
+//! passes**, but only the oversized pair's figures were recorded from the idle re-run, it being the
+//! pair that carries this clause — so no re-taken number is quoted here for the standard-model or
+//! IR arms, whose disqualified figures appear below and whose margin is orders of magnitude.
+//!
+//! **NFR-PERF-050's first clause passes with the read inside the window**: a 49.6 MiB file, opened
+//! by path, loads in ~152 ms against a 500 ms ceiling. The read itself costs about **23 ms** of
+//! that — the `file` minus `bytes` delta, warm cache — so **~85% of what a user waits for on a
+//! 50 MB file is parse and prepare**, and the storage stack is the small term. Because those reads
+//! are warm (see the page-cache paragraph above), the ~23 ms is a *floor* on cold-read cost rather
+//! than an estimate of it. At the realistic sizes the delta is in the tens of microseconds and
+//! disappears into the run-to-run spread, which is why the oversized pair is the one that carries
+//! this clause.
+//!
+//! ## The first M9b set, disqualified and kept on the record
+//!
+//! An earlier set of five runs was measured with this session's own agent tooling running, so the
+//! machine was not quiet and **D-2.4 condition 2 disqualifies it**. It is kept rather than deleted,
+//! this project's convention being to leave a corrected finding on the record:
 //!
 //! | arm | `bytes` | `file` |
 //! |---|---|---|
 //! | standard model (229 KB) | 0.89 - 0.97 ms | 0.94 - 1.47 ms |
 //! | 2 s stereo IR (384 KB) | 4.64 - 4.72 ms | 4.47 - 4.96 ms |
-//! | ~50 MB oversized (52,012,406 B) | 127.7 - 133.4 ms | **148.1 - 149.4 ms** |
+//! | ~50 MB oversized (52,012,406 B) | 127.7 - 133.4 ms | 148.1 - 149.4 ms |
 //!
-//! **NFR-PERF-050's first clause passes with the read inside the window**: a 49.6 MiB file, opened
-//! by path, loads in under 150 ms against a 500 ms ceiling. The read itself costs **15 - 21 ms** of
-//! that — the `file` minus `bytes` delta, warm cache — so about 86% of what a user waits for on a
-//! 50 MB file is parse and prepare, and the storage stack is the small term. At the realistic sizes
-//! the delta is in the tens of microseconds and disappears into the run-to-run spread, which is why
-//! the oversized pair is the one that carries this clause.
+//! Its `file` minus `bytes` delta read 15 - 21 ms against the idle re-run's ~23 ms, so the
+//! parse-dominates-I/O conclusion above survives the correction — but the figures this milestone
+//! quotes are the idle ones, not these.
 //!
 //! # Cold, not cached
 //!

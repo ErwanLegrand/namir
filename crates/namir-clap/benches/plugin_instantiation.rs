@@ -102,9 +102,48 @@
 //!
 //! # Measured at M9b on the §2 reference machine — and where the 200 ms actually goes
 //!
-//! Six runs of this binary (one plus D-2.4's five), 20 repetitions per arm, pinned to core 4 on the
-//! reference machine of `docs/02-architecture.md` §2. **NFR-PERF-040 passes**, and the
-//! attribution is worth stating plainly because it is not where a reader would guess:
+//! Five runs of this binary, 20 repetitions per arm, pinned to core 4 on the reference machine of
+//! `docs/02-architecture.md` §2, **re-taken on an idle machine** after this milestone's build work
+//! had finished. **NFR-PERF-040 passes on every arm**, and the attribution is worth stating plainly
+//! because it is not where a reader would guess:
+//!
+//! | arm | worst of 5 runs | headroom |
+//! |---|---|---|
+//! | empty library index, 48 kHz / 512 | 229 µs | ~99.9% |
+//! | 10 000-entry index, 48 kHz / 512 | 181.2 ms | 9.4% |
+//! | 10 000-entry index, 192 kHz / 4096 | **187.5 ms** | **6.2%** |
+//!
+//! **Namir's own instantiation is a fraction of a millisecond, about a tenth of a percent of the
+//! budget.** Building the entire six-stage chain — the `activate` half, `audio.rs:119` and
+//! everything under it — is **6 µs** on the empty arm and **147 µs** at 192 kHz with 4096-frame
+//! blocks, so the whole 16-fold jump between the two audio configurations moves the total by well
+//! under a millisecond. Essentially the entire measured figure is one thing: **the JSON parse of
+//! `library-index.json`** for 10 000 entries (7.57 MB), inside `SharedInner::new`'s
+//! `LibraryService::open_default`, whose median sits at 161-165 ms.
+//!
+//! Two consequences a future reader should have in front of them:
+//!
+//! 1. **The margin against 200 ms is a property of the user's library size, not of plugin code —
+//!    this is risk R-18** (`docs/02-architecture.md` §22). The index parse alone reaches the 200 ms
+//!    ceiling near **12 000 entries**, so a user with a library meaningfully larger than
+//!    FR-LIB-020's stated 10 000 would exceed this requirement — on a machine at least as fast as
+//!    the reference one. Nothing here is regressing; the requirement is simply being met with
+//!    **6.2% headroom** on the worst arm rather than with orders of magnitude, and this paragraph
+//!    exists so that is a known position rather than a surprise. The idle re-run *strengthens*
+//!    R-18 rather than softening it: it tightened the medians and worsened the tail. It also means
+//!    a regression in *chain construction* — the part this crate actually owns — could be a
+//!    hundredfold before this benchmark noticed, which is why the create/activate split is reported
+//!    per arm and not just the total.
+//! 2. **The empty-index arm is the sensitive one.** It is the arm that would catch a real
+//!    instantiation regression, and it currently sits close to three orders of magnitude under the
+//!    ceiling. Whoever tightens this requirement's guard should tighten it there, not on the total.
+//!
+//! ## The first M9b set, disqualified and kept on the record
+//!
+//! An earlier set — six runs (one plus D-2.4's five), same pinning, same arms — was measured while
+//! this session's own tooling was compiling throughout. **D-2.4 condition 2 disqualifies it**: the
+//! machine was not quiet, so those figures are not this milestone's measurement. They are kept
+//! rather than deleted, this project's convention being to leave a corrected finding on the record:
 //!
 //! | arm | median | worst of 6 runs |
 //! |---|---|---|
@@ -112,27 +151,10 @@
 //! | 10 000-entry index, 48 kHz / 512 | ~159 ms | 163.76 ms |
 //! | 10 000-entry index, 192 kHz / 4096 | ~159 ms | 172.59 ms |
 //!
-//! **Namir's own instantiation is ~0.17 ms, about a tenth of a percent of the budget.** Building
-//! the entire six-stage chain — the `activate` half, `audio.rs:119` and everything under it — is a
-//! *median 37–119 µs* depending on configuration, and the whole 16-fold jump between the two audio
-//! configurations moves the total by less than 0.1 ms. Essentially the entire measured figure is
-//! one thing: **the JSON parse of `library-index.json`**, ~161 ms for 10 000 entries (7.57 MB),
-//! inside `SharedInner::new`'s `LibraryService::open_default`.
-//!
-//! Two consequences a future reader should have in front of them:
-//!
-//! 1. **The margin against 200 ms is a property of the user's library size, not of plugin code.**
-//!    At ~16 µs per index entry the parse alone reaches 200 ms somewhere around 12 000–12 500
-//!    entries, so a user with a library meaningfully larger than FR-LIB-020's stated 10 000 would
-//!    exceed this requirement — on a machine at least as fast as the reference one. Nothing here
-//!    is regressing; the requirement is simply being met with ~14% headroom rather than with
-//!    orders of magnitude, and this paragraph exists so that is a known position rather than a
-//!    surprise. It also means a regression in *chain construction* — the part this crate actually
-//!    owns — could be a hundredfold before this benchmark noticed, which is why the create/activate
-//!    split is reported per arm and not just the total.
-//! 2. **The empty-index arm is the sensitive one.** It is the arm that would catch a real
-//!    instantiation regression, and it currently sits four orders of magnitude under the ceiling.
-//!    Whoever tightens this requirement's guard should tighten it there, not on the total.
+//! Note the direction, because it is the opposite of the intuitive one: the disqualified set read
+//! *faster* at the tail than the idle re-run did. A contaminated measurement is not reliably a
+//! pessimistic one, which is why D-2.4 disqualifies such a run rather than treating it as a
+//! conservative bound.
 //!
 //! # Why the tag above `main` is a plain `// trace:` and not a `trace-partial:`
 //!

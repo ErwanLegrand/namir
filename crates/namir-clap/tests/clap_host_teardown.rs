@@ -22,8 +22,15 @@
 //! itself stays unreachable from here: calling it needs `clack-extensions`' `clack-host` feature
 //! (`PluginState::save`/`load` live in its `state/host.rs`, behind that gate), and enabling it adds
 //! a `clack-host` row to THIRD-PARTY-NOTICES.md — see `Cargo.toml`'s dev-dependency comment for the
-//! measurement and why that blocker is not resolved here. So FR-CLAP-050's `// uncovered:` field
-//! stays exactly as written.
+//! measurement and why that blocker is not resolved here.
+//!
+//! **The last sentence of that paragraph used to read "So FR-CLAP-050's `// uncovered:` field stays
+//! exactly as written", and M9b's own later work falsified it.** D-18.7 resolved the blocker with a
+//! non-default `host-ext-tests` feature, so `PluginState::load` *is* now driven through the real
+//! vtable — by `clap_host_block_sizes.rs`, `clap_host_latency.rs`, `clap_host_rt_blocking.rs` and
+//! `fr_cfg_020_shell_parity.rs` — and FR-CLAP-050's field has been narrowed to the `save` direction
+//! accordingly. Nothing about *this* file changed: it still reaches only the `activate` call site,
+//! which is what its scope claim above is about.
 //!
 //! Measured against the pre-fix build (`Drop for NamirShared` neutralised, everything else
 //! untouched) this fails on cycle 0 or 1, five runs out of five, on an *idle* machine — a far

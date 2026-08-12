@@ -184,11 +184,11 @@ fn check_recall_outcome(nam: &ResourceRecall, ir: &ResourceRecall, uncatalogued:
 }
 
 // trace-partial: NFR-RT-010
-// uncovered: NFR-RT-010 — the allocation harness reaches neither crate that owns a real audio
-// uncovered: callback: #[global_allocator] AllocDisabler is installed in namir-dsp, namir-engine,
-// uncovered: namir-ir, namir-nam and namir-worker only, and namir-clap's process() and
-// uncovered: namir-app's cpal callback are exercised under no assert_no_alloc or audio_section
-// uncovered: anywhere; closes M8
+// uncovered: NFR-RT-010 — the allocation harness does not reach namir-app's audio callback:
+// uncovered: #[global_allocator] AllocDisabler is installed there (src/rt_harness.rs) but
+// uncovered: audio_section wraps only audio_io::convert's sample-format arithmetic, so the
+// uncovered: callbacks stream.rs drives through FakeBackend run under no assertion and the cpal
+// uncovered: data callbacks in audio_io.rs are executed by no test at all; closes M8
 #[test]
 fn nfr_rt_010_three_axes_run_concurrently_with_zero_audio_thread_allocation() {
     let c = ctx();

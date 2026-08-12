@@ -102,21 +102,48 @@
 //! # Measured at M9b on the §2 reference machine, with the assertions in place
 //!
 //! Three runs of this binary, five repetitions each (fifteen in total), pinned to core 4 on
-//! `docs/02-architecture.md` §2's machine — **not** a quiet one: this session's own agent tooling
-//! was running throughout, which is the ordinary condition the gate has to survive.
+//! `docs/02-architecture.md` §2's machine, **re-taken on an idle machine** after this milestone's
+//! build work had finished. Both parts pass against the 25%-of-one-core budget:
+//!
+//! | | across the three runs |
+//! |---|---|
+//! | part 1, the estimator | **14.56%** of one core, worst run |
+//! | part 2, raw `p99.9`, worst *quotable* repetition | **16.39%** |
+//!
+//! That is 41.8% headroom on part 1 and 34.4% on part 2. An idle machine is still not a *verified
+//! quiet* one, and the binary's own output says so — see the last section of this comment; a PASS
+//! line here is not by itself a certified figure.
+//!
+//! **D-2.4's validity check earned its place on this very run**, which is the argument for part 1
+//! made by the instrument rather than about it. One of the three repetition sets discarded **2 of
+//! its 5** repetitions — raw `p99.9` of **24.35%** and **24.54%**, one of them with a `max` of
+//! **76.09%** — while the contamination-immune estimator across those same five repetitions read
+//! **14.38%**, moving by hundredths of a point. An idle machine is not a quiet one, the difference
+//! is measurable, and the estimator is the figure to trust where the two disagree.
+//!
+//! ## The first M9b set, disqualified and kept on the record
+//!
+//! An earlier set of the same shape — three runs, five repetitions each — was measured with this
+//! session's own agent tooling running throughout, so the machine was not quiet and **D-2.4
+//! condition 2 disqualifies it**. It is kept rather than deleted, this project's convention being
+//! to leave a corrected finding on the record, and it still carries the sharpest illustration of
+//! why part 1 exists:
 //!
 //! | | across 15 repetitions |
 //! |---|---|
-//! | part 1, the estimator | **14.36 - 14.61%** of one core |
-//! | part 2, raw `p99.9`, worst *quotable* repetition per run | **19.28 / 19.37 / 19.44%** |
+//! | part 1, the estimator | 14.36 - 14.61% of one core |
+//! | part 2, raw `p99.9`, worst *quotable* repetition per run | 19.28 / 19.37 / 19.44% |
 //! | raw `p99.9` including discarded repetitions | 17.17 - 23.48% |
 //! | repetitions discarded by D-2.4's validity check | 6 of 15 |
 //! | `p50` | 7.41 - 7.79% |
 //!
 //! The estimator's 0.25-point spread against raw `p99.9`'s 6.3-point spread over the same fifteen
-//! repetitions is the whole argument for part 1 in one line. Sharper still: re-run pinned to
-//! **core 0** — the core `dxgkrnl.sys` puts ~165 interrupts/second of 128-512 µs on — the estimator
-//! read 14.47-14.48% while `max` blew out to 43.23%. Deliberate contamination moved the asserted
+//! repetitions is the whole argument for part 1 in one line — and the comparison across the two
+//! sets says it again: the disqualified set's estimator (14.36 - 14.61%) brackets the idle
+//! re-run's 14.56% almost exactly, while its raw `p99.9` ran about three points worse. Part 1
+//! barely noticed the contamination; part 2 did. Sharper still: re-run pinned to **core 0** — the
+//! core `dxgkrnl.sys` puts ~165 interrupts/second of 128-512 µs on — the estimator read
+//! 14.47-14.48% while `max` blew out to 43.23%. Deliberate contamination moved the asserted
 //! statistic by a hundredth of a point. That is what "background load cannot inflate it" means, and
 //! it was checked rather than assumed.
 //!

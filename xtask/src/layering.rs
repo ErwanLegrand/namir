@@ -44,7 +44,7 @@
 // uncovered: FR-CFG-030 — the Verify: I method's "each is installed alone into a clean
 // uncovered: environment and exercised" is executed by nothing: the artifact is xtask layering's
 // uncovered: compile-time dependency-edge lint over LAYERING_TABLE, which argues compile-time
-// uncovered: reachability and neither installs nor exercises either product; closes M13
+// uncovered: reachability and neither installs nor exercises either product; closes M8
 
 const FIXTURES: &str = "namir-fixtures";
 
