@@ -170,11 +170,19 @@ mod tests {
     }
 
     #[test]
-    fn the_real_roadmap_still_has_exactly_the_thirteen_milestone_sections() {
+    fn the_real_roadmap_still_has_exactly_the_fourteen_milestone_sections() {
         // The test that catches a heading-form change silently breaking the whole derivation.
         // Deliberately asserts on the *section structure* and on no id -> milestone pair, so
         // ordinary roadmap prose edits never churn it. `include_str!` rather than a filesystem
         // read, so this module stays free of I/O at runtime.
+        //
+        // Updated at M14 (2026-08-12), from thirteen sections to fourteen, and the update is the
+        // guard working rather than the guard being in the way: §21 adds a genuinely new milestone
+        // section, which is precisely the event this assertion exists to make somebody look at.
+        // Only a real new `## <n>. M<k>` heading may edit this list -- a prose change that alters
+        // it means the heading form drifted, which is the failure the comment above describes.
+        // Note the list is in *section* order, which is not execution order: M8 sits between M7
+        // and M9 here and runs last of all (§12's execution-order note, and its M14 consequence).
         let roadmap = include_str!("../../docs/03-implementation-roadmap.md");
         let sections: Vec<&str> = roadmap
             .lines()
@@ -184,7 +192,8 @@ mod tests {
         assert_eq!(
             sections,
             [
-                "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13"
+                "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13",
+                "M14"
             ]
         );
     }
