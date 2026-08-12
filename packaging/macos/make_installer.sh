@@ -386,59 +386,50 @@ codesign_payloads() {
 # ------------------------------------------------------------------------------------------------
 # Step 4 -- component packages
 # ------------------------------------------------------------------------------------------------
-# `BundleIsRelocatable` false on every bundle in every component. Left true (the default),
-# `installer` looks for an existing copy of the bundle anywhere on the volume via Spotlight and
-# installs *over that* instead of at the stated install-location -- so a developer with a
-# `Namir.app` in a scratch directory gets the release written into their scratch directory and
-# nothing at `/Applications` at all. This is the single best-known `pkgbuild` trap and the reason
-# `--analyze` exists.
+# `BundleIsRelocatable` false on every bundle in every component. Left true (the default for
+# bundle types that can relocate), `installer` looks for an existing copy of the bundle anywhere on
+# the volume via Spotlight and installs *over that* instead of at the stated install-location -- so
+# a developer with a `Namir.app` in a scratch directory gets the release written into their scratch
+# directory and nothing at `/Applications` at all. This is the single best-known `pkgbuild` trap and
+# the reason `--analyze` exists.
 #
-# **`pkgbuild` does not consider `Namir.clap` a bundle, and that was found by running it** (the
-# first tagged pipeline run, v0.1.0-rc1, 2026-08-12): `--analyze` over the plugin root wrote a
-# component plist with **no entries at all**, even though `Namir.clap/Contents/{Info.plist, PkgInfo,
-# MacOS/<dylib>}` is a bundle by structure and is exactly what CLAP's `entry.h` requires. The
-# reason is that `--analyze` recognises bundles by *extension* against a set macOS knows -- `.app`,
-# `.framework`, `.bundle`, `.plugin`, `.kext` and so on -- and `.clap` is not on it. The extension
-# rule is the standard explanation; the empty plist is the observation.
+# **Detect bundles by `RootRelativeBundlePath`, never by `BundleIsRelocatable`.** That is the whole
+# lesson of this function and it was learned the hard way, twice, on 2026-08-12:
 #
-# **The consequence is the useful part, and it cuts the other way from how it first reads.** If
-# `pkgbuild` never records the `.clap` as a bundle component, `installer` has no bundle to
-# Spotlight-relocate, so the trap this whole function exists to disarm **cannot occur for the
-# plugin payload**. The guard is not being weakened here; it is being applied where it can bite.
-# `Namir.app` *is* a recognised bundle, its `--analyze` does produce an entry, and
-# `BundleIsRelocatable false` on that entry is doing real work -- which is why `app` passes
-# `required` below and `plugin` passes `none`.
+#   1. The first tagged pipeline run (v0.1.0-rc1) died here with "found no bundle under
+#      roots/plugin", because the loop below probed each entry for `BundleIsRelocatable` and treated
+#      a failed probe as "no more entries".
+#   2. The conclusion drawn from that -- that `pkgbuild` does not consider a `.clap` a bundle at
+#      all, since `.clap` is not one of the extensions macOS knows -- was **wrong**, and a run on a
+#      real Mac disproved it. `--analyze` over the plugin root emits exactly one entry, carrying
+#      `RootRelativeBundlePath = Namir.clap`, `BundleIsVersionChecked` and `BundleOverwriteAction`.
+#      What it omits is `BundleIsRelocatable`, which it writes only for bundle types that *can*
+#      relocate. Probing for that key therefore conflates "there is no bundle" with "there is a
+#      bundle which cannot relocate" -- two very different things, and the second is what a `.clap`
+#      is. The built `PackageInfo` settles it: `relocatable="false"`, an empty `<relocate/>`, and
+#      `<bundle id="org.legrand.namir" path="./Namir.clap"/>` present.
 #
-# The `none` case therefore builds with no `--component-plist` at all, which is what the documents
-# root has always done for the same reason: a component with no bundles has nothing for a component
-# plist to say.
+# So both roots are handled identically and neither is special-cased: count entries by a key every
+# entry has, then force `BundleIsRelocatable` false on each with `Add`-then-`Set`, since `Add` fails
+# when the key exists and `Set` fails when it does not, and which applies depends on the bundle
+# type. The result for a `.clap` is the same `relocatable="false"` `pkgbuild` would have produced on
+# its own -- but stated by this script rather than inherited from a default, which is the difference
+# between a property that holds and a property that is asserted.
 component_pkg() {
-	local root="$1" identifier="$2" install_location="$3" out="$4" bundles="$5"
+	local root="$1" identifier="$2" install_location="$3" out="$4"
 	local plist="${WORK_DIR}/$(basename "$out").component.plist"
 
 	pkgbuild --analyze --root "$root" "$plist"
 
 	local i=0
-	while /usr/libexec/PlistBuddy -c "Print :${i}:BundleIsRelocatable" "$plist" >/dev/null 2>&1; do
-		/usr/libexec/PlistBuddy -c "Set :${i}:BundleIsRelocatable false" "$plist"
+	while /usr/libexec/PlistBuddy -c "Print :${i}:RootRelativeBundlePath" "$plist" >/dev/null 2>&1; do
+		/usr/libexec/PlistBuddy -c "Add :${i}:BundleIsRelocatable bool false" "$plist" >/dev/null 2>&1 ||
+			/usr/libexec/PlistBuddy -c "Set :${i}:BundleIsRelocatable false" "$plist"
 		i=$((i + 1))
 	done
-
-	if [ "$i" -eq 0 ]; then
-		[ "$bundles" = "none" ] || die "pkgbuild --analyze found no bundle under ${root}, and this\
- component requires one -- a bundle that stopped being recognised is a silent relocation hazard"
-		log "no bundle component under ${root} (expected -- see the .clap note above)"
-		pkgbuild \
-			--root "$root" \
-			--identifier "$identifier" \
-			--version "$VERSION" \
-			--install-location "$install_location" \
-			"$out"
-		return 0
-	fi
-
-	[ "$bundles" != "none" ] || die "pkgbuild --analyze found ${i} bundle(s) under ${root}, which\
- this component did not expect -- re-check the note above before relaxing this"
+	[ "$i" -gt 0 ] || die "pkgbuild --analyze found no bundle under ${root} -- every payload root\
+ this is called for contains one, so an empty component list means the payload is not what this\
+ script assembled"
 
 	pkgbuild \
 		--root "$root" \
@@ -454,11 +445,11 @@ build_component_pkgs() {
 
 	component_pkg \
 		"${WORK_DIR}/roots/plugin" "$PKG_ID_PLUGIN" "$INSTALL_LOCATION_PLUGIN" \
-		"${WORK_DIR}/pkgs/plugin.pkg" none
+		"${WORK_DIR}/pkgs/plugin.pkg"
 
 	component_pkg \
 		"${WORK_DIR}/roots/app" "$PKG_ID_APP" "$INSTALL_LOCATION_APP" \
-		"${WORK_DIR}/pkgs/app.pkg" required
+		"${WORK_DIR}/pkgs/app.pkg"
 
 	# No component plist for the documents: there is no bundle in that root, so `--analyze` would
 	# produce an empty array and `BundleIsRelocatable` has nothing to apply to.
