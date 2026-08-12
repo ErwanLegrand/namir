@@ -3,11 +3,19 @@
 //! least 90 dB below the RMS of the reference output, over a specified 10-second test signal
 //! containing clean, transient and saturated material."
 //!
-//! This is the artifact that requirement's `Verify: G` actually names -- a stated, numerical
+//! This is the kind of artifact that requirement's `Verify: G` names -- a stated, numerical
 //! comparison against the real reference implementation (`NeuralAmpModelerCore`), not against
 //! `namir-fixtures`' own from-scratch Rust port (`tests/fixtures.rs`'s/`tests/lstm_fixtures.rs`'s
 //! parity tests, which the M9a audit correctly demoted to `trace-partial:` for exactly this
-//! reason -- see those files' own `// uncovered:` text). Per D-19.1, the fixtures here are
+//! reason -- see those files' own `// uncovered:` text).
+//!
+//! **It does not span the requirement, and this sentence used to claim it did** (M14, 2026-08-12):
+//! it read "This is the artifact that requirement's `Verify: G` actually names", which is true of
+//! the two architectures below and false of the third. `tests/golden/` holds no A2 model, so both
+//! tests here are `trace-partial:` -- see each one's own `// uncovered:` field, and roadmap §21
+//! Phase 4b for the A2 golden that closes them.
+//!
+//! Per D-19.1, the fixtures here are
 //! *generated*, not captured: `tests/golden/wavenet_nano.nam` and `tests/golden/lstm_tiny.nam` are
 //! small, seeded `namir-fixtures` outputs (regenerate with the recipe below), and
 //! `tests/golden/input_10s.wav` is FR-NAM-030's own "10-second test signal containing clean,
@@ -98,13 +106,52 @@ fn rms_db(reference: &[f32], ours: &[f32]) -> f64 {
 const GOLDEN_REFERENCE_DB_BAR: f64 = -85.0;
 
 /// FR-NAM-030 quantifies over "each supported architecture," and neither this test nor its LSTM
-/// sibling below spans that set alone — each covers exactly one architecture. The plain
-/// `// trace: FR-NAM-030` tag is deliberately on **both**: together they span the full set (D-9.12
-/// keeps A2 inside the "WaveNet" architecture this test already covers, so a third variant isn't
-/// needed), and D-23.1's own worked example for this exact requirement is what this comment is
-/// resolving — the M9a audit's `// uncovered:` text this file's `fixtures.rs`/`lstm_fixtures.rs`
-/// siblings used to carry named precisely these two clauses as unmet; both are met here.
-// trace: FR-NAM-030
+/// sibling below spans that set alone — each covers exactly one. Between them they cover **two** of
+/// the three configurations this crate actually runs: WaveNet-**A1** here, LSTM below. **A2 is
+/// covered by neither**, which is why both tags are `trace-partial:` rather than plain.
+///
+/// The two clauses M9a's `// uncovered:` fields named — a comparison against the real reference
+/// implementation, and the specified 10-second clean/transient/saturated signal — *are* both met
+/// here, for both architectures this file does cover. The clause that is not met is the
+/// architecture quantifier itself.
+///
+/// **The argument this comment used to make for a plain tag was wrong, and is corrected here
+/// rather than deleted.** It read: "D-9.12 keeps A2 inside the 'WaveNet' architecture this test
+/// already covers, so a third variant isn't needed." D-9.12 is a *dispatch* decision — an A2 file
+/// declares `architecture: "WaveNet"` and is parsed and run by this one module rather than by a
+/// second one — not a claim that an A1 file and an A2 file execute the same code. `wavenet.rs`'s
+/// own module doc says the opposite in as many words: A2's structural additions are "provably
+/// inert when the file is A1", which is exactly why an A1 golden cannot reach them.
+///
+/// `tests/golden/wavenet_nano.nam` is a pure A1 file — scalar `kernel_size: 3`, `activation:
+/// "Tanh"`, no `bottleneck`, no `kernel_sizes`, no nested `head`, no `layer1x1` — so it takes the
+/// A1 side of every A2 branch in the config walk: per-layer `kernel_sizes` (`wavenet.rs:1124`), a
+/// `bottleneck` distinct from `channels` (`:1138`), the nested convolutional head (`:1152`), the
+/// per-layer activation array (`:1167`), and the k-tap causal head conv with its own history
+/// (`:683-712`, its state at `:895-911`). Six of the ten `Activation` variants
+/// (`wavenet.rs:139-158`) are the parameterized ones A2 introduced and no A1 file can reach any of
+/// them — `LeakyReLU`, which is what real A2 uses, among them; this fixture in fact exercises only
+/// `Tanh`, so the other three A1 variants are unreached here too, for a lesser reason. And
+/// `tests/golden/` holds no A2 model and no A2 reference render, so there is nothing to compare
+/// against even if a third test were added to this file today.
+///
+/// **What the A1 golden does cover transitively, recorded so this is not read as covering
+/// nothing:** A1's dilated conv drives the general `Conv1D` path at kernel size 3, and A2's head
+/// reuses that same code, so the `[out][in][k]` tap-flatten convention that path depends on *is*
+/// validated against the real reference here. What is unvalidated is every A2-specific shape built
+/// on top of it.
+///
+/// Closing this needs a committed A2 golden rendered through the pinned reference build over this
+/// same `input_10s.wav` — roadmap §21 Phase 4b, issue #37, which also reopens R-9.
+// trace-partial: FR-NAM-030
+// uncovered: FR-NAM-030 — "each supported architecture" spans three configurations this crate
+// uncovered: runs, and the golden set holds two: WaveNet-A1 (this test) and LSTM (below). A2 has
+// uncovered: no golden model and no reference render under tests/golden/, and the A1 fixture
+// uncovered: cannot stand in for one -- it takes the A1 side of every A2 branch in wavenet.rs
+// uncovered: (per-layer kernel_sizes :1124, bottleneck distinct from channels :1138, the nested
+// uncovered: head :1152, the per-layer activation array :1167, the k-tap causal head conv
+// uncovered: :683-712), so the six parameterized Activation variants A2 introduced are all
+// uncovered: unreachable by it, LeakyReLU among them, which is what real A2 uses; closes M14
 #[test]
 fn wavenet_matches_the_real_reference_implementation() {
     let model_bytes = std::fs::read(golden_path("wavenet_nano.nam")).unwrap();
@@ -141,7 +188,12 @@ fn wavenet_matches_the_real_reference_implementation() {
 const LSTM_PREWARM_SAMPLES: usize = SAMPLE_RATE as usize / 2;
 const SAMPLE_RATE: u32 = 48_000;
 
-// trace: FR-NAM-030
+// trace-partial: FR-NAM-030
+// uncovered: FR-NAM-030 — this half of the pair covers the LSTM architecture only. The third
+// uncovered: configuration the requirement quantifies over, WaveNet-A2, has no golden model and
+// uncovered: no reference render under tests/golden/ at all -- see the WaveNet test's own
+// uncovered: uncovered field above for why the A1 golden does not reach A2's code paths, and
+// uncovered: roadmap §21 Phase 4b for the fixture that closes both; closes M14
 #[test]
 fn lstm_matches_the_real_reference_implementation() {
     let model_bytes = std::fs::read(golden_path("lstm_tiny.nam")).unwrap();
