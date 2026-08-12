@@ -118,7 +118,7 @@ jobs:
   # Pure static checks over the dependency graph and a checked-in manifest -- not
   # platform-dependent, so one OS is enough.
   layering-and-params:
-    name: layering + params.lock + attribution + identity
+    name: layering + rt-logging + params.lock + attribution + identity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -129,6 +129,14 @@ jobs:
 
       - name: xtask layering (D-5.2)
         run: cargo run -p xtask -- layering
+
+      # M9b: FR-ERR-030's static half. `namir-app` and `namir-clap` are the two crates D-5.1 lets
+      # depend on `namir-platform` *and* the two that own the audio callbacks, so they are the only
+      # place a log record could be emitted from the audio thread; this rejects the logger being
+      # named in any module that carries audio-thread code. Same class as the step above -- a
+      # line-based scan over checked-in source, with no OS-specific behaviour to matrix over.
+      - name: xtask rt-logging (FR-ERR-030)
+        run: cargo run -p xtask -- rt-logging
 
       - name: xtask params-lock (FR-PARAM-020)
         run: cargo run -p xtask -- params-lock

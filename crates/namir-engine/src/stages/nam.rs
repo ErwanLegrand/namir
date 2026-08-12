@@ -93,13 +93,58 @@ use crate::telemetry::{TelemetryEntry, TelemetrySink};
 /// this stage's own documented choice for the shared pattern.
 const BYPASS_CROSSFADE_TIME_CONSTANT_MS: f64 = 15.0;
 
-/// D-9.2's "fixed internal block" for a resampled slot, as a desired *input* (engine-rate) chunk
-/// length handed to `rubato::FftFixedInOut::new` — the constructor may round this to a different
-/// exact value (see `SlotResampler::new`'s doc comment); this is a hint, not a guarantee. Chosen
-/// independent of `ctx.max_block_size()` on purpose: D-9.2 wants the model's own internal block
-/// size, and therefore the resampler's latency, to be a property of the *stage*, not of whatever
-/// block size the host happens to be calling with this session.
-const RESAMPLE_CHUNK_FRAMES: usize = 256;
+/// D-9.2's "fixed internal block" for a resampled slot, expressed as the minimum FFT length
+/// `rubato::FftFixedInOut` must end up using **in the lower of the two rates' domain** —
+/// `resample_chunk_frames` turns this into the `chunk_size_in` the constructor actually takes.
+/// Chosen independent of `ctx.max_block_size()` on purpose: D-9.2 wants the model's own internal
+/// block size, and therefore the resampler's latency, to be a property of the *stage*, not of
+/// whatever block size the host happens to be calling with this session.
+///
+/// **256 is a measured figure, not a round number** (M9b, FR-NAM-060 — see
+/// `resampler_frequency_response_meets_the_stopband_and_ripple_bar`). `rubato`'s FFT resampler
+/// builds its antialiasing filter as a `BlackmanHarris2`-windowed sinc whose length *is* the FFT
+/// size, with its cutoff placed by `rubato::calculate_cutoff` at
+/// `1/(1 + 13.745/n + 121.7/n² + 5964/n³)` of the lower Nyquist for a length-`n` filter — so a
+/// short filter does not merely have a wide transition band, it has its passband edge pulled *in*.
+/// At n = 64 (which is what a flat 256-frame chunk yielded at a 192 kHz engine rate against a
+/// 48 kHz model) the cutoff lands at 0.789 × 24 kHz ≈ 18.9 kHz and the response is **−15 dB at
+/// 20 kHz**; at n = 147 (a 96 kHz engine against a 44.1 kHz model) it is −5.6 dB. At n = 256 the
+/// cutoff is 0.947 × Nyquist and every rate pair in that test measures flat to 20 kHz well inside
+/// FR-NAM-060's 0.1 dB.
+const MIN_RESAMPLE_FFT_FRAMES: usize = 256;
+
+/// Greatest common divisor, iterative Euclid — used only by [`resample_chunk_frames`], to
+/// reproduce the same `gcd(rate_in, rate_out)` arithmetic `rubato::FftFixedInOut::new` does
+/// internally so this module can *choose* its FFT size rather than discover it.
+fn gcd(a: usize, b: usize) -> usize {
+    let (mut a, mut b) = (a, b);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// The `chunk_size_in` (engine-rate frames) to hand `rubato::FftFixedInOut::new` so that its
+/// resulting FFT length in the **lower** of `engine_hz`/`model_hz`'s domain is at least
+/// [`MIN_RESAMPLE_FFT_FRAMES`] — which is what FR-NAM-060's passband bar actually constrains, the
+/// antialiasing filter's cutoff being placed relative to the *lower* Nyquist (see
+/// [`MIN_RESAMPLE_FFT_FRAMES`]).
+///
+/// `FftFixedInOut::new` derives `fft_size_in = k · rate_in/gcd` and `fft_size_out = k ·
+/// rate_out/gcd` with `k = ceil(chunk_size_in / (rate_in/gcd))`; it inverts that, picking the `k`
+/// the bar needs and returning the exact `chunk_size_in` that produces it. Returning an exact
+/// multiple (rather than a hint the constructor rounds up) is also what makes
+/// `SlotResampler::new`'s round-trip symmetry assertions hold.
+///
+/// Never smaller than what a flat 256-frame request would have produced: when the engine rate is
+/// the lower of the two, the two rules coincide exactly (`engine_hz.min(model_hz) == engine_hz`),
+/// so the 48 kHz engine cases — including 48 kHz against a 44.1 kHz model — are unchanged by M9b.
+fn resample_chunk_frames(engine_hz: usize, model_hz: usize) -> usize {
+    let gcd = gcd(engine_hz, model_hz);
+    let fft_unit_low = engine_hz.min(model_hz) / gcd;
+    let fft_unit_engine = engine_hz / gcd;
+    MIN_RESAMPLE_FFT_FRAMES.div_ceil(fft_unit_low) * fft_unit_engine
+}
 
 /// This stage's RT-facing `namir_engine::ParamId`, converted once from `namir_params`'s own id
 /// for the same key — see `trim.rs`'s identical convention and its doc comment for why the two
@@ -334,13 +379,21 @@ impl NamSlot {
 /// makes its rounding a no-op). `SlotResampler::new` asserts this symmetry with `debug_assert`
 /// rather than silently trusting it.
 ///
-/// # Known limitation — best-effort, not verified to D-9.3's quality bar
+/// # Verified against D-9.3's quality bar since M9b; `latency_samples` still is not
 ///
-/// FR-NAM-060's stopband/ripple requirement is explicitly **out of scope for M2**
+/// FR-NAM-060's stopband/ripple requirement was out of scope for M2
 /// (`03-implementation-roadmap.md` §6: "most of §5.4 (NAM, minus... resampling-quality...)"), and
-/// this implementation has not been measured against it — `FftFixedInOut`'s antialiasing filter
-/// is used as configured by `rubato` itself, not tuned or verified the way D-9.3 asks for. Nor is
-/// [`SlotResampler`]'s `latency_samples` field proven sample-exact: it sums both resamplers'
+/// until M9b this implementation had never been measured against it — the note that stood here
+/// said so. It is measured now, by
+/// `resampler_frequency_response_meets_the_stopband_and_ripple_bar` below, and the measurement
+/// changed the configuration: `rubato`'s antialiasing filter is no longer "used as configured by
+/// `rubato` itself" but sized by [`MIN_RESAMPLE_FFT_FRAMES`], because as configured it failed the
+/// bar badly at engine rates above the model rate (−15 dB at 20 kHz for a 48 kHz model at a
+/// 192 kHz engine rate, against a 0.1 dB allowance). Stopband attenuation was never the problem
+/// and measures ≥ 140 dB throughout.
+///
+/// What is still *not* verified is [`SlotResampler`]'s `latency_samples` field, which is not
+/// proven sample-exact: it sums both resamplers'
 /// `output_delay()` (converting the first one's model-rate figure to engine-rate samples) plus
 /// one `engine_block` for FIFO buffering granularity, which is the right *order of magnitude* but
 /// not a value derived from a per-sample trace of the actual pipeline. What *is* verified here
@@ -392,7 +445,7 @@ impl SlotResampler {
         let into_model = FftFixedInOut::<f32>::new(
             engine_rate.hz() as usize,
             model_rate.hz() as usize,
-            RESAMPLE_CHUNK_FRAMES,
+            resample_chunk_frames(engine_rate.hz() as usize, model_rate.hz() as usize),
             1,
         )
         .expect("SampleRate's own invariant guarantees both rates are nonzero");
@@ -425,6 +478,31 @@ impl SlotResampler {
         // catches means a real design error, not a plausible legitimate block-size pattern.
         let fifo_capacity = 16 * (engine_block + max_block_size) + 4096;
 
+        // **M9b: the output FIFO is primed with one engine block of silence, and that priming is
+        // load-bearing rather than a convenience.** Without it `process`'s produce loop primes the
+        // pipeline only to *the current call's* output length, and its drain tail substitutes a
+        // zero for anything missing. Each starved frame therefore splices in one sample of silence
+        // that is never taken back, so the stage's delay becomes a function of the block-size
+        // *history*: measured at 48 kHz engine / 44.1 kHz model, uniform blocks of 512 down to 64
+        // ran at the nominal delay while 32/16/8/4/2/1-frame blocks accumulated 32/48/56/60/62/63
+        // extra samples, and the shift arrived *mid-stream* when a host changed block size — 63
+        // samples of silence spliced into a live signal, which is FR-CLAP-070's "without
+        // artefacts" clause failing, not merely its parity clause.
+        //
+        // Priming establishes `engine_in_fifo.len() + engine_out_fifo.len() == engine_block` as an
+        // invariant, under which the loop cannot starve: whenever `out < n` the identity gives
+        // `in == engine_block + n - out > engine_block`, so a full internal tick is always
+        // available to run. It also makes the *actual* delay equal the `latency_samples` this
+        // stage already reports; before priming that figure was an upper bound the truth met only
+        // by accident (576 under 512-frame blocks, 639 under 1-frame blocks, reported as 640).
+        //
+        // Found by FR-CLAP-070's resource-loaded parity test at M9b, which fails without this and
+        // passes bit-exactly with it. D-6.2's consequence asserted the design already handled
+        // arbitrary block sizes; it did not, and §15 item 13 fixed the branch policy for that
+        // discovery — fix the engine — before the test was written.
+        let mut engine_out_fifo = VecDeque::with_capacity(fifo_capacity);
+        engine_out_fifo.resize(engine_block, 0.0);
+
         Self {
             into_model,
             out_of_model,
@@ -435,7 +513,7 @@ impl SlotResampler {
             model_in_chunk: vec![0.0; model_block],
             model_out_chunk: vec![0.0; model_block],
             engine_out_chunk: vec![0.0; engine_block],
-            engine_out_fifo: VecDeque::with_capacity(fifo_capacity),
+            engine_out_fifo,
             latency_samples,
         }
     }
@@ -488,6 +566,36 @@ impl SlotResampler {
         for sample in output.iter_mut() {
             *sample = self.engine_out_fifo.pop_front().unwrap_or(0.0);
         }
+    }
+
+    /// FR-NAM-060's "in isolation": [`process`](Self::process)'s internal tick with the model
+    /// taken out of the middle, so what comes back is the two resamplers and nothing else. Runs
+    /// whole `engine_block`-sized chunks straight out of `input` and returns everything the pair
+    /// produced, rather than going through the FIFOs — those exist to reconcile the fixed internal
+    /// block with a caller's arbitrary block size, which is not a property of the resampling.
+    ///
+    /// Test-only, and not RT-safe (it allocates its own output). Lives here beside `process`
+    /// rather than in the test module so the two cannot drift: if the tick ever grows a step, this
+    /// is the code that has to grow it too.
+    #[cfg(test)]
+    fn resample_only(&mut self, input: &[f32]) -> Vec<f32> {
+        let mut output = Vec::with_capacity(input.len() * 2);
+        for chunk in input.chunks_exact(self.engine_block) {
+            let wave_in: [&[f32]; 1] = [chunk];
+            let mut wave_out: [&mut [f32]; 1] = [&mut self.model_in_chunk[..]];
+            self.into_model
+                .process_into_buffer(&wave_in, &mut wave_out, None)
+                .expect("buffers are exactly this resampler's own declared chunk sizes");
+
+            let wave_in: [&[f32]; 1] = [&self.model_in_chunk[..]];
+            let mut wave_out: [&mut [f32]; 1] = [&mut self.engine_out_chunk[..]];
+            self.out_of_model
+                .process_into_buffer(&wave_in, &mut wave_out, None)
+                .expect("buffers are exactly this resampler's own declared chunk sizes");
+
+            output.extend_from_slice(&self.engine_out_chunk);
+        }
+        output
     }
 }
 
@@ -870,7 +978,15 @@ impl Stage for NamStage {
                 resampler.into_model.reset();
                 resampler.out_of_model.reset();
                 resampler.engine_in_fifo.clear();
+                // Re-prime rather than merely clear: `SlotResampler::new`'s comment explains why
+                // one engine block of silence has to be present for the loop not to starve.
+                // Clearing alone would leave a reset stage in exactly the pre-M9b state whose
+                // block-size-dependent delay FR-CLAP-070 caught, so the two sites must agree.
+                // RT-safe: `resize` only ever shrinks back to a length this FIFO's capacity,
+                // reserved in `new`, already covers.
+                let engine_block = resampler.engine_block;
                 resampler.engine_out_fifo.clear();
+                resampler.engine_out_fifo.resize(engine_block, 0.0);
             }
         }
     }
@@ -967,6 +1083,7 @@ mod tests {
     use super::*;
     use crate::rt_harness::audio_section;
     use namir_core::ChannelConfig;
+    use namir_fixtures::resample_response::{ResampleResponse, measure};
     use namir_nam::{
         ActivationEntry, ActivationSpec, LayerArrayConfig, NamFile, NamMetadata, WaveNetConfig,
     };
@@ -1570,5 +1687,183 @@ mod tests {
         let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
         let mut io = StageIo::new(&mut channels, 64);
         audio_section(|| stage.process(&mut io));
+    }
+
+    // -------------------------------------------------------------------------------------
+    // FR-NAM-060 (M9b) — the resampler's frequency response, measured in isolation.
+    //
+    // Nothing had ever measured it: `SlotResampler`'s own doc comment said as much, and the
+    // first measurement failed. `rubato`'s FFT resampler places its antialiasing filter's
+    // cutoff at a fraction of the lower Nyquist that *depends on the filter's length*, and the
+    // filter's length is the FFT size, which the pre-M9b configuration let shrink to 64 frames
+    // at a 192 kHz engine rate — a response 15 dB down at 20 kHz against a 0.1 dB allowance.
+    // `MIN_RESAMPLE_FFT_FRAMES` (and D-9.3's "configured to meet FR-NAM-060... not by trusting
+    // the library's defaults") is the answer; these tests are what makes it a measured claim.
+    //
+    // The instrument is `namir_fixtures::resample_response`, whose module doc comment derives
+    // the coherent-sampling method and whose own tests check it against an identity converter
+    // and an analytically-known one-pole low-pass. It is shared with `namir-ir`, which owes the
+    // same numbers for FR-IR-030.
+    // -------------------------------------------------------------------------------------
+
+    /// The engine/model rate pairs the measurement below covers: every standard session rate
+    /// from 44.1 to 192 kHz against the three rates a `.nam` file realistically declares. Both
+    /// directions of each are measured, plus the round trip, so a 44.1 kHz-model row and a
+    /// 44.1 kHz-engine row are not the same measurement seen twice.
+    const MEASURED_RATE_PAIRS: [(u32, u32); 10] = [
+        (48_000, 44_100),
+        (44_100, 48_000),
+        (88_200, 48_000),
+        (96_000, 44_100),
+        (96_000, 48_000),
+        (176_400, 48_000),
+        (192_000, 44_100),
+        (192_000, 48_000),
+        (48_000, 96_000),
+        (44_100, 96_000),
+    ];
+
+    /// Streams `input` through one `rubato` resampler in exactly the fixed chunks
+    /// `SlotResampler::process` feeds it, returning everything it produced. Whole chunks only:
+    /// a `FftFixedInOut` accepts nothing else, which is the property D-9.2 chose it for.
+    fn stream_fixed(resampler: &mut FftFixedInOut<f32>, input: &[f32]) -> Vec<f32> {
+        let in_frames = resampler.input_frames_next();
+        let out_frames = resampler.output_frames_next();
+        let mut output = Vec::with_capacity(input.len() * 2);
+        let mut chunk_out = vec![0f32; out_frames];
+        for chunk in input.chunks_exact(in_frames) {
+            let wave_in: [&[f32]; 1] = [chunk];
+            let mut wave_out: [&mut [f32]; 1] = [&mut chunk_out[..]];
+            resampler
+                .process_into_buffer(&wave_in, &mut wave_out, None)
+                .expect("buffers are exactly this resampler's own declared chunk sizes");
+            output.extend_from_slice(&chunk_out);
+        }
+        output
+    }
+
+    /// Both halves of FR-NAM-060's bar, with the measured figures in the failure message so a
+    /// reader sees the margin rather than a bare pass/fail. `label` names the conversion.
+    fn assert_meets_fr_nam_060(label: &str, response: &ResampleResponse) {
+        println!("FR-NAM-060 {label}: {}", response.summary());
+        assert!(
+            response.ripple_db <= 0.1,
+            "FR-NAM-060 allows 0.1 dB of passband ripple; {label} measured {}",
+            response.summary()
+        );
+        if let Some(stopband_db) = response.stopband_db {
+            assert!(
+                stopband_db <= -100.0,
+                "FR-NAM-060 requires 100 dB of stopband attenuation; {label} measured {}",
+                response.summary()
+            );
+        }
+    }
+
+    // trace-partial: FR-NAM-060
+    // uncovered: FR-NAM-060 — measured across ten engine/model pairs drawn from the standard
+    // uncovered: rates (44.1/48/88.2/96/176.4/192 kHz engine against 44.1/48/96 kHz models), not
+    // uncovered: every pair `SampleRate::new` admits: it takes any nonzero u32, and where the
+    // uncovered: lower of the two rates falls below about 40 kHz the requirement's own "or the
+    // uncovered: Nyquist frequency, whichever is lower" clause is unsatisfiable by construction,
+    // uncovered: an antialiasing filter flat to Nyquist not being able to be 100 dB down just
+    // uncovered: above it, so that region needs an FRS decision rather than a test; closes M8
+    #[test]
+    fn resampler_frequency_response_meets_the_stopband_and_ripple_bar() {
+        for (engine_hz, model_hz) in MEASURED_RATE_PAIRS {
+            let engine = SampleRate::new(engine_hz).unwrap();
+            let model = SampleRate::new(model_hz).unwrap();
+            // Everything above the *lower* of the two Nyquists is what the pair must remove —
+            // for the round trip that is the model's, which neither of its own two rates names.
+            let band_edge_hz = engine_hz.min(model_hz) as f64 / 2.0;
+
+            let into_model = measure(engine_hz, model_hz, band_edge_hz, |input| {
+                let mut resampler = SlotResampler::new(engine, model, 64);
+                stream_fixed(&mut resampler.into_model, input)
+            });
+            assert_meets_fr_nam_060(&format!("{engine_hz} Hz -> {model_hz} Hz"), &into_model);
+
+            let out_of_model = measure(model_hz, engine_hz, band_edge_hz, |input| {
+                let mut resampler = SlotResampler::new(engine, model, 64);
+                stream_fixed(&mut resampler.out_of_model, input)
+            });
+            assert_meets_fr_nam_060(&format!("{model_hz} Hz -> {engine_hz} Hz"), &out_of_model);
+
+            // The whole of FR-NAM-050's "resample ... and resample the result back", which is
+            // what a listener actually hears and where the two halves' errors compound.
+            let round_trip = measure(engine_hz, engine_hz, band_edge_hz, |input| {
+                let mut resampler = SlotResampler::new(engine, model, 64);
+                resampler.resample_only(input)
+            });
+            assert_meets_fr_nam_060(
+                &format!("{engine_hz} Hz -> {model_hz} Hz -> {engine_hz} Hz"),
+                &round_trip,
+            );
+        }
+    }
+
+    /// The measurement's calibration against a *failing* resampler, and the reason the numbers
+    /// above can be believed: a measurement that has never been seen to fail proves nothing.
+    ///
+    /// The resampler here is the pre-M9b configuration — a flat 256-frame chunk regardless of
+    /// rate — at the rate pair where it was worst, 192 kHz engine against a 48 kHz model. Its
+    /// FFT is 64 frames long in the 48 kHz domain, so `rubato::calculate_cutoff` puts the
+    /// passband edge at 0.789 × 24 kHz, and the harness must report the resulting hole. Note
+    /// which half fails: the stopband is fine even here, and always was. Nothing about
+    /// FR-NAM-060's 100 dB was ever in doubt; its 0.1 dB was.
+    #[test]
+    fn frequency_response_measurement_catches_an_undersized_antialias_filter() {
+        let undersized = || {
+            FftFixedInOut::<f32>::new(192_000, 48_000, 256, 1)
+                .expect("both rates are nonzero constants")
+        };
+        assert_eq!(
+            undersized().output_frames_next(),
+            64,
+            "the configuration this test exists to reject should still be the one described"
+        );
+
+        let response = measure(192_000, 48_000, 24_000.0, |input| {
+            stream_fixed(&mut undersized(), input)
+        });
+        assert!(
+            response.ripple_db > 10.0,
+            "the harness should see this filter's hole at 20 kHz, but reported {}",
+            response.summary()
+        );
+        assert!(
+            response
+                .stopband_db
+                .expect("a down-conversion has a stopband")
+                <= -100.0,
+            "even undersized, this resampler's stopband was never the problem: {}",
+            response.summary()
+        );
+    }
+
+    /// [`resample_chunk_frames`] claims to compute the chunk length that makes `rubato` pick a
+    /// particular FFT size, rather than hinting at one and letting it round — `SlotResampler`'s
+    /// round-trip symmetry `debug_assert`s depend on landing exactly. Checks the claim on both
+    /// counts, for every pair the measurement above covers.
+    #[test]
+    fn resample_chunk_frames_lands_exactly_on_rubatos_own_fft_size() {
+        for (engine_hz, model_hz) in MEASURED_RATE_PAIRS {
+            let resampler = SlotResampler::new(
+                SampleRate::new(engine_hz).unwrap(),
+                SampleRate::new(model_hz).unwrap(),
+                64,
+            );
+            assert_eq!(
+                resampler.engine_block,
+                resample_chunk_frames(engine_hz as usize, model_hz as usize),
+                "{engine_hz}/{model_hz}: rubato rounded the requested chunk"
+            );
+            assert!(
+                resampler.engine_block.min(resampler.model_block) >= MIN_RESAMPLE_FFT_FRAMES,
+                "{engine_hz}/{model_hz}: FFT length in the lower rate's domain is {}, below the \
+                 {MIN_RESAMPLE_FFT_FRAMES} frames FR-NAM-060's passband bar needs",
+                resampler.engine_block.min(resampler.model_block)
+            );
+        }
     }
 }

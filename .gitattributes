@@ -11,6 +11,12 @@
 *.flac binary
 *.nam  binary
 *.bin  binary
+# M9b: FR-CFG-020's golden input vector (crates/namir-clap/tests/golden/fr-cfg-020/input.f32) is
+# raw little-endian f32 samples with no container to make its type self-evident. Git's own
+# text/binary heuristic would almost certainly classify it correctly from its NUL bytes, but a
+# golden vector that both product configurations are compared against is exactly the file this
+# section exists to keep out of the heuristic's hands.
+*.f32  binary
 
 # M5, docs/02-architecture.md D-2.5's "Consequence (added M5)" note: namir-state's checked-in
 # corpus (crates/namir-state/tests/corpus/) proves NFR-PORT-050's byte-level portability

@@ -23,6 +23,7 @@ mod preset;
 // resolves either way.
 #[cfg(test)]
 mod release_workflow;
+mod rt_logging;
 mod traceability;
 
 use std::collections::HashMap;
@@ -111,6 +112,57 @@ fn scan_repo_for_platform_cfg(root: &Path) -> Vec<String> {
     }
 
     violations
+}
+
+/// M9b's FR-ERR-030 gate: no audio-thread module in `namir-app`/`namir-clap` may name
+/// `namir-platform`'s logger. See `rt_logging.rs`'s module doc for why the ban is module-scoped,
+/// why file granularity is the honest granularity here, and what it cannot see.
+///
+/// A listed file that cannot be read is a violation rather than a skip: the list is hand-maintained
+/// (`rt_logging::AUDIO_THREAD_MODULES`), so a module that was renamed or moved must fail this gate
+/// loudly instead of quietly dropping out of it.
+fn run_rt_logging(root: &Path) -> bool {
+    let mut violations = Vec::new();
+
+    for (rel, why) in rt_logging::AUDIO_THREAD_MODULES {
+        let path = root.join(rel);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                violations.push(format!(
+                    "{rel}: could not read ({e}) -- this module is on FR-ERR-030's audio-thread \
+                     list because it {why}. If it moved or was renamed, update xtask's \
+                     AUDIO_THREAD_MODULES by hand; do not delete the entry"
+                ));
+                continue;
+            }
+        };
+        for (line, name) in rt_logging::scan_logger_names(&content) {
+            violations.push(format!(
+                "{rel}:{line}: names `{name}` -- FR-ERR-030 forbids logging on the audio thread, \
+                 and this module {why}. Route the diagnostic through a non-audio module the way \
+                 `activate()` routes it through `SharedInner::push_notice`"
+            ));
+        }
+    }
+
+    if violations.is_empty() {
+        println!(
+            "rt-logging: clean (none of the {} audio-thread module(s) names namir-platform's \
+             logger)",
+            rt_logging::AUDIO_THREAD_MODULES.len()
+        );
+        true
+    } else {
+        println!(
+            "rt-logging: {} violation(s) found (FR-ERR-030):",
+            violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
 }
 
 fn run_params_lock(root: &Path, write: bool) -> bool {
@@ -712,7 +764,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
     );
 }
 
@@ -722,6 +774,7 @@ fn main() {
 
     let ok = match args.first().map(String::as_str) {
         Some("layering") => run_layering(&root),
+        Some("rt-logging") => run_rt_logging(&root),
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
@@ -782,6 +835,59 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- FR-ERR-030: the audio-thread logging ban, wired to the real tree --------------------------
+
+    /// The gate as CI runs it. Doubles as the existence check for every path in
+    /// `rt_logging::AUDIO_THREAD_MODULES`, since an unreadable entry is a violation — so a module
+    /// renamed out from under the list fails here as well as in CI.
+    // trace-partial: FR-ERR-030
+    // uncovered: FR-ERR-030 — the S half's logging limb only. The allocation limb is D-7.5's
+    // uncovered: assert_no_alloc harness rather than this check; the "diagnostics ... communicated
+    // uncovered: to a non-real-time thread without blocking" clause is spanned by nothing; and the
+    // uncovered: `plus I` half of the Verify line has no integration test driving a real audio
+    // uncovered: callback and asserting no record was emitted; closes M8
+    #[test]
+    fn the_real_tree_names_no_logger_in_any_audio_thread_module() {
+        assert!(run_rt_logging(&repo_root()));
+    }
+
+    #[test]
+    fn a_listed_audio_thread_module_that_cannot_be_read_is_a_violation() {
+        // The negative control for the check's own wiring, and the mechanism `rt_logging.rs`'s
+        // residual 2 names: the list is hand-maintained, so a path that resolves to nothing must
+        // fail loudly instead of silently un-covering the module.
+        let dir = std::env::temp_dir().join(format!("xtask-rt-logging-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!run_rt_logging(&dir));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_planted_record_call_in_an_audio_thread_module_fails_the_gate() {
+        // The other negative control, and the one that matters: the check fires on the exact hazard
+        // FR-ERR-030 names. Every listed module is copied verbatim into a scratch root and one of
+        // them has a logging call appended, so the tree differs from the real one in precisely that.
+        let dir = std::env::temp_dir().join(format!("xtask-rt-logging-hit-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let root = repo_root();
+        for (rel, _) in rt_logging::AUDIO_THREAD_MODULES {
+            let dest = dir.join(rel);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::copy(root.join(rel), &dest).unwrap();
+        }
+        assert!(run_rt_logging(&dir), "the copy must start clean");
+
+        let victim = dir.join(rt_logging::AUDIO_THREAD_MODULES[0].0);
+        let mut source = std::fs::read_to_string(&victim).unwrap();
+        source
+            .push_str("fn smuggled() {\n    namir_platform::logging::record(CODE, \"oops\");\n}\n");
+        std::fs::write(&victim, source).unwrap();
+        assert!(!run_rt_logging(&dir));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// A minimal synthetic repo root: one `Verify: M` Must, its manual-test document, and a §14
     /// table carrying `chain_count` as 5.1 CHAIN's denominator. Everything else `run_traceability`
