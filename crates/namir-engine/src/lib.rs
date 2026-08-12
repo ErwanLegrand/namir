@@ -17,7 +17,9 @@
 //! see `telemetry_ring`'s module doc for why the sink was given a destination rather than replaced.
 //!
 //! `test_support` has a minimal real stage used only to exercise `Chain` and the RT harness; it is
-//! not one of the six.
+//! not one of the six. `probe` (M14) is the shared probe-signal harness — signals, a block-by-block
+//! runner inside the RT harness, the two fixture loaders and the estimators — and `chain_probes`
+//! holds the chain-level measurements written against it.
 
 mod chain;
 mod command;
@@ -34,6 +36,10 @@ mod telemetry_ring;
 pub mod error_codes;
 pub mod stages;
 
+#[cfg(test)]
+mod chain_probes;
+#[cfg(test)]
+mod probe;
 #[cfg(test)]
 mod rt_harness;
 #[cfg(test)]
