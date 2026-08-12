@@ -524,8 +524,11 @@ write_distribution_xml() {
 		<pkg-ref id="${PKG_ID_DOCS}"/>
 	</choice>
 
-	<!-- The leading `#` is what productbuild's own `--synthesize` output emits: it means "the
-	     component package of this name under --package-path", not a URL. -->
+	<!-- The leading "#" is what productbuild's own synthesized distribution emits: it names the
+	     component package of that name inside the package-path directory, not a URL.
+	     NOTE, and read this before editing any comment in this file: the heredoc that writes this
+	     document is unquoted, so backticks here are command substitutions, and XML forbids a
+	     double hyphen inside a comment. This comment previously contained both. -->
 	<pkg-ref id="${PKG_ID_PLUGIN}" version="${VERSION}">#plugin.pkg</pkg-ref>
 	<pkg-ref id="${PKG_ID_APP}" version="${VERSION}">#app.pkg</pkg-ref>
 	<pkg-ref id="${PKG_ID_DOCS}" version="${VERSION}">#docs.pkg</pkg-ref>
