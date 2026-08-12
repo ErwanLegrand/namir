@@ -33,25 +33,30 @@
 //! Same D-2.1/D-2.2 methodology as `spikes/s1-nam-inference/src/bin/bench.rs` and
 //! `namir-nam/benches/wavenet_inner_loops.rs`, extended to the whole chain: single-core-pinned
 //! (`core_affinity`), 5,000 warmup blocks discarded, >= 100,000 measured blocks of 64 samples at
-//! 48 kHz, p50/p99/p99.9/max reported both as raw time and as a percentage of the 1.333 ms block
-//! period. `chain.process(&mut io)` is called directly, without this crate's `rt_harness::
-//! audio_section` wrapper — that harness exists to turn an accidental allocation into a test
-//! failure (D-7.5), which is a correctness concern for `#[test]`s, not a timing concern for a
-//! `[[bench]]` binary; wrapping every timed call in it here would only add the harness's own
+//! 48 kHz per repetition, D-2.4's >= 5 repetitions, p50/p99/p99.9/max reported as a percentage of
+//! the 1.333 ms block period. `chain.process(&mut io)` is called directly, without this crate's
+//! `rt_harness::audio_section` wrapper — that harness exists to turn an accidental allocation into
+//! a test failure (D-7.5), which is a correctness concern for `#[test]`s, not a timing concern for
+//! a `[[bench]]` binary; wrapping every timed call in it here would only add the harness's own
 //! bookkeeping overhead to every measured sample for no benefit this file needs.
 //!
-//! # Read this before trusting the `p99.9` number this binary prints
+//! Each repetition's durations are kept in **acquisition order** until they are reduced, because
+//! the estimator described below is a function of a block's *index*; the sort happens on a copy.
 //!
-//! An earlier revision of this comment warned that the binary was running on a 4-core Intel Xeon
-//! sandbox rather than `docs/02-architecture.md` §2's pinned reference machine. That is no longer
-//! the situation — M3's close-out ran on the §2 machine itself (AMD Ryzen 9 5950X, 16c/32t,
-//! 64 GB, Windows 11 build 26200, confirmed against §2 rather than assumed). The caveat that
-//! replaces it is different, and sharper: **the raw `p99.9` this binary reports is not
-//! reproducible on a general-purpose desktop, and should not be read as an NFR-PERF-010 verdict.**
+//! # What this binary asserts, and why it asserts *those* statistics
 //!
-//! Measured on the reference machine, across ten consecutive runs of this binary with nothing
-//! changed between them, `p99.9` varied from 17% to 52% of the block period while `p50` stayed
-//! pinned near 7.8%. The causes were found and are documented where they belong:
+//! NFR-PERF-010's `Verify:` is `B, as a CI regression gate`, and the FRS defines `B` as a
+//! "benchmark with a numeric threshold" — so this binary **asserts** the 25% budget rather than
+//! printing a verdict line for a human to read past. Until M9b it printed one, in both branches,
+//! and its own `// trace-partial:` said so.
+//!
+//! The reason that took a milestone to fix is that the obvious assertion is a bad one. A bare
+//! `assert!(p99_9 <= budget)` over a single run of a *per-block audio-thread* measurement is a gate
+//! that fails on a busy machine, and a gate that fails for reasons the code cannot control is one
+//! people learn to ignore — which is worse than one that prints. Measured on the §2 reference
+//! machine across ten consecutive runs of this binary with nothing changed between them, raw
+//! `p99.9` varied from **17% to 52%** of the block period while `p50` stayed pinned near 7.8%. The
+//! causes were found and are documented where they belong:
 //!
 //! - `pin_to_measurement_core` below: pinning to CPU 0 — which every benchmark here used to do —
 //!   put the measurement on the one core absorbing `dxgkrnl.sys`'s 128-512 µs GPU interrupts,
@@ -59,15 +64,76 @@
 //! - Residual run-to-run drift from ordinary background load, which on this machine at times
 //!   doubled `p50` on its own.
 //!
-//! **For a figure that survives all of that, use `benches/tail_structure.rs`**, which reports the
-//! per-residue-minimum estimate of the schedule's own worst-case block. Because interference is
-//! additive and aperiodic while the IR partition schedule is periodic, that estimator returns the
-//! same value on a busy machine as on a quiet one — measured at 15.1-15.5% of the block period
-//! across runs whose raw `p99.9` spanned 47-49% and whose `p50` spanned 14-19%.
+//! So the gate is in **two parts**, with different failure semantics, and neither part is a
+//! statistic that a co-scheduled process can inflate into a false failure:
 //!
-//! This binary is still the one that assembles the real chain, and its `p50` is stable and
-//! trustworthy. It is the raw `p99.9`, and the PASS/FAIL line printed from it, that should be
-//! treated as indicative only.
+//! 1. **The schedule's own worst-case block, asserted unconditionally.** Over the durations kept in
+//!    acquisition order, the largest per-residue minimum modulo [`IR_PERIOD_BLOCKS`] — the same
+//!    contamination-immune estimator `benches/tail_structure.rs` reports and D-2.4 promotes to a
+//!    permanent part of the methodology, computed here so the assertion and the chain assembly live
+//!    in one binary. Interference is additive and aperiodic while the IR partition schedule is
+//!    periodic, so each residue's cheapest occurrence out of ~780 is one that nothing landed on,
+//!    and **nothing can make a block finish faster than its own arithmetic allows**. Background
+//!    load cannot push this number up; only the code can. It is a *necessary* condition for the
+//!    requirement rather than the requirement itself — if the uncontaminated worst block is over
+//!    budget then `p99.9` certainly is — and it is the part that catches a real regression on any
+//!    machine, quiet or not.
+//! 2. **Raw `p99.9`, asserted over every repetition D-2.4 permits quoting.** D-2.2's gate is kept
+//!    exactly as written; D-2.4 explicitly *rejected* replacing it with the estimator, so part 1
+//!    alone would not span the requirement's own wording. What makes this non-flaky is D-2.4's own
+//!    condition 4 rather than a margin invented here: a repetition whose raw `p99.9` substantially
+//!    exceeds its own estimator was contaminated, and its figure "must be discarded, not quoted".
+//!    A discarded repetition is not asserted against. A repetition can therefore only fail this
+//!    assertion by being clean *by D-2.4's own instrument* and over budget at the same time, which
+//!    is a regression and not a busy afternoon.
+//!
+//! [`VALIDITY_MARGIN_PCT`] is where the two parts meet, and it is deliberately set wider than
+//! D-2.4's own "within a couple of percentage points". A *wider* margin retains more repetitions
+//! and so makes part 2 fire **more** often, which is the conservative direction for a gate; set
+//! narrow, it would quietly discard its way into silence on an ordinary developer machine (the
+//! reference machine with this session's own agent tooling running showed gaps of 2.8-9.0 points,
+//! where M3's certified quiet-machine runs showed 1.3-1.9).
+//!
+//! If every repetition is discarded, part 2 does not fire and the binary says so in as many words
+//! — but part 1 has still fired, so the threshold does not evaporate. A `Verify: B` artifact whose
+//! threshold quietly evaporates on the machines it happens to run on is the failure mode
+//! `namir-app/benches/startup_to_audible.rs` is on record against.
+//!
+//! # Measured at M9b on the §2 reference machine, with the assertions in place
+//!
+//! Three runs of this binary, five repetitions each (fifteen in total), pinned to core 4 on
+//! `docs/02-architecture.md` §2's machine — **not** a quiet one: this session's own agent tooling
+//! was running throughout, which is the ordinary condition the gate has to survive.
+//!
+//! | | across 15 repetitions |
+//! |---|---|
+//! | part 1, the estimator | **14.36 - 14.61%** of one core |
+//! | part 2, raw `p99.9`, worst *quotable* repetition per run | **19.28 / 19.37 / 19.44%** |
+//! | raw `p99.9` including discarded repetitions | 17.17 - 23.48% |
+//! | repetitions discarded by D-2.4's validity check | 6 of 15 |
+//! | `p50` | 7.41 - 7.79% |
+//!
+//! The estimator's 0.25-point spread against raw `p99.9`'s 6.3-point spread over the same fifteen
+//! repetitions is the whole argument for part 1 in one line. Sharper still: re-run pinned to
+//! **core 0** — the core `dxgkrnl.sys` puts ~165 interrupts/second of 128-512 µs on — the estimator
+//! read 14.47-14.48% while `max` blew out to 43.23%. Deliberate contamination moved the asserted
+//! statistic by a hundredth of a point. That is what "background load cannot inflate it" means, and
+//! it was checked rather than assumed.
+//!
+//! # The one machine class that cannot run this gate
+//!
+//! NFR-PERF-010's budget is 25% of one core **of the reference machine** (`docs/02-architecture.md`
+//! §2). On slower hardware the requirement states nothing at all, so an absolute 25% assertion
+//! there is not a weaker measurement — it is a meaningless one. [`INFORMATIONAL_ENV`] turns both
+//! parts into an explicit, printed skip for exactly that case, and CI's `nfr-perf-010-chain-bench`
+//! job sets it, because a GitHub-hosted shared runner is precisely the variable hardware D-2.1 pins
+//! a single reference machine *away* from. Do not set it anywhere else, and note what it costs:
+//! `Verify: B, **as a CI regression gate**` is consequently still unspanned by anything in this
+//! repository, which is what this file's `// trace-partial:` now names and all it now names.
+//!
+//! `benches/tail_structure.rs` remains the fuller instrument — residue occupancy, run lengths,
+//! lag-1 autocorrelation and a histogram — and is what to reach for when this binary's two parts
+//! disagree with each other.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -88,8 +154,39 @@ const BLOCK_SIZE: usize = 64;
 const SAMPLE_RATE_HZ: u32 = 48_000;
 const SAMPLE_RATE_F64: f64 = 48_000.0;
 const WARMUP_BLOCKS: usize = 5_000;
-const MEASURED_BLOCKS: usize = 100_000; // >= 100,000 per D-2.2
+const MEASURED_BLOCKS: usize = 100_000; // >= 100,000 per D-2.2, per repetition
 const NFR_PERF_010_BUDGET_PCT: f64 = 25.0;
+
+/// D-2.4 condition 3: ">= 5 repetitions, with the spread reported, never a single run".
+const DEFAULT_REPS: usize = 5;
+/// The same floor, enforced rather than documented: [`REPS_ENV`] is clamped up to it, so no
+/// invocation of this binary can assert from a sample D-2.4 would not let anyone quote.
+const MIN_REPS: usize = 5;
+/// Overrides [`DEFAULT_REPS`] upward. Each repetition is ~12 s on the §2 reference machine.
+const REPS_ENV: &str = "NAMIR_CHAIN_REPS";
+
+/// Set (to anything) to turn both halves of the gate into an explicit, printed skip. For hardware
+/// that is not `docs/02-architecture.md` §2's reference machine — where a 25%-of-one-core budget
+/// states nothing — and for nothing else. CI's `nfr-perf-010-chain-bench` job sets it; see this
+/// file's "The one machine class that cannot run this gate".
+const INFORMATIONAL_ENV: &str = "NAMIR_PERF_010_INFORMATIONAL";
+
+/// D-2.4 condition 4, as a number: how far a repetition's raw `p99.9` may exceed its own
+/// contamination-immune estimator before that repetition counts as contaminated and its figure is
+/// discarded rather than asserted against.
+///
+/// Wider than the decision's own "a clean run has the two within a couple of percentage points",
+/// deliberately and in the safe direction: a wider margin *retains* repetitions, so it makes the
+/// `p99.9` assertion fire more often rather than less. It is still nowhere near wide enough to
+/// admit real contamination — M3 measured contaminated runs at 47-49% raw against a ~15% estimator,
+/// a gap of over thirty points.
+const VALIDITY_MARGIN_PCT: f64 = 5.0;
+
+/// The IR schedule's own period in host blocks at this condition: `DEFAULT_MAX_PARTITION /
+/// BLOCK_SIZE`. Same constant, same reasoning and same staleness check as `tail_structure.rs`'s:
+/// hard-coded so this file stays a passive observer of the schedule rather than a second consumer
+/// of it, and asserted against the real schedule in `main` so it cannot silently drift.
+const IR_PERIOD_BLOCKS: usize = 8192 / BLOCK_SIZE;
 
 /// A fixed seed for the "standard" WaveNet fixture — D-19.1's generated-not-captured corpus,
 /// same shape S-1/R-4 measured (`WaveNetShape::Standard`: the only shape confirmed against
@@ -125,6 +222,65 @@ const EQ_LOW_SHELF_GAIN_DB: f32 = 6.0;
 fn percentile(sorted_nanos: &[u64], p: f64) -> u64 {
     let idx = ((sorted_nanos.len() as f64 - 1.0) * p).round() as usize;
     sorted_nanos[idx]
+}
+
+/// One repetition, reduced. Every field is a percentage of the block period, because that is the
+/// unit NFR-PERF-010's budget is stated in (D-2.1: never wall-clock, always a fraction of one core)
+/// and carrying raw nanoseconds alongside it only invites the two being compared to each other.
+struct Rep {
+    p50: f64,
+    p99: f64,
+    p999: f64,
+    max: f64,
+    /// The contamination-immune estimator: the largest per-residue minimum, i.e. the IR schedule's
+    /// own worst-case block with whatever else the machine was doing subtracted out. See this
+    /// file's "What this binary asserts" section, and `tail_structure.rs` for the fuller argument.
+    estimator: f64,
+}
+
+impl Rep {
+    /// D-2.4 condition 4 as a predicate: may this repetition's raw `p99.9` be quoted at all?
+    ///
+    /// "If raw p99.9 substantially exceeds the estimator, the run was contaminated and the figure
+    /// must be discarded, not quoted." A figure that may not be quoted may not be asserted against
+    /// either — that is the whole reason this benchmark can carry an absolute threshold without
+    /// becoming a coin flip on a shared desktop.
+    fn is_quotable(&self) -> bool {
+        self.p999 - self.estimator <= VALIDITY_MARGIN_PCT
+    }
+}
+
+/// Reduces one repetition's per-block durations — **in acquisition order** — to a [`Rep`].
+///
+/// The estimator is a function of each block's index, so the ordering must survive to here; every
+/// other benchmark in this workspace sorts in place at the point of measurement and destroys it.
+/// The sort below is on a copy for exactly that reason.
+fn analyse(durations_ns: &[u64], block_period_ns: u64) -> Rep {
+    let pct = |v: u64| v as f64 / block_period_ns as f64 * 100.0;
+
+    let mut per_residue_min = [u64::MAX; IR_PERIOD_BLOCKS];
+    for (i, &v) in durations_ns.iter().enumerate() {
+        let r = i % IR_PERIOD_BLOCKS;
+        per_residue_min[r] = per_residue_min[r].min(v);
+    }
+    let estimator = per_residue_min
+        .iter()
+        .copied()
+        .filter(|&v| v != u64::MAX)
+        .max()
+        .expect("MEASURED_BLOCKS far exceeds IR_PERIOD_BLOCKS, so every residue is populated");
+
+    let mut sorted = durations_ns.to_vec();
+    sorted.sort_unstable();
+    Rep {
+        p50: pct(percentile(&sorted, 0.50)),
+        p99: pct(percentile(&sorted, 0.99)),
+        p999: pct(percentile(&sorted, 0.999)),
+        max: pct(*sorted
+            .last()
+            .expect("a repetition measures MEASURED_BLOCKS blocks")),
+        estimator: pct(estimator),
+    }
 }
 
 /// A small, seeded, dependency-free xorshift64* generator for the per-block driving signal —
@@ -240,10 +396,14 @@ fn pin_to_measurement_core() {
 }
 
 // trace-partial: NFR-PERF-010
-// uncovered: NFR-PERF-010 — the Verify: B threshold is printed, never asserted: both branches of
-// uncovered: the p99.9-against-25%-of-one-core comparison print "indicative only", the binary's
-// uncovered: only assertions being on channel count and fault count, and the CI job that runs it
-// uncovered: is named informational by its own design; closes M9b
+// uncovered: NFR-PERF-010 — the "as a CI regression gate" half of Verify: B. M9b made the
+// uncovered: threshold an in-process assertion twice over (the contamination-immune estimator
+// uncovered: unconditionally, raw p99.9 over every repetition D-2.4 permits quoting), but the
+// uncovered: budget is 25% of one core of the 02-architecture.md section 2 reference machine and
+// uncovered: CI runs on GitHub-hosted shared runners, so ci.yml's nfr-perf-010-chain-bench job
+// uncovered: sets NAMIR_PERF_010_INFORMATIONAL and asserts nothing: no automated runner anywhere
+// uncovered: in this project gates on this number, which is what the requirement's method asks
+// uncovered: for and would need a self-hosted runner on that machine; closes M8
 fn main() {
     // Pin to one core, per D-2.1: every figure is single-core, and cross-core migration would
     // pollute the tail with scheduler noise unrelated to the chain's own cost.
@@ -330,10 +490,55 @@ fn main() {
     let mut chain = Chain::new(stages);
     chain.prepare_crosscutting(&ctx);
 
+    // The estimator below is periodic in the IR schedule's own period, so confirm the constant
+    // against the real schedule rather than trusting it -- same check, same reason, as
+    // `tail_structure.rs`'s.
+    let schedule = namir_ir::build_schedule(
+        IR_LEN_SAMPLES,
+        BLOCK_SIZE,
+        namir_ir::DEFAULT_GROWTH_FACTOR,
+        namir_ir::DEFAULT_MAX_PARTITION,
+    );
+    let largest = schedule.iter().map(|s| s.size).max().unwrap_or(BLOCK_SIZE);
+    assert_eq!(
+        largest / BLOCK_SIZE,
+        IR_PERIOD_BLOCKS,
+        "IR_PERIOD_BLOCKS is stale relative to the real schedule, so the contamination-immune \
+         estimator this binary asserts on would be computed modulo the wrong period"
+    );
+
+    let reps = std::env::var(REPS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_REPS)
+        .max(MIN_REPS);
+    let block_period_ns = (BLOCK_SIZE as f64 / SAMPLE_RATE_F64 * 1e9) as u64;
+
+    println!("=== NFR-PERF-010: REAL six-stage chain (gate -> trim -> nam -> ir -> eq -> out) ===");
+    println!(
+        "48 kHz, {BLOCK_SIZE}-sample blocks, standard WaveNet, 2 s stereo IR, gate + EQ active"
+    );
+    println!(
+        "{reps} repetitions (D-2.4) x {MEASURED_BLOCKS} measured blocks (D-2.2), warmup \
+         {WARMUP_BLOCKS} discarded"
+    );
+    println!(
+        "block period (D-2.1): {block_period_ns} ns ({:.4} ms); budget \
+         {NFR_PERF_010_BUDGET_PCT:.0}% of one core of the section 2 reference machine",
+        block_period_ns as f64 / 1e6
+    );
+    println!(
+        "estimator = largest per-residue minimum mod {IR_PERIOD_BLOCKS} blocks: the IR schedule's \
+         own worst-case block, which background load cannot inflate\n"
+    );
+
     let mut left = vec![0f32; BLOCK_SIZE];
     let mut right = vec![0f32; BLOCK_SIZE];
     let mut rng_state = 0xC0DE_CAFEu64 ^ 0x9E37_79B9_7F4A_7C15;
 
+    // Warmed once, not once per repetition. The repetitions exist to sample D-2.4's spread, whose
+    // source is the machine rather than this chain's own state, and a chain that has already run
+    // 105,000 blocks is not going to become colder between two of them.
     for _ in 0..WARMUP_BLOCKS {
         gen_block(&mut rng_state, &mut left);
         right.copy_from_slice(&left);
@@ -344,82 +549,140 @@ fn main() {
     }
 
     let mut durations_ns = Vec::with_capacity(MEASURED_BLOCKS);
-    for _ in 0..MEASURED_BLOCKS {
-        gen_block(&mut rng_state, &mut left);
-        right.copy_from_slice(&left);
-        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
-        let mut io = StageIo::new(&mut channels, BLOCK_SIZE);
-        let start = Instant::now();
-        chain.process(&mut io);
-        let elapsed = start.elapsed();
-        std::hint::black_box(io.channel(0));
-        durations_ns.push(elapsed.as_nanos() as u64);
-    }
+    let mut measured = Vec::with_capacity(reps);
+    for rep in 1..=reps {
+        durations_ns.clear();
+        for _ in 0..MEASURED_BLOCKS {
+            gen_block(&mut rng_state, &mut left);
+            right.copy_from_slice(&left);
+            let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+            let mut io = StageIo::new(&mut channels, BLOCK_SIZE);
+            let start = Instant::now();
+            chain.process(&mut io);
+            let elapsed = start.elapsed();
+            std::hint::black_box(io.channel(0));
+            durations_ns.push(elapsed.as_nanos() as u64);
+        }
 
-    assert_eq!(
-        chain.fault_count(),
-        0,
-        "the measured run must not have hit FR-CHAIN-080's NaN/Inf fault path"
-    );
-
-    durations_ns.sort_unstable();
-    let p50 = percentile(&durations_ns, 0.50);
-    let p99 = percentile(&durations_ns, 0.99);
-    let p999 = percentile(&durations_ns, 0.999);
-    let max = *durations_ns.last().unwrap();
-
-    let block_period_ns = (BLOCK_SIZE as f64 / SAMPLE_RATE_F64 * 1e9) as u64;
-
-    println!("=== NFR-PERF-010: REAL six-stage chain (gate -> trim -> nam -> ir -> eq -> out) ===");
-    println!(
-        "48 kHz, {BLOCK_SIZE}-sample blocks, standard WaveNet, 2 s stereo IR, gate + EQ active"
-    );
-    println!(
-        "*** raw p99.9 below is NOT reproducible run-to-run on a general-purpose desktop \
-         (measured 17%-52% across ten identical runs with p50 stable) -- for a figure that \
-         survives background load, use benches/tail_structure.rs; see this file's doc comment ***"
-    );
-    println!("blocks measured: {MEASURED_BLOCKS} (warmup {WARMUP_BLOCKS} discarded)");
-    println!(
-        "block period (D-2.1): {block_period_ns} ns ({:.4} ms)",
-        block_period_ns as f64 / 1e6
-    );
-    for (label, v) in [
-        ("p50", p50),
-        ("p99", p99),
-        ("p99.9 (D-2.2 gate)", p999),
-        ("max", max),
-    ] {
-        let pct = v as f64 / block_period_ns as f64 * 100.0;
-        println!(
-            "  {label}: {v} ns ({:.4} ms) = {pct:.2}% of block period",
-            v as f64 / 1e6
+        assert_eq!(
+            chain.fault_count(),
+            0,
+            "the measured run must not have hit FR-CHAIN-080's NaN/Inf fault path"
         );
+
+        let r = analyse(&durations_ns, block_period_ns);
+        println!(
+            "rep {rep:>2}/{reps}: p50 {:>6.2}% | p99 {:>6.2}% | p99.9 {:>6.2}% | max {:>6.2}% | \
+             estimator {:>6.2}% | gap {:>6.2} pts -> {}",
+            r.p50,
+            r.p99,
+            r.p999,
+            r.max,
+            r.estimator,
+            r.p999 - r.estimator,
+            if r.is_quotable() {
+                "quotable"
+            } else {
+                "DISCARDED (D-2.4)"
+            }
+        );
+        measured.push(r);
     }
 
-    let p999_pct = p999 as f64 / block_period_ns as f64 * 100.0;
+    verdict(&measured);
+}
+
+/// The whole gate, in one place: both assertions, the discard rule between them, and the one
+/// opt-out. Separated from `main` so the measurement above reads as measurement and this reads as
+/// adjudication — and so there is exactly one place to look for what this binary actually enforces.
+fn verdict(reps: &[Rep]) {
+    // The estimator can only be pushed *up* by interference, never down, so the smallest of the
+    // repetitions' estimates is the least-contaminated view of the schedule's own worst block.
+    let best_estimator = reps
+        .iter()
+        .map(|r| r.estimator)
+        .fold(f64::INFINITY, f64::min);
+    let quotable: Vec<&Rep> = reps.iter().filter(|r| r.is_quotable()).collect();
+    let worst_p999 = quotable
+        .iter()
+        .map(|r| r.p999)
+        .fold(f64::NEG_INFINITY, f64::max);
+
     println!();
     println!(
-        "raw p99.9 (single core, D-2.2): {p999_pct:.2}% of one core (budget: \
-         {NFR_PERF_010_BUDGET_PCT:.0}%)"
+        "part 1 -- schedule's own worst-case block (contamination-immune): {best_estimator:.2}% \
+         of one core, best of {} repetitions",
+        reps.len()
     );
-    if p999_pct <= NFR_PERF_010_BUDGET_PCT {
+    if quotable.is_empty() {
         println!(
-            "  indicative only: {p999_pct:.2}% <= {NFR_PERF_010_BUDGET_PCT:.0}% on THIS run. Do \
-             not read as an NFR-PERF-010 pass -- this statistic measured 17%-52% across ten \
-             identical runs on the reference machine, so a single favourable run means little."
+            "part 2 -- raw p99.9 (D-2.2's gate): NOT ASSERTED. Every one of {} repetitions failed \
+             D-2.4's own validity check (raw p99.9 more than {VALIDITY_MARGIN_PCT:.0} points above \
+             its own estimator), and a figure D-2.4 says must be discarded rather than quoted is \
+             not one to gate on. The machine was not quiet; part 1 above still applies.",
+            reps.len()
         );
     } else {
         println!(
-            "  indicative only: {p999_pct:.2}% > {NFR_PERF_010_BUDGET_PCT:.0}% on THIS run. Do \
-             not read as an NFR-PERF-010 failure either -- most of the excess over p50 on this \
-             machine was traced to interference outside Namir (GPU-driver ISRs, kernel DPCs, \
-             background load), not to the chain's own cost."
+            "part 2 -- raw p99.9 (D-2.2's gate): {worst_p999:.2}% of one core, worst of the {} \
+             repetition(s) of {} that D-2.4 permits quoting",
+            quotable.len(),
+            reps.len()
         );
     }
+
+    // Printed first, asserted second, on the house pattern from
+    // `crates/namir-worker/benches/resource_load.rs`: a failing run still leaves every measured row
+    // above the panic, which is what a reader needs in order to judge the run at all.
+    if std::env::var(INFORMATIONAL_ENV).is_ok() {
+        println!(
+            "\nINFORMATIONAL ({INFORMATIONAL_ENV} is set) -- NOTHING ASSERTED. NFR-PERF-010's \
+             budget is {NFR_PERF_010_BUDGET_PCT:.0}% of one core of a specific machine \
+             (02-architecture.md section 2); on any other hardware the requirement states nothing, \
+             so the figures above are a report and not a verdict."
+        );
+        return;
+    }
+
+    assert!(
+        best_estimator <= NFR_PERF_010_BUDGET_PCT,
+        "NFR-PERF-010 (part 1): the IR schedule's own worst-case block measured \
+         {best_estimator:.2}% of one core, over the {NFR_PERF_010_BUDGET_PCT:.0}% budget, on the \
+         least-contaminated of {} repetitions. This statistic is a per-residue MINIMUM: background \
+         load cannot inflate it, so unlike raw p99.9 this is not something a busy machine explains \
+         away -- either the chain's own per-block cost regressed, or this is not the section 2 \
+         reference machine (in which case set {INFORMATIONAL_ENV}, and read this file's \"The one \
+         machine class that cannot run this gate\")",
+        reps.len()
+    );
+
+    if quotable.is_empty() {
+        println!(
+            "\nPARTIAL PASS: part 1 held at {best_estimator:.2}% against the \
+             {NFR_PERF_010_BUDGET_PCT:.0}% budget. Part 2 did not run -- quieten the machine and \
+             re-run to exercise D-2.2's own statistic."
+        );
+        return;
+    }
+
+    assert!(
+        worst_p999 <= NFR_PERF_010_BUDGET_PCT,
+        "NFR-PERF-010 (part 2): raw p99.9 measured {worst_p999:.2}% of one core, over the \
+         {NFR_PERF_010_BUDGET_PCT:.0}% budget, on the worst of the {} repetition(s) of {} that \
+         passed D-2.4's validity check -- i.e. on a repetition whose p99.9 sat within \
+         {VALIDITY_MARGIN_PCT:.0} points of its own contamination-immune estimator, which is what \
+         makes this reading D-2.4-quotable rather than a busy-machine artifact. The estimator read \
+         {best_estimator:.2}%. Re-run >= 5 times on a verified-quiet machine before believing it, \
+         and note that a certified figure is a section 2 reference-machine figure only",
+        quotable.len(),
+        reps.len()
+    );
+
     println!(
-        "  For the contamination-immune figure -- the schedule's own worst-case block, which \
-         returns the same value on a busy machine as a quiet one -- run \
-         `cargo bench -p namir-engine --bench tail_structure`."
+        "\nPASS: both parts inside NFR-PERF-010's {NFR_PERF_010_BUDGET_PCT:.0}% budget -- the \
+         schedule's own worst block at {best_estimator:.2}%, and D-2.2's raw p99.9 at \
+         {worst_p999:.2}% on the worst repetition D-2.4 lets us quote. A *certified* figure is one \
+         measured on 02-architecture.md section 2's machine, quiet, and this line is not by itself \
+         evidence that it was."
     );
 }

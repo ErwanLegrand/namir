@@ -642,9 +642,20 @@ jobs:
   # too variable to regress against"). A shared, variable-hardware CI runner can never certify
   # NFR-PERF-010's percentage; it can only build the benchmark, run it, and preserve the numbers
   # for a human to look at. Final NFR-PERF-010 sign-off against the literal pinned reference
-  # machine remains a manual pre-1.0 step -- do not "fix" this job by adding a threshold; that
-  # would fail the build on noise from runner hardware this project has explicitly decided not to
-  # regress against.
+  # machine remains a manual pre-1.0 step -- do not "fix" this job by removing the environment
+  # variable below; that would fail the build on runner hardware this project has explicitly
+  # decided not to regress against.
+  #
+  # Since M9b the benchmark itself **asserts** the 25% budget by default (twice: on a
+  # contamination-immune per-residue-minimum estimator unconditionally, and on raw p99.9 over every
+  # repetition D-2.4 permits quoting) -- the `Verify: B` the FRS asks for, which the binary
+  # previously only printed. NAMIR_PERF_010_INFORMATIONAL turns both assertions into an explicit,
+  # printed skip, which is correct *here specifically*: the budget is 25% of one core **of the
+  # reference machine**, so on a slower shared runner an absolute 25% assertion is not a weaker
+  # measurement but a meaningless one. The consequence is booked honestly rather than glossed --
+  # the "as a CI regression gate" half of NFR-PERF-010's `Verify:` remains unspanned, and the
+  # `// trace-partial:` above that benchmark's `main` says exactly that. Closing it needs a
+  # self-hosted runner on the §2 machine, not a threshold on this one.
   nfr-perf-010-chain-bench:
     name: NFR-PERF-010 chain benchmark (informational)
     runs-on: ubuntu-latest
@@ -656,6 +667,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo bench -p namir-engine --bench six_stage_chain
+        env:
+          NAMIR_PERF_010_INFORMATIONAL: "1"
         run: cargo bench -p namir-engine --bench six_stage_chain | tee six-stage-chain-bench.txt
 
       - uses: actions/upload-artifact@v4
