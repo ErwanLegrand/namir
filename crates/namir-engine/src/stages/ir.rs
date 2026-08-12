@@ -1147,6 +1147,61 @@ mod tests {
         );
     }
 
+    /// **FR-CHAIN-020's "U per stage" limb for this stage**, which nothing executed until M14:
+    /// `disabled_stage_is_passthrough_even_with_an_ir_loaded` below applies `ENABLED = 0` *before
+    /// any audio is processed* and then asserts a steady state, so it never sees a bypass toggle —
+    /// the requirement's "without an audible click or discontinuity" was untested here.
+    ///
+    /// A constant input, exactly as `gate.rs`'s and `nam.rs`'s counterparts use, so every step
+    /// measured belongs to the crossfade and none to the signal. The bound is this stage's own
+    /// [`BYPASS_CROSSFADE_TIME_CONSTANT_MS`] one-pole: at most `range · (1 − e^(−1/τ))` per sample.
+    // trace: FR-CHAIN-020
+    #[test]
+    fn bypass_toggle_mid_signal_is_click_free() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Mono);
+        // A multi-tap IR with a large DC gain, so bypassing it is a big, unambiguous change.
+        stage.load_ir(mono_ir(sample_rate, &[0.9f32, 0.7, 0.5, 0.3], 64));
+
+        let value = 0.2f32;
+        let settled_wet = *process_constant_in_chunks(&mut stage, 48_000, value)
+            .last()
+            .expect("the settle run produced output");
+        let range = (settled_wet - value).abs();
+        assert!(
+            range > 1e-3,
+            "the convolved output is indistinguishable from its input ({settled_wet} vs {value}), \
+             so bypassing it changes nothing and this test would pass vacuously"
+        );
+
+        stage.apply(ParamChange {
+            id: ENABLED_ID,
+            value: 0.0,
+        });
+        let out = process_constant_in_chunks(&mut stage, 9_600, value);
+
+        let mut prev = settled_wet;
+        let mut max_delta = 0.0f32;
+        for &s in &out {
+            max_delta = max_delta.max((s - prev).abs());
+            prev = s;
+        }
+
+        let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * f64::from(sample_rate);
+        let ideal_max_delta = range * (1.0 - (-1.0 / tau_samples).exp()) as f32;
+        assert!(
+            max_delta <= ideal_max_delta * 1.01,
+            "max_delta={max_delta} exceeds the {BYPASS_CROSSFADE_TIME_CONSTANT_MS} ms one-pole's \
+             own steepest step {ideal_max_delta} across a range of {range}"
+        );
+        assert!(max_delta > 0.0, "the bypass blend never advanced");
+        let tail = *out.last().unwrap();
+        assert!(
+            (tail - value).abs() < 1e-3,
+            "expected the bypassed stage to settle onto its input, got {tail} vs {value}"
+        );
+    }
+
     #[test]
     fn disabled_stage_is_passthrough_even_with_an_ir_loaded() {
         let sample_rate = 48_000;
@@ -1208,12 +1263,206 @@ mod tests {
         (buf[total - 1], last_input)
     }
 
-    // trace-partial: FR-IR-070
-    // uncovered: FR-IR-070 — of the four controls the "U per control" method names, the low cut's
-    // uncovered: 20-500 Hz and high cut's 1 kHz-20 kHz ranges are set by no test:
-    // uncovered: LOW_CUT_FREQ_HZ_ID and HIGH_CUT_FREQ_HZ_ID appear only in their declarations and
-    // uncovered: live apply arms, and both cut tests run at the descriptor defaults probing DC
-    // uncovered: and Nyquist, which is blind to the corner frequency; closes M8
+    /// The rate every test in this module runs at.
+    const TEST_SR: f64 = 48_000.0;
+    /// Discarded before measuring: 100 ms, many times any of these filters' settling times, and
+    /// long enough for the handover and bypass blends `identity_stage` starts to be long gone.
+    const PROBE_WARMUP: usize = 4_800;
+    /// The measurement window: 0.5 s, so any *even* probe frequency completes a whole number of
+    /// cycles inside it and the single-bin DFT below needs no window function. Same apparatus, and
+    /// same reasoning, as `eq.rs`'s FR-EQ-010 probe.
+    const PROBE_WINDOW: usize = 24_000;
+    /// Probe amplitude, well inside `f32`'s comfortable range at every setting swept below.
+    const PROBE_AMPLITUDE: f32 = 0.2;
+
+    /// `stage`'s measured magnitude response at `probe_hz`, in dB, through the real
+    /// `Stage::process` path. See `eq.rs`'s identical helper for the single-bin-DFT reasoning.
+    fn measure_magnitude_db(stage: &mut IrStage, probe_hz: f64) -> f64 {
+        assert!(
+            probe_hz.fract() == 0.0 && (probe_hz as u64).is_multiple_of(2),
+            "probe frequencies must be even integers so {PROBE_WINDOW} samples is a whole number \
+             of cycles; got {probe_hz}"
+        );
+        let total = PROBE_WARMUP + PROBE_WINDOW;
+        let mut buf: Vec<f32> = (0..total)
+            .map(|n| {
+                (f64::from(PROBE_AMPLITUDE)
+                    * (std::f64::consts::TAU * probe_hz * n as f64 / TEST_SR).sin())
+                    as f32
+            })
+            .collect();
+
+        let mut offset = 0usize;
+        while offset < total {
+            let end = (offset + 64).min(total);
+            let n = end - offset;
+            let mut channels: [&mut [f32]; 1] = [&mut buf[offset..end]];
+            let mut io = StageIo::new(&mut channels, n);
+            audio_section(|| stage.process(&mut io));
+            offset = end;
+        }
+
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, &s) in buf[PROBE_WARMUP..].iter().enumerate() {
+            let w = std::f64::consts::TAU * probe_hz * n as f64 / TEST_SR;
+            re += f64::from(s) * w.cos();
+            im += f64::from(s) * w.sin();
+        }
+        let amplitude = 2.0 * (re * re + im * im).sqrt() / (total - PROBE_WARMUP) as f64;
+        20.0 * (amplitude / f64::from(PROBE_AMPLITUDE)).log10()
+    }
+
+    /// **FR-IR-070's table, control by control.** The requirement tabulates a range and a default
+    /// for all four controls and nothing read any of them back — `params.lock` records key, id,
+    /// kind tag and smoothing and carries no bounds, so every number below could change with the
+    /// manifest untouched. Read off the descriptors this stage seeds itself from in `prepare`.
+    #[test]
+    fn every_control_matches_the_range_and_default_the_requirement_tabulates() {
+        for (descriptor, min, max, default) in [
+            (LEVEL_DB, -24.0f32, 24.0f32, 0.0f32),
+            (LOW_CUT_FREQ_HZ, 20.0, 500.0, 80.0),
+            (HIGH_CUT_FREQ_HZ, 1_000.0, 20_000.0, 8_000.0),
+        ] {
+            let ParamKind::Continuous {
+                min: got_min,
+                max: got_max,
+                default: got_default,
+            } = descriptor.kind
+            else {
+                panic!("{} must be Continuous", descriptor.key);
+            };
+            assert_eq!(got_min, min, "{}: minimum", descriptor.key);
+            assert_eq!(got_max, max, "{}: maximum", descriptor.key);
+            assert_eq!(got_default, default, "{}: default", descriptor.key);
+        }
+
+        // The three stepped controls: "on / off" for the stage, and "off, or <range>" for each cut,
+        // whose "off" is the separate enable the table folds into the same cell.
+        for (descriptor, default_index) in [
+            (ENABLED, 1usize),
+            (LOW_CUT_ENABLED, 0),
+            (HIGH_CUT_ENABLED, 0),
+        ] {
+            let ParamKind::Stepped {
+                values,
+                default_index: got,
+            } = descriptor.kind
+            else {
+                panic!("{} must be Stepped", descriptor.key);
+            };
+            assert_eq!(values, &["Off", "On"], "{}: named values", descriptor.key);
+            assert_eq!(
+                got.0 as usize, default_index,
+                "{}: default index",
+                descriptor.key
+            );
+        }
+    }
+
+    /// **FR-IR-070's low cut and high cut, at corners across their tabulated ranges.** Both cut
+    /// tests below run at the descriptor defaults and probe DC and Nyquist, which is blind to where
+    /// the corner actually sits: `LOW_CUT_FREQ_HZ_ID` and `HIGH_CUT_FREQ_HZ_ID` were written by
+    /// nothing in the workspace outside their own declarations and `apply` arms.
+    ///
+    /// Each corner is checked at the one frequency that pins it — its own — against the −3.0103 dB
+    /// a Butterworth-aligned second-order section has there, plus an octave either side to show the
+    /// slope runs the right way. The stage is otherwise an identity IR, so what is measured is the
+    /// filter and not the convolution.
+    // trace: FR-IR-070
+    #[test]
+    fn each_cut_corner_lands_where_the_parameter_puts_it() {
+        /// A Butterworth-aligned second-order corner, exactly.
+        const MINUS_THREE_DB: f64 = -3.010_299_956_639_812;
+        /// The stage designs its cuts in `f64` and runs them in `f32`; a tenth of a dB is the
+        /// tolerance FR-EQ-010 states for the same filters in the EQ stage, reused here.
+        const TOLERANCE_DB: f64 = 0.1;
+
+        // Every corner (and its half and double) is an even integer, which is what
+        // [`measure_magnitude_db`]'s whole-number-of-cycles requirement needs.
+        for corner in [20.0f64, 80.0, 240.0, 500.0] {
+            let mut stage = identity_stage(48_000);
+            stage.apply(ParamChange {
+                id: LOW_CUT_ENABLED_ID,
+                value: 1.0,
+            });
+            stage.apply(ParamChange {
+                id: LOW_CUT_FREQ_HZ_ID,
+                value: corner as f32,
+            });
+
+            let at_corner = measure_magnitude_db(&mut stage, corner);
+            assert!(
+                (at_corner - MINUS_THREE_DB).abs() < TOLERANCE_DB,
+                "low cut at {corner} Hz measures {at_corner:.4} dB at its own corner, not -3.01 dB"
+            );
+
+            // An octave below is ~12 dB down, an octave above ~1 dB down: asserted as an ordering
+            // rather than as figures, so this stays a statement about the corner's *placement*.
+            let below = measure_magnitude_db(&mut stage, corner / 2.0);
+            let above = measure_magnitude_db(&mut stage, corner * 2.0);
+            assert!(
+                below < at_corner - 3.0 && above > at_corner + 1.0,
+                "low cut at {corner} Hz is not sloped around its corner: {below:.2} / \
+                 {at_corner:.2} / {above:.2} dB at half, at, and twice the corner"
+            );
+        }
+
+        for corner in [1_000.0f64, 8_000.0, 20_000.0] {
+            let mut stage = identity_stage(48_000);
+            stage.apply(ParamChange {
+                id: HIGH_CUT_ENABLED_ID,
+                value: 1.0,
+            });
+            stage.apply(ParamChange {
+                id: HIGH_CUT_FREQ_HZ_ID,
+                value: corner as f32,
+            });
+
+            let at_corner = measure_magnitude_db(&mut stage, corner);
+            assert!(
+                (at_corner - MINUS_THREE_DB).abs() < TOLERANCE_DB,
+                "high cut at {corner} Hz measures {at_corner:.4} dB at its own corner, not -3.01 dB"
+            );
+
+            let below = measure_magnitude_db(&mut stage, corner / 2.0);
+            assert!(
+                below > at_corner + 1.0,
+                "high cut at {corner} Hz is not sloped around its corner: {below:.2} dB at half \
+                 the corner against {at_corner:.2} dB at it"
+            );
+            // Above the corner only where there is room for it below Nyquist.
+            if corner * 2.0 <= 20_000.0 {
+                let above = measure_magnitude_db(&mut stage, corner * 2.0);
+                assert!(
+                    above < at_corner - 3.0,
+                    "high cut at {corner} Hz does not roll off above its corner: {above:.2} dB at \
+                     twice it against {at_corner:.2} dB at it"
+                );
+            }
+        }
+    }
+
+    /// **FR-IR-070's Level control across its tabulated −24…+24 dB range**, both endpoints and the
+    /// 0 dB default, where `level_db_is_applied_once_settled` below checks one interior value.
+    // trace: FR-IR-070
+    #[test]
+    fn level_spans_its_whole_tabulated_range() {
+        for level_db in [-24.0f32, -12.0, 0.0, 12.0, 24.0] {
+            let mut stage = identity_stage(48_000);
+            stage.apply(ParamChange {
+                id: LEVEL_DB_ID,
+                value: level_db,
+            });
+            let dc = 0.03f32; // +24 dB of it is still comfortably inside full scale.
+            let tail = process_constant_tail(&mut stage, 48_000, dc);
+            let measured_db = linear_to_db(tail / dc);
+            assert!(
+                (measured_db - level_db).abs() < 0.1,
+                "level {level_db} dB measured {measured_db} dB"
+            );
+        }
+    }
+
     #[test]
     fn low_cut_enabled_blocks_dc_and_passes_near_nyquist() {
         let sample_rate = 48_000;

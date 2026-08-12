@@ -92,6 +92,14 @@ harness = false
 name = "handover_crossfade"
 harness = false
 
+# M14: NFR-RT-040's verification (Verify method B). Its annotation lived on `tail_structure` until
+# M14, which drives one material at one amplitude with the parameters set once and asserts nothing;
+# this one drives nine content/parameter conditions interleaved and asserts the invariance the
+# requirement states. Gates NFR-RT-040 itself. See the file's own doc comment.
+[[bench]]
+name = "rt_invariance"
+harness = false
+
 # M6: NFR-RT-030's verification (Verify method B), open since M1 built `DenormalGuard` with no
 # audio path ever acquiring it and no benchmark ever built to check it -- see the file's own doc
 # comment for the full history and methodology. Gates NFR-RT-030 itself, not NFR-PERF-010.
