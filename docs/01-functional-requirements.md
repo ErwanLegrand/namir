@@ -717,6 +717,33 @@ gate in CI.
 FR-CHAIN-060 and shall correctly negotiate the configuration the host requests.
 *Verify:* I across at least two host implementations.
 
+*Consequence (added M9b's P0 decision pass, 2026-08-12; settles roadmap §15 item 9) — 1.0 declares
+the **Stereo configuration only**, and this is an accepted scope reduction rather than an
+outstanding defect.* FR-CHAIN-060 names three configurations (Mono, Mono→stereo, Stereo);
+`crates/namir-clap/src/audio_ports_ext.rs` declares Stereo alone and does not implement CLAP's
+`audio-ports-config` extension, which is what would let a host choose among several. The reduction
+has been in force and recorded honestly since M6 — in that module's own doc comment and in
+`docs/manual-tests/fr-clap-030-audio-ports-negotiation.md` — but only ever as an implementation
+note. **This is the decision that was missing**, and the requirement text above is deliberately left
+unamended: the FRS states what Namir must do, and lowering it to match what was built would erase
+the gap rather than record it.
+
+*What this means for the requirement's disposition, stated so no later pass has to re-derive it:*
+FR-CLAP-030 is covered by a `// trace-partial:` and **stays partial for 1.0**. The unspanned member
+is the negotiation limb — one configuration of the three — and D-23.1's enumerated-set rule bites
+regardless of how many host implementations exercise it, so satisfying the "at least two host
+implementations" clause (the in-process `clack-host` harness and the commit-pinned `clap-validator`
+CI job are two genuinely independent hosts) does **not** promote the tag. A partial counts as
+covered for `xtask traceability`, so this does not obstruct NFR-QUAL-010 closing at M9b; it does
+mean 5.12 CLAP cannot read **Done** in the roadmap's §14 table while it stands.
+
+*Rejected: implementing `audio-ports-config` at M9b.* It is the only option that meets this
+requirement as written, and it remains the route to a plain tag whenever it is taken. It was
+declined here because M9b is scoped to verification infrastructure and this is a feature touching
+the audio path — the reduction has stood unremarked for four milestones, and the fix for that is to
+write it down, not to bundle an audio-path change into the milestone that flips the traceability
+gate. *Rejected outright: leaving it unrecorded*, which is the disposition M9 exists to end.
+
 **FR-CLAP-040 (Must)** — The plugin shall report its total latency in samples and shall notify the
 host whenever that latency changes, including as a result of a model change under FR-NAM-050.
 *Verify:* I.

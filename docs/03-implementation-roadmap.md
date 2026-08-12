@@ -2455,7 +2455,7 @@ that happens to depend on them first.
    way until M13 — and one thing this item did not know: FR-UI-110's *window* icon is blocked in M12
    as well, `baseview` 0.2.2's `WindowOpenOptions` having no icon field at all, so the two clauses
    defer together rather than one moving and one landing. **Deferred to M13 (§20 below).**
-8. **Whether the plugin configuration ever gets a persisted verbosity setting, or stays
+8. ~~**Whether the plugin configuration ever gets a persisted verbosity setting, or stays
    environment-variable-only.** Raised 2026-08-08 by M9's P0 decision pass while settling
    `02-architecture.md` **D-16.5**. D-16.4 says FR-ERR-010's verbosity is "configurable from
    settings and overridable by an environment variable", and in the standalone application both
@@ -2471,8 +2471,23 @@ that happens to depend on them first.
    worth of value; or move the verbosity level into a shared, non-preset settings record both shells
    read, which is the general fix and the largest. **Due before M8**, since it is a user-guide and
    support-story question rather than an engine one, and cheap to answer while D-16.5's own text is
-   fresh.
-9. **Whether FR-CLAP-030 ships with a single Stereo port configuration.** Raised 2026-08-08 in M9's
+   fresh.~~
+   **Resolved 2026-08-12, at M9b's start: the first answer — environment-variable-only for the
+   plugin in 1.0**, recorded as a dated Consequence note on **D-16.5** itself rather than as a new
+   decision, because D-16.5's level-resolution rule already reads "the persisted setting **where one
+   exists**" and therefore needs no amendment. That the writer was *already* specified to work in a
+   configuration with no settings file is the argument for this answer, not merely its cheapness.
+   The obligation it creates is a documentation one and is recorded at D-16.5 so it is not lost: the
+   user guide's troubleshooting section must tell a plugin user how to raise verbosity with
+   `NAMIR_LOG`, **including that it must be set in the environment the host inherits** — a DAW
+   launched from a desktop shortcut does not see a variable exported in a terminal, which is the
+   detail separating an instruction that works from a support thread. Both other answers are
+   recorded rejected there: a `namir-clap` preferences file (a new persisted artifact and migration
+   surface for one enum, and the plugin's only host-machine state — a category declined once already
+   when device selection was kept out of the preset document at M5), and a shared non-preset
+   settings record (the general fix, far too large to buy for a log level, and reasonable to raise
+   again when a second such setting actually exists).
+9. ~~**Whether FR-CLAP-030 ships with a single Stereo port configuration.** Raised 2026-08-08 in M9's
    P0 decision pass. The requirement says the plugin "shall declare audio port configurations
    corresponding to FR-CHAIN-060", and FR-CHAIN-060 names three (Mono, Mono→stereo, Stereo);
    `crates/namir-clap/src/audio_ports_ext.rs` declares **Stereo only** and does not implement CLAP's
@@ -2485,7 +2500,22 @@ that happens to depend on them first.
    requirement as written; declare Stereo only and record it as an accepted, FRS-level scope
    reduction with a Consequence note at FR-CLAP-030 itself; or keep the current silence, which is the
    one option M9 exists to stop doing. **Due before M8**, since 5.12 CLAP cannot be marked Done
-   without it.
+   without it.~~
+   **Resolved 2026-08-12, at M9b's start: the second answer — Stereo only, recorded as an accepted
+   FRS-level scope reduction**, with the Consequence note written at **FR-CLAP-030 itself** in
+   `01-functional-requirements.md` as this item prescribes. The requirement text is deliberately left
+   unamended: the FRS states what Namir must do, and lowering it to match what was built would erase
+   the gap rather than record it. Three things that note settles so no later pass re-derives them.
+   **FR-CLAP-030 stays `trace-partial:` for 1.0** — the unspanned member is the negotiation limb,
+   one configuration of FR-CHAIN-060's three. **Satisfying "at least two host implementations" does
+   not promote it**: the in-process `clack-host` harness and the commit-pinned `clap-validator` CI
+   job are two genuinely independent hosts, but D-23.1's enumerated-set rule bites regardless of how
+   many hosts ask. And **this does not obstruct NFR-QUAL-010 closing at M9b**, since a partial counts
+   as covered — what it does mean is that **5.12 CLAP cannot read Done in §14** while the reduction
+   stands, which is exactly what this item's own "Due before M8" clause was protecting. Implementing
+   `audio-ports-config` is recorded as rejected-for-now rather than dismissed: it remains the only
+   route to a plain tag, and it was declined because M9b is scoped to verification infrastructure
+   and this is a feature touching the audio path.
 10. ~~**Whether `xtask traceability`'s scanned-file list gains `.github/workflows/release.yml` when M13
     creates it.** Raised 2026-08-08 by M9's P0 decision pass. The list at `xtask/src/main.rs:205-216`
     is hard-coded to `ci.yml`, `fuzz.yml`, `Cargo.toml` and `deny.toml` — nothing derives it, so a
@@ -2541,7 +2571,7 @@ that happens to depend on them first.
     workspace's own pin. The exposure itself does not disappear with the
     pin — a git-sourced build input on every merge is still the class **R-10** tracks, and
     `deny.toml` still cannot see it — so the pin is the mitigation, not a closure of the concern.
-12. **What happens if FR-NAM-060's measurement legitimately fails.** The resampler's stopband
+12. ~~**What happens if FR-NAM-060's measurement legitimately fails.** The resampler's stopband
     attenuation (≥100 dB) and passband ripple (≤0.1 dB up to 20 kHz or Nyquist) have never been
     measured; FR-NAM-050's resampling is tested for *correctness*, not *quality*, and the plan's row
     for FR-NAM-060 is `**UNRESOLVED**`. This is a genuine first look and it may fail. Three branches,
@@ -2549,8 +2579,28 @@ that happens to depend on them first.
     requirement's figures in the FRS with a stated justification; or record a deviation. **Decide the
     branch policy before the number exists** — deciding afterwards means the rule gets chosen to suit
     the measurement, which is the failure mode D-2.2's own history already demonstrates. **Due at
-    M9b's start.**
-13. **What happens if FR-CLAP-070's block-size parity test fails.** The requirement demands arbitrary
+    M9b's start.**~~
+    **Resolved 2026-08-12, at M9b's start, before the measurement was taken: the three branches are
+    ordered as a hierarchy, not offered as a choice.** Taken in order, and a later branch may be
+    reached only when the one before it has been tried and written up:
+    1. **Meet the requirement as written.** `SlotResampler` (`crates/namir-engine/src/stages/nam.rs:351`)
+       uses two `rubato::FftFixedInOut<f32>` "as configured by `rubato` itself, not tuned or
+       verified" — that module's own doc comment. A bar missed by a resampler nobody has *tried* to
+       configure is not evidence the bar is wrong. Configuration, or a different `rubato` resampler
+       type, is the first move, bounded by NFR-PERF-010's budget.
+    2. **Amend the FRS figures** — permitted only with a stated justification in terms of what a
+       user would *hear*, not in terms of what the current implementation happens to achieve. A
+       figure edited to match a measurement is not a requirement.
+    3. **Record a deviation** — last, and it must name the audible consequence.
+    *Why a hierarchy rather than a choice:* the item's own warning is that deciding afterwards means
+    the rule gets chosen to suit the measurement. Three peer branches do not prevent that; they
+    merely make the choice look deliberate. Ordering them does prevent it, because branch 2 is
+    unreachable without a written record of branch 1 having failed. **This applies unchanged to
+    `namir-ir`'s second resampler**, `resample_mono` (`crates/namir-ir/src/convolver.rs:845`), whose
+    own `trace-partial:` at `:1408-1413` imports the same bar and records it "measured nowhere …
+    which a 40 dB-stopband, 3 dB-ripple resampler would pass". Both sites are measured in M9b and
+    both are governed by this order.
+13. ~~**What happens if FR-CLAP-070's block-size parity test fails.** The requirement demands arbitrary
     and varying block sizes "including a block size of one sample", `Verify: U`, and the test has
     **never been run** — `namir-clap` carries `// trace:` tags for FR-CLAP-010/-050/-060/-090 only.
     `02-architecture.md` D-6.2's consequence asserts the design handles it (buffers sized for the
@@ -2559,8 +2609,24 @@ that happens to depend on them first.
     schedule and the NAM stage's history are the plausible places a one-sample block breaks. Same
     branch structure as item 12 and the same reason to settle it first, with one addition: **"declare
     a minimum block size" is not an available branch** without an FRS change, because the requirement
-    names one sample explicitly. **Due at M9b's start.**
-14. **Whether an in-process instantiation counts as "a host" for NFR-PERF-040's certified figure.**
+    names one sample explicitly. **Due at M9b's start.**~~
+    **Resolved 2026-08-12, at M9b's start, before the test was written: fix the engine. Item 12's
+    hierarchy does not transfer here, and the difference is the point.** FR-NAM-060 measures a
+    quantity nobody has ever claimed, so a failure there is new information about an untuned
+    component. FR-CLAP-070 is not that: **D-6.2's consequence already asserts the design handles it**
+    — buffers sized for the declared maximum, a smaller block using a prefix, an over-declared block
+    processed in slices rather than allocating. A failing parity test therefore does not report that
+    the requirement is too strict; it reports that **the implementation has diverged from a decision
+    this document already made**. The remedy for that is to fix the implementation.
+    Consequently, for this requirement: amending the FRS is **not** an available branch, and neither
+    is recording a deviation, unless the failure first proves D-6.2 itself unimplementable — which
+    would be a finding about the architecture, would be written up as an amendment to D-6.2 rather
+    than to the FRS, and is not something a test failure alone establishes. The item's own exclusion
+    stands and is widened: "declare a minimum block size" remains unavailable, and so does every
+    other route that changes the requirement instead of the code. The plausible failure sites named
+    above — the partitioned convolver's schedule and the NAM stage's history — are where to look
+    first.
+14. ~~**Whether an in-process instantiation counts as "a host" for NFR-PERF-040's certified figure.**
     The requirement caps plugin instantiation at 200 ms excluding model loading, `Verify: B`; nothing
     measures it and the identifier appears nowhere in the codebase. **D-18.6 settles the vehicle** —
     the `clack-host` harness instantiates this crate's real plugin in-process through the real C
@@ -2569,7 +2635,20 @@ that happens to depend on them first.
     DAW is required for that and the in-process figure is the regression test beside it. The choice
     decides whether this requirement closes with a repeatable benchmark, a one-time recorded figure,
     or both; D-2.4's "certified means the §2 reference machine and at least five repetitions" binds
-    either way. **Due at M9b's start.**
+    either way. **Due at M9b's start.**~~
+    **Resolved 2026-08-12, at M9b's start: `02-architecture.md` **D-2.6** — the in-process harness
+    certifies; a real-DAW figure is supplementary and is not a precondition for closure.** The
+    deciding argument is D-2.4's own definition rather than a judgement about realism: "certified"
+    means the §2 reference machine and at least five repetitions with a contaminated run discarded,
+    and five hand-timed instantiations inside a DAW measure the operator as much as the plugin. The
+    vehicle is not a stub — `PluginEntry::load_from_clack::<SinglePluginEntry<NamirClapPlugin>>`
+    drives the real `activate` path through the real C vtable — and the split mirrors D-18.6's
+    existing doctrine rather than inventing a second one: the in-process artifact is traced, the
+    manual document is the residue a real host is needed to observe. D-2.6 records the honest limit
+    in full: a DAW also does plugin scanning, sandboxing and host-thread contention, so this figure
+    is the plugin's own instantiation cost and a lower bound on what a user experiences. **Both
+    rejected options are recorded there**, including "both required", which was declined because it
+    would make a `Verify: B` requirement's closure depend on a manual session.
 15. ~~**How a `Verify: M` Must is matched to its manual-test document.** Raised 2026-08-09 by M9a's
     set-quantification sweep. `build_report` credits a manual document to a `Verify: M` requirement
     if **either** the filename starts with the id's lowercase prefix **or** the file's text contains
@@ -3867,6 +3946,66 @@ now blocks for the duration of any in-flight job. Library scans are cancelled co
 so those are bounded by one `Scanner::step`; recall jobs have no cancel flag and are joined
 outright. If a real DAW ever shows this as a stall, the remedy is to give recall jobs the same
 cooperative cancel the scanner already has.
+
+---
+
+### M9b P0 decision pass — 2026-08-12 (decisions only; one measurement, nothing else implemented)
+
+Appended per this document's convention; nothing above is edited. M9a opened with a documented
+decision pass and M9b does the same, for the same reason: three §15 items were explicitly **due at
+M9b's start**, and two of the three are branch policies that must be fixed *before* the measurement
+they govern exists, or the rule gets chosen to suit the number.
+
+**Five §15 items are struck in this pass** — 8, 9, 12, 13 and 14. Each carries its resolution at the
+item; only what a later reader would not find there is repeated here.
+
+**The one thing that was measured, because the decision turned on a fact nobody had checked.**
+D-18.6's landing note hands M9b a named blocker: a harness wanting the host-side halves of
+`audio-ports`/`params`/`state`/`latency` must "first make `xtask attribution` resolve dependency kind
+per shipped path rather than per unified-resolve node, or observe those extensions another way". A
+spike in an isolated worktree measured all three arms and found a **third** route that note did not
+consider. `xtask attribution` walks `cargo metadata`'s **default-feature** resolve, so a feature that
+is off by default never enters the graph it reads. `02-architecture.md` **D-18.7** adopts it:
+`host-ext-tests = ["clack-extensions/clack-host"]`, non-default, with a **required** CI step running
+`cargo test -p namir-clap --features host-ext-tests` — because a feature-gated test that no gate runs
+is not evidence, and tagging FR-CLAP-030/-040/-100 against tests nobody executes would be the exact
+over-claiming D-23.1 exists to prevent. §22 gains **R-17** for the landmine this creates: nothing
+mechanical stops `--all-features` from linking `clack-host` into the shipped cdylib, and what catches
+it is `xtask attribution` going red, which is a real gate but a late one.
+
+**Recorded because the pass first drafted it wrongly:** the spike reported that
+`crates/namir-clap/Cargo.toml:95-107` was "right for the wrong reason", and a draft of D-18.7 said so.
+It is not. That comment does not claim `cargo tree -e normal` predicts attribution; it uses
+`cargo tree` to establish that the **cdylib** is unaffected and therefore that the row would be a
+fidelity artifact rather than a real leak — which is correct as written, and which **R-15 already
+names as its own detector**. Arm A reproduced the comment's prediction to the character, including
+the row text. The correction was made before the decision landed rather than after.
+
+**What this pass did *not* do: the ~52 partials declaring `closes M9b`.** M9b's scope is the twelve
+uncovered Musts plus the partials its own new infrastructure promotes for free. The great majority of
+partials naming M9b were booked there **by default** — M9b was the open-ended "missing verification
+infrastructure" bucket, as §16's own note above says in as many words — not by anyone sizing them.
+They do not block D-18.5's flip, because a partial counts as covered for the ordinary run. The
+policy set here is that **each is re-booked explicitly rather than silently carried**, and the
+mechanical re-booking is deliberately deferred to M9b's close-out rather than done now, for one
+reason: the correct destination for a given partial depends on whether M9b's own work happens to
+close it, which is not knowable at the milestone's start. Doing it now would mean editing 52
+annotations twice. Three stale declarations are already known and are fixed in the same close-out
+pass: **FR-CFG-030** and **NFR-LIC-030** declare `closes M13`, a milestone that has *completed*, and
+**NFR-QUAL-010** still declares `closes M13` when §20's own second scope note moved that flip to
+M9b.
+
+**Two counts corrected against the tool rather than inherited from prose.** §16's restated acceptance
+and §20's correction both say **ten** uncovered Musts are M9b's. `cargo run -p xtask -- traceability`
+reports **twelve**, and M13's close-out already recorded why: it closed four of its own five and
+**added two**, FR-UI-020 and FR-UI-070, which §15 item 15's fix demoted by stopping a prose mention
+from crediting a manual document. That close-out left them as "gaps no milestone has claimed" and
+addressed the next planner directly — "whoever plans M9b should read that as work arriving, not as
+bookkeeping". **M9b adopts both.** Neither can be a partial: `xtask` refuses a `trace-partial:` on a
+`Verify: M` Must, so the only disposition is a manual-test document, and neither
+`docs/manual-tests/fr-ui-020-*.md` nor `fr-ui-070-*.md` exists. **The zero-uncovered gate cannot flip
+without them**, which makes two documents nobody had scoped into a precondition for NFR-QUAL-010
+closing.
 
 ---
 

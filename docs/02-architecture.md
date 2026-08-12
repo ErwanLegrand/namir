@@ -189,6 +189,42 @@ reason this decision exists rather than being silently worked around).
 
 ---
 
+**Decision D-2.6 (added M9b's P0 decision pass, 2026-08-12; settles roadmap §15 item 14)** —
+NFR-PERF-040's **certified** figure is taken from the **in-process `clack-host` harness**, which
+D-18.6 already elects as the vehicle. A measurement in a real DAW is **supplementary evidence**,
+recorded in a manual-test document where one is taken, and is **not** a precondition for the
+requirement closing.
+
+*Rationale.* Three reasons, in the order they decided it. **D-2.4's own definition of "certified"
+is what forces this**: the §2 reference machine and at least five repetitions, with a contaminated
+run discarded against an estimator. A figure obtained by hand in a DAW cannot meet that bar
+reproducibly — five repetitions of a manual instantiation, timed by a human against a host's own
+startup, measures the operator as much as the plugin. **The vehicle is not a stub**:
+`PluginEntry::load_from_clack::<SinglePluginEntry<NamirClapPlugin>>` instantiates this crate's real
+plugin through the real C vtable, so what is timed is the same `activate` path a host drives
+(`crates/namir-clap/src/audio.rs:119` → `build_default_engine` at `:151` → `Instance::new` at
+`:157`). And it **mirrors the split D-18.6 already established** rather than inventing a second
+doctrine: the in-process test is the traced artifact, the manual document is the residue a real host
+is needed to observe. A requirement whose evidence is a one-time manual figure has no regression
+test between releases, which for a `Verify: B` requirement is the wrong shape entirely.
+
+*Consequence.* NFR-PERF-040 closes on a benchmark that **asserts** the 200 ms ceiling in-process —
+D-23.1 requires a `Verify: B` artifact to assert its numeric threshold rather than print it for a
+human, which is the defect `six_stage_chain.rs`'s own `trace-partial:` records against NFR-PERF-010.
+The house pattern to follow is `crates/namir-worker/benches/resource_load.rs:181-189`,
+print-then-assert on the slowest repetition rather than the median.
+
+*Honest limitation — the in-process figure is a lower bound on what a user experiences, and is not
+claimed otherwise.* A DAW does work this harness does not: plugin scanning and metadata caching,
+process or thread sandboxing, contention with a host UI thread and with other plugin instances
+already loaded in the session. The number this benchmark certifies is therefore the plugin's own
+instantiation cost, which is the part Namir controls and the part a regression would appear in. If
+a user-visible instantiation delay is ever reported against a figure this benchmark says is well
+within budget, that gap is the first place to look, and this paragraph is the record that it was
+anticipated rather than discovered.
+
+---
+
 ## 3. Architectural principles
 
 These are derived from the FRS, not invented here. Each is traceable, and each is a rule that
@@ -1873,10 +1909,51 @@ severity mapping share, for a distinction only the log makes. So `verbose` is ex
 entry point rather than by a fifth severity, and it is the one place where the level ladder and the
 severity ladder are not the same ladder.
 
+*Correction (added M9b, 2026-08-12, from building it) — three statements in this decision cannot all
+hold, and the one that gives way is the severity of `platform.log.bad_level`.* The decision says
+lifecycle events get **`Severity::Info`** consts, naming all three including
+`platform.log.bad_level`; it also says an unparseable `NAMIR_LOG` value writes one
+**`WARN platform.log.bad_level`** record; and it also makes `LEVEL` the record's own severity
+rendered, "so the level and the catalogue severity are one fact rather than two that can disagree".
+An `Info` const would render `INFO platform.log.bad_level`, contradicting the second statement. The
+adjudication is that **`LOG_BAD_LEVEL` carries `Severity::Warning`** — the worked spelling and the
+derived-`LEVEL` invariant are both load-bearing and are preserved, while "three `Info` consts" was
+an over-general summary of a set whose members were never individually checked against their own
+example lines. `platform.log.session_started` and `platform.log.rotated` are `Info` as specified. The
+reasoning is repeated in that const's own doc comment so it is not rediscovered and quietly
+"fixed" back. Nothing else in the specification moved: the writer as built matches every parameter
+in the table above, and the six clauses below are all exercised by
+`crates/namir-platform/tests/logging.rs`.
+
 *Left open rather than settled here:* `namir-clap` cannot see `namir-app`'s `AppSettings`, so in the
 plugin configuration `NAMIR_LOG` is the only verbosity control 1.0 has. Whether the plugin ever
 gains a persisted verbosity setting is a product question about plugin preferences, not a logging
 one, and is registered as roadmap §15 item 8, due before M8.
+
+*Consequence (added M9b's P0 decision pass, 2026-08-12; settles roadmap §15 item 8) — the plugin
+stays environment-variable-only for 1.0, and the obligation this creates is a documentation one.*
+The paragraph above is now answered with its own first option. **No new persisted artifact is
+added.** The table's level-resolution rule already accommodates this without amendment — "the
+persisted setting **where one exists**" — so nothing in D-16.5's specification changes, which is
+itself the argument that this is the right answer rather than merely the cheapest: the writer was
+already designed to work in a configuration that has no settings file.
+
+What the decision does create is an obligation on the user guide, and it is recorded here so it is
+not lost between a decision document and a document nobody has written yet: **the troubleshooting
+section must tell a plugin user how to raise verbosity with `NAMIR_LOG`, including that it must be
+set in the environment the *host* inherits** — a DAW launched from a desktop shortcut does not see a
+variable exported in a terminal, which is the one detail that makes the difference between an
+instruction that works and one that produces a support thread. NFR-DOC-* owns the guide; this note
+owns the requirement on it.
+
+*Rejected: a `namir-clap` preferences file under `config_dir()`.* A new persisted artifact, a new
+migration surface, and a new failure mode on disk, for one enum's worth of value — and it would be
+the plugin's *only* persisted host-machine state, which is a category this project has twice
+declined to open (device selection was kept out of the preset document at M5 on the same reasoning).
+*Also rejected: moving verbosity into a shared non-preset settings record both shells read.* That is
+the general and probably eventually-correct fix, and it is far too large to buy for a log level;
+raising it again when a second shared non-preset setting actually exists would be reasonable, and
+raising it now would not.
 
 ---
 
@@ -2607,6 +2684,71 @@ per unified-resolve node, or observe those extensions another way.
 
 ---
 
+**Decision D-18.7 (added M9b's P0 decision pass, 2026-08-12; resolves the blocker D-18.6 above
+hands to M9b)** — `clack-extensions`' `clack-host` feature is enabled through a **non-default
+`namir-clap` feature**, `host-ext-tests = ["clack-extensions/clack-host"]`, and the test limbs that
+need the host-side halves of `audio-ports`/`params`/`state`/`latency`/`gui` are guarded
+`#[cfg(feature = "host-ext-tests")]`. A **required** CI step runs
+`cargo test -p namir-clap --features host-ext-tests`.
+
+*Rationale — the blocker dissolves without either route D-18.6 anticipated.* The consequence note
+directly above offers two ways out: make `xtask attribution` resolve dependency kind per shipped
+path, or observe the extensions another way. There is a third it did not consider, and it costs
+nothing: `xtask attribution` walks `cargo metadata`'s **default-feature** resolve
+(`xtask/src/cargo_meta.rs` builds its `MetadataCommand` with no feature arguments), so a feature
+that is off by default never enters the graph the tool reads. The edge still becomes `Normal` when
+the feature is on — D-18.6's mechanism is correct and is not amended — it simply is not on in any
+configuration `xtask attribution`, CI or a release build ever resolves.
+
+*Measured at M9b's P0 pass, in an isolated worktree, all three arms.* Baseline: 243 dependencies,
+`clack-common`, `clack-extensions`, `clack-plugin`, no `clack-host`. **Arm A** (feature enabled
+unconditionally) confirms D-18.6 exactly — `THIRD-PARTY-NOTICES.md` gains precisely one row,
+`| clack-host | 0.1.1 | MIT OR Apache-2.0 |`, 243 → 244 dependencies, nothing transitive. **Arm B**
+(this decision), feature off: `xtask attribution` reports up to date and the file is **byte-identical
+to baseline**; the `clack-extensions` node resolves to `bitflags`, `clack_common`, `clack_plugin`,
+`clap_sys`, `raw_window_handle_06` and no `clack_host`, while `namir-clap → clack_host` carries
+`kinds: ['dev']`, which `cargo_meta.rs:83-87` drops. Feature on: the edge appears as `Normal`, and an
+integration test importing `PluginAudioPorts`, `PluginParams`, `PluginState` and `PluginLatency`
+compiles and passes while being silently skipped by a default `cargo test -p namir-clap`.
+`cargo deny check` reports advisories, bans, licenses and sources ok in every arm; `xtask layering`
+is clean; `cargo build -p namir-clap` produces the cdylib with **no `clack_host` artifact compiled
+at all** under default features.
+
+*Consequence — the CI step is what makes the coverage real, and is therefore required, not optional.*
+A feature-gated test that no gate runs is not evidence, and tagging FR-CLAP-030/-040/-100 against
+tests nobody executes would be precisely the over-claiming D-23.1 exists to prevent. The step is
+required rather than `continue-on-error`, and it is the reason this decision is not simply "add a
+feature".
+
+*Consequence — R-15 and `crates/namir-clap/Cargo.toml:95-107` are confirmed, not corrected, and this
+is recorded because the P0 pass first drafted it the other way.* Arm A reproduced the manifest
+comment's prediction to the character, including the exact row text it names,
+`| clack-host | 0.1.1 | MIT OR Apache-2.0 |`. The tree-versus-attribution disagreement Arm A shows
+is not a discovery either: **R-15 already names that disagreement as its own detector** ("read a
+crate that `attribution` lists while `cargo tree -e normal` cannot reach as this row"), and the
+manifest comment is not claiming `cargo tree` predicts attribution — it uses `cargo tree` to
+establish that the **cdylib** is unaffected, and therefore that the row would be a fidelity artifact
+rather than a real leak. That reasoning is correct as written. The only genuinely new fact this
+pass contributes is the third route above: the resolve `xtask attribution` reads is the
+default-feature one, so a non-default feature never enters it.
+
+*Honest limitation — a standing landmine, unguarded by anything mechanical.* Adding `--all-features`
+to any build or release command silently links `clack-host` into the shipped cdylib. Nothing
+prevents it. What catches it is `xtask attribution` going red, which is a real gate but a late one,
+and it catches the attribution error rather than the linkage. Confirmed unexploited today:
+`.github/workflows/release.yml:110`, `:232`, `:293` all run plain `cargo build --release
+--workspace`, and `ci.yml:315` runs `cargo build --release -p namir-clap --lib`. §22 gains **R-17**.
+
+*Consequence — `namir-clap` gains its first `[features]` table*, a small precedent worth naming so
+the next feature added there is a deliberate act rather than an inherited habit.
+
+*Rejected: Arm A, enabling the feature unconditionally.* It is simpler and carries no landmine, but
+it writes a host-only test dependency into the file that states what Namir **distributes** —
+a false statement about the shipped artifact, and §17's row exists to prevent exactly it.
+*Also rejected: Arm B without the CI step*, for the reason given above.
+
+---
+
 ## 19. Spike specifications
 
 Spikes are throwaway code written to answer a specific question, with success criteria fixed
@@ -3019,6 +3161,7 @@ S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 
 | R-14 | **New, from M9's P0 decision pass, 2026-08-08.** M8's exit gate is "every row in §14 reads **Done**", and after D-23.2 the only mechanically-checked part of that table is its Must-count column and row set. The three verdict columns stay hand-adjudicated — 72 cells in the re-audited table, 24 FRS-area rows by three columns — so a wrongly-**Done** cell still passes CI silently, the same failure mode that produced six rows untouched since M0 and five contradicted by prose written beneath them, now sitting directly under the 1.0 ship decision. The M0 evidence says this is not hypothetical: two denominators were wrong the day they were written and nothing noticed for seven milestones. | Medium | D-23.2's per-cell evidence-naming rule: a **Done** cell citing no file path is not a **Done** cell, which makes an unsupported verdict visible in review instead of invisible inside a number. M9a's re-audit establishes one dated baseline; M9b and every later milestone append their moves beneath it as the six prior sessions did, so a cell's age stays readable. Re-check at M8 against evidence rather than trusting the accumulated table, and treat any **Done** cell whose evidence is a one-time manual run as **Partial** until it is repeatable. |
 | R-15 | **New, from M9a, 2026-08-08 — found while landing D-18.6's `clack-host` dev-dependency.** `xtask attribution` can list in THIRD-PARTY-NOTICES.md a crate the shipped binaries do not contain. It walks `cargo metadata`'s **single unified resolve**, keeping any edge that carries a `Normal` `dep_kinds` entry (`xtask/src/cargo_meta.rs:82-91`, the test itself at `:83-87`) — but that resolve does not decouple features by dependency kind, so features a **dev**-dependency turns on sit on the same node as the shipped one. The trigger condition is therefore precise rather than vague: **any dev-dependency edge that enables an *optional normal* dependency of a crate the shipped graph already reaches.** That optional dependency becomes a `Normal` edge out of a package the walk visits, and it is attributed. Live instance, which is why this row exists rather than being theoretical: `clack-extensions` 0.1.1 declares `clack-host` `optional` under `[dependencies]` (its `Cargo.toml:118-121`), so enabling that crate's own `clack-host` feature from `namir-clap`'s `[dev-dependencies]` puts `clack-host` into the attribution file — recorded as measured at `crates/namir-clap/Cargo.toml:93-105`, and readable without re-running it from those two manifests plus `cargo_meta.rs`. The error direction is the safe one and that is why this is **Low**: the walk over-approximates and cannot *omit* a shipped crate, so NFR-LIC-030 is never under-served. What it costs is still real — an attribution file naming crates the binary does not carry is a false statement about what Namir redistributes, and `xtask attribution` becomes a gate that fails for a reason no reviewer can act on, which is the shape D-18.5's own reasoning warns about. | Low | The detector already exists and needs no new tool: **`cargo tree -e normal` disagreeing with `xtask attribution`** is exactly this condition, which is why D-18.6's third landing gate pairs those two commands rather than either alone. Run both whenever a dev-dependency edge is added or its feature list changes, and read a crate that `attribution` lists while `cargo tree -e normal` cannot reach as this row, not as a real leak. Avoided rather than fixed today — `clack-extensions`' `clack-host` feature is off, so the notices file is correct as it stands. The fix, when a harness finally needs those host halves, is to resolve dependency kind per shipped path rather than per unified-resolve node (`--filter-platform` plus a per-root walk, or the resolution `cargo tree -e normal` already performs); **M9b owns it**, per D-18.6's dated landing note. |
 | R-16 | **New, from M13, 2026-08-11 — found by the Linux packaging lane while writing `install.sh`, not by anyone looking at the UI.** Both products draw through `baseview` 0.2.2, whose **only Unix backend is X11 + GLX**; there is no Wayland backend in any published `baseview` version. A Wayland-only session therefore needs XWayland present, and a session without it gets no window at all. This has been observed rather than inferred: M12's own status subsection records `cargo run -p namir-app` starting audio and then panicking inside `baseview`'s X11 window open, with `xvfb-run` not helping because that path needs a GLX-capable display. The risk is not that the constraint exists — D-15.2 pinned this stack knowingly — but that **M13 is the milestone at which it stops being a developer's problem and becomes a user's**: before M13 the only way to run Namir on Linux was to build it, and anyone building it already had the X11 development headers. An installed binary reaches people who did not. Wayland is the default session on current Fedora, Ubuntu and RHEL, and several distributions are actively removing their X11 sessions rather than merely defaulting away from them. | Medium | Stated rather than fixed, because fixing it is a windowing-stack migration and not a packaging change: `packaging/linux/install.sh` reports the runtime constraint alongside its `libGL.so.1` check, `packaging/linux/README.md` records it, and `docs/user-guide.md`'s Known Limitations carries it in the user's own words. The upgrade path is known to be closed at both ends and was checked at M13 rather than assumed: `baseview` 0.3.0 renames `WindowOpenOptions` to `WindowSettings` and still has no Wayland backend, and the newest published `egui-baseview` (0.6.0, the pinned one) requires `baseview` 0.2.2 — so the pin is forced, not merely conservative. Revisit when a `baseview` with a Wayland backend exists, or when XWayland stops being present by default on a tier-2 platform, whichever comes first. |
+| R-17 | **New, from M9b's P0 decision pass, 2026-08-12 — created by D-18.7, not discovered in existing code.** D-18.7 puts `clack-extensions`' `clack-host` feature behind the non-default `namir-clap` feature `host-ext-tests`, which keeps it out of the default-feature resolve `xtask attribution` walks and out of the shipped cdylib. That confinement holds only for as long as nothing turns the feature on in a build that ships. **Adding `--all-features` to any build or release command silently links `clack-host` into the cdylib**, and unlike R-15 — whose error direction is over-attribution, and therefore safe — this one's is a real dependency entering a shipped artifact. Distinct from R-15 and not a restatement of it: R-15 is about the tool naming a crate the binary does not contain; R-17 is about the binary coming to contain one. Confirmed unexploited at the time of writing: `.github/workflows/release.yml:110`, `:232` and `:293` all run plain `cargo build --release --workspace`, and `ci.yml:315` runs `cargo build --release -p namir-clap --lib`. | Low | Nothing mechanical guards the linkage itself, and that is stated rather than glossed. What exists is a late detector: `xtask attribution` goes red, because the feature being on is exactly the Arm A condition that adds the `clack-host` row — so the failure surfaces on the next merge, as an attribution error rather than as a linkage error. The cheap discipline is that `--all-features` never appears in a build or release command in this repository; the durable fix, if one is ever wanted, is the same per-shipped-path resolution R-15 already nominates, which would make the question answerable directly instead of by proxy. Re-read this row whenever `namir-clap`'s `[features]` table gains a second entry. |
 
 ---
 
