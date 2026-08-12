@@ -172,20 +172,13 @@ fn assert_reported_latency_is_the_measured_latency(name: &str, model_bytes: &[u8
     );
 }
 
-/// FR-NAM-110's remaining gap after this file, narrowed from what M9a's field named. The method
-/// *is* now performed, for every architecture, so the half that said "performed by nothing" is
-/// false. What survives is the other half, and it is in a crate this test cannot reach: the stage's
-/// resampler latency. It is not re-scoped away here because FR-NAM-110's subject really is the
-/// stage, not the model.
-// trace-partial: FR-NAM-110
-// uncovered: FR-NAM-110 — the model's own latency is now measured by cross-correlating an impulse
-// uncovered: through every architecture (this file), so the reported figure would fail if
-// uncovered: inference introduced delay. What is still unverified is the other figure the
-// uncovered: requirement's "model stage" covers: namir-engine's NamStage adds SlotResampler
-// uncovered: latency when the model rate differs from the engine rate, and that value is asserted
-// uncovered: only as > 0 (stages/nam.rs:1441-1459) with its own doc comment recording that it is
-// uncovered: not verified sample-exactly (:395); no impulse is cross-correlated through the
-// uncovered: assembled stage at a mismatched rate; closes M14
+/// FR-NAM-110's model half, and since M14 the requirement is closed rather than narrowed: this
+/// file measures the model's own latency for every architecture, and `namir-engine`'s
+/// `stages/nam.rs::the_resampled_stages_reported_latency_is_the_delay_the_signal_actually_sees`
+/// measures the stage's — the `SlotResampler` figure that was asserted only as `> 0`, and that this
+/// crate cannot reach because the resampler is a stage concern (D-9.2), not a model one. 640
+/// reported, 640 measured, sample for sample.
+// trace: FR-NAM-110
 #[test]
 fn reported_latency_matches_an_impulse_cross_correlation_for_every_architecture() {
     let wavenet_a1 = namir_fixtures::nam::generate(WaveNetShape::Nano, 30)
