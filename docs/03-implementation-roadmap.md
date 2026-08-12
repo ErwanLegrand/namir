@@ -2760,6 +2760,30 @@ that happens to depend on them first.
     or leave it, which is the option this appendix exists to stop taking silently. **Due before M8**,
     since 6.3 PORT's row feeds M8's exit checklist and this is the one cell in it whose method and
     text are known to disagree.
+20. **Whether 1.0 ships a CLAP plugin with no interface on two of its three supported platforms.**
+    Raised 2026-08-12 by M13, by loading the plugin in Reaper on a Mac — the first time anyone had.
+    `crates/namir-clap/src/gui.rs`'s `is_api_supported` returns true only for `GuiApiType::WIN32`,
+    so on macOS and Linux the host is refused and **no editor is ever embedded**: the plugin loads,
+    processes audio and takes automation, and what the user sees is the host's own generic parameter
+    panel — no brand mark, no meters, nothing Namir drew. The standalone is unaffected on those
+    platforms, which is what makes the plugin's behaviour look like a defect rather than a scope
+    boundary. **FR-CLAP-100 is a Must and says nothing about platform**: "the plugin shall provide
+    an embedded graphical editor via the CLAP GUI extension". Its second clause — function correctly
+    if the host declines a GUI — is met, and the macOS run is what demonstrates it. Three things
+    make this an appendix item rather than a bug report. It was **introduced deliberately** at M6
+    from spike S-4's validated shape, and S-4 ran on Windows only; it was **recorded nowhere** —
+    not in `02-architecture.md`, not in the FRS, not in `docs/user-guide.md` — until M13 added the
+    notes now at FR-CLAP-100 and at S-4's own record; and closing it is **not a small change**:
+    Cocoa and X11 embedding mean a second and third `#![allow(unsafe_code)]` surface in
+    `namir-clap` under D-5.3, on window-handle paths this project has never exercised. Three
+    answers. Ship as-is for 1.0 and say so plainly in the user guide and release notes, treating
+    the plugin as Windows-first and the standalone as the cross-platform product — cheapest, and
+    honest only if it is *stated*, which until now it was not. Add the two backends, which is real
+    unsafe work against D-5.3's bar and needs its own decision the way `libc` did. Or narrow
+    FR-CLAP-100 to name the platforms it applies to, which is an FRS change and makes the ledger
+    honest without pretending the limitation is smaller than it is. **Due before M8**, since
+    FR-CLAP-100 feeds 5.12 CLAP's row and M8's exit gate reads every row Done. Tracked as a GitHub
+    issue so it is visible outside this appendix.
 
 ---
 
