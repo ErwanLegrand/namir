@@ -52,11 +52,11 @@ mod tests {
     use super::*;
     use namir_core::{ErrorCode, Severity};
 
-    const SAMPLE: ErrorCode = ErrorCode {
-        id: "ui.example.file_missing",
-        severity: Severity::Error,
-        message_template: "The file could not be found.",
-    };
+    const SAMPLE: ErrorCode = ErrorCode::new(
+        "ui.example.file_missing",
+        Severity::Error,
+        "The file could not be found.",
+    );
 
     #[test]
     fn notice_text_includes_code_id_template_and_detail() {

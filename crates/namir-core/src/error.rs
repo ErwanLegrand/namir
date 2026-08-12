@@ -28,7 +28,29 @@ pub enum Severity {
 /// One entry in a crate's error catalogue (D-16.1): a stable identifier, a severity, and a
 /// message template — never a formatted string, so the audio thread never allocates or formats
 /// one (D-16.2).
+///
+/// # `#[non_exhaustive]`: why a call site may read one but not build one (M14, FR-ERR-020)
+///
+/// FR-ERR-020's method has two conjuncts — "the catalogue is enumerable **and** every error path in
+/// the code maps to an entry" — and the second had no artifact of any kind. Part of the reason was
+/// this type: all three fields were `pub` on an ordinary struct, so any expression anywhere could
+/// build an `ErrorCode` inline, and two live sites did — `crates/namir-ui/examples/
+/// manual_window_smoke.rs` invented `ui.manual_smoke.example_notice`, and `namir-app`'s
+/// `AppHost::handle` built `app.host.scan_warning` in the middle of a `push_notice` call. Neither
+/// id belonged to any catalogue; neither would have appeared in any enumeration of one.
+///
+/// `#[non_exhaustive]` makes the struct-literal form unavailable outside `namir-core`, so **every**
+/// construction in the tree now goes through [`ErrorCode::new`] — one token, greppable, and the
+/// thing `xtask error-catalogue` looks for. The fields stay `pub` for *reading*: nothing about a
+/// call site consulting `code.severity` is a problem, and making the reads go through accessors
+/// would have churned ~40 sites to no end.
+///
+/// This is not by itself a guarantee — `ErrorCode::new` is still callable anywhere. It is what
+/// makes the guarantee *checkable*, and the check is `xtask error-catalogue`: every `ErrorCode::new`
+/// in the tree must be a named `const` in a catalogue module. See that module's doc comment for
+/// what it can and cannot see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ErrorCode {
     /// Stable identifier (FR-PARAM-020-style: never reused, never repurposed).
     pub id: &'static str,
@@ -37,6 +59,19 @@ pub struct ErrorCode {
     /// A `{placeholder}`-style template the UI fills in — the audio thread never formats
     /// anything (D-16.2); this template is read only off the RT path.
     pub message_template: &'static str,
+}
+
+impl ErrorCode {
+    /// The one way to build an `ErrorCode`. `const` so a catalogue entry stays a `const` — every
+    /// one in the tree is declared that way, and a runtime constructor would have forced them all
+    /// into `LazyLock` for nothing.
+    pub const fn new(id: &'static str, severity: Severity, message_template: &'static str) -> Self {
+        Self {
+            id,
+            severity,
+            message_template,
+        }
+    }
 }
 
 /// A crate-time check that a catalogue slice has no duplicate or empty identifiers. Each crate
@@ -57,24 +92,20 @@ pub fn assert_unique_ids(codes: &[ErrorCode]) {
 mod tests {
     use super::*;
 
-    const A: ErrorCode = ErrorCode {
-        id: "core.sample_rate.zero",
-        severity: Severity::Error,
-        message_template: "Sample rate must be greater than zero.",
-    };
-    const B: ErrorCode = ErrorCode {
-        id: "core.example.other",
-        severity: Severity::Warning,
-        message_template: "Example: {detail}",
-    };
+    const A: ErrorCode = ErrorCode::new(
+        "core.sample_rate.zero",
+        Severity::Error,
+        "Sample rate must be greater than zero.",
+    );
+    const B: ErrorCode =
+        ErrorCode::new("core.example.other", Severity::Warning, "Example: {detail}");
 
-    // trace-partial: FR-ERR-020
-    // uncovered: FR-ERR-020 — the method's second conjunct, "every error path in the code
-    // uncovered: maps to an entry", has no artifact of any kind: no xtask subcommand reads
-    // uncovered: error paths, ErrorCode's three fields are all pub so a call site can construct
-    // uncovered: an off-catalogue code inline, and
-    // uncovered: crates/namir-ui/examples/manual_window_smoke.rs:27 is a live instance of exactly
-    // uncovered: that; closes M8
+    // The method's first conjunct, "the catalogue is enumerable": this test and the matching one in
+    // every crate's own `error_codes.rs`. Its second, "every error path in the code maps to an
+    // entry", is `xtask error-catalogue` since M14 — `#[non_exhaustive]` above puts every
+    // construction through `ErrorCode::new`, and that check requires each one to be a named `const`
+    // inside a catalogue module.
+    // trace: FR-ERR-020
     #[test]
     fn unique_ids_pass() {
         assert_unique_ids(&[A, B]);
@@ -89,11 +120,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "empty id")]
     fn empty_id_fails() {
-        const EMPTY: ErrorCode = ErrorCode {
-            id: "",
-            severity: Severity::Info,
-            message_template: "",
-        };
+        const EMPTY: ErrorCode = ErrorCode::new("", Severity::Info, "");
         assert_unique_ids(&[EMPTY]);
     }
 

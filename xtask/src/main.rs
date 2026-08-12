@@ -9,6 +9,7 @@ mod assets;
 mod attribution;
 mod bundle;
 mod cargo_meta;
+mod error_catalogue;
 mod feature_guard;
 mod identity;
 mod layering;
@@ -179,6 +180,47 @@ fn run_rt_logging(root: &Path) -> bool {
     } else {
         println!(
             "rt-logging: {} violation(s) found (FR-ERR-030):",
+            violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
+}
+
+/// M14's FR-ERR-020 gate (issue #33): every `ErrorCode` in the shipped crates is a named `const`
+/// inside a catalogue. See `error_catalogue.rs`'s module doc for the two rules, for why
+/// `#[non_exhaustive]` on the type is what makes them checkable, and for what neither can see.
+fn run_error_catalogue(root: &Path) -> bool {
+    let crates_dir = root.join("crates");
+    let mut violations = Vec::new();
+
+    for file in walkdir::WalkDir::new(&crates_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| error_catalogue::is_scanned(e.path()))
+    {
+        let path = file.path();
+        let Ok(content) = std::fs::read_to_string(path) else {
+            violations.push(format!("{}: could not read", path.display()));
+            continue;
+        };
+        for problem in error_catalogue::scan(path, &content) {
+            violations.push(format!("{}:{problem}", path.display()));
+        }
+    }
+
+    if violations.is_empty() {
+        println!(
+            "error-catalogue: clean (every ErrorCode under crates/ is a named const inside a \
+             catalogue)"
+        );
+        true
+    } else {
+        println!(
+            "error-catalogue: {} violation(s) found (FR-ERR-020):",
             violations.len()
         );
         for v in &violations {
@@ -948,7 +990,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
     );
 }
 
@@ -961,6 +1003,7 @@ fn main() {
         Some("rt-logging") => run_rt_logging(&root),
         Some("feature-guard") => run_feature_guard(&root),
         Some("network-free") => run_network_free(&root),
+        Some("error-catalogue") => run_error_catalogue(&root),
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
@@ -1025,6 +1068,43 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- FR-ERR-020: every ErrorCode is a named const in a catalogue --------------------------
+
+    /// The gate as CI should run it, over the real tree. Doubles as the regression test for the two
+    /// live off-catalogue codes M14 moved (`manual_window_smoke.rs`'s sample notice and
+    /// `namir-app`'s inline `app.host.scan_warning`).
+    #[test]
+    fn every_error_code_in_the_real_tree_is_a_named_const_in_a_catalogue() {
+        assert!(run_error_catalogue(&repo_root()));
+    }
+
+    #[test]
+    fn a_planted_inline_error_code_fails_the_gate() {
+        // The negative control, in the shape `namir-app/src/host.rs` actually had until M14: a code
+        // built in the argument list of the call that reports it.
+        let dir = std::env::temp_dir().join(format!("xtask-err-020-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-app/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-app/src/host.rs"),
+            "fn handle(&mut self) {\n    self.push_notice(local_error_codes::SCAN_WARNING, w);\n}\n",
+        )
+        .unwrap();
+        assert!(
+            run_error_catalogue(&dir),
+            "the scratch tree must start clean"
+        );
+
+        std::fs::write(
+            dir.join("crates/namir-app/src/host.rs"),
+            "fn handle(&mut self) {\n    self.push_notice(\n        ErrorCode::new(\"app.host.scan_warning\", Severity::Warning, \"{detail}\"),\n        w,\n    );\n}\n",
+        )
+        .unwrap();
+        assert!(!run_error_catalogue(&dir));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     // --- FR-ERR-060 / NFR-SEC-030: no first-party crate names a socket ------------------------
 
