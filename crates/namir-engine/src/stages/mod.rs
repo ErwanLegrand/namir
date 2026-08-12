@@ -78,18 +78,15 @@ mod tests {
     /// The whole point of M2: this compiles and runs at all, for every channel configuration
     /// FR-CHAIN-060 requires, with nothing loaded (FR-CHAIN-040) and produces silence in, silence
     /// out without panicking, allocating on the audio thread, or emitting a non-finite sample.
-    // trace-partial: FR-CHAIN-010
-    // uncovered: FR-CHAIN-010 — the Verify: I method's "measure stage interaction against a
-    // uncovered: specified probe signal" is unexecuted: the tagged test fills every channel with
-    // uncovered: 0.0 and asserts 0.0 out with nothing loaded, which cannot distinguish any
-    // uncovered: ordering of any stages from an empty chain; closes M8
+    ///
+    /// **It carries no FR-CHAIN-010 or FR-CHAIN-060 tag any more, and that is the point** (M14).
+    /// Zeros in and zeros out with nothing loaded cannot distinguish any ordering of any stages
+    /// from an empty chain, and it never puts an IR into an `IrStage` at all — so it was covering
+    /// neither requirement's `Verify:` method. Both now resolve through `crate::chain_probes`,
+    /// which runs a real probe signal through a loaded chain. This test keeps its own real job:
+    /// FR-CHAIN-040's nothing-loaded behaviour, in every channel configuration.
     #[test]
     fn builds_and_runs_silently_for_every_channel_config() {
-        // trace-partial: FR-CHAIN-060
-        // uncovered: FR-CHAIN-060 — of the table's three rows the "I per configuration"
-        // uncovered: method names, the Mono→stereo row's IR-stage cell ("stereo IR, or dual mono
-        // uncovered: IR") is exercised by nothing: no test loads any IR into an IrStage prepared
-        // uncovered: with ChannelConfig::MonoToStereo; closes M8
         for channel_config in [
             ChannelConfig::Mono,
             ChannelConfig::MonoToStereo,
@@ -113,12 +110,12 @@ mod tests {
         }
     }
 
-    // trace-partial: NFR-PERF-020
-    // uncovered: NFR-PERF-020 — the first conjunct, that the engine adds no latency beyond
-    // uncovered: what it reports, is measured nowhere: no test compares a chain's actual group
-    // uncovered: delay against latency_samples() for any configuration where that value is
-    // uncovered: nonzero, and the tagged test asserts 0 with nothing loaded, where every stage's
-    // uncovered: own latency_samples() is 0 by construction; closes M8
+    /// **No NFR-PERF-020 tag any more** (M14): asserting `0` with nothing loaded, where every
+    /// stage's `latency_samples()` is `0` by construction, can only ever confirm the arithmetic of
+    /// summing zeros — it never compared a chain's actual group delay against the figure it
+    /// reports, at any configuration where that figure is not zero. That comparison now lives in
+    /// `crate::chain_probes`. This stays as what it always really was: the assembly's
+    /// nothing-loaded latency smoke test.
     #[test]
     fn reports_a_nonzero_latency_only_from_stages_that_declare_one() {
         let ctx = ctx(ChannelConfig::Mono);
