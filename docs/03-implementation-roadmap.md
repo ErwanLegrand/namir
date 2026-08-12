@@ -1814,7 +1814,7 @@ not adjudicate them further.
 
 | FRS area | Must count | Done | Partial | Not started |
 |---|---|---|---|---|
-| 4 CFG | 3 | 1 | 2 | 0 |
+| 4 CFG | 3 | 2 | 1 | 0 |
 | 5.1 CHAIN | 8 | 3 | 5 | 0 |
 | 5.2 IN | 3 | 1 | 2 | 0 |
 | 5.3 GATE | 3 | 1 | 2 | 0 |
@@ -1824,21 +1824,21 @@ not adjudicate them further.
 | 5.7 OUT | 2 | 0 | 2 | 0 |
 | 5.8 PARAM | 5 | 0 | 5 | 0 |
 | 5.9 STATE | 7 | 2 | 5 | 0 |
-| 5.10 LIB | 5 | 1 | 4 | 0 |
+| 5.10 LIB | 5 | 2 | 3 | 0 |
 | 5.11 IO | 8 | 2 | 6 | 0 |
-| 5.12 CLAP | 11 | 2 | 9 | 0 |
+| 5.12 CLAP | 11 | 5 | 6 | 0 |
 | 5.13 UI | 7 | 1 | 6 | 0 |
-| 5.14 ERR | 6 | 1 | 4 | 1 |
+| 5.14 ERR | 6 | 2 | 4 | 0 |
 | 5.15 PKG | 4 | 3 | 1 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
-| 6.2 PERF | 6 | 0 | 6 | 0 |
+| 6.2 PERF | 6 | 1 | 5 | 0 |
 | 6.3 PORT | 5 | 3 | 2 | 0 |
 | 6.4 QUAL | 6 | 2 | 4 | 0 |
 | 6.5 LIC | 6 | 3 | 3 | 0 |
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **37** | **92** | **1** |
+| **Total** | **130** | **44** | **86** | **0** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2338,14 +2338,109 @@ that never happened — and M9a had already adjudicated both **Partial** by hand
 "Divergence 2". This change makes the tool agree with a verdict that was already correct, which is
 not evidence for moving it.
 
-**One row deliberately not moved, recorded so its absence is not read as an oversight.** 6.7 BUILD
-stays **0 / 2 / 0**. M12 improved NFR-BUILD-020 — the README documents the build, run and test
+**One row deliberately not moved, recorded so its absence is not read as an oversight (M13's).** 6.7
+BUILD stays **0 / 2 / 0**. M12 improved NFR-BUILD-020 — the README documents the build, run and test
 commands, and `xtask identity` pins those exact strings, so the document can no longer drift
 silently from what CI runs — but the requirement's "exercised by CI" clause is still unmet: nothing
 executes a command *as documented*. That tag's `uncovered:` field is rewritten to say so and its
 closing milestone moved from M12 to M13, which is a correction to a claim M12 would otherwise have
 been recorded as meeting. **FR-UI-110 appears in no row here**: it is a Should, and §14 counts Musts
 only. It stays open after M12 — see `docs/manual-tests/fr-ui-110-brand-mark.md`.
+
+**M9b moves, 2026-08-12 — five rows, seven requirements, appended per D-23.2's "every later
+milestone moves only the cells its own evidence justifies."** 4 CFG becomes **2 / 1 / 0** (was
+1 / 2 / 0); 5.10 LIB becomes **2 / 3 / 0** (was 1 / 4 / 0); 5.12 CLAP becomes **5 / 6 / 0** (was
+2 / 9 / 0); 5.14 ERR becomes **2 / 4 / 0** (was 1 / 4 / 1); 6.2 PERF becomes **1 / 5 / 0** (was
+0 / 6 / 0); **Total** becomes **44 / 86 / 0** (was 37 / 92 / 1). **The Not-started column reaches
+zero for the first time**, 5.14 ERR having been its only non-zero cell since M13 emptied 5.15 PKG's.
+That is a real fact about the ledger and a small one: it says every Must now has *some* artifact, not
+that any additional Must is met — 86 of 130 are still Partial, which is the number that matters.
+
+- **FR-CFG-020: Partial → Done.** The M9a bullet above named the gap in full — "no golden vector
+  exists anywhere in the tree and nothing runs one through both configurations".
+  `crates/namir-clap/tests/fr_cfg_020_shell_parity.rs` closes both halves as the `Verify: G` method
+  words them: a committed, generated (D-19.1) input vector and preset
+  (`crates/namir-clap/tests/golden/fr-cfg-020/input.f32`, `preset.namirpreset`) driven through each
+  configuration's **own** code — the plugin through `clap_plugin.process`, the standalone through the
+  real output callback `namir_app::stream::open` builds, not through a shared helper that would prove
+  only that one engine equals itself — and compared bit-identically at three block sizes. This is the
+  requirement §12's M8 exit checklist nominates as its final integration test and the one §14's own
+  2026-08-08 note recorded as "gated by a table it has never appeared in"; it is now the 4 CFG row's
+  second Done.
+- **FR-CLAP-040: Partial → Done.** The M9a bullet's gap was that the notify path was "built and
+  driven by nothing" with its document recording Not executed.
+  `crates/namir-clap/tests/clap_host_latency.rs` drives it in-process through `clack-host`: latency
+  is both **reported** on the extension and the host **notified** across three transitions, and the
+  reported value is checked against an independently constructed `AudioEngine` rather than against
+  the plugin's own accessor, so a stage's latency contribution going unreported would fail. Both
+  verbs of the requirement's own text are spanned by one artifact executing its `Verify: I` method.
+- **FR-CLAP-070: Partial → Done.** M9a: "no artifact anywhere compares a varying-block run against a
+  fixed-block reference at chain or plugin level". `crates/namir-clap/tests/clap_host_block_sizes.rs`
+  is that comparison at plugin level — a fixed-block reference against randomised block runs
+  including a 256-block sequence of one-frame blocks, with a model and an IR actually loaded rather
+  than through an empty chain where any block division trivially agrees. It earned its Done the hard
+  way: the test found a real engine defect on first run, and the cell moves on the fixed code.
+- **FR-CLAP-080: Partial → Done.** M9a: "`activate` takes the host's rate and neither the 44.1-192 kHz
+  range nor a mid-session change is exercised". `crates/namir-clap/tests/clap_host_sample_rates.rs`
+  spans 154 rates including both endpoints the requirement names, plus a mid-session rate change —
+  the requirement's set quantifier ("across its supported range") and its second clause both
+  executed, which is what D-23.1's first question asks of a plain tag.
+- **FR-ERR-010: Not started → Done, the only cell in this milestone that crosses two columns.** M9a's
+  finding was categorical — "nothing writes a log record anywhere", with
+  `crates/namir-clap/src/shared.rs`'s sink recorded as a deliberate no-op and D-16.5's six parameters
+  wholly unimplemented. `crates/namir-platform/src/logging.rs` is the writer and
+  `crates/namir-platform/tests/logging.rs` its coverage, spanning D-16.5's parameters rather than
+  asserting that a file appears. This empties the Not-started column.
+- **FR-LIB-020: Partial → Done.** M9a's gap was one clause of four: three met the 10 000-file scale
+  and "the off-the-audio-thread clause is exercised against a 6-file corpus only".
+  `crates/namir-worker/tests/library_scan_scale.rs` runs all four clauses against a 10 000-file
+  corpus, which is the scale the method itself names — the case D-23.1's first question is written
+  for, where the requirement quantifies over a set *and the method names its size*.
+- **NFR-PERF-040: Partial → Done, and read the next paragraph before reading this as a certified
+  figure.** M9a's gap was the whole `Verify: B` half — "no `Verify: B` harness exists and the 200 ms
+  bound has never been measured". `crates/namir-clap/benches/plugin_instantiation.rs` is that
+  harness, and it **asserts** the bound in-process rather than printing it for a human, which is what
+  D-2.6 settles as the satisfied form and what D-23.1's second question demands of a `Verify: B`
+  plain tag. §15 item 14 — which of an in-process instantiation and a real host counts as "in a host"
+  — is answered by D-2.6 for the purpose of this cell and is not otherwise reopened here.
+
+**Eight requirements gained real evidence this milestone and stay Partial, deliberately.**
+FR-NAM-060, FR-IR-030, FR-CLAP-030, FR-CLAP-100, FR-CLAP-130, FR-ERR-030, NFR-PERF-010 and
+NFR-PERF-050 each carry more than they did at M9a and each still carries a `// trace-partial:` whose
+`uncovered:` field names what is unmet; under D-23.2 a Partial is not Done, and the cells stay where
+M9a put them. None of the eight sat in **Not started**, so none moves one column either — worth
+saying because the instruction to move a Not-started requirement to Partial would have been
+justified had any of them been there, and checking the M9a bullets above shows none was.
+
+**FR-UI-020 and FR-UI-070 do not move, and this is the most important caveat on this table.** Both
+are `Verify: M`. `docs/manual-tests/fr-ui-020-single-screen-elements.md` and
+`docs/manual-tests/fr-ui-070-non-modal-error-notices.md` now exist — closing the M9a bullet's literal
+complaint that "there is **no** `docs/manual-tests/fr-ui-020-*.md`" — and `xtask traceability`
+therefore counts both **covered**, the filename arm doing exactly what §15 item 15's fix left it
+doing. **Neither script has been executed by a human.** Both documents say so in as many words:
+each records **Result: NOT EXECUTED**, with no step run in either product configuration. A `Verify: M`
+requirement is met by *running* its script, not by the file existing, and under D-18.6 that document
+is the requirement's whole traced artifact — so the file's existence moves the tool's reading and
+nothing else. The mechanical gate and the honest verdict disagree here, §14 is the place that
+disagreement is resolved in the requirement's favour rather than the tool's, and a later reader must
+not "reconcile" these two cells by promoting them to match `docs/03-test-plan.md`. Both stay
+**Partial**, where M9a put them; 5.13 UI stays **1 / 6 / 0**, unchanged for the second milestone
+running and for the same reason M13 recorded.
+
+**FR-STATE-040 does not move either, and its stability is not evidence of anything.** 5.9 STATE stays
+**2 / 5 / 0**. Its `Verify:` is `M plus S (schema check)`; the parser keeps only the first code, so
+the requirement resolves plainly covered from a filename match while **no schema check exists
+anywhere in the tree**. M9b found this while building FR-ERR-030's static check and recorded the full
+analysis — the six compound-method Musts, why five self-correct through their `uncovered:` fields and
+this one structurally cannot, and the three candidate fixes — as **§15 item 21**, due before M8.
+Cited rather than restated here so there is one copy of it.
+
+**The performance figures behind this milestone are not certified, and NFR-PERF-040's Done does not
+claim they are.** They were taken on `docs/02-architecture.md` §2's pinned reference machine but not
+on a *quiet* one, which fails D-2.4's second condition, so under this project's own standing rule
+they are informational. NFR-PERF-040's promotion rests on D-2.6 — an in-process benchmark that
+asserts its threshold is the satisfied form of a `Verify: B` — and not on any measured number being
+certified. NFR-PERF-010 stays **Partial** for the separate reason its own tag names.
 
 ---
 
