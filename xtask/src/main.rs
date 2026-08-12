@@ -13,6 +13,7 @@ mod identity;
 mod layering;
 mod milestones;
 mod nam_parity;
+mod network_free;
 mod params_lock;
 mod preset;
 // M13: FR-PKG-010's in-repo assertion over `.github/workflows/release.yml`
@@ -177,6 +178,46 @@ fn run_rt_logging(root: &Path) -> bool {
     } else {
         println!(
             "rt-logging: {} violation(s) found (FR-ERR-030):",
+            violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
+}
+
+/// M14's FR-ERR-060/NFR-SEC-030 source half: no first-party crate names a `std::net` API. See
+/// `network_free.rs`'s module doc for why `deny.toml`'s dependency deny-list cannot cover this and
+/// what this check in turn cannot see.
+fn run_network_free(root: &Path) -> bool {
+    let crates_dir = root.join("crates");
+    let mut violations = Vec::new();
+
+    for file in walk_rs_files(&crates_dir) {
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            violations.push(format!("{}: could not read", file.display()));
+            continue;
+        };
+        for (line, name) in network_free::scan_network_apis(&content) {
+            violations.push(format!(
+                "{}:{line}: names `{name}` -- FR-ERR-060 forbids Namir 1.0 from making any \
+                 outbound network connection, and a first-party crate needs no dependency at all \
+                 to open one, so `deny.toml`'s ban list would not see this",
+                file.display()
+            ));
+        }
+    }
+
+    if violations.is_empty() {
+        println!(
+            "network-free: clean (no crate under crates/ names any of the {} std::net APIs)",
+            network_free::NETWORK_APIS.len()
+        );
+        true
+    } else {
+        println!(
+            "network-free: {} violation(s) found (FR-ERR-060 / NFR-SEC-030):",
             violations.len()
         );
         for v in &violations {
@@ -875,7 +916,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
     );
 }
 
@@ -887,6 +928,7 @@ fn main() {
         Some("layering") => run_layering(&root),
         Some("rt-logging") => run_rt_logging(&root),
         Some("feature-guard") => run_feature_guard(&root),
+        Some("network-free") => run_network_free(&root),
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
@@ -947,6 +989,39 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- FR-ERR-060 / NFR-SEC-030: no first-party crate names a socket ------------------------
+
+    /// The gate as CI should run it, over every `.rs` file under `crates/`.
+    #[test]
+    fn no_first_party_crate_names_a_std_net_api() {
+        assert!(run_network_free(&repo_root()));
+    }
+
+    #[test]
+    fn a_planted_outbound_connection_fails_the_gate() {
+        // The negative control, in the shape the requirement is actually at risk from: a line of
+        // Namir's own code opening a socket, with `Cargo.lock` untouched and `cargo deny check
+        // bans` green.
+        let dir = std::env::temp_dir().join(format!("xtask-err-060-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-worker/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-worker/src/update.rs"),
+            "pub fn check_for_updates() {}\n",
+        )
+        .unwrap();
+        assert!(run_network_free(&dir), "the scratch tree must start clean");
+
+        std::fs::write(
+            dir.join("crates/namir-worker/src/update.rs"),
+            "pub fn check_for_updates() {\n    let _ = std::net::TcpStream::connect(\"x:80\");\n}\n",
+        )
+        .unwrap();
+        assert!(!run_network_free(&dir));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     // --- §22 R-17 (issue #25): the --all-features guard, wired to the real tree -----------------
 
