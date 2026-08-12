@@ -20,9 +20,24 @@ libfuzzer-sys = "0.4"
 [dependencies.namir-ir]
 path = ".."
 
+# M14: `load_ir` needs `SampleRate` to call `PreparedIr::from_wav_bytes`, and `namir-ir` does not
+# re-export it. `namir-ir` already depends on `namir-core`, so this resolves nothing new.
+[dependencies.namir-core]
+path = "../../namir-core"
+
 [[bin]]
 name = "probe_wav"
 path = "fuzz_targets/probe_wav.rs"
+test = false
+doc = false
+bench = false
+
+# M14: the deep half of NFR-QUAL-040's "audio file readers" -- `decode`'s allocation, the
+# MAX_LOAD_SECONDS clamp, resampling and FFT planning, none of which `probe_wav` reaches. See that
+# target's own doc comment for why the two are separate targets rather than one widened one.
+[[bin]]
+name = "load_ir"
+path = "fuzz_targets/load_ir.rs"
 test = false
 doc = false
 bench = false
