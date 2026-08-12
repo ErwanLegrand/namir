@@ -1495,6 +1495,22 @@ P0 subsection records the reasoning and the phase membership. The preamble to §
 added 2026-08-08") repeats the unrefined arrow for a reader who skipped this section; it is left as
 written too, and read through this note.
 
+*Consequence (added M14, 2026-08-12)* — the arrow is **refined again, and again not replaced**. A
+sweep of every open register after M9b — §15's open decisions, §22's risks, all 66 partials, all 26
+manual-test documents, every Should, and a grep for in-code deferrals — established that M8 as
+written cannot hold what it now inherits. **M8 is "Size: S, a gate, not a construction phase", and
+what stands in front of it includes nine user-facing surfaces that do not exist in `namir-ui` at
+all, six unexecuted `Verify: M` Musts, and six open §15 decisions, two of them past their own
+deadlines.** §21 adds **M14 — Pre-1.0 closure** to hold that work, so M8 remains the gate its own
+text describes. The order is:
+
+> **M9a → M10 → M11 → M12 → M13 → M9b → M14 → M8.**
+
+M14 is numbered by when it joined the plan, not by when it runs — the same convention this section
+established for M9 through M13, and for the same reason: renumbering would destroy the audit trail
+that every existing reference to M8 forms. Nothing above this note is rewritten, M8 keeps its number
+and its text, and §21 states its own depends-on and blocks relationships in its header line.
+
 ---
 
 ## 13. Explicit non-goals for this roadmap (restated, not re-decided)
@@ -5566,3 +5582,244 @@ artifacts are developer-only until a signing identity exists. NFR-SEC-040's two 
 — hashes are published, bit-for-bit reproducibility is not claimed and is weakened by M11's git
 dependency. And the Linux tarball has never been unpacked by `install.sh` on any distribution, so
 the platform whose CI leg passed first is the one with the least evidence behind it.
+
+---
+
+## 21. M14 — Pre-1.0 closure
+
+**Size: XL.** **Depends on:** M9b, for the ledger this milestone is planned from — the triage below
+reads 66 `**PARTIAL**` rows, and until M9b those rows were neither complete nor trustworthy.
+**Blocks:** M8, entirely. **Governed by:** the decisions its Phase 0 makes, none of which exist yet.
+
+### Why this milestone exists
+
+**M8 says "Size: S, a gate, not a construction phase."** That is the right description of M8 and the
+wrong description of what M8 currently inherits. A sweep this session of every open register — §15's
+open decisions, §22's risk rows, all 66 partials, all 26 manual-test documents, every Should, and a
+grep for in-code deferrals — found that the work standing between today and the 1.0 exit checklist
+is not a checklist's worth. Three findings make the case, and each was verified against the source
+rather than inherited from a document:
+
+- **14 of the 66 partials are not verification debt.** They are Must requirements whose *product*
+  half was never built, wearing a coverage annotation. **Nine of those are user-facing surfaces that
+  do not exist in `namir-ui` at all** — `UiIntent` has seven variants and not one of them saves a
+  preset, adds a library root, selects a device, or resets a clip indicator. A milestone whose
+  entire content is "check that every row reads Done" cannot absorb a UI feature phase.
+- **Six `Verify: M` Musts are unexecuted**, not the two M9b's close-out names. FR-UI-020, -030,
+  -040, -050, -070 and FR-IO-030 all resolve to a manual document that says `NOT EXECUTED`, and
+  `xtask traceability` cannot tell — §15 item 15's filename arm was deliberately left unfixed, and
+  `xtask` refuses a `trace-partial:` on a `Verify: M` Must, so there is no disposition between "no
+  document" and "fully covered". **FR-IO-030 means neither Linux nor macOS audio has ever moved a
+  sample.**
+- **Six §15 items and eleven §22 risks are open**, two of them past their own stated deadlines. §15
+  item 16 — whether 1.0 ships an audio-device panel — was due before M9b's start, has not been
+  taken, and is upstream of five Musts' user-facing clauses.
+
+**The alternative was to let M8 discover all of this.** That is precisely the failure M9a was
+created to prevent one level up: a gate that first learns what it is gating when it runs. M8 keeps
+its number, its text and its meaning, and gains a milestone in front of it.
+
+### Sequencing
+
+> **M9a → M10 → M11 → M12 → M13 → M9b → M14 → M8.**
+
+M14 is numbered by when it joined the plan, not when it runs, exactly as §12's execution-order note
+established for M9–M13. Nothing above this section is rewritten; §12 carries a dated note recording
+the refinement.
+
+### Phase 0 — Decisions, before any of it is built
+
+**Nothing in Phases 1–6 starts until Phase 0 closes**, for the reason M9b's own P0 pass gives: a
+branch policy chosen after the measurement is a policy chosen to suit the measurement. Every item
+here is a paragraph in a governing document, not code.
+
+- **§15 item 16 — the audio-device panel.** Overdue. Answer 1 (build it) makes Phase 1 materially
+  larger; answer 2 (record an FRS scope reduction at FR-IO-010, -040, -050, -060, -070) deletes most
+  of Phase 1's device work and converts five Musts' clauses into recorded reductions. Answer 3
+  (silence) is not available at a 1.0 gate. **This is the single decision with the largest effect on
+  this milestone's size, and it must be first.** Issue #26.
+- **§15 item 3 — AQ-4 and factory presets.** Note a third resolution the item does not list:
+  FR-STATE-090 is a **Should**, §13 says no Should gates M8, and yet M8's exit checklist gates on
+  "factory presets ship". Striking that bullet is cheaper than either of the item's two answers and
+  is the only one consistent with §13. Whichever is chosen, no factory preset exists in the tree, so
+  the permitted route is still unbuilt work.
+- **§15 item 18 — FR-CHAIN-070's stereo source.** Decide; do not build. Dropping the Should costs no
+  Must and is recommended, because the alternative reopens D-9.8's stage order, which M9a re-affirmed.
+- **§15 item 19 — NFR-PORT-030's method vs. its text.** Decide whether the two mobile cross-builds
+  are the method or whether the five enumerated constraints need per-constraint checks. If the
+  latter, each becomes Phase 4 work.
+- **§15 item 20 / issue #18 — the plugin's missing editor on macOS and Linux.** A decision, not a
+  build; Cocoa and X11 embedding is a second and third `unsafe` surface under D-5.3 and is not 1.0
+  work.
+- **§15 item 21 / issue #27 — compound `Verify:` methods.** Six Musts state one; the parser keeps
+  the first code. Five self-correct through an `uncovered:` field; FR-STATE-040 structurally cannot,
+  and reads fully covered while its schema-check half exists nowhere.
+- **The sub-40 kHz clause (FR-NAM-060, FR-IR-030).** Where the lower rate falls below ~40 kHz, "0.1
+  dB to 20 kHz or Nyquist, whichever is lower" is unsatisfiable by any resampler. The honest fix is
+  an FRS clause bounding the supported range — a paragraph, not a test.
+- **R-13's fired condition.** The row says: if the partial count is not falling by M12, the mechanism
+  is being used as a bypass. M12 and M13 have both run and the count went 56 → 66. The rise is
+  honest accounting — M9b demoted two of its own tags and drove twelve uncovered Musts to zero — but
+  **a stated test that fires and is then reinterpreted needs the reinterpretation written down**,
+  not assumed.
+- **Accepted limitations, recorded as `*Consequence*` notes at their requirements** rather than
+  rolled forward as partials one more time: NFR-DOC-040's "stating what it does"; NFR-PERF-010's CI
+  regression gate (the figure passes with 34–42% headroom; closing it as written needs a self-hosted
+  runner on the §2 machine, which is disproportionate); NFR-PERF-030's stronger audible marker
+  (already considered and rejected once, on good grounds — ratify rather than reopen);
+  FR-CLAP-030's `audio-ports-config`; FR-NAM-090's true BS.1770 meter; FR-CLAP-090's memory
+  benchmark; NFR-LIC-010's SPDX-header clause, which is NFR-LIC-060's (a Should) work;
+  FR-CFG-030's "exercised" half for the standalone, which needs a device no runner has.
+
+### Phase 1 — The unbuilt user surfaces
+
+The nine Musts whose mechanism does not exist. Scope depends on Phase 0's item 16 answer.
+
+- **FR-STATE-030 — save and recall a named preset.** `AppHost::save_state`/`load_state` exist and
+  their own doc comment says they are wired to no control; their only caller is a test. `namir-clap`
+  has no equivalent. **`namir-app` constructs no `FileRef` anywhere**, so a save wired today would
+  write a state with no model or IR identity and silently break FR-STATE-060 and -070 — the
+  `FileRef` construction is a prerequisite of the save path, not a follow-up. Issue #32.
+- **FR-LIB-010 — nominate library directories.** Roots are hard-coded to `<config_dir>/Library`;
+  `AppSettings` has no roots field. Issue #32.
+- **FR-STATE-070 — locate a missing file manually.** Also `library_relative: None` on every
+  plugin-side `FileRef`, so FR-STATE-070's *first* resolution candidate is never recorded, in the
+  shell where project portability matters most. This is not the gap that row's `uncovered:` field
+  names.
+- **FR-NAM-080 — model metadata on screen.** `UiSnapshot` carries `loaded_model_name` only, filled
+  from the file basename, so author/gear/tone-type reach no screen.
+- **FR-IN-020, FR-IN-030, FR-OUT-020 — peak-hold, clip latch, output metering.** The engine already
+  publishes all of it; `MeterReading` carries `peak_db`/`rms_db` only and the string "clip" does not
+  appear anywhere in `crates/namir-ui/src`. `Meter::reset_clip` has no caller outside its unit test.
+  **The cheapest work in this phase** — the data exists one layer short of the screen.
+- **FR-IO-060, FR-IO-070 — xrun count and device re-selection.** The xrun counter surfaces only
+  through `eprintln!`. Gated on item 16.
+
+Every item here needs both `UiHost` bridges — `namir-app/src/host.rs` and `namir-clap/src/ui_host.rs`
+implement it independently by design — and any file dialog must respect NFR-PORT-030's no-blocking-
+dialog-on-an-audio-affecting-path clause.
+
+**FR-GATE-040 rides along.** It is a Should, it is one `UiSnapshot` field, and the engine already
+publishes `telemetry.gate.gain_reduction_db`. It is the cheapest Should in the FRS and the gate meter
+is currently computed and thrown away.
+
+### Phase 2 — The CLAP host contract
+
+- **FR-CLAP-060 — automation is applied at block boundaries.** `apply_automation` never reads
+  `ev.header().time()` and runs once before the block, so every automation point quantises to the
+  buffer size: ~10.7 ms at 48 kHz/512, ~85 ms at 4096. A Must, audible to the plugin's primary user
+  class, with **no recorded disposition anywhere**. Split the block at event offsets. Issue #30.
+- **FR-CLAP-060's click-freedom half.** Global bypass is a plain `bool` flip with no crossfade;
+  `GateStage` already has the pattern.
+- **Issue #36 — global bypass processes every stage when `prepare_crosscutting` was never called.**
+  Establish first whether any production path reaches it; fix or assert accordingly.
+
+### Phase 3 — Gates that do not gate
+
+Three mechanisms that exist, are green, and cannot detect what they were built to detect.
+
+- **FR-PARAM-020 — the tombstone mechanism is inoperable.** `check_manifest` has no caller outside
+  its own tests, and `xtask params-lock` byte-diffs against live-only output, so a committed
+  tombstone fails the gate permanently and `--write` deletes it. 1.0 is the version the stability
+  promise is measured from. Issue #31.
+- **FR-ERR-020 — `ErrorCode`'s fields are all `pub`** and one live site constructs an off-catalogue
+  code. The second conjunct of its `Verify: S` has no artifact. Issue #33.
+- **R-17 — nothing mechanical stops `--all-features`** linking `clack-host` into the shipped cdylib;
+  `xtask rt-logging` is the template for the guard. Issue #25.
+- **The manual-document verdict gap (issue #34).** Have `xtask traceability` read the `Result:` line
+  and treat `NOT EXECUTED` as uncovered, so the gate cannot print `clean` on evidence nobody
+  produced. **This must land before D-18.5's flip**, or the flip inherits the same hole.
+
+### Phase 4 — Engine and parameter verification
+
+~35 Musts of test debt against product code that is believed correct. No single theme needs its own
+phase; together they are the largest block of work in the milestone, and M9b's experience is the
+argument for doing it rather than deferring it again — **both DSP defects M9b found were found by
+running tests that had never run against a loaded chain.**
+
+- **Chain-level probes** (FR-CHAIN-010, -020, -050, -060, -080, NFR-PERF-020). The tagged
+  FR-CHAIN-010 test feeds zeros with nothing loaded and asserts zeros out; it cannot distinguish any
+  stage order from an empty chain. `ChannelConfig::MonoToStereo` appears in no gate or NAM test. No
+  NaN is ever injected into a real stage's state. One probe-signal harness through
+  `build_default_chain` closes most of this.
+- **Per-control DSP coverage** (FR-GATE-010, -030, FR-EQ-010, -020, -030, FR-IR-070, FR-PARAM-040).
+  Gate Attack/Release are exercised by no test. EQ magnitude is measured at DC and Nyquist only,
+  where the method says each band's own corner within 0.1 dB. FR-EQ-020 is a one-liner: the rate
+  array holds four of the six rates the requirement names.
+- **Parameter descriptors and delivery paths** (FR-PARAM-010, -030, -050, FR-OUT-010). Nothing
+  asserts a name, unit, range or default over a *shipped* `REGISTRY` entry — both tagged tests assert
+  against a fabricated const declared inside `mod tests`.
+- **Stage behaviour under a real signal** (FR-NAM-050, -110, FR-IR-060, FR-STATE-050). FR-NAM-110's
+  "cross-correlate an impulse through the stage" is performed by nothing — both tagged tests read an
+  accessor whose body is the literal `0` and assert it equals `0`.
+- **Sample-rate coverage** (FR-CLAP-080). The sweep loads nothing at any of its 154 rates, so
+  `SlotResampler` — the one rate-dependent subsystem, and the one M9b found broken at 192 kHz —
+  never runs in it. Loading a Nano fixture into the existing sweep is cheap and high-value.
+- **Cross-shell state interchange** (FR-STATE-030 test half, -060, FR-CLAP-050). Gated on Phase 1.
+- **RT safety and timing** (NFR-RT-010, -030, -040, NFR-PERF-050, FR-CLAP-130). The alloc harness
+  does not reach `namir-app`'s audio callback. NFR-RT-030 measures the assembled chain's aggregate,
+  in which a real denormal spike in one stage is diluted below the bound by the other five, where the
+  method says "drive each stage".
+- **Diagnostics and fault containment** (FR-ERR-010, -030, -040). FR-ERR-040 injects a fault only
+  into the generic worker pool — nothing into the scanner, the state path, settings I/O, the cache or
+  the GUI thread — and its "continue passing audio" clause is asserted by nothing, in the requirement
+  whose Rationale is "crashing a user's DAW loses their work".
+- **Static checks that under-approximate** (NFR-PORT-020, FR-ERR-060, NFR-QUAL-040, NFR-SEC-020,
+  NFR-LIC-010, NFR-LIC-050). `xtask layering`'s platform lint matches three literal substrings, so
+  `#[cfg(not(windows))]`, `cfg!(...)` and `#[cfg(target_arch)]` all pass unseen. Nothing detects
+  direct `std::net` use in a first-party crate.
+- **Benchmarks that assert nothing** (FR-LIB-030, FR-UI-060). Both already exist and print rather
+  than assert, which is the worst state a `Verify: B` can be in. FR-UI-060's timed frame uses
+  `scan: None`, so neither the scan branch nor the re-filter path — the reason the memoization exists
+  — runs inside it. Closing FR-UI-060's also closes **R-12**'s detector gap.
+
+### Phase 5 — Distribution and install verification
+
+Four requirements naming one hole: **`ci.yml` never runs `xtask bundle`**, so every assertion against
+a real produced tree happens only on a `v*` tag. Only macOS re-opens what it produced; Windows and
+Linux assert the staging tree only, so nothing opens the produced installer, ZIP or tarball to
+confirm the licence texts and `THIRD-PARTY-NOTICES.md` are inside (FR-CFG-030, FR-PKG-040,
+NFR-LIC-030, NFR-BUILD-020). Add bundle-and-inspect lanes on all three platforms, plus an
+`xtask identity`-style check tying README commands to `ci.yml` — they have already drifted.
+
+### Phase 6 — The human sessions, and R-18
+
+- **One Windows session** with a display, an audio interface and an instrument closes five of the six
+  unexecuted `Verify: M` Musts — FR-UI-020, -040, -050, -070 and, with a DAW, the residues of
+  FR-CLAP-040, -060, -090 and -100. **This is the highest-value single unblocking action in the
+  project**, and it also releases D-18.5's flip and NFR-QUAL-010's closure. Issue #34.
+- **FR-IO-030 needs a Linux box and a Mac.** Neither platform's audio path has ever moved a sample,
+  and both are claimed as supported.
+- **FR-UI-030 cannot be closed by running its script** — `egui-baseview` wires no `accesskit`
+  platform adapter, so a screen reader announces nothing and the script would fail. Decide it in
+  Phase 0; issue #35.
+- **R-18 / issue #22 — NFR-PERF-040's margin is not Namir's.** Instantiation is 187.5 ms against a
+  200 ms Must at 10 000 entries, of which chain construction is 147 µs; the rest is one JSON parse
+  of `library-index.json`, per plugin instance, with no cross-instance sharing. **Asserting on `max`
+  as the benchmark does puts the breach near 10 700 entries**, and FR-LIB-020's 10 000 is a floor on
+  what Namir claims to support. No regression test can ever catch this, because nothing regresses.
+  Take the index off the instantiation path.
+- **R-11 / issue #23 — signing.** If 1.0 is a public release, a quarantined macOS plugin has no
+  user-visible load path at all and the CI signing route is unreachable because the keychain import
+  is unbuilt. Decide, then build or record.
+
+### Acceptance
+
+- Phase 0's decisions are all recorded in the governing documents, each at its own requirement or
+  decision, before any Phase 1–6 commit lands.
+- Every partial that this milestone closes is closed by closing its named gap, never by promoting its
+  tag — D-23.1's own failure mode, and the one §22 **R-13** exists to catch.
+- The remaining partials are re-booked deliberately, with a stated reason, not by default onto
+  whatever milestone follows. M9b's own status subsection records that the last such re-booking was a
+  default and says so plainly; this milestone must not repeat it.
+- The six unexecuted `Verify: M` Musts either carry an executed per-step verdict or a recorded
+  scope reduction. **Neither `NOT EXECUTED` nor silence survives into M8.**
+- `xtask traceability` cannot print `clean` while any manual document reads `NOT EXECUTED`.
+- D-18.5's flip and NFR-QUAL-010's closure — inherited from M9b, which could not reach them — land
+  here, after Phase 3's verdict-parsing change and Phase 6's Windows session, and not before.
+
+**What this milestone deliberately does not do:** build a Wayland backend (R-16, issue #19), an
+accessibility platform adapter (issue #35, unless Phase 0 says otherwise), a Cocoa or X11 plugin
+editor (issue #18), a BS.1770 loudness meter, a memory benchmark, or a self-hosted benchmark runner.
+Each is recorded as an accepted limitation in Phase 0 rather than carried as an open partial into the
+1.0 gate.
