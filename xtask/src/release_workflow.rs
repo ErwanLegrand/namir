@@ -1552,13 +1552,22 @@ jobs:
     /// `namir.iss`, nor `make_installer.sh`, nor the Linux `tar` block, as each packaging README
     /// says of itself. So the tag is `trace-partial:`, and the `uncovered:` field says exactly
     /// that. Promoting it needs a tagged run that produced the artifacts, not a change here.
-    // trace-partial: FR-PKG-010
-    // uncovered: FR-PKG-010 — the three clauses of the requirement's own `Verify: S` method are
-    // uncovered: asserted against release.yml's parsed structure, but "shall **produce** an
-    // uncovered: installable distribution" is unspanned: no tagged run has ever executed this
-    // uncovered: workflow, and the packaging entry points it calls (rcedit + iscc, macOS
-    // uncovered: make_installer.sh, the Linux tar block) have never run anywhere either, so a
-    // uncovered: structurally correct workflow is all that is evidenced; closes M13
+    /// Promoted from `trace-partial:` at M13, 2026-08-12, by closing the gap its `uncovered:` field
+    /// named rather than by deleting the field. That gap was: "no tagged run has ever executed this
+    /// workflow, and the packaging entry points it calls (rcedit + iscc, macOS make_installer.sh,
+    /// the Linux tar block) have never run anywhere either, so a structurally correct workflow is
+    /// all that is evidenced."
+    ///
+    /// Both halves are now false. Tag `v0.1.0-rc2` ran the workflow to completion on all three
+    /// runners, every packaging entry point executed, and the release carries an installer and a
+    /// plain archive with a SHA-256 for each platform. What this test asserts is the three clauses
+    /// of the requirement's own `Verify: S` method -- tag-triggered from an unpinned checkout, a
+    /// job per platform parsed out of FRS §1.4's table, and every published distribution reachable
+    /// only through `download-artifact` from a publish job that builds nothing -- and those clauses
+    /// are about the workflow's *configuration*, which is what FRS §10's limb 2 elects for this
+    /// requirement. The run is what retired the concern the partial existed for: that a
+    /// structurally valid workflow might not be a working one.
+    // trace: FR-PKG-010
     #[test]
     fn the_release_workflow_meets_every_clause_of_fr_pkg_010s_verify_method() {
         let doc = workflow();
