@@ -34,6 +34,7 @@ use crate::audio_io::{
 use crate::host::AppHost;
 use crate::instance::SharedInstance;
 use crate::settings::{self, AppSettings};
+use crate::startup_probe;
 use crate::stream::{self, StreamSetup};
 use crate::worker::{AppEvent, WorkerContext, WorkerHandle};
 use crate::xrun::XrunCounter;
@@ -42,8 +43,12 @@ use crate::xrun::XrunCounter;
 /// unrecognised environment — see that function's own doc comment). A session with no persistent
 /// config directory still runs; it just doesn't remember anything across restarts, which is a
 /// strictly worse but still-functional degradation (P8), not a reason to refuse to start.
+///
+/// [`crate::startup_probe`]'s override takes precedence when set, so an NFR-PERF-030 measurement
+/// runs against a configuration directory the harness owns rather than this machine's real one.
+/// Unset in every ordinary launch, which is every launch that is not a benchmark.
 fn resolve_config_dir() -> Option<PathBuf> {
-    namir_platform::config_dir()
+    startup_probe::config_dir_override().or_else(namir_platform::config_dir)
 }
 
 /// FR-IO-010/040: enumerates and negotiates one direction (input or output). Returns the selected
@@ -168,6 +173,7 @@ fn negotiate_share_mode(
 
 /// `main`'s real body. Blocks until the window is closed.
 pub fn run() {
+    startup_probe::entered();
     let config_dir = resolve_config_dir();
 
     let (mut settings, settings_warning) = match &config_dir {
@@ -302,8 +308,18 @@ pub fn run() {
     let (library, library_warnings) = namir_worker::library::LibraryService::open_at(&library_dir);
     let library_roots = library.roots().to_vec();
     let library = Arc::new(library);
+    // NFR-PERF-030's "with a warm library index": captured here, where it is true, so the startup
+    // probe's marker reports the size of the index this launch actually read rather than leaving a
+    // harness to assume one. An `Arc` clone and a `len()`.
+    let library_index_entries = library.snapshot().len();
 
-    let state = Arc::new(Mutex::new(State::defaults()));
+    let default_state = State::defaults();
+    // NFR-PERF-030's "default state loaded": that half of the requirement has no event of its own
+    // — it is satisfied implicitly, here and at `build_default_engine` above — so rather than
+    // invent one, the probe reports what was actually built and the benchmark checks it against
+    // `namir_params::REGISTRY`. See `crate::startup_probe`'s module doc comment.
+    let default_state_params = default_state.params.iter().count();
+    let state = Arc::new(Mutex::new(default_state));
     let worker_ctx = WorkerContext {
         instance: instance.clone(),
         cache: Arc::clone(&cache),
@@ -380,19 +396,39 @@ pub fn run() {
     let _running = match running {
         Ok(running) => match running.play() {
             Ok(()) => {
+                // NFR-PERF-030's marking event, emitted before the log line below so the measured
+                // interval ends where the requirement says it does: `RunningStreams::play`
+                // returning `Ok(())` is, in its own doc comment's words, "the one call that
+                // actually makes audio flow". A no-op outside a measurement run.
+                startup_probe::audible(library_index_entries, default_state_params);
                 eprintln!("namir: audio stream started");
                 Some(running)
             }
             Err(e) => {
+                // The detail is carried on the marker, not left to the notice alone: a probed
+                // launch opens no window, so `host.report` below has no reader.
+                startup_probe::not_audible(
+                    startup_probe::REASON_STREAM_NOT_STARTED,
+                    &e.to_string(),
+                );
                 host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
                 None
             }
         },
         Err(e) => {
+            startup_probe::not_audible(startup_probe::REASON_STREAM_NOT_STARTED, &e.to_string());
             host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
             None
         }
     };
+
+    // NFR-PERF-030: a measurement run has nothing left to do — its marker is out — and returning
+    // here is what makes the process exit instead of blocking in `open_blocking` below. Before the
+    // `settings::save` at the foot of this function too, so a measurement never writes to the
+    // directory it was pointed at.
+    if startup_probe::enabled() {
+        return;
+    }
 
     // FR-IO-050/060: no device-settings surface exists in the shared `namir-ui` window (that
     // crate's scope is FR-UI-020's amp/cab screen; FR-IO is standalone-only and has no UI owner
@@ -432,6 +468,16 @@ pub fn run() {
 /// fails outright (FR-IO-070's "shall not crash or hang": a window the user can at least see and
 /// close is strictly better than a silent process exit with no explanation).
 fn open_window_without_audio(config_dir: Option<PathBuf>) {
+    // NFR-PERF-030: every one of this function's four call sites is a launch that will never become
+    // audible, which is a different outcome from a slow one and must not be measured as a timeout.
+    // Checked here rather than at the four call sites so a fifth can never be added without it, and
+    // returning before anything is built because a measurement run has no window to open. Each call
+    // site has already printed on stderr which of the four conditions it was.
+    if startup_probe::enabled() {
+        startup_probe::not_audible(startup_probe::REASON_NO_AUDIO_DEVICE, "");
+        return;
+    }
+
     let c = PrepareContext::new(
         SampleRate::new(48_000).unwrap(),
         512,

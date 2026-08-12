@@ -1,0 +1,216 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Audio Effect Preset Schema",
+  "description": "JSON schema for audio effect presets, including time-variant effects, compressors, and limiters.",
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the preset."
+        },
+        "version": {
+          "type": "string",
+          "description": "Version of the preset."
+        },
+        "schema_version": {
+          "type": "string",
+          "description": "Version of this JSON schema.",
+          "default": "1.0"
+        },
+        "author": {
+          "type": "string",
+          "description": "Creator of the preset."
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of the effect or preset."
+        },
+        "date": {
+          "type": "string",
+          "format": "date",
+          "description": "Creation or modification date (ISO 8601 format)."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Array of tags for categorization."
+        }
+      },
+      "required": ["name", "version", "schema_version"]
+    },
+    "effect": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["delay", "chorus", "flanger", "phaser", "tremolo", "compressor", "limiter"],
+          "description": "Type of effect."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Toggle the effect on/off.",
+          "default": true
+        },
+        "mix": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Wet/dry mix ratio (0.0 to 1.0).",
+          "default": 0.5
+        },
+        "input_gain": {
+          "type": "number",
+          "description": "Input gain in dB.",
+          "default": 0
+        },
+        "output_gain": {
+          "type": "number",
+          "description": "Output gain in dB.",
+          "default": 0
+        },
+        "bypass": {
+          "type": "boolean",
+          "description": "Bypass the effect entirely.",
+          "default": false
+        },
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "attack": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Attack time in milliseconds."
+            },
+            "ceiling": {
+              "type": "number",
+              "description": "Maximum output level for limiter in dB."
+            },
+            "delay_time": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Delay time in milliseconds."
+            },
+            "depth": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Modulation depth (0.0 to 1.0)."
+            },
+            "duty_cycle": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Duty cycle for square wave tremolo (0.0 to 1.0)."
+            },
+            "feedback": {
+              "type": "number",
+              "minimum": -1,
+              "maximum": 1,
+              "description": "Feedback amount (-1.0 to 1.0)."
+            },
+            "high_cut": {
+              "type": "number",
+              "minimum": 0,
+              "description": "High-cut filter frequency in Hz."
+            },
+            "knee": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Knee width in dB."
+            },
+            "lookahead": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Lookahead time in milliseconds."
+            },
+            "low_cut": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Low-cut filter frequency in Hz."
+            },
+            "makeup_gain": {
+              "type": "number",
+              "description": "Makeup gain in dB."
+            },
+            "phase": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 360,
+              "description": "Phase offset in degrees."
+            },
+            "ping_pong": {
+              "type": "boolean",
+              "description": "Stereo ping-pong mode for delay."
+            },
+            "rate": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Modulation rate in Hz."
+            },
+            "ratio": {
+              "type": "number",
+              "minimum": 1,
+              "description": "Compression ratio (e.g., 4.0 for 4:1)."
+            },
+            "release": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Release time in milliseconds."
+            },
+            "spread": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Stereo spread in milliseconds or percent."
+            },
+            "stages": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of phase-shifting stages."
+            },
+            "stereo_mode": {
+              "type": "string",
+              "enum": ["mono", "stereo", "ping_pong"],
+              "description": "Stereo mode."
+            },
+            "sync": {
+              "type": "boolean",
+              "description": "Sync to host tempo."
+            },
+            "sync_note": {
+              "type": "string",
+              "description": "Musical note value for sync (e.g., '1/4', '1/8')."
+            },
+            "threshold": {
+              "type": "number",
+              "description": "Threshold level in dB."
+            },
+            "time": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Effect time in milliseconds."
+            },
+            "voice_count": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of chorus voices."
+            },
+            "waveform": {
+              "type": "string",
+              "enum": ["sine", "square", "triangle", "random", "sawtooth"],
+              "description": "LFO waveform."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "parameters"]
+    }
+  },
+  "required": ["metadata", "effect"],
+  "additionalProperties": false
+}

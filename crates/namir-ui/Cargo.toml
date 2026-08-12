@@ -4,15 +4,17 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
-namir-params = { path = "../namir-params" }
-namir-library = { path = "../namir-library" }
-namir-state = { path = "../namir-state" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
+namir-params = { path = "../namir-params", version = "0.1.0" }
+namir-library = { path = "../namir-library", version = "0.1.0" }
+namir-state = { path = "../namir-state", version = "0.1.0" }
 # D-5.1's table (docs/02-architecture.md §5, mirrored in xtask/src/layering.rs's LAYERING_TABLE)
 # permits exactly these four `namir-*` crates. In particular:
 #  - no namir-engine: this crate never touches a live Chain -- see this crate's top doc comment.
@@ -40,4 +42,4 @@ raw-window-handle = "0.6"
 # NFR-PERF-060-scale library-list stress fixture for FR-UI-060's "stays responsive during a
 # 10,000-file scan" test (library_view.rs) -- the same generator namir-library's own benchmark
 # uses, not a hand-rolled guess at what 10,000 rows looks like.
-namir-fixtures = { path = "../namir-fixtures" }
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }

@@ -4,12 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# D-18.4: Namir publishes nothing to crates.io. Inherited so the policy has one home.
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-namir-core = { path = "../namir-core" }
+namir-core = { path = "../namir-core", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
@@ -32,5 +34,5 @@ hound = "3.5"
 # ones rather than re-checking its own output by construction). Both take `namir-fixtures` as a
 # dev-dependency in the other direction already (their parity/robustness tests), so this is the
 # same pairing running the other way round for a different purpose, not a new layering shape.
-namir-nam = { path = "../namir-nam" }
-namir-ir = { path = "../namir-ir" }
+namir-nam = { path = "../namir-nam", version = "0.1.0" }
+namir-ir = { path = "../namir-ir", version = "0.1.0" }

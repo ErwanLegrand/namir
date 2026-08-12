@@ -748,6 +748,27 @@ extension, supporting the host embedding it, and shall function correctly if the
 show a GUI at all.
 *Verify:* I.
 
+*Consequence (added M13, 2026-08-12, from loading the plugin on macOS)* — **the first clause is not
+met on macOS or Linux, and cannot be as the plugin is built.**
+`crates/namir-clap/src/gui.rs`'s `is_api_supported` returns true only for `GuiApiType::WIN32`, so a
+host on any other platform is refused and never embeds an editor. Observed rather than inferred: in
+Reaper on macOS the plugin loads and processes audio, and the window the host shows is **Reaper's
+own generic parameter panel** — no brand mark, no meters, because Namir draws nothing. The
+standalone application is unaffected on those platforms, since it opens its own window and never
+uses this extension.
+
+*The second clause is met, and the same observation is what demonstrates it.* "Shall function
+correctly if the host declines to show a GUI at all" is exactly the situation a macOS host is in,
+and audio, parameters and state all work.
+
+This note changes no text, priority or `*Verify:*` line above; the requirement remains unqualified
+about platform and remains unmet. It is `**UNRESOLVED**` in the generated plan and owned by M9b, so
+nothing in the ledger claims otherwise. **Whether 1.0 ships a plugin with no interface on two of
+three supported platforms is a scope question, not a verification one** —
+`03-implementation-roadmap.md` §15 carries it as an open decision rather than this note settling it.
+The restriction was introduced at M6 following spike S-4, which ran on Windows only, and until this
+note it was recorded nowhere outside a code comment.
+
 **FR-CLAP-110 (Should)** — The GUI shall support host-driven resizing and shall report its size
 constraints and preferred aspect to the host.
 *Verify:* M.
@@ -819,6 +840,23 @@ cannot be followed as written. This note changes no text, priority or `*Verify:*
 the milestone that closes the requirement moves. `docs/manual-tests/fr-ui-110-brand-mark.md` records
 what was and was not executed, including that no display was available to execute the brand-mark
 half either.
+
+*Consequence (added M13, 2026-08-11)* — the **executable** icon clause is built; the **window** icon
+clause **cannot be met through the pinned stack**, which is a finding rather than a further
+deferral. `images/namir.ico` is generated from `images/namir.png` by `xtask identity` and gated for
+freshness the same way M12's brand-mark blob is, and `rcedit` embeds it into `namir.exe` in the
+packaging pipeline, so `02-architecture.md` **D-17.3**'s refusal of a build script in a shipped
+crate holds and its stated cost is now real: a plain `cargo build` produces an icon-less executable.
+The window clause is a different matter. M12 left "whether `baseview` 0.3.0 gained an icon field"
+explicitly unchecked; M13 checked, and **no published `baseview` version has ever exposed an icon on
+any backend** — 0.3.0 does not even have `WindowOpenOptions`, and its Win32 window class registers
+`hIcon: null_mut()` byte-identically to 0.2.2. The upgrade is unreachable regardless, published
+`egui-baseview` 0.6.0 requiring `baseview` 0.2.2. The only in-process route is `WM_SETICON`, which
+D-17.3 priced at a fourth `#![allow(unsafe_code)]` file for a cosmetic feature and declined. What
+remains untested is whether the shell's own executable-icon fallback gives the window, the taskbar
+button and Alt-Tab an icon anyway; `docs/manual-tests/fr-ui-110-brand-mark.md` carries those as
+three separate unexecuted steps, because they need not agree. This note changes no text, priority or
+`*Verify:*` line above. **FR-UI-110 remains open**, on the window clause and on those observations.
 
 ### 5.14 Diagnostics and error handling (ERR)
 
