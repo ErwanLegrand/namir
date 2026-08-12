@@ -2863,6 +2863,32 @@ that happens to depend on them first.
     honest without pretending the limitation is smaller than it is. **Due before M8**, since
     FR-CLAP-100 feeds 5.12 CLAP's row and M8's exit gate reads every row Done. Tracked as a GitHub
     issue so it is visible outside this appendix.
+21. **`xtask traceability` keeps only the first code of a compound `Verify:` method, and for one
+    requirement that silently hides an unexecuted half.** Raised 2026-08-12 at M9b, found while
+    building FR-ERR-030's static check. **Six** Musts state a compound method: FR-STATE-040
+    (`M plus S (schema check)`), FR-CLAP-090 (`I plus B`), FR-CLAP-130 (`S plus I`), FR-ERR-030
+    (`S plus I`), NFR-RT-020 (`S plus code review`) and NFR-PERF-010 (`B, as a CI regression gate`).
+    The parser records only the first, so `docs/03-test-plan.md` shows a weaker bar than the FRS
+    states for all six. **Five self-correct and one cannot, and the difference is structural.** For
+    the five whose first code is not `M`, the annotation author can write the missing half into the
+    `uncovered:` field, and at M9b four of them do exactly that, naming the `B` half, the `S` half,
+    the `I` half and the unasserted threshold respectively — the doctrine working as intended.
+    **FR-STATE-040 cannot**, because its first code *is* `M`: under D-18.6 a `Verify: M` Must is
+    traced by its manual document, `xtask` hard-refuses a `trace-partial:` naming one, and so it
+    resolves **plainly covered** from a filename match alone. Its `S` half is a schema check that
+    **does not exist** — nothing under `crates/namir-state/src/` mentions a schema, `xtask preset`
+    is a sample *generator* rather than a validator, and no `trace:` tag anywhere in the tree names
+    FR-STATE-040. So one Must reads fully green while half its stated method is unexecuted, and no
+    mechanism in the current design could ever say so. Three answers, and the cheapest is not
+    obviously right: **teach the parser compound methods**, which is the general fix and would catch
+    this class automatically, but will demote rows and reopen adjudications; **build FR-STATE-040's
+    schema check** and tag it, which closes this instance and leaves the class open — and requires
+    deciding what the schema *is*, which the FRS does not say; or **narrow the FRS line** to the half
+    that is actually verified, which is honest bookkeeping and gives up a check the requirement's
+    author evidently wanted. **Due before M8**, since M8's exit gate reads §14 and 5.9 STATE's row
+    depends on it. **Recorded rather than acted on at M9b by decision**, and M9b's close-out states
+    the caveat plainly rather than letting NFR-QUAL-010's first-ever closure be read as stronger
+    than it is.
 
 ---
 
