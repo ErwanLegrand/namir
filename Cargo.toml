@@ -1,6 +1,7 @@
 # NFR-LIC-010's own partial sits beside the `license` key in [workspace.package] below, which is the
-# one of its three named checks that has an artifact; D-23.1's adjacency rule takes one anchor per
-# tag, so it is annotated there rather than stacked here.
+# manifest-metadata one of its three named checks; D-23.1's adjacency rule takes one anchor per
+# tag, so it is annotated there rather than stacked here. Its licence-files-present check is
+# `xtask identity`'s since M14 (`xtask/src/identity.rs`'s LICENCE_FILES).
 # trace: FR-CFG-010, NFR-BUILD-010
 [workspace]
 resolver = "3"
@@ -22,10 +23,10 @@ exclude = [
 [workspace.package]
 edition = "2024"
 # trace-partial: NFR-LIC-010
-# uncovered: NFR-LIC-010 — two of the method's three named checks have no artifact: nothing checks
-# uncovered: that the licence files are present, so their removal would go unnoticed, and nothing
-# uncovered: checks SPDX headers, which only two tracked files under crates/ carry;
-# uncovered: closes M8
+# uncovered: NFR-LIC-010 — the method's SPDX-header check has no artifact: only two tracked files
+# uncovered: under crates/ carry a header, and making the check meaningful means putting one on
+# uncovered: every file, which is NFR-LIC-060's (a Should's) work — accepted on that basis by the
+# uncovered: requirement's own Consequence note (FRS, 2026-08-12); closes M8
 license = "MIT OR Apache-2.0"
 # D-18.4 (M13): Namir publishes **nothing** to crates.io. Twelve of the fourteen crates are
 # implementation details of one product, `namir-clap` is a cdylib nothing can depend on as a
