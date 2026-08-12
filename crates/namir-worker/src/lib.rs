@@ -721,6 +721,64 @@ mod tests {
         assert_eq!(err.code.id, error_codes::FILE_UNREADABLE.id);
     }
 
+    /// NFR-SEC-020's refusal branch itself, driven for the first time at M14: "shall **reject** a
+    /// file that exceeds it with a clear message rather than exhausting memory". Until now
+    /// `namir-core`'s limits test asserted only that `MAX_FILE_BYTES` is larger than
+    /// NFR-PERF-050's target, which says nothing about what happens to a file above it, and this
+    /// crate's own coverage stopped at the unreadable-file arm one line up.
+    ///
+    /// **The oversized file is sparse.** `File::set_len` past the ceiling sets the size without
+    /// writing 256 MB of anything, on every filesystem this project targets, and the branch under
+    /// test reads `std::fs::metadata(..).len()` and returns *before* `std::fs::read` — so the
+    /// bytes never have to exist for the check to be the real one. That is not a shortcut around
+    /// the test: it is the property NFR-SEC-020 asks for, which is precisely that an oversized
+    /// file is refused without being loaded.
+    // The `.nam`/IR disk-load kind of the four `namir-core`'s limits doc comment enumerates; the
+    // other three are annotated at `namir-state`'s `document.rs`, `namir-ir`'s `wav.rs` and
+    // `namir-library`'s `scan.rs`.
+    // trace: NFR-SEC-020
+    #[test]
+    fn a_file_over_the_ceiling_is_refused_before_its_bytes_are_read() {
+        let dir = std::env::temp_dir().join(format!("namir-worker-sec-020-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("oversized.nam");
+
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_FILE_BYTES as u64 + 1).unwrap();
+        drop(file);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            MAX_FILE_BYTES as u64 + 1,
+            "the scratch filesystem did not honour the requested length, so this test would \
+             otherwise pass for the wrong reason"
+        );
+
+        let err = LoadSource::File(path.clone()).read().unwrap_err();
+        assert_eq!(err.code.id, error_codes::FILE_TOO_LARGE.id);
+        // The message names the file and its size, which is the "clear message" half of the
+        // requirement -- a refusal the user cannot act on is not what NFR-SEC-020 asks for.
+        assert!(err.detail.contains("oversized.nam"), "{}", err.detail);
+        assert!(
+            err.detail.contains(&(MAX_FILE_BYTES + 1).to_string()),
+            "{}",
+            err.detail
+        );
+
+        // The control: a file under the ceiling in the same directory is read normally, so the
+        // refusal above is the ceiling firing rather than anything about the path or the scratch
+        // filesystem. Deliberately small rather than one byte under the ceiling -- reading that
+        // would allocate the whole 256 MB this test exists to show is never allocated.
+        let ok_path = dir.join("small.nam");
+        std::fs::write(&ok_path, b"under the ceiling").unwrap();
+        assert_eq!(
+            &*LoadSource::File(ok_path).read().unwrap(),
+            b"under the ceiling"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// **M6's non-blocking parameter path** (`namir-clap`'s `ui_host.rs`): a plain param change
     /// reaches the audio thread's chain through the ordinary command ring, exactly as one
     /// submitted through `Command::Param` directly would.
