@@ -25,7 +25,7 @@ use libfuzzer_sys::fuzz_target;
 // uncovered: header-only: the target calls probe_wav, which the crate documents as deliberately
 // uncovered: shallower, so decode's per-channel Vec::with_capacity, its MAX_LOAD_SECONDS clamp
 // uncovered: and PreparedIr::from_wav_bytes's resample and FFT planning — where a hang or an
-// uncovered: over-allocation would actually live — are never reached; closes M9b
+// uncovered: over-allocation would actually live — are never reached; closes M8
 fuzz_target!(|data: &[u8]| {
     let _ = namir_ir::probe_wav(data);
 });

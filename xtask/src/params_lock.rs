@@ -10,7 +10,7 @@
 // uncovered: check_manifest, the function that detects TOMBSTONE_REUSED and ID_CHANGED, has no
 // uncovered: caller outside its own test module, and the byte-equality check CI runs against
 // uncovered: render_manifest's live-only output makes a tombstoned line in params.lock fail the
-// uncovered: gate permanently and be deleted by --write; closes M9b
+// uncovered: gate permanently and be deleted by --write; closes M8
 
 use std::path::Path;
 

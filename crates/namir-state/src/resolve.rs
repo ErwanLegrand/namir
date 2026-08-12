@@ -231,7 +231,7 @@ mod tests {
     // uncovered: it manually", is spanned by nothing and exists nowhere in the product: UiIntent
     // uncovered: carries no locate or browse variant and neither shell offers such a path, the
     // uncovered: only mention in the tree being a doc comment paraphrasing the requirement;
-    // uncovered: closes M9b
+    // uncovered: closes M8
     #[test]
     fn resolves_via_library_relative_when_that_candidate_exists() {
         let reference = reference_with(Some("marshall/plexi.nam"), None);

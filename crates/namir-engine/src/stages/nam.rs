@@ -1507,7 +1507,7 @@ mod tests {
     // uncovered: at 44.1 kHz against the same model driven at 48 kHz with the input and output
     // uncovered: resampled offline to the FR-NAM-030 tolerance, is computed nowhere; the tagged
     // uncovered: test asserts only finiteness and non-allocation over 200 blocks of varying size;
-    // uncovered: closes M9b
+    // uncovered: closes M8
     #[test]
     fn resampled_path_runs_many_varying_blocks_without_allocating_or_panicking() {
         // Best-effort coverage for the mismatched-rate path (this module's doc comment: not
@@ -1546,7 +1546,7 @@ mod tests {
     // uncovered: (rms_db's own doc comment states the substitution). The two agree for this
     // uncovered: test's own otherwise-matched signal pairs, which is why the behavior under test
     // uncovered: is real, but a true LUFS meter does not exist anywhere in this codebase, so the
-    // uncovered: method is not executed as stated in the general case; closes M9b
+    // uncovered: method is not executed as stated in the general case; closes M8
     #[test]
     fn normalization_enabled_brings_differently_declared_models_within_one_lu() {
         let sample_rate = 48_000;

@@ -142,7 +142,7 @@ mod tests {
     // uncovered: FR-NAM-080 — the "and display" half spans only the name field: UiSnapshot
     // uncovered: carries no metadata field beyond loaded_model_name, which namir-app fills from
     // uncovered: the file's basename rather than metadata.name, so author, gear make/model/type,
-    // uncovered: tone type and description reach no screen; closes M9b
+    // uncovered: tone type and description reach no screen; closes M8
     #[test]
     fn probe_agrees_with_the_full_wavenet_parse() {
         let bytes = wavenet_json_with_weights(5);

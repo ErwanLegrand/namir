@@ -21,7 +21,7 @@
 // uncovered: is a runtime generator whose output is never committed: the fifteen assets tracked
 // uncovered: under crates/*/fuzz/corpus, including a .wav impulse response and a .nam model, are
 // uncovered: recorded nowhere and no check would catch a captured asset added beside them;
-// uncovered: closes M9b
+// uncovered: closes M8
 
 pub mod ir;
 pub mod library;
