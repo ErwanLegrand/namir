@@ -4130,6 +4130,102 @@ closing.
 
 ---
 
+### M9b status — the build work, and why this is not yet a close-out, 2026-08-12
+
+Appended per this document's convention; nothing above is edited. **This is deliberately a `status`
+and not a `close-out`**, because the two things M9b was created to deliver last — D-18.5's flip and
+NFR-QUAL-010's closure — are blocked on a precondition no amount of code can satisfy. See the final
+subsection below.
+
+**`xtask traceability` reports `clean -- all 130 Must requirements are covered`.** That sentence has
+never been printable before. Twelve uncovered Musts at this milestone's start are zero: FR-CFG-020,
+FR-NAM-060, FR-CLAP-030/-040/-070/-080/-100/-130, FR-ERR-010, NFR-PERF-040, and the two M13 handed
+over unclaimed, FR-UI-020 and FR-UI-070. §14's table moves 37 / 92 / 1 to **44 / 86 / 0**, emptying
+the Not-started column for the first time.
+
+**Two real DSP defects were found, and finding them is the milestone's strongest justification.**
+Neither was a tagging gap; both had shipped undetected because the test that would catch them did
+not exist.
+
+- **FR-NAM-060 had never been measured at all**, and failed at both resampling sites on its first
+  measurement. `rubato` places an antialias cutoff as a function of filter *length*, so a short
+  filter loses passband rather than widening a transition. The NAM stage sized its FFT in *engine*
+  frames, so at a 192 kHz engine against a 48 kHz model the filter was 64 frames in the model's
+  domain: **−14.95 dB at 20 kHz** against a 0.1 dB ripple bar. `namir-ir`'s `SincFixedIn(256)`
+  measured **−17.7 dB** stopband at 192→48 against a 100 dB bar. Both now size the FFT in the lower
+  rate's domain — worst ripple 1.9e-5 dB, worst stopband −129 dB, and 48 kHz output byte-identical.
+- **FR-CLAP-070 had never run with a model loaded**, and found a live engine bug. `SlotResampler`
+  primed its output FIFO only to the current call's length and substituted zeros when starved, so
+  every starved frame spliced in a sample of silence never taken back. The stage's delay became a
+  function of block-size **history** — 63 accumulated samples under one-frame blocks — and the shift
+  arrived **mid-stream** when a host changed block size, which a user hears as a glitch. Both the
+  parity clause and the "without artefacts" clause were failing. Priming the FIFO with one engine
+  block makes `in.len() + out.len() == engine_block` an invariant the loop cannot starve under, and
+  makes the reported `latency_samples` exactly true where it had been an upper bound met by
+  accident.
+
+**The branch policies fixed at this milestone's start are why neither turned into an argument.**
+§15 item 12's hierarchy sent FR-NAM-060 to configuration before any thought of amending the FRS;
+§15 item 13 sent FR-CLAP-070 straight to the engine, because D-6.2 had already asserted the
+behaviour and a failure therefore reported an implementation that had diverged from a decision. Both
+failures arrived exactly as those items predicted they might, and in neither case was the rule chosen
+to suit the measurement — which is the whole reason they were decided in advance.
+
+**Scope taken on beyond the plan, each by explicit decision rather than drift.** FR-ERR-030's static
+half, once the logger made an abstract gap live — both shells now link a logger their audio callbacks
+could reach, and `xtask rt-logging` forbids the logger's name in the six modules that carry
+audio-thread code. `namir-fixtures` as a `namir-clap` dev-dependency, whose absence had already
+forced two tests into workarounds. And a `namir-app` dev-edge for FR-CFG-020, recorded at D-5.1,
+because bit-identity is only a meaningful claim within one process and one build.
+
+**Three findings recorded rather than acted on**, each with its own home so none rests only here:
+**R-17** (D-18.7's `--all-features` landmine), **R-18** (NFR-PERF-040's margin is governed by the
+user's library size, not by plugin code — the index parse reaches the 200 ms ceiling near 12 000
+entries), and **§15 item 21** (the traceability parser keeps only the first code of a compound
+`Verify:` method; five such Musts self-correct through their `uncovered:` field and FR-STATE-040
+cannot, because its first code is `M`).
+
+**The 51 partials that declared `closes M9b` are re-booked to M8**, discharging the deferral this
+section's P0 pass recorded. M9b closed none of them. **That destination is a default, not a scoping
+decision**, and saying so is the point: they were booked here because M9b was the open-ended bucket,
+and M8 is now simply the only milestone that follows. Whoever plans M8 inherits 58 partials and
+should expect to triage them, not assume someone already has.
+
+### M9b's two outstanding preconditions — what this milestone must not claim, 2026-08-12
+
+**D-18.5's flip has not happened and NFR-QUAL-010 is not closed.** Both are M9b's to do, and M9b
+alone is permitted to do them. Neither is done, for one reason, stated plainly because the mechanical
+gate now disagrees with it.
+
+**FR-UI-020 and FR-UI-070 are covered on paper and unexecuted in fact.** Both are `Verify: M`, and
+since §15 item 15's fix a `Verify: M` Must resolves against a manual-test document by filename. Those
+two documents now exist and are written as runnable scripts — so `xtask traceability` counts them
+covered and prints `clean -- all 130 Must requirements are covered`. **Both documents say
+`Result: NOT EXECUTED`.** A `Verify: M` requirement is met by a human running its script, not by the
+file being present, and the gate structurally cannot tell the difference: `xtask` refuses a
+`trace-partial:` on a `Verify: M` Must, so there is no disposition between "no document" and "fully
+covered" for it to express.
+
+**Deleting `--allow-uncovered` today would therefore make the required check green on evidence
+nobody has produced** — the precise inversion of what D-18.5's split was for. The flip waits on those
+two scripts being run and their results recorded in their own documents, and **NFR-QUAL-010 closes
+with the flip, not before**. §14's own prose carries the same caveat at 5.13 UI.
+
+**A second caveat on the closure, when it comes: FR-STATE-040.** Its `Verify:` is `M plus S (schema
+check)`; the parser keeps only `M`, so it reads plainly covered from a filename match while no schema
+check exists anywhere in the tree. NFR-QUAL-010's own text asks for a check that "fails on any
+uncovered **Must**", and by the tool's rules that will be true — but one Must's coverage is weaker
+than its stated method, and the closure should be recorded with that said rather than left to be
+discovered. §15 item 21 carries the analysis and the three candidate fixes.
+
+**The performance figures are not certified.** NFR-PERF-040's 163.8 ms and NFR-PERF-050's 149 ms were
+measured on §2's reference machine but **not a quiet one** — this session's own tooling was compiling
+throughout — which D-2.4 condition 2 disqualifies. Both requirements' dispositions rest on their
+benchmarks *asserting in-process*, per D-2.6 for the first, not on a certified figure. Re-taking them
+on an idle machine is owed before either number is quoted as certified.
+
+---
+
 ## 17. M10 — NAM Architecture 2 (A2) support
 
 **Size: L.** **Depends on:** M9, in the sense that a hard-won parity claim is worth less landing in
