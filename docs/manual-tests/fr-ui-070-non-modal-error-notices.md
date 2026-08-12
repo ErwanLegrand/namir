@@ -45,6 +45,20 @@ failed, *which* file or device, and *what the user can do* — is exactly what s
 below ask you to read off the screen and record verbatim. Do not paraphrase the text you see;
 transcribe it.
 
+**This is already a known, tracked defect — record it, do not re-file it.** GitHub issue **#15**,
+"Notice text renders {placeholder} literally — no code substitutes ErrorCode::message_template",
+was raised from M11's FR-IO-020 manual run against exactly this behaviour and carries the full
+analysis: **33 placeholder-bearing `message_template` values in production code across five
+crates**, the reason it survived (this module's doc justifies the *shape* of
+`{code.id}: {message_template} ({detail})` but never addresses the placeholders inside the
+template, and `notice_text`'s unit test asserts the concatenation contract rather than a rendered
+example a reader would recognise as wrong), and two candidate fixes. That issue's own assessment of
+requirement impact is worth carrying into whatever verdict this script reaches: the `detail` string
+does carry the file or device, so this is presentation quality rather than a missing capability —
+"but a user-facing string containing `{device}` is not shippable". Transcribing the literal tokens
+here adds a second, independent observation to that issue; deciding what to do about it is not this
+document's business and is deliberately not M9b's.
+
 ## Preconditions
 
 - A display, a real audio interface with monitoring audible, and an instrument or signal generator

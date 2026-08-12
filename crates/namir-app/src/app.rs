@@ -174,6 +174,25 @@ fn negotiate_share_mode(
 /// `main`'s real body. Blocks until the window is closed.
 pub fn run() {
     startup_probe::entered();
+
+    // FR-ERR-010, first thing and once per process: everything below this line — a settings file
+    // that failed to parse, a device that could not be opened, a share mode that was refused — is
+    // reported through `AppHost::push_notice`, which writes a log record only if a logger has been
+    // installed. Installed before anything can report, so a launch that fails early is exactly the
+    // launch whose log a bug report will have.
+    //
+    // `None` for the persisted level, deliberately: `AppSettings` (FR-IO-080's record) has no
+    // verbosity field, and M9b does not add one — the plugin is environment-variable-only by
+    // decision (roadmap §15 item 8) and giving the app a second, divergent control was ruled out of
+    // this round. `NAMIR_LOG` therefore governs both products identically. The seam is already
+    // there for the day a settings field arrives: `logging::init` takes the level as a parameter
+    // precisely so `namir-platform` need not know what `AppSettings` is.
+    //
+    // Before `resolve_config_dir` because the log's own location is `namir_platform::
+    // log_file_path`, which is independent of the app's config directory and of
+    // `startup_probe`'s override of it — a probed launch logs to the same place a real one does.
+    namir_platform::logging::init(None);
+
     let config_dir = resolve_config_dir();
 
     let (mut settings, settings_warning) = match &config_dir {
@@ -460,7 +479,13 @@ pub fn run() {
         settings.output_device_name = Some(output.device.name.clone());
         settings.sample_rate_hz = Some(sample_rate_hz);
         settings.buffer_size_frames = buffer_frames;
-        let _ = settings::save(&settings::settings_path(dir), &settings);
+        // The one report in this function that cannot become a notice: the window is already
+        // closed, so there is no FR-UI-070 list left to push onto. It was `let _ =` — a settings
+        // file that silently failed to save is precisely the "why did it forget my device again?"
+        // report a log exists to answer — and is now the record it always should have been.
+        if let Err(w) = settings::save(&settings::settings_path(dir), &settings) {
+            namir_platform::logging::record(w.code, &w.detail);
+        }
     }
 }
 

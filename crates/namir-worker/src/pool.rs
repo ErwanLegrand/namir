@@ -243,7 +243,36 @@ fn worker_loop(shared: &Arc<Shared>) {
         // while a cache lock is held poisons it, and `cache::lock` recovers from poisoning rather
         // than propagating it, for the P8 reason documented there. Without that, one panicking job
         // would disable every subsequent load for the process's lifetime.
-        let _ = std::panic::catch_unwind(AssertUnwindSafe(job));
+        //
+        // The "recorded" half of that sentence was missing until M9b: the outcome was discarded
+        // with `let _ =`, so `error_codes::JOB_PANICKED` existed and was emitted by nothing, and a
+        // contained panic left no trace anywhere. It is now one FR-ERR-010 record at `Fault`
+        // severity — the one record in this system a bug report most needs, since a contained
+        // panic is by construction invisible to the user (the pool keeps serving and only this
+        // job's result is lost). A pool thread is never an audio thread, so the record's
+        // formatting and its writer's lock are both permitted here (D-16.2/FR-ERR-030).
+        if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(job)) {
+            namir_platform::logging::record(
+                crate::error_codes::JOB_PANICKED,
+                panic_message(payload.as_ref()),
+            );
+        }
+    }
+}
+
+/// The printable message out of a panic payload.
+///
+/// `panic!` boxes its payload as `&'static str` for a literal and as `String` for a formatted
+/// message; those two cover every panic this workspace raises and every one `std` raises. Anything
+/// else has no printable form at all — `Any` exposes no `Display` — so it is named as such rather
+/// than dropping the record, which would put the pool back to swallowing the fault silently.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        s
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.as_str()
+    } else {
+        "a worker job panicked with a payload of an unprintable type"
     }
 }
 
@@ -317,6 +346,34 @@ mod tests {
             .expect("the pool must keep serving after a job panics");
         std::panic::set_hook(previous);
         assert_eq!(got, 42);
+    }
+
+    /// D-16.3's **"recorded"** half, at the only seam a unit test can observe it.
+    ///
+    /// The record itself goes to the process-global logger, which `namir_platform::logging::init`
+    /// installs once per process against the real per-user sink — nothing a test may install,
+    /// redirect or read back (that is deliberate; see that module's doc comment). What is pinned
+    /// here is therefore the detail the record carries: the panic's own message, for both payload
+    /// types `panic!` actually produces, and a named fallback rather than a dropped record for the
+    /// third case. Getting this wrong would leave `worker.job.panicked` lines in a user's log with
+    /// no indication of what panicked.
+    #[test]
+    fn a_contained_panic_renders_its_own_message_for_the_log_record() {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let literal = std::panic::catch_unwind(|| panic!("a literal payload")).unwrap_err();
+        let formatted =
+            std::panic::catch_unwind(|| panic!("a formatted payload: {}", 7)).unwrap_err();
+        std::panic::set_hook(previous);
+
+        assert_eq!(panic_message(literal.as_ref()), "a literal payload");
+        assert_eq!(panic_message(formatted.as_ref()), "a formatted payload: 7");
+
+        let opaque: Box<dyn std::any::Any + Send> = Box::new(42u8);
+        assert_eq!(
+            panic_message(opaque.as_ref()),
+            "a worker job panicked with a payload of an unprintable type"
+        );
     }
 
     #[test]
