@@ -117,7 +117,31 @@ fn chunked_processing_matches_monolithic_processing_for_a2() {
 /// is not). `BottleneckProbe` is checked too, at the same bar, even though it is outside what
 /// FR-NAM-150 itself names — it is the only generated fixture exercising `bottleneck != channels`
 /// at all.
-// trace: FR-NAM-150
+///
+/// **Why this is a `trace-partial:` even so.** The set FR-NAM-150 quantifies over is spanned —
+/// D-23.1's first question passes. Its second question is what fails, and on exactly one clause:
+/// "**to the accuracy of FR-NAM-030**". *Not* on the comparison target — FR-NAM-150's own
+/// `Verify:` line elects "an independent reference implementation, per NFR-QUAL-030", so
+/// `reference_infer_a2` is the artifact this requirement asks for, and the in-house-port objection
+/// that demotes FR-NAM-030's own tags is not a gap here. What is unmet is the probe: FR-NAM-030's
+/// accuracy is stated "over a specified 10-second test signal containing clean, transient and
+/// saturated material", and `deterministic_signal(99, 4_000)` is ~83 ms of 110 Hz sine plus low
+/// noise at 48 kHz — the same probe M9a demoted the A1 and LSTM parity tests for, with no
+/// transient and nothing saturated. Worse for A2 specifically: the real A2 shapes' receptive field
+/// is **~6 346 samples** (6 331 through the 23 dilated layers of `a2_core_layer_array`'s
+/// `KERNEL_SIZES`/`DILATIONS`, kernels 6/15 and dilations to 239, plus 15 for the 16-tap head),
+/// which is *longer than the 4 000-sample probe*. Every compared sample therefore still depends on
+/// zero-padded startup history on both sides, so the figure this test asserts is measured entirely
+/// inside the startup transient and never over settled output. Closing it needs a longer probe of
+/// the specified material — roadmap §21 Phase 4b, issue #37.
+// trace-partial: FR-NAM-150
+// uncovered: FR-NAM-150 — the "to the accuracy of FR-NAM-030" clause. Both named configurations
+// uncovered: are spanned and the in-house reference is what this requirement's own Verify line
+// uncovered: elects, so neither is a gap, but the probe is deterministic_signal(99, 4_000):
+// uncovered: ~83 ms of 110 Hz sine plus low noise, not FR-NAM-030's specified 10-second
+// uncovered: clean/transient/saturated signal, and shorter than the real A2 shapes' ~6 346-sample
+// uncovered: receptive field, so every compared sample still depends on zero-padded startup
+// uncovered: history and the asserted figure never leaves the startup transient; closes M14
 #[test]
 fn numeric_parity_against_an_independent_reference_implementation_for_a2() {
     for (shape, name) in A2_SHAPES {

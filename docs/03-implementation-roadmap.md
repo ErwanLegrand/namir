@@ -1834,7 +1834,7 @@ not adjudicate them further.
 | 5.1 CHAIN | 8 | 3 | 5 | 0 |
 | 5.2 IN | 3 | 1 | 2 | 0 |
 | 5.3 GATE | 3 | 1 | 2 | 0 |
-| 5.4 NAM | 13 | 6 | 7 | 0 |
+| 5.4 NAM | 13 | 4 | 9 | 0 |
 | 5.5 IR | 7 | 4 | 3 | 0 |
 | 5.6 EQ | 3 | 0 | 3 | 0 |
 | 5.7 OUT | 2 | 0 | 2 | 0 |
@@ -1854,7 +1854,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **42** | **88** | **0** |
+| **Total** | **130** | **40** | **90** | **0** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2371,6 +2371,19 @@ milestone moves only the cells its own evidence justifies."** 4 CFG becomes **2 
 zero for the first time**, 5.14 ERR having been its only non-zero cell since M13 emptied 5.15 PKG's.
 That is a real fact about the ledger and a small one: it says every Must now has *some* artifact, not
 that any additional Must is met — 88 of 130 are still Partial, which is the number that matters.
+
+**M14 moves, 2026-08-12 — one row, two requirements, and the reason is worth stating.** 5.4 NAM
+becomes **4 / 9 / 0** (was 6 / 7 / 0); **Total** becomes **40 / 90 / 0** (was 42 / 88 / 0).
+FR-NAM-030 and FR-NAM-150 both move Done → Partial, not because anything regressed but because the
+owner asked whether A2 support had ever been tested and the answer was that it has never been
+compared against the reference implementation at all. FR-NAM-030's golden pair spans WaveNet-A1 and
+LSTM; `tests/golden/` holds no A2 model, and the comment claiming an A1 golden covers A2 was false
+on the facts. FR-NAM-150's own `Verify:` line elects an in-house reference, so that half is not a
+gap — its "to the accuracy of FR-NAM-030" clause is, since the probe is 4 000 samples against a
+receptive field of roughly 6 300. §21 Phase 4b owns both, R-9 is reopened, and issue #37 tracks it.
+**This is the third time in two sessions that a question asked from outside the ledger found a
+requirement the ledger read as Done** — after M9b's own two demotions, and it is the strongest
+argument in this document for §22 **R-14**, which says the verdict columns sit outside every gate.
 
 **Two of those cells moved back inside this same milestone, and the figures above are the corrected
 ones.** M9b's build phase first recorded **44 / 86 / 0**, counting FR-CLAP-080 and FR-ERR-010 Done;
@@ -5772,6 +5785,57 @@ running tests that had never run against a loaded chain.**
   than assert, which is the worst state a `Verify: B` can be in. FR-UI-060's timed frame uses
   `scan: None`, so neither the scan branch nor the re-filter path — the reason the memoization exists
   — runs inside it. Closing FR-UI-060's also closes **R-12**'s detector gap.
+
+### Phase 4b — A2's missing golden, added 2026-08-12
+
+**Added after the rest of this section was written, because the owner asked whether A2 support had
+ever actually been tested and the honest answer turned out to be "not against the reference".** It
+is recorded as its own phase rather than folded into Phase 4 because it is not test debt against
+code believed correct — it is an unverified numerical claim about a shipped architecture. Issue #37.
+
+**What exists and is real:** A2 loads and runs; two from-scratch Rust implementations written from
+the upstream C++ agree bit-exactly on both real shapes plus a bottleneck probe
+(`crates/namir-nam/tests/a2_fixtures.rs`); the unsupported-feature boundary is properly enforced and
+FR-NAM-140's test is honest (`crates/namir-nam/src/model.rs`); block-splitting, mutation-robustness
+and RT-allocation all hold.
+
+**What does not exist: any executable comparison of A2 against `NeuralAmpModelerCore`.**
+`crates/namir-nam/tests/golden/` holds `wavenet_nano.nam` and `lstm_tiny.nam` and no A2 model.
+`golden_reference.rs` argued one was not needed because "D-9.12 keeps A2 inside the 'WaveNet'
+architecture this test already covers" — **and that is false as a statement about code paths.**
+D-9.12 is a dispatch decision; `wavenet.rs`'s own module doc says A2's additions are "provably inert
+when the file is A1", which is exactly why an A1 golden cannot reach them. The A1 fixture takes the
+other side of every A2 branch — per-layer `kernel_sizes`, a `bottleneck` distinct from `channels`,
+the nested convolutional head, the per-layer activation array, and the k-tap causal head conv — and
+six of the ten activation variants go unreached, `LeakyReLU` among them, which is what real A2 uses.
+
+**Three further findings, each recorded rather than assumed:**
+
+- **R-9 is reopened** (§22, and its own row carries the analysis). Its retirement rested on a real-
+  reference A2 cross-check with no committed artifact, no tool that could regenerate it, and no
+  manual write-up — and the two records of it disagree about whether it measured A2 or an A1
+  `WaveNetShape::Standard`. Bit-exact agreement between two in-house ports proves they derived the
+  *same* weight order, not the *right* one, which is precisely what R-9 was raised about.
+- **No genuine A2 export has ever been loaded**, and both the generator and the parser derive the A2
+  schema from one reading of the same C++ — so a *shared* misreading is bit-exactly invisible to
+  every test in the tree. `file.rs`'s A2 fields are all `#[serde(default)] Option<_>` with no
+  `deny_unknown_fields`, so a real file carrying a feature under an unanticipated key is silently
+  ignored rather than rejected, which undercuts FR-NAM-140 *for real files* even though its test is
+  sound. This is the class AGENTS.md warns about, citing the post-M6 `null`-vs-omitted bug.
+- **Real A2 models in the wild take a path Namir has never been compared against.**
+  `NAM_ENABLE_A2_FAST` defaults to **ON** upstream and its `is_a2_shape` detector matches exactly
+  the two shapes FR-NAM-150 names, so a default-built host runs them through `a2_fast.cpp`; the one
+  unrecorded Namir comparison used `-DNAM_ENABLE_A2_FAST=OFF`. Excluding the fast path is
+  defensible, but the choice has **no recorded rationale** — `golden_reference.rs` attributes the
+  flag to D-9.12's PR #264 note, and that note discusses only `NAM_USE_INLINE_GEMM`.
+
+**Deliverables:** a committed A2-Full golden (and ideally A2-Lite) rendered through the pinned
+reference build over `tests/golden/input_10s.wav`, asserted beside the two existing golden tests,
+with a probe longer than A2's ~6300-sample receptive field — the same shape of work
+`golden_reference.rs` already did twice; one recorded run against a genuine trainer-produced A2
+export, written up as `docs/manual-tests/fr-nam-020-real-lstm-models.md` was for LSTM; and a
+recorded decision on the fast path. FR-NAM-030's and FR-NAM-150's tags are demoted to
+`trace-partial:` in the meantime, and R-9 stays reopened until the golden lands.
 
 ### Phase 5 — Distribution and install verification
 
