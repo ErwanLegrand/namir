@@ -8,11 +8,11 @@ use namir_core::{ErrorCode, Severity};
 
 /// FR-IO-070: a device failed to open (missing, in use by another process exclusively,
 /// unsupported configuration). Reported to the user; the application does not crash or hang.
-pub const DEVICE_OPEN_FAILED: ErrorCode = ErrorCode {
-    id: "app.audio_io.device_open_failed",
-    severity: Severity::Error,
-    message_template: "Could not open audio device {device}: {reason}.",
-};
+pub const DEVICE_OPEN_FAILED: ErrorCode = ErrorCode::new(
+    "app.audio_io.device_open_failed",
+    Severity::Error,
+    "Could not open audio device {device}: {reason}.",
+);
 
 /// FR-IO-020: exclusive mode was asked for (`crate::settings::AppSettings::exclusive_mode`) and at
 /// least one of the session's two devices could not provide it, so the session opens shared
@@ -22,56 +22,56 @@ pub const DEVICE_OPEN_FAILED: ErrorCode = ErrorCode {
 /// next to [`DEVICE_OPEN_FAILED`], which means no audio at all. Reported once, at start-up, rather
 /// than silently — roadmap §18 asks for "the user told which mode they actually got", and the
 /// notice is the half of that a mode indicator alone cannot give (it says *why*).
-pub const EXCLUSIVE_MODE_UNAVAILABLE: ErrorCode = ErrorCode {
-    id: "app.audio_io.exclusive_mode_unavailable",
-    severity: Severity::Warning,
-    message_template: "Exclusive mode is not available for {device} ({reason}); using shared mode.",
-};
+pub const EXCLUSIVE_MODE_UNAVAILABLE: ErrorCode = ErrorCode::new(
+    "app.audio_io.exclusive_mode_unavailable",
+    Severity::Warning,
+    "Exclusive mode is not available for {device} ({reason}); using shared mode.",
+);
 
 /// FR-IO-070: a device that was open and in use disappeared (unplugged, disabled, reclaimed by
 /// the OS). The stream is stopped cleanly and the user is told which side (input/output) was
 /// lost.
-pub const DEVICE_LOST: ErrorCode = ErrorCode {
-    id: "app.audio_io.device_lost",
-    severity: Severity::Error,
-    message_template: "The {direction} device \"{device}\" became unavailable and the stream was \
+pub const DEVICE_LOST: ErrorCode = ErrorCode::new(
+    "app.audio_io.device_lost",
+    Severity::Error,
+    "The {direction} device \"{device}\" became unavailable and the stream was \
                         stopped.",
-};
+);
 
 /// FR-IO-040: none of the sample rates/buffer sizes a device reports as supported could be
 /// negotiated at all (an empty supported-configs list, or every candidate rejected by the
 /// device when opening).
-pub const NO_SUPPORTED_CONFIG: ErrorCode = ErrorCode {
-    id: "app.audio_io.no_supported_config",
-    severity: Severity::Error,
-    message_template: "Device {device} reported no usable sample rate/buffer size combination.",
-};
+pub const NO_SUPPORTED_CONFIG: ErrorCode = ErrorCode::new(
+    "app.audio_io.no_supported_config",
+    Severity::Error,
+    "Device {device} reported no usable sample rate/buffer size combination.",
+);
 
 /// FR-IO-080: the remembered device from a previous session is no longer present. Not fatal —
 /// [`crate::device_state`] degrades to a working default — but worth telling the user once.
-pub const REMEMBERED_DEVICE_UNAVAILABLE: ErrorCode = ErrorCode {
-    id: "app.audio_io.remembered_device_unavailable",
-    severity: Severity::Warning,
-    message_template: "The previously selected {direction} device \"{device}\" is no longer \
+pub const REMEMBERED_DEVICE_UNAVAILABLE: ErrorCode = ErrorCode::new(
+    "app.audio_io.remembered_device_unavailable",
+    Severity::Warning,
+    "The previously selected {direction} device \"{device}\" is no longer \
                         available; using {fallback} instead.",
-};
+);
 
 /// FR-IO-080: the settings file on disk could not be parsed (corrupted, from an incompatible
 /// future version). Degrades to defaults (P8) rather than refusing to start.
-pub const SETTINGS_UNREADABLE: ErrorCode = ErrorCode {
-    id: "app.settings.unreadable",
-    severity: Severity::Warning,
-    message_template: "Saved audio settings could not be read ({reason}); using defaults.",
-};
+pub const SETTINGS_UNREADABLE: ErrorCode = ErrorCode::new(
+    "app.settings.unreadable",
+    Severity::Warning,
+    "Saved audio settings could not be read ({reason}); using defaults.",
+);
 
 /// The settings file could not be written back to disk (permissions, disk full, no config
 /// directory available on this platform/environment). Degrades to "this session's choices are
 /// not remembered" rather than failing the action that triggered the save.
-pub const SETTINGS_UNWRITABLE: ErrorCode = ErrorCode {
-    id: "app.settings.unwritable",
-    severity: Severity::Warning,
-    message_template: "Audio settings could not be saved ({reason}).",
-};
+pub const SETTINGS_UNWRITABLE: ErrorCode = ErrorCode::new(
+    "app.settings.unwritable",
+    Severity::Warning,
+    "Audio settings could not be saved ({reason}).",
+);
 
 #[cfg(test)]
 mod tests {

@@ -5,13 +5,17 @@
 //! consuming a product crate's public API, not a product edge, so `xtask` itself sits outside
 //! D-5.1's layering table (see `layering.rs`'s module doc).
 
+mod assets;
 mod attribution;
 mod bundle;
 mod cargo_meta;
+mod error_catalogue;
+mod feature_guard;
 mod identity;
 mod layering;
 mod milestones;
 mod nam_parity;
+mod network_free;
 mod params_lock;
 mod preset;
 // M13: FR-PKG-010's in-repo assertion over `.github/workflows/release.yml`
@@ -62,8 +66,15 @@ fn run_layering(root: &Path) -> bool {
     }
 }
 
-/// Walks every `.rs` file under every `crates/*/src`, excluding
-/// `crates/namir-platform/src` (D-5.1's one carve-out), for D-5.2(b)'s platform-cfg lint.
+/// Walks every `.rs` file under every crate — **not** `crates/*/src` alone — plus every crate's
+/// own `Cargo.toml` and the workspace root manifest, excluding `crates/namir-platform` (D-5.1's one
+/// carve-out), for D-5.2(b)'s platform-cfg lint.
+///
+/// M14 widened the scanned set with the pattern set (`layering::scan_platform_cfg`). Restricting it
+/// to `src` exempted every test, bench and example in the tree from a Must-level portability lint,
+/// and `[target.'cfg(...)']` manifest tables — a platform conditional expressed in TOML — were
+/// outside it entirely. `target/` is skipped by name rather than filtered afterwards, for the same
+/// reason `walk_rs_files` skips it.
 fn scan_repo_for_platform_cfg(root: &Path) -> Vec<String> {
     let crates_dir = root.join("crates");
     let mut violations = Vec::new();
@@ -75,22 +86,21 @@ fn scan_repo_for_platform_cfg(root: &Path) -> Vec<String> {
         }
     };
 
+    let mut manifests = vec![root.join("Cargo.toml")];
+
     for entry in entries.flatten() {
         let crate_dir = entry.path();
         if !crate_dir.is_dir() {
             continue;
         }
-        let crate_name = entry.file_name();
-        if crate_name == layering::PLATFORM_CFG_EXEMPT_CRATE {
+        if entry.file_name() == layering::PLATFORM_CFG_EXEMPT_CRATE {
             continue;
         }
-        let src_dir = crate_dir.join("src");
-        if !src_dir.is_dir() {
-            continue;
-        }
+        manifests.push(crate_dir.join("Cargo.toml"));
 
-        for file in walkdir::WalkDir::new(&src_dir)
+        for file in walkdir::WalkDir::new(&crate_dir)
             .into_iter()
+            .filter_entry(|e| e.file_name() != "target")
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
         {
@@ -102,12 +112,26 @@ fn scan_repo_for_platform_cfg(root: &Path) -> Vec<String> {
                     continue;
                 }
             };
-            for (line, pattern) in layering::scan_platform_cfg(&content) {
+            for (line, key) in layering::scan_platform_cfg(&content) {
                 violations.push(format!(
-                    "{}:{line}: contains '{pattern}' (only namir-platform may carry platform cfg)",
+                    "{}:{line}: names the platform cfg predicate '{key}' (only namir-platform may \
+                     carry platform conditionals)",
                     path.display()
                 ));
             }
+        }
+    }
+
+    for manifest in manifests {
+        let Ok(content) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        for (line, header) in layering::scan_cargo_target_tables(&content) {
+            violations.push(format!(
+                "{}:{line}: declares '{header}' (only namir-platform may take a \
+                 platform-conditional dependency)",
+                manifest.display()
+            ));
         }
     }
 
@@ -165,6 +189,162 @@ fn run_rt_logging(root: &Path) -> bool {
     }
 }
 
+/// M14's FR-ERR-020 gate (issue #33): every `ErrorCode` in the shipped crates is a named `const`
+/// inside a catalogue. See `error_catalogue.rs`'s module doc for the two rules, for why
+/// `#[non_exhaustive]` on the type is what makes them checkable, and for what neither can see.
+fn run_error_catalogue(root: &Path) -> bool {
+    let crates_dir = root.join("crates");
+    let mut violations = Vec::new();
+
+    for file in walkdir::WalkDir::new(&crates_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| error_catalogue::is_scanned(e.path()))
+    {
+        let path = file.path();
+        let Ok(content) = std::fs::read_to_string(path) else {
+            violations.push(format!("{}: could not read", path.display()));
+            continue;
+        };
+        for problem in error_catalogue::scan(path, &content) {
+            violations.push(format!("{}:{problem}", path.display()));
+        }
+    }
+
+    if violations.is_empty() {
+        println!(
+            "error-catalogue: clean (every ErrorCode under crates/ is a named const inside a \
+             catalogue)"
+        );
+        true
+    } else {
+        println!(
+            "error-catalogue: {} violation(s) found (FR-ERR-020):",
+            violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
+}
+
+/// M14's FR-ERR-060/NFR-SEC-030 source half: no first-party crate names a `std::net` API. See
+/// `network_free.rs`'s module doc for why `deny.toml`'s dependency deny-list cannot cover this and
+/// what this check in turn cannot see.
+fn run_network_free(root: &Path) -> bool {
+    let crates_dir = root.join("crates");
+    let mut violations = Vec::new();
+
+    for file in walk_rs_files(&crates_dir) {
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            violations.push(format!("{}: could not read", file.display()));
+            continue;
+        };
+        for (line, name) in network_free::scan_network_apis(&content) {
+            violations.push(format!(
+                "{}:{line}: names `{name}` -- FR-ERR-060 forbids Namir 1.0 from making any \
+                 outbound network connection, and a first-party crate needs no dependency at all \
+                 to open one, so `deny.toml`'s ban list would not see this",
+                file.display()
+            ));
+        }
+    }
+
+    if violations.is_empty() {
+        println!(
+            "network-free: clean (no crate under crates/ names any of the {} std::net APIs)",
+            network_free::NETWORK_APIS.len()
+        );
+        true
+    } else {
+        println!(
+            "network-free: {} violation(s) found (FR-ERR-060 / NFR-SEC-030):",
+            violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
+}
+
+/// M14's R-17 gate (issue #25): no `cargo` invocation in this repository's command-carrying files
+/// passes `--all-features`, and `namir-clap`'s `host-ext-tests` stays unreachable from `default`
+/// with `clack-host` a dev-dependency. See `feature_guard.rs`'s module doc for why both halves are
+/// needed and what neither can see.
+///
+/// A scanned root that has gone missing is a violation rather than a skip, on the same terms as
+/// `run_rt_logging`'s module list: the list is hand-maintained, so a rename must fail loudly
+/// instead of quietly un-guarding the tree.
+fn run_feature_guard(root: &Path) -> bool {
+    let mut violations = Vec::new();
+
+    for (rel, why) in feature_guard::COMMAND_ROOTS {
+        let dir = root.join(rel);
+        if !dir.is_dir() {
+            violations.push(format!(
+                "{rel}: not a directory -- it is on R-17's scanned list because it {why}. If it \
+                 moved or was renamed, update xtask's COMMAND_ROOTS by hand; do not delete the entry"
+            ));
+            continue;
+        }
+        for file in feature_guard::command_files(&dir) {
+            let Ok(content) = std::fs::read_to_string(&file) else {
+                violations.push(format!("{}: could not read", file.display()));
+                continue;
+            };
+            for line in feature_guard::scan_for_all_features(&content) {
+                violations.push(format!(
+                    "{}:{line}: a cargo invocation passes --all-features, which switches \
+                     namir-clap's host-ext-tests on for the shipped cdylib and links clack-host \
+                     into it (R-17). Name the feature instead: `--features host-ext-tests`",
+                    file.display()
+                ));
+            }
+        }
+    }
+
+    for (manifest_rel, feature, dependency, why) in feature_guard::NON_DEFAULT_FEATURES {
+        let path = root.join(manifest_rel);
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            violations.push(format!(
+                "{manifest_rel}: could not read -- `{feature}` must stay non-default because \
+                 {why}. Update xtask's NON_DEFAULT_FEATURES by hand if the manifest moved"
+            ));
+            continue;
+        };
+        for problem in feature_guard::check_feature_stays_non_default(&content, feature, dependency)
+        {
+            violations.push(format!("{manifest_rel}: {problem} ({why})"));
+        }
+    }
+
+    if violations.is_empty() {
+        println!(
+            "feature-guard: clean (no cargo invocation under {} passes --all-features; {} \
+             feature(s) still non-default with their dependency dev-only)",
+            feature_guard::COMMAND_ROOTS
+                .iter()
+                .map(|(root, _)| *root)
+                .collect::<Vec<_>>()
+                .join(", "),
+            feature_guard::NON_DEFAULT_FEATURES.len()
+        );
+        true
+    } else {
+        println!(
+            "feature-guard: {} violation(s) found (R-17):",
+            violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
+}
+
 fn run_params_lock(root: &Path, write: bool) -> bool {
     match params_lock::check_or_write(root, write) {
         Ok((ok, message)) => {
@@ -173,6 +353,37 @@ fn run_params_lock(root: &Path, write: bool) -> bool {
         }
         Err(e) => {
             println!("params-lock: could not run check: {e}");
+            false
+        }
+    }
+}
+
+/// M14's NFR-LIC-050 gate: every checked-in asset under `crates/` is recorded in
+/// `crates/namir-fixtures/assets.lock` with a declared provenance and a content hash. Reports a
+/// **list**, like `identity` and `bundle` — one asset's missing declaration should not hide
+/// another's changed bytes.
+fn run_assets(root: &Path, write: bool) -> bool {
+    match assets::check_or_write(root, write) {
+        Ok(violations) if violations.is_empty() => {
+            println!(
+                "assets: clean (every asset under crates/ is recorded in {} with a declared \
+                 provenance and a matching hash)",
+                assets::ASSET_MANIFEST_PATH
+            );
+            true
+        }
+        Ok(violations) => {
+            println!(
+                "assets: {} violation(s) found (NFR-LIC-050):",
+                violations.len()
+            );
+            for v in &violations {
+                println!("  - {v}");
+            }
+            false
+        }
+        Err(e) => {
+            println!("assets: could not run check: {e}");
             false
         }
     }
@@ -580,7 +791,10 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
             report.missing.len()
         );
         for req in &report.missing {
-            println!("{}", uncovered_line(req, &owners));
+            println!(
+                "{}",
+                uncovered_line(req, &owners, report.manual_unexecuted.get(&req.id))
+            );
         }
         // Mandatory rather than decorative: without it a derived label reads as a curated ownership
         // register, which is the artifact D-18.5 rejects in every form it can take.
@@ -617,11 +831,23 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
 /// owning milestone appended. An id no milestone section names renders `[unattributed]` and is
 /// printed with exactly the same weight, and counts identically toward the total, as one whose
 /// milestone derives -- the attribution never removes, reorders or suppresses an entry.
-fn uncovered_line(req: &traceability::Requirement, owners: &HashMap<String, String>) -> String {
+/// `manual` is the `(filename, reason)` pair a `Verify: M` Must carries when its script exists but
+/// records no clean pass (issue #34). Appended so the reader is not left hunting for a document
+/// that is right there: an id printed with nothing after it means no document at all, which is a
+/// materially different thing to fix.
+fn uncovered_line(
+    req: &traceability::Requirement,
+    owners: &HashMap<String, String>,
+    manual: Option<&(String, String)>,
+) -> String {
     let owner = owners
         .get(&req.id)
         .map_or(milestones::UNATTRIBUTED, String::as_str);
-    format!("  - {} (Verify: {}) [{owner}]", req.id, req.verify)
+    let mut line = format!("  - {} (Verify: {}) [{owner}]", req.id, req.verify);
+    if let Some((file, reason)) = manual {
+        line.push_str(&format!(" -- docs/manual-tests/{file} {reason}"));
+    }
+    line
 }
 
 /// §22's **R-13** mitigation (d): "the ordinary run prints the partial count on **every**
@@ -764,7 +990,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
     );
 }
 
@@ -775,6 +1001,9 @@ fn main() {
     let ok = match args.first().map(String::as_str) {
         Some("layering") => run_layering(&root),
         Some("rt-logging") => run_rt_logging(&root),
+        Some("feature-guard") => run_feature_guard(&root),
+        Some("network-free") => run_network_free(&root),
+        Some("error-catalogue") => run_error_catalogue(&root),
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
@@ -782,6 +1011,10 @@ fn main() {
         Some("attribution") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_attribution(&root, write)
+        }
+        Some("assets") => {
+            let write = args.iter().skip(1).any(|a| a == "--write");
+            run_assets(&root, write)
         }
         Some("identity") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
@@ -835,6 +1068,219 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- FR-ERR-020: every ErrorCode is a named const in a catalogue --------------------------
+
+    /// The gate as CI should run it, over the real tree. Doubles as the regression test for the two
+    /// live off-catalogue codes M14 moved (`manual_window_smoke.rs`'s sample notice and
+    /// `namir-app`'s inline `app.host.scan_warning`).
+    #[test]
+    fn every_error_code_in_the_real_tree_is_a_named_const_in_a_catalogue() {
+        assert!(run_error_catalogue(&repo_root()));
+    }
+
+    #[test]
+    fn a_planted_inline_error_code_fails_the_gate() {
+        // The negative control, in the shape `namir-app/src/host.rs` actually had until M14: a code
+        // built in the argument list of the call that reports it.
+        let dir = std::env::temp_dir().join(format!("xtask-err-020-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-app/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-app/src/host.rs"),
+            "fn handle(&mut self) {\n    self.push_notice(local_error_codes::SCAN_WARNING, w);\n}\n",
+        )
+        .unwrap();
+        assert!(
+            run_error_catalogue(&dir),
+            "the scratch tree must start clean"
+        );
+
+        std::fs::write(
+            dir.join("crates/namir-app/src/host.rs"),
+            "fn handle(&mut self) {\n    self.push_notice(\n        ErrorCode::new(\"app.host.scan_warning\", Severity::Warning, \"{detail}\"),\n        w,\n    );\n}\n",
+        )
+        .unwrap();
+        assert!(!run_error_catalogue(&dir));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- FR-ERR-060 / NFR-SEC-030: no first-party crate names a socket ------------------------
+
+    /// The gate as CI should run it, over every `.rs` file under `crates/`.
+    #[test]
+    fn no_first_party_crate_names_a_std_net_api() {
+        assert!(run_network_free(&repo_root()));
+    }
+
+    #[test]
+    fn a_planted_outbound_connection_fails_the_gate() {
+        // The negative control, in the shape the requirement is actually at risk from: a line of
+        // Namir's own code opening a socket, with `Cargo.lock` untouched and `cargo deny check
+        // bans` green.
+        let dir = std::env::temp_dir().join(format!("xtask-err-060-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-worker/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-worker/src/update.rs"),
+            "pub fn check_for_updates() {}\n",
+        )
+        .unwrap();
+        assert!(run_network_free(&dir), "the scratch tree must start clean");
+
+        std::fs::write(
+            dir.join("crates/namir-worker/src/update.rs"),
+            "pub fn check_for_updates() {\n    let _ = std::net::TcpStream::connect(\"x:80\");\n}\n",
+        )
+        .unwrap();
+        assert!(!run_network_free(&dir));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- §22 R-17 (issue #25): the --all-features guard, wired to the real tree -----------------
+
+    /// The gate as CI should run it, against the real repository. Doubles as the existence check
+    /// for every entry in `feature_guard::COMMAND_ROOTS` and `NON_DEFAULT_FEATURES`, since a
+    /// missing one is a violation.
+    #[test]
+    fn the_real_tree_passes_the_all_features_guard() {
+        assert!(run_feature_guard(&repo_root()));
+    }
+
+    #[test]
+    fn a_planted_all_features_build_command_fails_the_guard() {
+        // R-17 broken once, on purpose, in the exact shape the row describes: a release step that
+        // adds the flag. Every scanned root is copied verbatim into a scratch tree, which must
+        // start clean, and one workflow file then gains the line -- so the tree differs from the
+        // real one in precisely that.
+        let dir = std::env::temp_dir().join(format!("xtask-r17-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let root = repo_root();
+        for (rel, _) in feature_guard::COMMAND_ROOTS {
+            for file in feature_guard::command_files(&root.join(rel)) {
+                let dest = dir.join(file.strip_prefix(&root).unwrap());
+                std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                std::fs::copy(&file, &dest).unwrap();
+            }
+        }
+        for (manifest, _, _, _) in feature_guard::NON_DEFAULT_FEATURES {
+            let dest = dir.join(manifest);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::copy(root.join(manifest), &dest).unwrap();
+        }
+        assert!(run_feature_guard(&dir), "the copy must start clean");
+
+        let victim = dir.join(".github/workflows/release.yml");
+        let mut source = std::fs::read_to_string(&victim).unwrap();
+        source.push_str("      - name: smuggled\n        run: cargo build --release --workspace --all-features\n");
+        std::fs::write(&victim, source).unwrap();
+        assert!(!run_feature_guard(&dir));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_scanned_root_is_a_violation_rather_than_a_skip() {
+        // The list is hand-maintained; a root that has moved must fail loudly instead of silently
+        // shrinking the guard to nothing.
+        let dir = std::env::temp_dir().join(format!("xtask-r17-empty-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!run_feature_guard(&dir));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- NFR-PORT-020 / D-5.2(b): the platform-cfg lint, wired to the real tree -----------------
+
+    /// The lint as CI runs it, over the whole scanned set — every `.rs` file under every crate bar
+    /// `namir-platform`, plus every manifest. Tests, benches and examples are inside that set since
+    /// M14; before then only `crates/*/src` was.
+    // trace: NFR-PORT-020
+    #[test]
+    fn the_real_tree_carries_no_platform_conditional_outside_namir_platform() {
+        assert!(scan_repo_for_platform_cfg(&repo_root()).is_empty());
+    }
+
+    #[test]
+    fn a_planted_conditional_outside_src_fails_the_lint() {
+        // The negative control, and specifically for the part of the scanned set M14 added: a
+        // conditional in a crate's `tests/` directory, which the `crates/*/src` walk could not see.
+        // Every real crate file is left alone -- the scratch root holds one crate and one file.
+        let dir = std::env::temp_dir().join(format!("xtask-port-020-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-engine/tests")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-engine/tests/probe.rs"),
+            "fn a() {}\n",
+        )
+        .unwrap();
+        assert!(
+            scan_repo_for_platform_cfg(&dir).is_empty(),
+            "the scratch tree must start clean"
+        );
+
+        std::fs::write(
+            dir.join("crates/namir-engine/tests/probe.rs"),
+            "#[cfg(not(windows))]\nfn a() {}\n",
+        )
+        .unwrap();
+        let violations = scan_repo_for_platform_cfg(&dir);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(
+            violations[0].contains("tests/probe.rs:1"),
+            "{violations:#?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_planted_target_table_in_a_crate_manifest_fails_the_lint() {
+        // The manifest half: a platform conditional expressed in TOML, which no source-level scan
+        // can see because the conditional is not in the source.
+        let dir = std::env::temp_dir().join(format!("xtask-port-020-toml-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-engine/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-engine/Cargo.toml"),
+            "[package]\nname = \"namir-engine\"\n\n\
+             [target.'cfg(windows)'.dependencies]\nwindows-sys = \"0.59\"\n",
+        )
+        .unwrap();
+
+        let violations = scan_repo_for_platform_cfg(&dir);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].contains("Cargo.toml:4"), "{violations:#?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn namir_platforms_own_conditionals_stay_exempt() {
+        // D-5.1's one carve-out, over the widened scanned set: `namir-platform`'s manifest carries
+        // the tree's only legitimate `[target.'cfg(...)']` table and its `src` the only legitimate
+        // `#[cfg(target_os)]` attributes. Both must remain invisible to this lint.
+        let dir =
+            std::env::temp_dir().join(format!("xtask-port-020-exempt-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("crates/namir-platform/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/namir-platform/src/paths.rs"),
+            "#[cfg(target_os = \"windows\")]\nfn a() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("crates/namir-platform/Cargo.toml"),
+            "[package]\nname = \"namir-platform\"\n\n\
+             [target.'cfg(any(target_os = \"linux\"))'.dependencies]\nalsa = \"0.9\"\n",
+        )
+        .unwrap();
+
+        assert!(scan_repo_for_platform_cfg(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     // --- FR-ERR-030: the audio-thread logging ban, wired to the real tree --------------------------
 
@@ -905,7 +1351,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
-            "executed, passed\n",
+            "**Result: PASS.** Executed this session.\n",
         )
         .unwrap();
         std::fs::write(
@@ -973,7 +1419,7 @@ mod tests {
         if covered {
             std::fs::write(
                 dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
-                "executed, passed\n",
+                "**Result: PASS.** Executed this session.\n",
             )
             .unwrap();
         }
@@ -1076,8 +1522,29 @@ mod tests {
         let mut owners = HashMap::new();
         owners.insert("FR-CFG-020".to_string(), "M9".to_string());
         assert_eq!(
-            uncovered_line(&req, &owners),
+            uncovered_line(&req, &owners, None),
             "  - FR-CFG-020 (Verify: G) [M9]"
+        );
+    }
+
+    #[test]
+    fn an_uncovered_manual_must_names_the_document_and_what_it_records() {
+        // Issue #34: a `Verify: M` Must whose script exists but has not been run is uncovered, and
+        // the line has to say which of the two it is -- "no document" and "a document saying NOT
+        // EXECUTED" are different pieces of work.
+        let req = traceability::Requirement {
+            id: "FR-UI-020".into(),
+            verify: 'M',
+            section: "5.13".into(),
+        };
+        let manual = (
+            "fr-ui-020-single-screen-elements.md".to_string(),
+            "records `NOT EXECUTED.`".to_string(),
+        );
+        assert_eq!(
+            uncovered_line(&req, &HashMap::new(), Some(&manual)),
+            "  - FR-UI-020 (Verify: M) [unattributed] -- \
+             docs/manual-tests/fr-ui-020-single-screen-elements.md records `NOT EXECUTED.`"
         );
     }
 
@@ -1089,7 +1556,7 @@ mod tests {
             section: "9.9".into(),
         };
         assert_eq!(
-            uncovered_line(&req, &HashMap::new()),
+            uncovered_line(&req, &HashMap::new(), None),
             "  - FR-XXXX-010 (Verify: U) [unattributed]"
         );
     }
@@ -1170,7 +1637,7 @@ mod tests {
         if verify == "M" {
             std::fs::write(
                 dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
-                "executed, passed\n",
+                "**Result: PASS.** Executed this session.\n",
             )
             .unwrap();
         }
@@ -1399,6 +1866,7 @@ mod tests {
         let report = traceability::Report {
             missing: Vec::new(),
             manual_hits: HashMap::new(),
+            manual_unexecuted: HashMap::new(),
             source_hits: HashMap::new(),
             partial_hits,
         };

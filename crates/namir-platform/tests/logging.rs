@@ -40,26 +40,10 @@ use namir_platform::logging::{
 // `fs.rs`, `namir-app`'s `settings.rs`), and D-16.5 rules out adding a crate for this module.
 // ---------------------------------------------------------------------------------------------
 
-const INFO: ErrorCode = ErrorCode {
-    id: "platform.test.info",
-    severity: Severity::Info,
-    message_template: "",
-};
-const WARNING: ErrorCode = ErrorCode {
-    id: "platform.test.warning",
-    severity: Severity::Warning,
-    message_template: "",
-};
-const ERROR: ErrorCode = ErrorCode {
-    id: "platform.test.error",
-    severity: Severity::Error,
-    message_template: "",
-};
-const FAULT: ErrorCode = ErrorCode {
-    id: "platform.test.fault",
-    severity: Severity::Fault,
-    message_template: "",
-};
+const INFO: ErrorCode = ErrorCode::new("platform.test.info", Severity::Info, "");
+const WARNING: ErrorCode = ErrorCode::new("platform.test.warning", Severity::Warning, "");
+const ERROR: ErrorCode = ErrorCode::new("platform.test.error", Severity::Error, "");
+const FAULT: ErrorCode = ErrorCode::new("platform.test.fault", Severity::Fault, "");
 
 struct Scratch {
     dir: PathBuf,
@@ -230,11 +214,7 @@ fn submit_one_of_each(logger: &Logger) {
     logger.record(ERROR, "error-record");
     logger.record(FAULT, "fault-record");
     logger.record_verbose(
-        ErrorCode {
-            id: "platform.test.verbose",
-            severity: Severity::Info,
-            message_template: "",
-        },
+        ErrorCode::new("platform.test.verbose", Severity::Info, ""),
         "verbose-record",
     );
 }
