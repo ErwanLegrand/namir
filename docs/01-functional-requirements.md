@@ -748,6 +748,27 @@ extension, supporting the host embedding it, and shall function correctly if the
 show a GUI at all.
 *Verify:* I.
 
+*Consequence (added M13, 2026-08-12, from loading the plugin on macOS)* — **the first clause is not
+met on macOS or Linux, and cannot be as the plugin is built.**
+`crates/namir-clap/src/gui.rs`'s `is_api_supported` returns true only for `GuiApiType::WIN32`, so a
+host on any other platform is refused and never embeds an editor. Observed rather than inferred: in
+Reaper on macOS the plugin loads and processes audio, and the window the host shows is **Reaper's
+own generic parameter panel** — no brand mark, no meters, because Namir draws nothing. The
+standalone application is unaffected on those platforms, since it opens its own window and never
+uses this extension.
+
+*The second clause is met, and the same observation is what demonstrates it.* "Shall function
+correctly if the host declines to show a GUI at all" is exactly the situation a macOS host is in,
+and audio, parameters and state all work.
+
+This note changes no text, priority or `*Verify:*` line above; the requirement remains unqualified
+about platform and remains unmet. It is `**UNRESOLVED**` in the generated plan and owned by M9b, so
+nothing in the ledger claims otherwise. **Whether 1.0 ships a plugin with no interface on two of
+three supported platforms is a scope question, not a verification one** —
+`03-implementation-roadmap.md` §15 carries it as an open decision rather than this note settling it.
+The restriction was introduced at M6 following spike S-4, which ran on Windows only, and until this
+note it was recorded nowhere outside a code comment.
+
 **FR-CLAP-110 (Should)** — The GUI shall support host-driven resizing and shall report its size
 constraints and preferred aspect to the host.
 *Verify:* M.

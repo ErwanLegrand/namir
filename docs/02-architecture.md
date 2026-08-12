@@ -2940,6 +2940,19 @@ is `clap-validator` in CI (FR-CLAP-020).
 **R-2 is retired.** D-14.2 (clack) is validated end to end: entry point, descriptor, audio
 processing, host discovery, and the GUI extension.
 
+*Consequence (added M13, 2026-08-12) — what this spike validated was Windows, and the shipped code
+says so in a place no document repeated.* Every part of S-4 ran on Windows 11 against Reaper, and
+the GUI half of it was validated for **Win32 embedding only**. `crates/namir-clap/src/gui.rs`'s
+`is_api_supported` accordingly returns true for `GuiApiType::WIN32` and nothing else, which M6
+adopted from this spike's validated shape. The consequence — **the CLAP plugin has no editor at all
+on macOS or Linux**, both of which §1.4 lists as supported platforms — appears nowhere in this
+document, in the FRS, or in the user guide, and was found at M13 by loading the plugin in Reaper on
+a Mac: it runs, processes audio, and the host shows its own generic parameter panel because Namir
+declines to create one. Recorded here because this spike is what the code cites as its authority,
+and an authority that was only ever exercised on one platform should say so. FR-CLAP-100 carries the
+requirement-level note; roadmap §15 carries the scope decision. No decision in this document is
+changed — there was none to change, which is itself the finding.
+
 **Install-path finding — this cost a failed first attempt and is a real product requirement, not a
 spike detail.** Reaper does **not** scan `%APPDATA%\REAPER\UserPlugins\CLAP`; a plugin placed there
 is silently invisible, with no error anywhere. The paths that work are the CLAP-specified ones:
