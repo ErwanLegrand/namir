@@ -534,10 +534,6 @@ mod tests {
     /// would be reporting a level the user never hears; this stage's own doc comment says the
     /// meters run post-gain, and nothing checked it. The same tone through a stage settled at
     /// −6 dB must read 6 dB lower on all three.
-    // trace-partial: FR-OUT-020
-    // uncovered: FR-OUT-020 — see peak_average_and_peak_hold_each_report_their_own_quantity for
-    // uncovered: this requirement's remaining limb, FR-IN-020's imported "M for the display";
-    // uncovered: closes M8
     #[test]
     fn the_meter_reads_the_post_gain_signal() {
         let mut unity = stage(ChannelConfig::Mono);
@@ -573,10 +569,9 @@ mod tests {
         }
     }
 
-    // trace-partial: FR-OUT-020
-    // uncovered: FR-OUT-020 — see peak_average_and_peak_hold_each_report_their_own_quantity for
-    // uncovered: this requirement's remaining limb, FR-IN-020's imported "M for the display";
-    // uncovered: closes M8
+    /// FR-OUT-020's clip half, which imports FR-IN-030. The requirement's tag sits on
+    /// [`peak_average_and_peak_hold_each_report_their_own_quantity`] above, which names the one
+    /// limb still unspanned; this test is the other half of the same evidence.
     #[test]
     fn clip_latches_and_is_reported_via_telemetry() {
         let mut stage = stage(ChannelConfig::Mono);
