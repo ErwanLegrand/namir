@@ -295,16 +295,13 @@ struct AudioRun {
 // The test.
 // -------------------------------------------------------------------------------------------
 
-/// FR-CLAP-130, driven end to end: see this file's doc comment for the shape, the yardstick and
-/// the one enumerated action that is covered by proxy.
-// trace-partial: FR-CLAP-130
-// uncovered: FR-CLAP-130 — the S half of "S plus I" is absent: nothing statically asserts that
-// uncovered: the audio-thread path takes no lock, makes no file-system call and performs no host
-// uncovered: round-trip, so only the I half is executed here; and of the three enumerated user
-// uncovered: actions only model loading and preset recall are driven for real, library scanning
-// uncovered: standing in as a worker job that reads, hashes and parses a multi-megabyte file while
-// uncovered: holding the same instance mutex a scan's jobs take, because starting a real scan
-// uncovered: would erase the developer's own library index; closes M8
+/// FR-CLAP-130's **`I` half**, driven end to end: see this file's doc comment for the shape, the
+/// yardstick and the one enumerated action that is covered by proxy.
+///
+/// **The `S` half is `tests/fr_clap_130_rt_static.rs`** (added M14), and FR-CLAP-130's tag moved
+/// there with it: a requirement whose method is "S plus I" is better booked against the artifact
+/// that was missing than against the one that already existed. This test is unchanged and still
+/// does the whole of what it always did.
 #[test]
 fn fr_clap_130_no_block_waits_on_a_preset_recall_a_model_load_or_the_host() {
     let dir = scratch_dir();
