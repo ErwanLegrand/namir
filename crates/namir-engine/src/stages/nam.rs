@@ -379,7 +379,7 @@ impl NamSlot {
 /// makes its rounding a no-op). `SlotResampler::new` asserts this symmetry with `debug_assert`
 /// rather than silently trusting it.
 ///
-/// # Verified against D-9.3's quality bar since M9b; `latency_samples` still is not
+/// # Verified against D-9.3's quality bar since M9b, and `latency_samples` since M14
 ///
 /// FR-NAM-060's stopband/ripple requirement was out of scope for M2
 /// (`03-implementation-roadmap.md` §6: "most of §5.4 (NAM, minus... resampling-quality...)"), and
@@ -392,15 +392,19 @@ impl NamSlot {
 /// 192 kHz engine rate, against a 0.1 dB allowance). Stopband attenuation was never the problem
 /// and measures ≥ 140 dB throughout.
 ///
-/// What is still *not* verified is [`SlotResampler`]'s `latency_samples` field, which is not
-/// proven sample-exact: it sums both resamplers'
-/// `output_delay()` (converting the first one's model-rate figure to engine-rate samples) plus
-/// one `engine_block` for FIFO buffering granularity, which is the right *order of magnitude* but
-/// not a value derived from a per-sample trace of the actual pipeline. What *is* verified here
-/// (see this module's tests): the mismatched-rate path runs without allocating or panicking
-/// across many blocks of varying size, and its FIFOs' capacities are generous relative to the
-/// bound the design keeps them under (see the `engine_in_fifo`/`engine_out_fifo` field docs) —
-/// not a formally proven bound, an empirical one the RT harness would catch a violation of.
+/// [`SlotResampler`]'s `latency_samples` field is **derived** rather than traced: it sums both
+/// resamplers' `output_delay()` (converting the first one's model-rate figure to engine-rate
+/// samples) plus one `engine_block` for FIFO buffering granularity. Until M14 that derivation had
+/// never been checked against the pipeline's actual behaviour, and this note said so. It is checked
+/// now, and it is exact — `the_resampled_stages_reported_latency_is_the_delay_the_signal_actually_sees`
+/// cross-correlates a chirp through the resampled stage against the *same model at the engine's own
+/// rate*, so the model's own filtering group delay cancels and what is left is this field: **640
+/// reported, 640 measured** for a 44.1 kHz Nano model at a 48 kHz engine.
+///
+/// Still not formally proven, and empirical rather than derived: the FIFOs' capacities are generous
+/// relative to the bound the design keeps them under (see the `engine_in_fifo`/`engine_out_fifo`
+/// field docs) — a bound the RT harness would catch a violation of rather than one anything
+/// establishes ahead of time.
 struct SlotResampler {
     /// Engine rate → model rate.
     into_model: FftFixedInOut<f32>,
@@ -1602,6 +1606,86 @@ mod tests {
         );
     }
 
+    /// **FR-NAM-110's `Verify: U` method — "cross-correlate an impulse through the stage" — for the
+    /// figure `namir-nam` cannot see.** W3 closed the model's own half in
+    /// `crates/namir-nam/tests/latency.rs`, which cross-correlates through every architecture and
+    /// would fail if inference introduced delay. What survived was this stage's *other* figure: when
+    /// a model's declared rate differs from the engine's, [`SlotResampler`] adds latency, and that
+    /// value was asserted only as `> 0` by
+    /// [`latency_reports_the_active_slots_resampler_latency`] below, with this module's own doc
+    /// comment recording that it "is not proven sample-exact".
+    ///
+    /// It is proven here, and it is exact: **640 samples reported, 640 measured** for a 44.1 kHz
+    /// Nano model in a 48 kHz engine at a 64-frame block, stable across every correlation window
+    /// tried.
+    ///
+    /// # What is correlated against what, and why not against the input
+    ///
+    /// The obvious construction — correlate the stage's output against the stage's *input* — does
+    /// not measure this. A NAM model is a filter as well as a nonlinearity, and an arbitrary filter
+    /// has a **group delay of its own** that is neither latency nor constant with frequency: driving
+    /// this same chirp through a 1:1-rate stage, where D-9.2 bypasses the resampler entirely and the
+    /// stage correctly reports zero, an input-referenced correlation reads 11, 9, 8 or 7 samples
+    /// depending only on where the measurement window starts, because the chirp is at a different
+    /// frequency in each. That is the model's filtering, not a latency the stage failed to declare —
+    /// `namir-nam`'s own `tests/latency.rs` is what establishes that inference itself is causal.
+    ///
+    /// So the reference is **the same model at the engine's own rate**. Both runs carry the model's
+    /// filtering; the only thing between them is the resampler, so the lag between the two outputs
+    /// is exactly what [`SlotResampler`] adds — which is the figure FR-NAM-110 makes this stage
+    /// report and the one nothing had ever checked from outside the stage.
+    ///
+    /// A chirp rather than a literal impulse: this stage's bypass blend needs a settling period
+    /// before the measurement and an impulse would be long over by then, while a sustained broadband
+    /// probe measures the same delay and conditions the correlation far better.
+    // trace: FR-NAM-110
+    #[test]
+    fn the_resampled_stages_reported_latency_is_the_delay_the_signal_actually_sees() {
+        const FRAMES: usize = 32_768;
+        /// Discarded: past the handover crossfade and the bypass blend, so what is correlated is
+        /// the settled wet path rather than a fade between it and an undelayed dry signal.
+        const WARMUP: usize = 8_192;
+        /// Correlation window: long enough for the chirp to be well conditioned, short enough to
+        /// stay cheap in a debug build.
+        const WINDOW: usize = 8_192;
+
+        let signal = crate::probe::chirp(FRAMES, 200.0, 6_000.0, 48_000, 0.25);
+
+        let run = |declared_rate_hz: u32| -> (u32, Vec<f32>) {
+            let mut stage = stage(48_000, ChannelConfig::Mono);
+            stage.load_model(crate::probe::nam_model(
+                namir_fixtures::nam::WaveNetShape::Nano,
+                53,
+                declared_rate_hz,
+            ));
+            let out = process_signal_in_chunks(&mut stage, &signal);
+            (stage.latency_samples(), out)
+        };
+
+        let (reported_1_to_1, at_engine_rate) = run(48_000);
+        assert_eq!(
+            reported_1_to_1, 0,
+            "a model at the engine's own rate engages no conversion, so nothing may be reported"
+        );
+
+        let (reported, resampled) = run(44_100);
+        assert!(
+            reported > 0,
+            "a model at a different rate must engage the resampler and report its latency"
+        );
+
+        let measured = crate::probe::estimate_delay_samples(
+            &at_engine_rate[WARMUP..WARMUP + WINDOW],
+            &resampled[WARMUP..],
+            reported as usize * 2 + 64,
+        );
+        assert_eq!(
+            measured, reported as usize,
+            "the stage reports {reported} samples of latency and delays the signal by {measured}: \
+             FR-NAM-110 asks for the figure it reports, not one of the right order of magnitude"
+        );
+    }
+
     #[test]
     fn latency_reports_the_active_slots_resampler_latency() {
         // 1:1 rate: bypassed entirely, zero added latency (D-9.2).
@@ -1667,12 +1751,214 @@ mod tests {
         audio_section(|| stage.process(&mut io));
     }
 
+    /// Offline, non-real-time sample-rate conversion by direct windowed-sinc interpolation, written
+    /// from scratch here so that FR-NAM-050's "resampled offline" reference does not share an
+    /// implementation with the thing under test. [`SlotResampler`] is `rubato::FftFixedInOut`, an
+    /// overlap-add FFT resampler running on a fixed internal block; this is a time-domain
+    /// convolution against a Blackman-windowed sinc, evaluated at each output sample's own
+    /// fractional position with no blocking at all. Same operation, no shared code and no shared
+    /// method — which is the whole point of an offline reference.
+    ///
+    /// The kernel is normalised per output sample so DC gain is exactly 1 at every fractional
+    /// phase; the cutoff sits at 0.45 × the lower of the two rates, matching the region FR-NAM-060's
+    /// M14 note calls the satisfiable one.
+    fn resample_offline(input: &[f32], from_hz: f64, to_hz: f64) -> Vec<f32> {
+        /// Half the kernel length. 96 taps either side is far longer than anything real-time would
+        /// use, which is exactly what an offline reference is for.
+        const HALF_TAPS: isize = 96;
+
+        let ratio = from_hz / to_hz; // input samples per output sample
+        let cutoff = 0.45 * from_hz.min(to_hz);
+        let out_len = (input.len() as f64 / ratio).floor() as usize;
+        let half_width = HALF_TAPS as f64 + 1.0;
+
+        let sinc = |x: f64| {
+            if x.abs() < 1e-12 {
+                1.0
+            } else {
+                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+            }
+        };
+        // Blackman window over [-1, 1], zero outside.
+        let window = |t: f64| {
+            if t.abs() >= 1.0 {
+                0.0
+            } else {
+                let a = std::f64::consts::PI * (t + 1.0);
+                0.42 - 0.5 * a.cos() + 0.08 * (2.0 * a).cos()
+            }
+        };
+
+        let mut out = Vec::with_capacity(out_len);
+        for m in 0..out_len {
+            let center = m as f64 * ratio;
+            let first = center.floor() as isize;
+            let (mut acc, mut norm) = (0.0f64, 0.0f64);
+            for k in (first - HALF_TAPS)..=(first + HALF_TAPS) {
+                let t = center - k as f64;
+                let w = window(t / half_width);
+                if w == 0.0 {
+                    continue;
+                }
+                let h = 2.0 * cutoff / from_hz * sinc(2.0 * cutoff * t / from_hz) * w;
+                norm += h;
+                if k >= 0 && (k as usize) < input.len() {
+                    acc += h * f64::from(input[k as usize]);
+                }
+            }
+            out.push((acc / norm) as f32);
+        }
+        out
+    }
+
+    /// `20·log10(rms(error) / rms(reference))` — FR-NAM-030's figure of merit, which FR-NAM-050
+    /// imports by reference.
+    fn error_rms_db(reference: &[f32], measured: &[f32]) -> f64 {
+        assert_eq!(reference.len(), measured.len());
+        let mut err_sq = 0.0f64;
+        let mut ref_sq = 0.0f64;
+        for (r, m) in reference.iter().zip(measured.iter()) {
+            let (r, m) = (f64::from(*r), f64::from(*m));
+            err_sq += (r - m) * (r - m);
+            ref_sq += r * r;
+        }
+        20.0 * ((err_sq / ref_sq).sqrt()).log10()
+    }
+
+    /// **FR-NAM-050's `Verify: I` method, computed for the first time.** "A 48 kHz model driven at
+    /// 44.1 kHz shall match, within the FR-NAM-030 tolerance, the same model driven at 48 kHz with
+    /// the input and output resampled offline."
+    ///
+    /// Both paths, on the same probe, through the same model:
+    ///
+    /// - **the stage's path** — a 48 kHz model in a 44.1 kHz engine, so [`SlotResampler`] runs
+    ///   44.1 → 48 kHz into the model and 48 → 44.1 kHz out of it, block by block through
+    ///   `Stage::process`, aligned afterwards by the latency the stage itself reports;
+    /// - **the offline path** — the same probe resampled to 48 kHz by [`resample_offline`], the
+    ///   model run directly on it in one shot by `PreparedNam::process`, and the result resampled
+    ///   back to 44.1 kHz the same way.
+    ///
+    /// # The measured figures, and why this stays a partial
+    ///
+    /// **The tolerance is met — up to a probe bandwidth, and then it is not.** FR-NAM-030's figure
+    /// is an error RMS 90 dB below the reference's; measured over four probe bands, latency-aligned:
+    ///
+    /// | Probe | Error RMS | FR-NAM-030's −90 dB |
+    /// |---|---|---|
+    /// | 100 Hz – 1 kHz | −91.5 dB | met |
+    /// | 100 Hz – 2 kHz | −92.9 dB | met |
+    /// | 100 Hz – 5 kHz | −86.3 dB | 3.7 dB short |
+    /// | 100 Hz – 8 kHz | −78.2 dB | 11.8 dB short |
+    ///
+    /// The trend is the finding, and it is not a resampler passband problem: both conversions are
+    /// flat far above 8 kHz. **It is the nonlinearity between them.** A NAM model is a distortion,
+    /// so an 8 kHz probe puts harmonics at 16, 24 and 32 kHz — above the 22.05 kHz Nyquist the
+    /// return conversion has to fold or reject — and that is precisely where a 193-tap windowed sinc
+    /// and a 256-point overlap-add FFT resampler stop agreeing. Two *different* resamplers cannot
+    /// agree to −90 dB on content sitting in their transition bands, and an offline reference that
+    /// shared `SlotResampler`'s own implementation would be checking nothing.
+    ///
+    /// So the requirement's own tolerance is executed and met for a probe whose harmonics stay
+    /// inside both passbands, and the residue is a question the FRS has to answer rather than a test
+    /// can: FR-NAM-050's method names no probe signal and no reference resampler, and FR-NAM-030's
+    /// tolerance was written for a comparison against `NeuralAmpModelerCore` on a *fixed* 10-second
+    /// signal, not for a resampler-versus-resampler difference.
+    ///
+    /// What every band establishes, and what nothing established before M14: the stage's round trip
+    /// really does carry the signal through the model at the model's declared rate, sample-aligned
+    /// by the latency it reports. A regression that broke the conversion moves these figures by tens
+    /// of dB — as the one-sample-misalignment control below demonstrates.
     // trace-partial: FR-NAM-050
-    // uncovered: FR-NAM-050 — the comparison the Verify method specifies, a 48 kHz model driven
-    // uncovered: at 44.1 kHz against the same model driven at 48 kHz with the input and output
-    // uncovered: resampled offline to the FR-NAM-030 tolerance, is computed nowhere; the tagged
-    // uncovered: test asserts only finiteness and non-allocation over 200 blocks of varying size;
-    // uncovered: closes M8
+    // uncovered: FR-NAM-050 — the comparison the Verify method specifies is computed here for the
+    // uncovered: first time (a 48 kHz model in a 44.1 kHz engine against the same model driven at
+    // uncovered: 48 kHz with the probe resampled offline by an independent from-scratch
+    // uncovered: windowed-sinc reference, latency-aligned) and FR-NAM-030's -90 dB tolerance is
+    // uncovered: met for probes up to 2 kHz: -91.5 dB to 1 kHz, -92.9 dB to 2 kHz. It is not met
+    // uncovered: for wider probes -- -86.3 dB to 5 kHz, -78.2 dB to 8 kHz -- because the model's
+    // uncovered: own harmonics land above the 22.05 kHz Nyquist where two different resamplers
+    // uncovered: cannot agree to -90 dB, and a reference sharing SlotResampler's implementation
+    // uncovered: would check nothing. Which probe decides is an FRS question: the method names no
+    // uncovered: signal and no reference resampler; closes M8
+    #[test]
+    fn a_48_khz_model_driven_at_44_1_khz_matches_the_offline_resampled_path() {
+        /// 1 s at 44.1 kHz. Long enough for both paths to settle far from their edges, short enough
+        /// that a 193-tap offline convolution stays cheap in a debug build.
+        const FRAMES: usize = 44_100;
+        /// Discarded from both ends before comparing: the stage's own handover and bypass blends at
+        /// the start, and the offline kernel's edge taper at both ends.
+        const EDGE: usize = 8_192;
+        /// FR-NAM-030's tolerance, which FR-NAM-050 imports by reference.
+        const FR_NAM_030_DB: f64 = -90.0;
+
+        let engine_rate = 44_100u32;
+        let model_rate = 48_000u32;
+        let model =
+            crate::probe::nam_model(namir_fixtures::nam::WaveNetShape::Nano, 59, model_rate);
+
+        // (probe's top frequency, the ceiling this band is asserted against). The first two are
+        // FR-NAM-030's own tolerance; the last two are the measured shortfall, recorded with a
+        // couple of dB of headroom so a regression still fails. See this test's doc comment.
+        let bands: [(f32, f64); 4] = [
+            (1_000.0, FR_NAM_030_DB),
+            (2_000.0, FR_NAM_030_DB),
+            (5_000.0, -84.0),
+            (8_000.0, -76.0),
+        ];
+
+        for (top_hz, ceiling_db) in bands {
+            let probe = crate::probe::chirp(FRAMES, 100.0, top_hz, engine_rate, 0.25);
+
+            // --- The stage's path.
+            let mut stage = stage(engine_rate, ChannelConfig::Mono);
+            stage.load_model(Arc::clone(&model));
+            let through_stage = process_signal_in_chunks(&mut stage, &probe);
+            let latency = stage.latency_samples() as usize;
+            assert!(
+                latency > 0,
+                "a 48 kHz model in a 44.1 kHz engine must engage the resampler"
+            );
+
+            // --- The offline path.
+            let at_model_rate =
+                resample_offline(&probe, f64::from(engine_rate), f64::from(model_rate));
+            let mut state = model.new_state(at_model_rate.len());
+            let model_out = model.process(&mut state, &at_model_rate);
+            let offline =
+                resample_offline(&model_out, f64::from(model_rate), f64::from(engine_rate));
+
+            // --- Aligned by the figure the stage reports, over the settled middle.
+            let end = (FRAMES - EDGE)
+                .min(offline.len())
+                .min(through_stage.len() - latency - 1);
+            assert!(end > EDGE + 8_000, "the comparison window is too short");
+            let reference = &offline[EDGE..end];
+            let figure = error_rms_db(reference, &through_stage[EDGE + latency..end + latency]);
+
+            assert!(
+                figure < ceiling_db,
+                "a 100 Hz-{top_hz} Hz probe: the stage's resampled path differs from the \
+                 offline-resampled path by {figure:.2} dB RMS, past this band's recorded \
+                 {ceiling_db} dB"
+            );
+            // Non-vacuous twice over: the reference really carries signal, and the comparison is
+            // really this sensitive -- a one-sample misalignment costs tens of dB.
+            assert!(
+                reference.iter().any(|s| s.abs() > 1e-3),
+                "a 100 Hz-{top_hz} Hz probe: the offline path produced no signal to compare against"
+            );
+            let misaligned = error_rms_db(
+                reference,
+                &through_stage[EDGE + latency + 1..end + latency + 1],
+            );
+            assert!(
+                misaligned > figure + 6.0,
+                "a 100 Hz-{top_hz} Hz probe: shifting the comparison by one sample moves the \
+                 figure only from {figure:.2} to {misaligned:.2} dB, so this test cannot tell an \
+                 aligned path from a misaligned one"
+            );
+        }
+    }
+
     #[test]
     fn resampled_path_runs_many_varying_blocks_without_allocating_or_panicking() {
         // Best-effort coverage for the mismatched-rate path (this module's doc comment: not

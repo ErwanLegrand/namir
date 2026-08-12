@@ -230,7 +230,7 @@ impl Stage for OutStage {
 mod tests {
     use super::*;
     use crate::rt_harness::audio_section;
-    use namir_core::{ChannelConfig, SampleRate, db_to_linear};
+    use namir_core::{ChannelConfig, SampleRate, db_to_linear, linear_to_db};
 
     fn ctx(channel_config: ChannelConfig) -> PrepareContext {
         PrepareContext::new(SampleRate::new(48_000).unwrap(), 64, channel_config).unwrap()
@@ -272,23 +272,64 @@ mod tests {
         }
     }
 
+    /// **FR-OUT-010's other two literal parameters**, which no test read back until M14: the
+    /// requirement states **three** — a −60 dB to +12 dB range, a 0 dB default, and exact silence
+    /// at or below −60 dB — and only the third was asserted, here and in `namir-params`' own
+    /// `silence_floor_matches_the_range_minimum`, which pins the range *minimum* to
+    /// [`SILENCE_FLOOR_DB`] and says nothing about the maximum or the default. `params.lock` cannot
+    /// stand in: `render_manifest` emits key, id, kind tag and smoothing, and the kind tag is the
+    /// bare word `continuous` carrying no bounds, so it would not move if either literal changed.
+    ///
+    /// Both halves: the descriptor declares them, **and** the stage realises them — a stage built
+    /// from the descriptor's default passes its input at unity without anyone setting anything, and
+    /// one driven to the declared maximum applies exactly +12 dB.
+    // trace: FR-OUT-010
+    #[test]
+    fn the_declared_range_and_default_are_the_ones_the_requirement_states() {
+        let ParamKind::Continuous { min, max, default } = GAIN_DB.kind else {
+            panic!("out.gain_db must be Continuous");
+        };
+        assert_eq!(min, -60.0, "out.gain_db: minimum");
+        assert_eq!(max, 12.0, "out.gain_db: maximum");
+        assert_eq!(default, 0.0, "out.gain_db: default");
+
+        // The default, realised: an untouched stage is unity, not merely declared to be.
+        let mut at_default = stage(ChannelConfig::Mono);
+        settle(&mut at_default, 1, 0.5);
+        let mut buf = [0.5f32; 64];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| at_default.process(&mut io));
+        for s in io.channel(0) {
+            assert!(
+                (*s - 0.5).abs() < 1e-6,
+                "an untouched Out stage should be unity gain, got {s} for an input of 0.5"
+            );
+        }
+
+        // The maximum, realised.
+        let mut at_max = stage(ChannelConfig::Mono);
+        at_max.apply(ParamChange {
+            id: GAIN_DB_ID,
+            value: max,
+        });
+        settle(&mut at_max, 1, 0.1);
+        let mut buf = [0.1f32; 64];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| at_max.process(&mut io));
+        let expected = 0.1 * db_to_linear(max);
+        for s in io.channel(0) {
+            assert!(
+                (*s - expected).abs() < 1e-4,
+                "at the declared +{max} dB maximum, got {s}, expected {expected}"
+            );
+        }
+    }
+
     /// FR-OUT-010: at or below -60 dB the output is *exact* silence, not merely a very quiet
     /// asymptotic approach (`db_to_linear(-60.0)` is a tiny nonzero `f32` on its own).
-    ///
-    /// Partial rather than plain (D-23.1's second question), corrected at M9a's §14 re-audit.
-    /// FR-OUT-010 states **three** literal parameters — the -60 dB to +12 dB range, a 0 dB default,
-    /// and exact silence at or below -60 dB — and its `Verify: U` wants all three asserted. Only
-    /// the silence clause is, here and in `namir-params`' own
-    /// `silence_floor_matches_the_range_minimum`, which pins the range *minimum* to
-    /// [`SILENCE_FLOOR_DB`] and says nothing about the maximum or the default. Both of those are
-    /// declared in `namir_params::stages::out::GAIN_DB` and read back by nothing: `render_manifest`
-    /// emits only key, id, kind tag and smoothing, and the kind tag is the bare word `continuous`
-    /// carrying no bounds, so `params.lock` would not move if either literal changed.
-    // trace-partial: FR-OUT-010
-    // uncovered: FR-OUT-010 — of the requirement's three literal parameters only exact silence at
-    // uncovered: or below -60 dB is asserted; the +12 dB maximum and the 0 dB default are declared
-    // uncovered: in namir_params::stages::out::GAIN_DB and read back by no test, params.lock
-    // uncovered: recording only key, id, kind and smoothing; closes M8
+    // trace: FR-OUT-010
     #[test]
     fn silence_floor_is_exact_not_asymptotic() {
         let mut at_floor = stage(ChannelConfig::Mono);
@@ -387,12 +428,155 @@ mod tests {
         );
     }
 
+    /// Runs a sine of `amplitude` at `freq_hz` for `frames` samples through a mono stage in
+    /// 64-sample blocks. Returns nothing: what these FR-OUT-020 tests read is the telemetry the
+    /// stage publishes afterwards, not the audio.
+    fn drive_sine(stage: &mut OutStage, frames: usize, freq_hz: f64, amplitude: f32) {
+        let mut offset = 0usize;
+        while offset < frames {
+            let n = 64usize.min(frames - offset);
+            let mut buf: Vec<f32> = (offset..offset + n)
+                .map(|i| {
+                    (f64::from(amplitude)
+                        * (std::f64::consts::TAU * freq_hz * i as f64 / 48_000.0).sin())
+                        as f32
+                })
+                .collect();
+            let mut channels: [&mut [f32]; 1] = [&mut buf];
+            let mut io = StageIo::new(&mut channels, n);
+            audio_section(|| stage.process(&mut io));
+            offset += n;
+        }
+    }
+
+    /// This stage's published value for one telemetry id, in dB.
+    fn telemetry_value(stage: &OutStage, id: u32) -> f32 {
+        let mut storage = [TelemetryEntry { id: 0, value: 0.0 }; 16];
+        let mut sink = TelemetrySink::new(&mut storage);
+        stage.telemetry(&mut sink);
+        sink.entries()
+            .find(|e| e.id == id)
+            .expect("telemetry entry present")
+            .value
+    }
+
+    /// **FR-OUT-020's three unread readings.** The requirement imports FR-IN-020's characteristics
+    /// — "peak and a short-term average, with a peak-hold indicator that latches for at least
+    /// 1 second" — and until M14 no test read `OutStage`'s published `peak_db`, `average_db` or
+    /// `peak_hold_db` at all, only the clip flag. A wiring error emitting any one of them under
+    /// another's id would have passed every test in this file.
+    ///
+    /// The probe is chosen so **all three readings are different numbers**, which is what makes a
+    /// swap detectable: a 0.8 burst latches the peak-hold, then a long 0.2 tone lets the
+    /// fast-attack/slow-release peak fall to 0.2 while the short-term average settles on that
+    /// tone's RMS, 0.2/√2. −1.94, −13.98 and −16.99 dB: no two within 3 dB of each other.
+    ///
+    /// The 1.5 s tail also executes FR-IN-020's "latches for at least 1 second" directly — the hold
+    /// is still reading the burst a second and a half after the burst ended.
     // trace-partial: FR-OUT-020
-    // uncovered: FR-OUT-020 — of the four characteristics this requirement imports from FR-IN-020
-    // uncovered: and FR-IN-030, only the clip latch is asserted at the stage: no test reads
-    // uncovered: OutStage's published peak_db, average_db or peak_hold_db telemetry entries, so a
-    // uncovered: wiring error emitting one under another's id would pass, and the clip indicator
-    // uncovered: is reachable by no user reset path; closes M8
+    // uncovered: FR-OUT-020 — the engine-side half is closed here: peak, short-term average,
+    // uncovered: peak-hold and the clip latch are each read back from OutStage's own telemetry
+    // uncovered: under signals that make the three readings distinct, and measured post-gain. What
+    // uncovered: is unspanned is FR-IN-020's "M for the display", which this requirement imports
+    // uncovered: with the rest: namir_ui::MeterReading carries only peak_db and rms_db, so the
+    // uncovered: peak-hold value this stage publishes reaches no UI field, no
+    // uncovered: docs/manual-tests/fr-out-020-*.md exists, and the clip indicator is still
+    // uncovered: reachable by no user reset path. That is roadmap section 21 Phase 1's unbuilt
+    // uncovered: surface, deliberately deferred by this milestone; closes M8
+    #[test]
+    fn peak_average_and_peak_hold_each_report_their_own_quantity() {
+        let mut stage = stage(ChannelConfig::Mono);
+
+        // 0.25 s at 0.8: the peak follower jumps to 0.8 on the first crest and the hold latches it.
+        drive_sine(&mut stage, 12_000, 1_000.0, 0.8);
+        // 1.5 s at 0.2: five release time constants, so the peak has fallen onto the new tone while
+        // the hold has not moved.
+        drive_sine(&mut stage, 72_000, 1_000.0, 0.2);
+
+        let ids = &stage.telemetry_ids[0];
+        let peak = telemetry_value(&stage, ids.peak_db);
+        let average = telemetry_value(&stage, ids.average_db);
+        let peak_hold = telemetry_value(&stage, ids.peak_hold_db);
+
+        let expected_hold = linear_to_db(0.8);
+        let expected_peak = linear_to_db(0.2);
+        let expected_average = linear_to_db(0.2 / std::f32::consts::SQRT_2);
+
+        assert!(
+            (peak_hold - expected_hold).abs() < 0.1,
+            "peak-hold reads {peak_hold} dB, expected the 0.8 burst's {expected_hold} dB"
+        );
+        assert!(
+            (peak - expected_peak).abs() < 0.3,
+            "peak reads {peak} dB, expected the current 0.2 tone's {expected_peak} dB"
+        );
+        assert!(
+            (average - expected_average).abs() < 0.3,
+            "average reads {average} dB, expected the 0.2 tone's RMS {expected_average} dB"
+        );
+
+        // No two readings are close enough for a swapped id to have passed the three assertions
+        // above by accident.
+        assert!(
+            peak_hold > peak + 3.0 && peak > average + 2.0,
+            "the three readings are not well separated ({peak_hold} / {peak} / {average} dB), so \
+             this probe cannot tell them apart"
+        );
+
+        // FR-IN-020's "latches for at least 1 second": the burst ended 1.5 s ago.
+        assert!(
+            peak_hold > peak + 3.0,
+            "the peak-hold decayed within 1.5 s of the burst that set it"
+        );
+    }
+
+    /// **FR-OUT-020's readings are of what leaves the stage.** An output meter that read its input
+    /// would be reporting a level the user never hears; this stage's own doc comment says the
+    /// meters run post-gain, and nothing checked it. The same tone through a stage settled at
+    /// −6 dB must read 6 dB lower on all three.
+    // trace-partial: FR-OUT-020
+    // uncovered: FR-OUT-020 — see peak_average_and_peak_hold_each_report_their_own_quantity for
+    // uncovered: this requirement's remaining limb, FR-IN-020's imported "M for the display";
+    // uncovered: closes M8
+    #[test]
+    fn the_meter_reads_the_post_gain_signal() {
+        let mut unity = stage(ChannelConfig::Mono);
+        drive_sine(&mut unity, 48_000, 1_000.0, 0.5);
+
+        let mut attenuated = stage(ChannelConfig::Mono);
+        attenuated.apply(ParamChange {
+            id: GAIN_DB_ID,
+            value: -6.0,
+        });
+        // Settle the ramp, then clear the meter so only the settled part is measured (`reset` is
+        // meters-only here — see this stage's own `reset`).
+        drive_sine(&mut attenuated, 48_000, 1_000.0, 0.5);
+        attenuated.reset();
+        drive_sine(&mut attenuated, 48_000, 1_000.0, 0.5);
+
+        let unity_ids = &unity.telemetry_ids[0];
+        let attenuated_ids = &attenuated.telemetry_ids[0];
+        for (what, id_of) in [("peak", 0usize), ("average", 1), ("peak-hold", 2)] {
+            let pick = |ids: &ChannelTelemetryIds| match id_of {
+                0 => ids.peak_db,
+                1 => ids.average_db,
+                _ => ids.peak_hold_db,
+            };
+            let loud = telemetry_value(&unity, pick(unity_ids));
+            let quiet = telemetry_value(&attenuated, pick(attenuated_ids));
+            assert!(
+                (loud - quiet - 6.0).abs() < 0.2,
+                "{what} reads {loud} dB at unity and {quiet} dB at -6 dB: a difference of {}, not \
+                 the 6 dB the gain applies -- is the meter reading the stage's input?",
+                loud - quiet
+            );
+        }
+    }
+
+    // trace-partial: FR-OUT-020
+    // uncovered: FR-OUT-020 — see peak_average_and_peak_hold_each_report_their_own_quantity for
+    // uncovered: this requirement's remaining limb, FR-IN-020's imported "M for the display";
+    // uncovered: closes M8
     #[test]
     fn clip_latches_and_is_reported_via_telemetry() {
         let mut stage = stage(ChannelConfig::Mono);
