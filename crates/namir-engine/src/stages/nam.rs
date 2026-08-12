@@ -1418,6 +1418,171 @@ mod tests {
         );
     }
 
+    /// **FR-CHAIN-020's "U per stage" limb for this stage**, which nothing executed until M14:
+    /// `disabled_stage_is_passthrough_even_with_a_model_loaded` below applies `ENABLED = 0` *before
+    /// any audio is processed* and then asserts a steady state, so it cannot see a bypass toggle at
+    /// all — the requirement's "without an audible click or discontinuity" was untested for this
+    /// stage.
+    ///
+    /// A constant input, exactly as `gate.rs`'s counterpart uses, so the signal contributes no slew
+    /// of its own and every sample-to-sample step measured belongs to the crossfade. The bound is
+    /// this stage's own [`BYPASS_CROSSFADE_TIME_CONSTANT_MS`]: a one-pole of time constant τ steps
+    /// by at most `range · (1 − e^(−1/τ))`, which for a 15 ms τ at 48 kHz is `range / 720`.
+    // trace: FR-CHAIN-020
+    #[test]
+    fn bypass_toggle_mid_signal_is_click_free() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Mono);
+        stage.load_model(tiny_model(sample_rate));
+
+        // 1 s: many times over both the ~20 ms handover crossfade and the ~15 ms bypass blend, and
+        // long enough for the model's own causal history to settle on a constant input.
+        let value = 0.2f32;
+        let settled_wet = *process_constant_in_chunks(&mut stage, 48_000, value)
+            .last()
+            .expect("the settle run produced output");
+        // Non-vacuity: bypassing has to change something, or the smoothness assertion is empty.
+        let range = (settled_wet - value).abs();
+        assert!(
+            range > 1e-3,
+            "the model's output is indistinguishable from its input ({settled_wet} vs {value}), \
+             so bypassing it changes nothing and this test would pass vacuously"
+        );
+
+        stage.apply(ParamChange {
+            id: ENABLED_ID,
+            value: 0.0,
+        });
+
+        // 200 ms, comfortably past the 15 ms blend.
+        let out = process_constant_in_chunks(&mut stage, 9_600, value);
+
+        // Include the step from the last pre-toggle sample into the first post-toggle one, which is
+        // where an unramped switch would show.
+        let mut prev = settled_wet;
+        let mut max_delta = 0.0f32;
+        for &s in &out {
+            max_delta = max_delta.max((s - prev).abs());
+            prev = s;
+        }
+
+        let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * f64::from(sample_rate);
+        let ideal_max_delta = range * (1.0 - (-1.0 / tau_samples).exp()) as f32;
+        assert!(
+            max_delta <= ideal_max_delta * 1.01,
+            "max_delta={max_delta} exceeds the {BYPASS_CROSSFADE_TIME_CONSTANT_MS} ms one-pole's \
+             own steepest step {ideal_max_delta} across a range of {range}"
+        );
+        assert!(max_delta > 0.0, "the bypass blend never advanced");
+        // And it actually arrived: the stage is passing its input through by the end.
+        let tail = *out.last().unwrap();
+        assert!(
+            (tail - value).abs() < 1e-3,
+            "expected the bypassed stage to settle onto its input, got {tail} vs {value}"
+        );
+    }
+
+    /// **FR-CHAIN-050's mono core, for `NamStage` itself, in both multi-channel configurations.**
+    /// Until M14 every test in this file was `ChannelConfig::Mono` bar one that asserted nothing
+    /// about channel content, and `MonoToStereo` appeared in none of them — so the
+    /// channel-0-then-duplicate shuttle this stage performs was verified only through the assembled
+    /// chain, never at the stage.
+    ///
+    /// The two input channels carry *different* signals, so "both outputs agree" is a statement
+    /// about the shuttle and not an accident of the input; and the shared result is compared
+    /// against a `Mono` stage fed channel 0 alone, which is what "the engine core shall process a
+    /// single channel" means operationally.
+    // trace: FR-CHAIN-050
+    #[test]
+    fn every_multi_channel_configuration_duplicates_one_mono_core_result() {
+        const FRAMES: usize = 24_000;
+        const SETTLE: usize = 19_200;
+        let sample_rate = 48_000;
+
+        let left = sine_signal(FRAMES);
+        let right: Vec<f32> = (0..FRAMES)
+            .map(|i| 0.15 * ((i as f32) * 0.037).sin())
+            .collect();
+
+        let mut mono = stage(sample_rate, ChannelConfig::Mono);
+        mono.load_model(tiny_model(sample_rate));
+        let mono_out = process_signal_in_chunks(&mut mono, &left);
+
+        for channel_config in [ChannelConfig::Stereo, ChannelConfig::MonoToStereo] {
+            let mut stage = stage(sample_rate, channel_config);
+            stage.load_model(tiny_model(sample_rate));
+
+            let mut out_left = Vec::with_capacity(FRAMES);
+            let mut out_right = Vec::with_capacity(FRAMES);
+            let mut offset = 0usize;
+            while offset < FRAMES {
+                let end = (offset + 64).min(FRAMES);
+                let n = end - offset;
+                let mut l = left[offset..end].to_vec();
+                let mut r = right[offset..end].to_vec();
+                let mut channels: [&mut [f32]; 2] = [&mut l, &mut r];
+                let mut io = StageIo::new(&mut channels, n);
+                audio_section(|| stage.process(&mut io));
+                out_left.extend_from_slice(io.channel(0));
+                out_right.extend_from_slice(io.channel(1));
+                offset = end;
+            }
+
+            // **Measured after the fade-in, and that is not a weakening.** Until the handover
+            // completes and the shared bypass blend settles, this stage is partly passing its
+            // *dry* input through, and the dry path is per channel by construction (`gate.rs` and
+            // this module both capture it that way) — so two channels carrying different signals
+            // legitimately produce different output while `mix < 1`. That is FR-CHAIN-040's
+            // passthrough, not a second core. The mono-core claim is about the wet path, which is
+            // everything this stage emits once settled.
+            //
+            // **To within a residue, and the residue has a name.** `mix` approaches 1.0 through
+            // `m += mix_coeff · (1 − m)` in `f32`, and once `1 − m` falls below about
+            // `ulp(1.0) / 2 / mix_coeff ≈ 2·10⁻⁵` the increment rounds away and the recurrence
+            // stalls there rather than landing on 1.0. So a fully-engaged stage keeps mixing in
+            // ~0.002% of its dry input — about −94 dB, inaudible, and the reason this compares
+            // within a tolerance instead of `assert_eq!`. A core that really ran per channel would
+            // differ by order 0.1 here, four orders of magnitude above the bound.
+            for i in SETTLE..FRAMES {
+                let spread = (out_left[i] - out_right[i]).abs();
+                assert!(
+                    spread < 1e-4,
+                    "{channel_config:?}: sample {i} differs between channels by {spread}, so the \
+                     core did not process a single channel"
+                );
+            }
+            for i in SETTLE..FRAMES {
+                assert!(
+                    (out_left[i] - mono_out[i]).abs() < 1e-5,
+                    "{channel_config:?}: sample {i} is {} where a Mono stage fed channel 0 alone \
+                     produces {} -- the widened configuration is not the same core",
+                    out_left[i],
+                    mono_out[i]
+                );
+            }
+            // Non-vacuous: channel 1 really did carry something else, and that something else
+            // really was discarded rather than passed through. A stage that ran a core per channel,
+            // or that simply passed channel 1 along, would leave channel 1's own 0.15-amplitude
+            // tone in the output; what is there instead is channel 0's core result.
+            assert!(
+                left.iter()
+                    .zip(right.iter())
+                    .any(|(l, r)| (l - r).abs() > 0.05),
+                "the two probe channels are too similar for this comparison to mean anything"
+            );
+            let discarded = right[SETTLE..]
+                .iter()
+                .zip(out_right[SETTLE..].iter())
+                .map(|(dry, out)| (dry - out).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                discarded > 0.05,
+                "{channel_config:?}: channel 1's output is within {discarded} of its own input, so \
+                 nothing shows it was replaced by the mono core's result"
+            );
+        }
+    }
+
     #[test]
     fn disabled_stage_is_passthrough_even_with_a_model_loaded() {
         let sample_rate = 48_000;
