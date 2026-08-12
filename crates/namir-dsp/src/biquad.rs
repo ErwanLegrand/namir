@@ -257,6 +257,23 @@ impl Biquad {
         self.s1 = 0.0;
         self.s2 = 0.0;
     }
+
+    /// The two TDF-II state registers plus the coefficients currently applied, all of which
+    /// FR-EQ-020's method asks be asserted finite ("asserting bounded output **and finite
+    /// state**"). A filter can hand back one finite block while its own registers have already
+    /// reached infinity; the next block is then entirely NaN, which is the failure a bounded-output
+    /// check alone would not see until a block later. Test-only: no production code reads the
+    /// registers.
+    #[cfg(test)]
+    fn state_is_finite(&self) -> bool {
+        self.s1.is_finite()
+            && self.s2.is_finite()
+            && self.current.b0.is_finite()
+            && self.current.b1.is_finite()
+            && self.current.b2.is_finite()
+            && self.current.a1.is_finite()
+            && self.current.a2.is_finite()
+    }
 }
 
 impl Default for Biquad {
@@ -268,6 +285,7 @@ impl Default for Biquad {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artefact;
     use crate::rt_harness::audio_section;
 
     /// A small deterministic PRNG (xorshift32) so noise-based tests are reproducible without
@@ -435,10 +453,12 @@ mod tests {
 
     // --- Stability sweep (FR-EQ-020).
 
-    // trace-partial: FR-EQ-020
-    // uncovered: FR-EQ-020 — two of the six sample rates the method names by number, 88.2 kHz and
-    // uncovered: 176.4 kHz, are absent from the sweep's rate array, which is [44_100, 48_000,
-    // uncovered: 96_000, 192_000]; closes M8
+    /// The six rates FR-EQ-020's method names by number: "44.1/48/88.2/96/176.4/192 kHz". Held as
+    /// a named const rather than a literal inside the loop so the correspondence to the FRS line is
+    /// checkable by eye; M14 added 88 200 and 176 400, which had simply never been in it.
+    const FR_EQ_020_SAMPLE_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+
+    // trace: FR-EQ-020
     #[test]
     fn stable_across_a_wide_parameter_and_sample_rate_sweep() {
         let kinds = [
@@ -451,9 +471,8 @@ mod tests {
         let freqs = [20.0, 100.0, 1000.0, 5000.0, 20_000.0];
         let qs = [0.2, 0.707, 1.0, 2.5, 5.0];
         let gains = [-15.0, 0.0, 15.0];
-        let sample_rates = [44_100u32, 48_000, 96_000, 192_000];
 
-        for &sample_rate in &sample_rates {
+        for &sample_rate in &FR_EQ_020_SAMPLE_RATES {
             let sr_v = sr(sample_rate);
             for &kind in &kinds {
                 for &freq in &freqs {
@@ -475,9 +494,230 @@ mod tests {
                                      sr={sample_rate} sample[{i}]={s}"
                                 );
                             }
+                            // "and finite state": the registers the *next* block would be
+                            // computed from, which a bounded-output check cannot see.
+                            assert!(
+                                biquad.state_is_finite(),
+                                "non-finite state: kind={kind:?} freq={freq} q={q} gain={gain} \
+                                 sr={sample_rate}"
+                            );
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // --- FR-PARAM-040's second sentence: "Frequency-affecting parameters shall be smoothed or
+    // their coefficients interpolated to the same audible standard."
+    //
+    // The standard the first sentence sets is a 20 ms linear ramp, so that is what the shipped
+    // coefficient interpolation is measured against here: for each full-range change one of the
+    // EQ's frequency-like parameters can make, the artefact energy of the real interpolation must
+    // not exceed the artefact energy of a 20 ms linear transition between the same two steady
+    // states. `namir-engine`'s `EqStage::retarget` ramps over `max_block_size` samples, so 64 —
+    // the shortest block a host realistically asks for, and therefore the least favourable ramp
+    // the shipped code ever runs.
+
+    /// One full-range change of a frequency-affecting EQ parameter: the two designs and the
+    /// FR-EQ-010/FR-IR-070 range endpoints they come from.
+    struct FrequencyChange {
+        label: &'static str,
+        from: (FilterKind, f64, f64, f64),
+        to: (FilterKind, f64, f64, f64),
+    }
+
+    /// Every frequency-like parameter `namir-params` declares for the EQ, driven end to end of
+    /// its own FRS range. `eq.mid_q` is included because Q is `SmoothingCategory::FrequencyLike`
+    /// too and travels the same `set_coeffs` path.
+    const FREQUENCY_CHANGES: &[FrequencyChange] = &[
+        FrequencyChange {
+            label: "eq.mid_freq_hz 200 -> 5000 at Q 5.0, +15 dB",
+            from: (FilterKind::Peaking, 200.0, 5.0, 15.0),
+            to: (FilterKind::Peaking, 5_000.0, 5.0, 15.0),
+        },
+        FrequencyChange {
+            label: "eq.mid_q 0.2 -> 5.0 at 1 kHz, +15 dB",
+            from: (FilterKind::Peaking, 1_000.0, 0.2, 15.0),
+            to: (FilterKind::Peaking, 1_000.0, 5.0, 15.0),
+        },
+        FrequencyChange {
+            label: "eq.low_shelf_freq_hz 40 -> 500 at +15 dB",
+            from: (FilterKind::LowShelf, 40.0, 0.707, 15.0),
+            to: (FilterKind::LowShelf, 500.0, 0.707, 15.0),
+        },
+        FrequencyChange {
+            label: "eq.high_shelf_freq_hz 1000 -> 12000 at -15 dB",
+            from: (FilterKind::HighShelf, 1_000.0, 0.707, -15.0),
+            to: (FilterKind::HighShelf, 12_000.0, 0.707, -15.0),
+        },
+        FrequencyChange {
+            label: "eq.high_pass_freq_hz 20 -> 500",
+            from: (FilterKind::HighPass, 20.0, 0.707, 0.0),
+            to: (FilterKind::HighPass, 500.0, 0.707, 0.0),
+        },
+        FrequencyChange {
+            label: "eq.low_pass_freq_hz 20000 -> 1000",
+            from: (FilterKind::LowPass, 20_000.0, 0.707, 0.0),
+            to: (FilterKind::LowPass, 1_000.0, 0.707, 0.0),
+        },
+    ];
+
+    fn design(spec: (FilterKind, f64, f64, f64), sample_rate: SampleRate) -> BiquadCoeffs {
+        BiquadCoeffs::design(spec.0, spec.1, spec.2, spec.3, sample_rate)
+    }
+
+    /// The steady-state response of `coeffs` to `artefact::tone()`, phase-aligned with it: the
+    /// tone is periodic in the analysis window, so feeding three copies and keeping the last
+    /// leaves the filter settled and the output aligned sample-for-sample with the input.
+    fn steady_state(coeffs: BiquadCoeffs, tone: &[f32]) -> Vec<f32> {
+        let mut biquad = Biquad::new();
+        biquad.set_coeffs(coeffs, 0);
+        let mut last = Vec::new();
+        for _ in 0..3 {
+            last = tone.to_vec();
+            biquad.process(&mut last);
+        }
+        last
+    }
+
+    /// The response of a filter settled at `from` that is retargeted to `to` over `ramp_samples`
+    /// at sample `at` of the analysis window. `ramp_samples == 0` is the unsmoothed control.
+    fn transition(
+        from: BiquadCoeffs,
+        to: BiquadCoeffs,
+        tone: &[f32],
+        at: usize,
+        ramp_samples: u32,
+    ) -> Vec<f32> {
+        let mut biquad = Biquad::new();
+        biquad.set_coeffs(from, 0);
+        for _ in 0..2 {
+            let mut warm = tone.to_vec();
+            biquad.process(&mut warm);
+        }
+        let mut out = tone.to_vec();
+        biquad.process(&mut out[..at]);
+        biquad.set_coeffs(to, ramp_samples);
+        biquad.process(&mut out[at..]);
+        out
+    }
+
+    /// The largest pole radius reached anywhere along the straight line `set_coeffs` walks from
+    /// `from` to `to`. Sampled rather than solved: the interpolation is linear in the
+    /// coefficients, so a dense sample of it is the interpolation.
+    fn worst_pole_radius(from: BiquadCoeffs, to: BiquadCoeffs) -> f64 {
+        let mut worst = 0.0f64;
+        for i in 0..=1000 {
+            let t = i as f64 / 1000.0;
+            let a1 = from.a1 as f64 + t * (to.a1 as f64 - from.a1 as f64);
+            let a2 = from.a2 as f64 + t * (to.a2 as f64 - from.a2 as f64);
+            let discriminant = a1 * a1 - 4.0 * a2;
+            let radius = if discriminant >= 0.0 {
+                let root = discriminant.sqrt();
+                ((-a1 + root) / 2.0).abs().max(((-a1 - root) / 2.0).abs())
+            } else {
+                a2.max(0.0).sqrt()
+            };
+            worst = worst.max(radius);
+        }
+        worst
+    }
+
+    /// FR-PARAM-040's two measurements, applied to the frequency-affecting parameters for the
+    /// first time.
+    ///
+    /// **What this test asserts, and why it is not the 20 ms bound the gain half asserts.** Run,
+    /// the measurements say the shipped one-block coefficient interpolation does *not* meet a
+    /// 20 ms linear transition's standard on either quantity for the widest changes: at a
+    /// 64-sample ramp the mid band swept 200 Hz → 5 kHz at Q 5 measures −31.8 dB of artefact
+    /// energy against the reference's −71.9 dB, and 0.177 of peak sample-to-sample delta against
+    /// the reference's 0.132. The mechanism is understood and is not a click: linear interpolation
+    /// of `(a1, a2)` cannot leave the stability triangle, that region being convex, so the filter
+    /// never rings away — instead its resonance *sweeps* across the band and releases its stored
+    /// energy as a chirp. A longer ramp makes that worse, not better (−14.4 dB and 0.278 at 4096
+    /// samples, the widest gap this test drives), which is the signature of a glide rather than of
+    /// a discontinuity.
+    ///
+    /// So the numbers do not show a defect and they also do not show compliance: FR-PARAM-040's
+    /// "the same audible standard" is not a figure, and a swept resonance is not the same
+    /// phenomenon as the level step the first sentence bounds. Asserting the 20 ms figure here
+    /// would be inventing a requirement and failing the product against it; asserting nothing
+    /// would leave the clause where M14 found it. What is asserted is what the measurements
+    /// establish without invention — the change is bounded, finite and stable throughout, and
+    /// every figure is printed — and FR-PARAM-040's `uncovered:` field names the rest.
+    // trace-partial: FR-PARAM-040
+    // uncovered: FR-PARAM-040 — the second sentence's "frequency-affecting parameters ... to the
+    // uncovered: same audible standard" is measured but not asserted, because the FRS states no
+    // uncovered: figure for it and the measurement says the shipped one-block coefficient
+    // uncovered: interpolation exceeds a 20 ms linear transition between the same two steady
+    // uncovered: states by up to 57 dB of artefact energy and 2.1x of peak sample-to-sample delta
+    // uncovered: on the widest EQ sweeps, a swept resonance not being the level step the first
+    // uncovered: sentence bounds; closes M8
+    #[test]
+    fn full_range_frequency_changes_are_measured_against_the_20ms_linear_standard() {
+        let sample_rate = sr(48_000);
+        let tone = artefact::tone();
+        let at = artefact::WINDOW / 2;
+        // `EqStage::retarget` ramps over `max_block_size`; 64 is the shortest block a host
+        // realistically asks for, and 4096 the longest, so both ends are driven.
+        for &ramp_samples in &[64u32, 4096] {
+            for change in FREQUENCY_CHANGES {
+                let from = design(change.from, sample_rate);
+                let to = design(change.to, sample_rate);
+
+                let interpolated = transition(from, to, &tone, at, ramp_samples);
+                let jumped = transition(from, to, &tone, at, 0);
+                let reference = artefact::linear_20ms_crossfade(
+                    &steady_state(from, &tone),
+                    &steady_state(to, &tone),
+                    at,
+                    artefact::SAMPLE_RATE_HZ,
+                );
+
+                let after = at..artefact::WINDOW;
+                println!(
+                    "FR-PARAM-040 ramp={ramp_samples} {}: artefact interpolated {:.1} dB / \
+                     20 ms reference {:.1} dB / unsmoothed jump {:.1} dB; max sample delta \
+                     {:.5} / {:.5} / {:.5}",
+                    change.label,
+                    artefact::artefact_energy_db(&interpolated),
+                    artefact::artefact_energy_db(&reference),
+                    artefact::artefact_energy_db(&jumped),
+                    artefact::max_step(&interpolated[after.clone()]),
+                    artefact::max_step(&reference[after.clone()]),
+                    artefact::max_step(&jumped[after]),
+                );
+
+                // The interpolation is walked in a straight line through coefficient space, and
+                // the biquad stability region — |a2| < 1 and |a1| < 1 + a2 — is a convex triangle,
+                // so a line between two stable designs cannot leave it. Asserted rather than
+                // argued, because it is the property that makes everything above a sweep rather
+                // than a divergence, and nothing else in the tree checks it.
+                let radius = worst_pole_radius(from, to);
+                assert!(
+                    radius < 1.0,
+                    "{}: the coefficient interpolation reaches a pole radius of {radius}",
+                    change.label
+                );
+
+                // And the audible consequence of that: the transition stays bounded. The peak
+                // overshoot measured is 1.44x the steady-state amplitude at the widest sweep, so
+                // 4x is a generous ceiling that a divergence would still blow straight through.
+                let peak = interpolated.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+                let steady_peak = steady_state(to, &tone)
+                    .iter()
+                    .fold(0.0f32, |a, s| a.max(s.abs()));
+                assert!(
+                    interpolated.iter().all(|s| s.is_finite()),
+                    "{}: non-finite output during the change",
+                    change.label
+                );
+                assert!(
+                    peak <= steady_peak.max(1.0) * 4.0,
+                    "{}: peaked at {peak} against a steady-state {steady_peak}",
+                    change.label
+                );
             }
         }
     }

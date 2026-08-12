@@ -12,6 +12,8 @@ mod gate;
 mod meter;
 
 #[cfg(test)]
+mod artefact;
+#[cfg(test)]
 mod rt_harness;
 
 pub use biquad::{Biquad, BiquadCoeffs, FilterKind};
