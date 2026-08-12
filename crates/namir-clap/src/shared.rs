@@ -419,9 +419,10 @@ mod tests {
     /// `ResourceCache::shared()`, not `ResourceCache::new()`.
     // trace-partial: FR-CLAP-090
     // uncovered: FR-CLAP-090 — the B half of "I plus B", that N instances of one model use
-    // uncovered: materially less memory than N separate copies, is measured by nothing: namir-clap
-    // uncovered: has no benches directory and no memory benchmark exists anywhere in the workspace;
-    // uncovered: closes M8
+    // uncovered: materially less memory than N separate copies, is measured by nothing: this
+    // uncovered: crate's one bench (benches/plugin_instantiation.rs) times NFR-PERF-040's
+    // uncovered: instantiation window, and no benchmark anywhere in the workspace measures memory
+    // uncovered: at all; closes M8
     #[test]
     fn two_shared_inners_resolve_to_the_same_process_global_cache() {
         let a = SharedInner::new();

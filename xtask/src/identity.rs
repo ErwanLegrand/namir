@@ -82,7 +82,7 @@
 // uncovered: NFR-DOC-040 — the "stating what it does" clause has no artifact: this check asserts
 // uncovered: that `# Namir`, the two licence file names and the three build/run/test command lines
 // uncovered: are present as substrings, and no static check can extend that to whether the prose
-// uncovered: around them actually describes the product; closes M13
+// uncovered: around them actually describes the product; closes M8
 use std::path::{Path, PathBuf};
 
 /// Repository-relative path of the brand artwork every generated blob is derived from.

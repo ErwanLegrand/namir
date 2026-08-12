@@ -4,10 +4,15 @@
 //! This is `namir-platform`'s first `tests/` directory; D-16.5 nominates this exact file for the
 //! requirement and enumerates the six clauses it has to span, which are the six `clause_*`
 //! functions below. They are called by one covering `#[test]` rather than being six `#[test]`s of
-//! their own, because D-23.1 makes a plain `// trace:` tag an assertion about *one* annotated
-//! artifact verifying the *whole* requirement — six independent tests would leave no single
-//! artifact that does, and splitting the tag six ways is not something the annotation grammar
+//! their own, because D-23.1 makes a tag an assertion about *one* annotated artifact and what it
+//! verifies of the *whole* requirement — six independent tests would leave no single artifact to
+//! carry that assertion, and splitting a tag six ways is not something the annotation grammar
 //! expresses. Each clause is named, so a panic still says which one failed.
+//!
+//! **The tag is `trace-partial:`, and the next paragraph is why.** The six clauses span the
+//! requirement's verbosity and boundedness clauses; its *per-user location* clause is asserted
+//! here by nothing, because nothing here calls `logging::init`, which is the only code that binds
+//! the sink to `crate::log_file_path`. The annotation above the covering test names that gap.
 //!
 //! The logger is driven against a caller-supplied temporary path throughout, never the
 //! process-global one: the same "pure logic, wired to the real world only at the edge" split
@@ -607,9 +612,18 @@ fn clause_6_the_namir_log_parser() {
 // The covering test.
 // ---------------------------------------------------------------------------------------------
 
-// trace: FR-ERR-010
+// trace-partial: FR-ERR-010
+// uncovered: FR-ERR-010 — the configurable-verbosity and cannot-grow-without-bound clauses are
+// uncovered: spanned by the six clause helpers above; the per-user-location clause is asserted by
+// uncovered: nothing. Every clause drives a `Logger` built on a caller-supplied temporary path,
+// uncovered: and this test asserts `logging::logger().is_none()`, so `logging::init` —
+// uncovered: the only code binding the sink to a per-user path, via `crate::log_file_path`
+// uncovered: (`src/logging.rs:614-620`) — is called by no test. The nearest evidence,
+// uncovered: `src/paths.rs:123-133`, is `#[cfg(target_os)]`-gated, is vacuous when its
+// uncovered: environment variable is unset (`if let Some(...)`), and carries no tag for this
+// uncovered: requirement; closes M8
 #[test]
-fn the_diagnostic_log_is_per_user_configurable_and_bounded() {
+fn the_diagnostic_log_is_configurable_and_bounded() {
     clause_1_level_filtering_per_severity();
     clause_2_rotation_at_the_byte_cap_preserves_content();
     clause_3_retention_bound_never_produces_a_fourth_file();

@@ -32,11 +32,22 @@
 //! synthetic model's) to the embedded copy, so no file is written anywhere and the developer's
 //! library is neither read for a hit nor modified.
 //!
-//! The model itself is generated here rather than taken from `namir-fixtures`, which is not a
-//! dependency of this crate: a `.nam` file is JSON, `serde_json` already *is* a dev-dependency,
-//! and the topology below is the same minimal WaveNet shape `namir-engine`'s own `nam.rs` tests
-//! build against the public `NamFile` surface. It stays inside D-19.1 — generated from fixed
-//! values, nothing captured.
+//! The model itself is generated here rather than taken from `namir-fixtures`. That was originally
+//! because `namir-fixtures` was not a dependency of this crate; as of M9b it is one (`Cargo.toml`'s
+//! `[dev-dependencies]`, whose own comment cites this file's workaround as half of what motivated
+//! adding it), and the hand-rolled model stays anyway, for a reason that outlived the first one:
+//! what this file wants is the *smallest* model that engages D-9.2's resampler, not a numerically
+//! meaningful one. Nothing here reads a sample of the output — every assertion is about a reported
+//! figure and a notification — while the model's parse time is what the recall this file then waits
+//! on is made of, and `LIMB_TIMEOUT` below is reasoned in terms of "a parse of a ~1 kB model". A
+//! generated fixture is built for the opposite case: larger, RMS-calibrated so its output is worth
+//! listening to, and always stamped with the generator's own 48 kHz, which is exactly the rate that
+//! leaves `NamSlot::resample` as `None` — so it would have to have `sample_rate` overwritten before
+//! it was of any use here at all (`clap_host_block_sizes.rs`'s `loaded::model_bytes` does precisely
+//! that, because that file *does* need real inference). A `.nam` file is JSON, `serde_json` already
+//! *is* a dev-dependency, and the topology below is the same minimal WaveNet shape `namir-engine`'s
+//! own `nam.rs` tests build against the public `NamFile` surface. Either route stays inside D-19.1
+//! — generated from fixed values, nothing captured.
 //!
 //! # Why the tag is plain rather than partial (D-23.1)
 //!

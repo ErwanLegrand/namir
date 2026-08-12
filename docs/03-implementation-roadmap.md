@@ -1826,9 +1826,9 @@ not adjudicate them further.
 | 5.9 STATE | 7 | 2 | 5 | 0 |
 | 5.10 LIB | 5 | 2 | 3 | 0 |
 | 5.11 IO | 8 | 2 | 6 | 0 |
-| 5.12 CLAP | 11 | 5 | 6 | 0 |
+| 5.12 CLAP | 11 | 4 | 7 | 0 |
 | 5.13 UI | 7 | 1 | 6 | 0 |
-| 5.14 ERR | 6 | 2 | 4 | 0 |
+| 5.14 ERR | 6 | 1 | 5 | 0 |
 | 5.15 PKG | 4 | 3 | 1 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
 | 6.2 PERF | 6 | 1 | 5 | 0 |
@@ -1838,7 +1838,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **44** | **86** | **0** |
+| **Total** | **130** | **42** | **88** | **0** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2347,14 +2347,24 @@ closing milestone moved from M12 to M13, which is a correction to a claim M12 wo
 been recorded as meeting. **FR-UI-110 appears in no row here**: it is a Should, and §14 counts Musts
 only. It stays open after M12 — see `docs/manual-tests/fr-ui-110-brand-mark.md`.
 
-**M9b moves, 2026-08-12 — five rows, seven requirements, appended per D-23.2's "every later
+**M9b moves, 2026-08-12 — five rows, six requirements, appended per D-23.2's "every later
 milestone moves only the cells its own evidence justifies."** 4 CFG becomes **2 / 1 / 0** (was
-1 / 2 / 0); 5.10 LIB becomes **2 / 3 / 0** (was 1 / 4 / 0); 5.12 CLAP becomes **5 / 6 / 0** (was
-2 / 9 / 0); 5.14 ERR becomes **2 / 4 / 0** (was 1 / 4 / 1); 6.2 PERF becomes **1 / 5 / 0** (was
-0 / 6 / 0); **Total** becomes **44 / 86 / 0** (was 37 / 92 / 1). **The Not-started column reaches
+1 / 2 / 0); 5.10 LIB becomes **2 / 3 / 0** (was 1 / 4 / 0); 5.12 CLAP becomes **4 / 7 / 0** (was
+2 / 9 / 0); 5.14 ERR becomes **1 / 5 / 0** (was 1 / 4 / 1); 6.2 PERF becomes **1 / 5 / 0** (was
+0 / 6 / 0); **Total** becomes **42 / 88 / 0** (was 37 / 92 / 1). **The Not-started column reaches
 zero for the first time**, 5.14 ERR having been its only non-zero cell since M13 emptied 5.15 PKG's.
 That is a real fact about the ledger and a small one: it says every Must now has *some* artifact, not
-that any additional Must is met — 86 of 130 are still Partial, which is the number that matters.
+that any additional Must is met — 88 of 130 are still Partial, which is the number that matters.
+
+**Two of those cells moved back inside this same milestone, and the figures above are the corrected
+ones.** M9b's build phase first recorded **44 / 86 / 0**, counting FR-CLAP-080 and FR-ERR-010 Done;
+this section's `### M9b addendum` re-read both against D-23.1 and demoted their tags to
+`trace-partial:`, so 5.12 CLAP is 4 / 7 / 0 rather than 5 / 6 / 0 and 5.14 ERR is 1 / 5 / 0 rather
+than 2 / 4 / 0. The earlier figure is left standing where the status subsection first recorded it,
+per this document's convention, and corrected here rather than there. It is worth naming what that
+means: **the milestone built to enforce a tagging doctrine shipped two tags that failed it**, which
+is the second time M9's own phases have done exactly that — M9a's `### M9a status` records the same
+thing happening to NFR-PERF-050, caught the same way, by adversarial review rather than by any gate.
 
 - **FR-CFG-020: Partial → Done.** The M9a bullet above named the gap in full — "no golden vector
   exists anywhere in the tree and nothing runs one through both configurations".
@@ -2380,17 +2390,36 @@ that any additional Must is met — 86 of 130 are still Partial, which is the nu
   including a 256-block sequence of one-frame blocks, with a model and an IR actually loaded rather
   than through an empty chain where any block division trivially agrees. It earned its Done the hard
   way: the test found a real engine defect on first run, and the cell moves on the fixed code.
-- **FR-CLAP-080: Partial → Done.** M9a: "`activate` takes the host's rate and neither the 44.1-192 kHz
-  range nor a mid-session change is exercised". `crates/namir-clap/tests/clap_host_sample_rates.rs`
-  spans 154 rates including both endpoints the requirement names, plus a mid-session rate change —
-  the requirement's set quantifier ("across its supported range") and its second clause both
-  executed, which is what D-23.1's first question asks of a plain tag.
-- **FR-ERR-010: Not started → Done, the only cell in this milestone that crosses two columns.** M9a's
-  finding was categorical — "nothing writes a log record anywhere", with
-  `crates/namir-clap/src/shared.rs`'s sink recorded as a deliberate no-op and D-16.5's six parameters
-  wholly unimplemented. `crates/namir-platform/src/logging.rs` is the writer and
-  `crates/namir-platform/tests/logging.rs` its coverage, spanning D-16.5's parameters rather than
-  asserting that a file appears. This empties the Not-started column.
+- **FR-CLAP-080: stays Partial, and its M9a gap narrows without closing.** M9a: "`activate` takes
+  the host's rate and neither the 44.1-192 kHz range nor a mid-session change is exercised".
+  `crates/namir-clap/tests/clap_host_sample_rates.rs` now exercises both — 154 rates including both
+  endpoints the requirement names, plus a mid-session rate change through the deactivate/reactivate
+  cycle. It is not Done, on both of D-23.1's questions. The requirement's own quantifier is "**every
+  sample rate the host may present** within 44.1 kHz to 192 kHz inclusive"
+  (`01-functional-requirements.md:763`), and `crates/namir-clap/src/audio.rs:125` rounds the host's
+  rate to an integer, so that set is ~147 900 distinct `SampleRate` values of which the sweep
+  reaches 154 — the same shape as FR-NAM-060's own `uncovered:` field, and D-23.2's clause 4 makes a
+  quantified requirement whose test spans part of the set Partial. And nothing is loaded at any of
+  those rates: the file never touches `PluginState`, so D-9.2's `SlotResampler` — the one
+  rate-dependent subsystem in the chain, and the one this very milestone found broken at 192 kHz —
+  runs at none of them, and the mid-session limb asserts only a 1 kHz tone's RMS through a
+  pass-through chain. The tag is `// trace-partial:` at `clap_host_sample_rates.rs:219`, and that
+  pair is this cell's named evidence.
+- **FR-ERR-010: Not started → Partial.** M9a's finding was categorical — "nothing writes a log
+  record anywhere", with `crates/namir-clap/src/shared.rs`'s sink recorded as a deliberate no-op and
+  D-16.5's six parameters wholly unimplemented. `crates/namir-platform/src/logging.rs` is the writer
+  and `crates/namir-platform/tests/logging.rs` its coverage, spanning D-16.5's parameters rather
+  than asserting that a file appears. This empties the Not-started column. It is Partial and not
+  Done because the requirement has **three** clauses and the covering test spans two: the six clause
+  helpers verify configurable verbosity and boundedness, while **the per-user-location clause is
+  asserted by nothing**. The logger is driven against a caller-supplied temporary path throughout
+  (`crates/namir-platform/tests/logging.rs:17-19`) and the covering test asserts
+  `logging::logger().is_none()` (`:606`); the only code binding the sink to a per-user path is
+  `logging::init` via `crate::log_file_path` (`crates/namir-platform/src/logging.rs:614-620`), which
+  no test calls. `crates/namir-platform/src/paths.rs:123-133` is the nearest evidence and is not it:
+  `#[cfg(target_os)]`-gated, vacuous when its environment variable is unset, and untagged. The tag
+  is `// trace-partial:` at `crates/namir-platform/tests/logging.rs:615`, and that pair is this
+  cell's named evidence.
 - **FR-LIB-020: Partial → Done.** M9a's gap was one clause of four: three met the 10 000-file scale
   and "the off-the-audio-thread clause is exercised against a 6-file corpus only".
   `crates/namir-worker/tests/library_scan_scale.rs` runs all four clauses against a 10 000-file
@@ -4259,6 +4288,99 @@ while the contamination-immune estimator across those same repetitions read 14.3
 hundredths of a point. An idle machine is not a quiet one, the difference is measurable, and the
 estimator is the figure to trust when they disagree. That is the argument for asserting on it, made
 by the instrument rather than about it.
+
+### M9b addendum: an adversarial re-read of this milestone's own ledger, 2026-08-12
+
+Appended per this document's convention; nothing above is edited. **This is still not a close-out** —
+the two preconditions above are unchanged and unmet. What this pass did is re-read M9b's own output
+against the tree, on the principle the milestone itself is built on, and it found the ledger
+over-claiming in eleven places. None of it changes what the suite does; all of it changes what the
+ledger says.
+
+**The verification state was confirmed first, so the findings below are corrections to a green tree
+rather than excuses for a red one.** `cargo fmt`, `cargo clippy --workspace --all-targets -D
+warnings`, `cargo test --workspace` and all six `xtask` subcommands pass. Two environment defects
+were fixed to get there and neither is a repository defect: the sandbox's toolchain was 1.94.1
+against this workspace's 1.97 MSRV, and ALSA development headers were absent, which `alsa-sys`'
+`build.rs` fails on exactly as `ci.yml`'s own Linux step predicts.
+
+**Two plain tags were demoted to `trace-partial:`, and both were written by M9b.** This is the same
+class of error M9a's sweep existed to find, committed by the milestone that inherited the doctrine.
+
+- **FR-CLAP-080.** Its test sweeps 154 rates — both endpoints, the six standard rates, a 1 kHz grid
+  and one fractional value — against a requirement reading "**every** sample rate the host may
+  present within 44.1 kHz to 192 kHz inclusive". `src/audio.rs` rounds to an integer, so the set is
+  ~147 900 values. **That is the identical argument by which this same milestone made FR-NAM-060 a
+  partial**, applied to the same milestone's own other tag and reaching the opposite verdict; the
+  two sat a few hundred lines apart. The second gap is larger: the file never touches
+  `PluginState`, so no model and no IR are loaded, and D-9.2's `SlotResampler` — the one
+  rate-dependent subsystem in the chain, and the thing M9b itself found broken at 192 kHz — runs at
+  none of the 154 rates.
+- **FR-ERR-010.** The requirement has three clauses; the covering test asserts two. The logger is
+  driven against a caller-supplied temporary path throughout, and the covering test asserts
+  `logging::logger().is_none()` — the per-user-location clause is asserted by nothing, and
+  `logging::init`, the only thing binding the sink to `log_file_path()`, is called by no test. The
+  test's own *name* claimed the clause it did not assert.
+
+§14's table moves **44 / 86 / 0 → 42 / 88 / 0** accordingly. The Not-started column stays empty.
+
+**Nine `uncovered:` fields asserted facts that were false when read.** D-23.1 makes this field the
+ledger entry a Partial is retired against, and it is rendered verbatim into checked-in
+`docs/03-test-plan.md`, so a stale field is a false statement in a generated document. Four were
+falsified by M9b's own work, because the re-booking commit changed the milestone token in 104 lines
+and re-validated none of the text: **FR-CLAP-090** said this crate "has no benches directory" when
+M9b had just added one; **NFR-RT-010** said `namir-clap`'s `process()` runs under no
+`assert_no_alloc` anywhere when M9b's own harness wraps every call (and mis-stated the surviving
+`namir-app` half besides); **FR-CLAP-050** said `PluginState::load` "is called by no test" and its
+`spawn_recall` sequel "runs nowhere" when four M9b suites drive it through the real vtable and one
+*depends* on it; **NFR-QUAL-010** said "20 uncovered Musts stand with CI green" against a tool that
+now reports zero.
+
+**Six declared a milestone that cannot close them.** Three are the ones this section's P0 pass
+named and said would be fixed in the close-out — FR-CFG-030, NFR-LIC-030 and NFR-QUAL-010 — and the
+P0 pass's own count was short: **FR-PKG-040, NFR-BUILD-020 and NFR-DOC-040 declare `closes M13`
+too**, and M13 has completed. NFR-LIC-030's and FR-PKG-040's *text* was stale in the same direction
+as the milestone, both asserting that no release workflow, installer or archive exists — M13 built
+all three. All six are re-booked to **M8**, on the same "only milestone that follows" default the
+51 partials took, and their gap text is re-derived rather than carried.
+
+**Two stale prose comments and one stale test doc were corrected.**
+`crates/namir-clap/tests/clap_host_block_sizes.rs`'s module doc still read, in the present tense,
+"**why it is currently red**" and "`NamStage::reset`… **which currently clears both FIFOs**", with
+the remedy described as something to run "at a distance, without touching `namir-engine`" — all
+falsified by the fix that landed in the same commit, in the most load-bearing place in the
+milestone: the file carrying FR-CLAP-070's plain tag. The investigation is kept and re-tensed
+rather than deleted with the bug.
+
+**D-6.2 gains a consequence note, because the finding was a gap in its reasoning and not only in
+the code.** That decision's stated consequence is about buffer *sizing* — "a smaller block simply
+uses a prefix" — which is true of the buffers and false of a stateful stage's delay. The general
+form, which nothing in the decision implied: a stage carrying its own FIFOs owes a
+block-size-independent delay invariant, which buffer sizing neither supplies nor can check.
+
+**One audit finding was investigated and rejected**, recorded because a rejected finding is worth
+as much as an accepted one here. It was argued that the FR-NAM-060 fix materially raises reported
+latency at high engine rates with nothing saying so. The consequence *is* recorded, twice — D-9.3's
+own `*Consequence (added M9b)*` note gives it as "a constant ~5.3 ms internal block rather than a
+constant 256 frames", and this section's status subsection records the FIFO priming making
+`latency_samples` exactly true where it had been an upper bound met by accident.
+
+**The two blocking manual scripts were attempted, and the attempt is why R-16 is now precise.**
+FR-UI-020's and FR-UI-070's scripts were run as far as a headless Linux container allows, which
+turned out to be not at all: neither product can open a window on a software-GL X server. **R-16
+already predicted this and gave the wrong reason** — "`xvfb-run` not helping because that path needs
+a GLX-capable display". An Xvfb display *is* GLX-capable; Mesa 25.2.8 / llvmpipe reports direct
+rendering, a 4.5 core profile and 320 GLXFBConfigs on it. **None of the 320 is sRGB-capable**, and
+`egui-baseview`'s default `GlConfig` asks for one, so `glXChooseFBConfig` matches nothing and
+`baseview` panics on its own `.expect`. No Mesa configuration tried produces an sRGB config. R-16
+carries the mechanism now, with the consequence stated in the form that matters: **no headless CI or
+container can execute the `Verify: M` UI scripts**, so those two documents stay `NOT EXECUTED` and
+D-18.5's flip stays unmade. Recorded so the next session does not spend the hour again.
+
+**What M9b still owes is exactly what it owed before this pass**: a human running
+`docs/manual-tests/fr-ui-020-single-screen-elements.md` and `fr-ui-070-non-modal-error-notices.md`
+on a machine with a display, a real audio interface and an instrument, their results recorded in
+those documents, and only then the flip and NFR-QUAL-010's closure.
 
 ---
 

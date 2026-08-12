@@ -216,7 +216,17 @@ fn assert_report_is_correct(rate: f64, report: &RateReport, reference_rms: f32) 
     );
 }
 
-// trace: FR-CLAP-080
+// trace-partial: FR-CLAP-080
+// uncovered: FR-CLAP-080 — swept at 154 rates (both endpoints, the six standard rates, a 1 kHz
+// uncovered: grid and one fractional value), not every rate the requirement's range admits:
+// uncovered: `src/audio.rs:125` rounds the host's rate to an integer, so the set a host can
+// uncovered: present collapses onto ~147 900 distinct `SampleRate` values, of which this file
+// uncovered: reaches 154. And nothing is loaded at any of them — this file never touches
+// uncovered: `PluginState`, so no model and no IR are present and D-9.2's `SlotResampler`, the
+// uncovered: one rate-dependent subsystem in the chain and the one this milestone found broken
+// uncovered: at 192 kHz, never runs at any rate here, the mid-session limb included, which
+// uncovered: asserts only a 1 kHz tone's RMS within 0.05 dB of the 48 kHz reading through a
+// uncovered: pass-through chain; closes M8
 #[test]
 fn every_presentable_sample_rate_and_a_mid_session_change_are_handled() {
     let (_entry, mut instance) = instantiate_default();

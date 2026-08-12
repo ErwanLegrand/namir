@@ -95,49 +95,63 @@
 //! `PluginState::load` is `clack-extensions`' *host* half. `.github/workflows/ci.yml`'s second,
 //! required `cargo test -p namir-clap --features host-ext-tests` step is what runs it.
 //!
-//! # What the loaded limb found, and why it is currently red (M9b, 2026-08-12)
+//! # What the loaded limb found, and how it was fixed (M9b, 2026-08-12)
 //!
-//! **`randomised_block_sizes_match_the_fixed_block_reference_with_a_model_and_an_ir` fails, and it
-//! is right to.** Recorded here rather than worked around, per this project's practice of keeping a
+//! **`randomised_block_sizes_match_the_fixed_block_reference_with_a_model_and_an_ir` failed the
+//! first time it was run, and it was right to.** What it found was a real defect in
+//! `namir-engine`, fixed in the same commit that added this file. The investigation is kept here
+//! rather than deleted along with the bug it found, per this project's practice of keeping a
 //! finding on the record.
 //!
 //! `crates/namir-engine/src/stages/nam.rs`'s `SlotResampler::process` ends with
 //! `*sample = self.engine_out_fifo.pop_front().unwrap_or(0.0)` — any output frame the FIFO cannot
 //! supply is emitted as silence — and its produce loop is gated on
 //! `engine_out_fifo.len() < output.len()`, i.e. it primes the pipeline to *this call's* output size
-//! and no further. Those two together make the stage's delay a function of the block-size history:
-//! every starved frame inserts one sample of silence that is never taken back, so the accumulated
-//! delay grows whenever a block arrives that the current FIFO occupancy cannot cover, and never
-//! shrinks. Measured on a 48 kHz engine against a 44.1 kHz model (`engine_block` = 320 engine-rate
+//! and no further. Those two together made the stage's delay a function of the block-size history:
+//! every starved frame inserted one sample of silence that was never taken back, so the accumulated
+//! delay grew whenever a block arrived that the current FIFO occupancy could not cover, and never
+//! shrank. Measured on a 48 kHz engine against a 44.1 kHz model (`engine_block` = 320 engine-rate
 //! frames), against a 512-frame reference, after an identical 512-frame warm-up:
 //!
 //! | Uniform block size | 512, 320, 319, 256, 160, 128, 64 | 32 | 16 | 8 | 4 | 2 | 1 |
 //! |---|---|---|---|---|---|---|---|
 //! | Extra delay (samples) | 0 | 32 | 48 | 56 | 60 | 62 | 63 |
 //!
-//! The divergence is a pure time shift — remove the lag and the residual is ~4.4e-6 RMS — and it
-//! moves *mid-stream*: 512-frame blocks for the first half of a stream and one-frame blocks for the
-//! second gives lag 0 then lag 63, which is 63 samples of silence spliced in at the moment the host
+//! The divergence was a pure time shift — remove the lag and the residual is ~4.4e-6 RMS — and it
+//! moved *mid-stream*: 512-frame blocks for the first half of a stream and one-frame blocks for the
+//! second gave lag 0 then lag 63, which is 63 samples of silence spliced in at the moment the host
 //! changed its block size. That is FR-CLAP-070's "without artefacts" clause as much as its
-//! comparison clause. `latency_samples` reports `in_delay + out_delay + engine_block` regardless, so
-//! the figure is an upper bound the actual delay only meets by accident.
+//! comparison clause. `latency_samples` reported `in_delay + out_delay + engine_block` regardless,
+//! so the figure was an upper bound the actual delay only met by accident.
 //!
-//! Three things localise it to the resampler and nothing else, all measured through a plain
-//! `namir_engine::AudioEngine` with no plugin and no CLAP in the picture: an IR alone under the same
-//! two schedules differs by **exactly 0**; a 48 kHz model (same weights, so the same inference, but
-//! `NamSlot::resample` is `None`) differs by 7.5e-8; the two together by 5.4e-7, both inside this
-//! file's tolerance. So `namir-ir`'s partitioned convolver is block-size independent as D-9.4 says,
-//! and so is the model's own history.
+//! Three things localised it to the resampler and nothing else, all measured through a plain
+//! `namir_engine::AudioEngine` with no plugin and no CLAP in the picture: an IR alone under the
+//! same two schedules differed by **exactly 0**; a 48 kHz model (same weights, so the same
+//! inference, but `NamSlot::resample` is `None`) differed by 7.5e-8; the two together by 5.4e-7,
+//! both inside this file's tolerance. So `namir-ir`'s partitioned convolver is block-size
+//! independent as D-9.4 says, and so is the model's own history.
 //!
-//! And the remedy is confirmed, not merely proposed: priming `engine_out_fifo` with `engine_block`
-//! zeros in `SlotResampler::new` (and re-priming it in `NamStage::reset`, which currently clears
-//! both FIFOs) makes the invariant `engine_in_fifo.len() + engine_out_fifo.len() == engine_block`
-//! hold for the life of the slot, and under it the produce loop can never be starved — when
-//! `out < n`, `in == engine_block + n - out > engine_block`, so the loop's second condition always
-//! holds. It also makes the actual delay equal the already-reported `latency_samples` exactly. Run
-//! at a distance, without touching `namir-engine`: warming the same chain with **one-frame** blocks
-//! drives the accumulated delay to its ceiling, and from there the fixed and varying schedules agree
-//! **bit-exactly** (`0e0`), model-only and model-plus-IR alike.
+//! **The fix landed in `namir-engine`, not here.** `SlotResampler::new` now primes
+//! `engine_out_fifo` with `engine_block` zeros (`crates/namir-engine/src/stages/nam.rs:481-504`),
+//! and `NamStage::reset` re-primes it rather than clearing both FIFOs (`nam.rs:981-989`), so the
+//! invariant `engine_in_fifo.len() + engine_out_fifo.len() == engine_block` holds for the life of
+//! the slot. Under it the produce loop can never be starved — when `out < n`,
+//! `in == engine_block + n - out > engine_block`, so the loop's second condition always holds — and
+//! the actual delay is now exactly the `latency_samples` the stage already reported, where before
+//! that figure was an upper bound the truth met only by accident (576 under 512-frame blocks, 639
+//! under 1-frame blocks, both reported as 640).
+//!
+//! **Running the test at a distance, without touching `namir-engine`, is precisely what was *not*
+//! done**, and the alternative is recorded because it exists and works: warming the same chain with
+//! **one-frame** blocks drives the accumulated delay to its ceiling, and from there the fixed and
+//! varying schedules agree bit-exactly, model-only and model-plus-IR alike. That would have made
+//! this file green over an engine still splicing 63 samples of silence into any host that changed
+//! its block size mid-stream — a test describing its own workaround rather than the requirement —
+//! so roadmap §15 item 13 settled the branch policy (fix the engine) before this test was written.
+//! The warm-up below is accordingly [`loaded::WARMUP_BLOCKS`] blocks of `DEFAULT_MAX_BLOCK` and not
+//! one-frame blocks, so the plain tag this file carries rests on the engine fix and on nothing
+//! else: take the priming out and the test goes red again. With it in, the two schedules agree
+//! **bit-exactly** (`0e0`) with no warm-up trick at all.
 //!
 //! **Before changing anything here, read `tests/support/mod.rs`'s doc comment — in particular the
 //! HAZARD about `start_library_scan` and the developer's real library index.** This file starts no

@@ -595,7 +595,7 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
             println!(
                 "traceability: uncovered Musts are informational under --allow-uncovered -- exit \
                  status reflects the generated-plan diff and \u{a7}14's denominators only. This \
-                 half becomes required at M13's close-out (D-18.5)."
+                 half becomes required at M9b's close-out (D-18.5)."
             );
         }
         false

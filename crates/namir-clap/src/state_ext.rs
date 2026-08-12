@@ -75,11 +75,15 @@ mod tests {
     /// same values, without a live CLAP host or stream at all (the pure logic `save`/`load` call
     /// through, exercised directly).
     // trace-partial: FR-CLAP-050
-    // uncovered: FR-CLAP-050 — the host-driven half is unspanned: PluginStateImpl::save and load
-    // uncovered: are called by no test, the tagged artifact bypassing them and the
-    // uncovered: clap_istream/clap_ostream adapters to exercise the pure logic directly, so load's
-    // uncovered: own sequel work — set_last_document, push_notice on parse warnings,
-    // uncovered: notify_params_changed and spawn_recall — runs nowhere; closes M8
+    // uncovered: FR-CLAP-050 — the save direction of the host-driven half is unspanned:
+    // uncovered: PluginStateImpl::save is called by no test, so nothing drives the clap_ostream
+    // uncovered: adapter or the write-back through last_document it performs. load is driven
+    // uncovered: through the real vtable by the host-ext-tests suites (clap_host_latency,
+    // uncovered: clap_host_block_sizes, clap_host_rt_blocking, fr_cfg_020_shell_parity), which
+    // uncovered: reach set_last_document and spawn_recall; two of its sequel steps still are not
+    // uncovered: exercised — push_notice never runs, no test loading a document State::read warns
+    // uncovered: on, and notify_params_changed's rescan is asserted by nothing, since
+    // uncovered: TestHostMainThread::param_rescans has no reader; closes M8
     #[test]
     fn a_snapshot_round_trips_through_bytes_and_adopt_state() {
         let a = crate::shared::SharedInner::new();
