@@ -4299,10 +4299,15 @@ ledger says.
 
 **The verification state was confirmed first, so the findings below are corrections to a green tree
 rather than excuses for a red one.** `cargo fmt`, `cargo clippy --workspace --all-targets -D
-warnings`, `cargo test --workspace` and all six `xtask` subcommands pass. Two environment defects
-were fixed to get there and neither is a repository defect: the sandbox's toolchain was 1.94.1
-against this workspace's 1.97 MSRV, and ALSA development headers were absent, which `alsa-sys`'
-`build.rs` fails on exactly as `ci.yml`'s own Linux step predicts.
+warnings`, `cargo test --workspace`, D-18.7's `cargo test -p namir-clap --features host-ext-tests`,
+all six `xtask` subcommands and `cargo deny check` pass — the last in the full form AGENTS.md names
+*and* in each of the three `ci.yml` runs separately (`check licenses`, `check sources`, `check
+bans`), all four categories reporting ok, which matters because the `clack-host` dev-dependency
+D-18.6 adopted is exactly what those gates were told to watch. Three environment defects were fixed
+to get there and none is a repository defect: the sandbox's toolchain was 1.94.1 against this
+workspace's 1.97 MSRV, ALSA development headers were absent — which `alsa-sys`' `build.rs` fails on
+exactly as `ci.yml`'s own Linux step predicts — and `cargo-deny` was not installed at all, so that
+gate had never run in this sandbox.
 
 **Two plain tags were demoted to `trace-partial:`, and both were written by M9b.** This is the same
 class of error M9a's sweep existed to find, committed by the milestone that inherited the doctrine.
