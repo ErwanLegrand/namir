@@ -5,6 +5,7 @@
 //! consuming a product crate's public API, not a product edge, so `xtask` itself sits outside
 //! D-5.1's layering table (see `layering.rs`'s module doc).
 
+mod assets;
 mod attribution;
 mod bundle;
 mod cargo_meta;
@@ -310,6 +311,37 @@ fn run_params_lock(root: &Path, write: bool) -> bool {
         }
         Err(e) => {
             println!("params-lock: could not run check: {e}");
+            false
+        }
+    }
+}
+
+/// M14's NFR-LIC-050 gate: every checked-in asset under `crates/` is recorded in
+/// `crates/namir-fixtures/assets.lock` with a declared provenance and a content hash. Reports a
+/// **list**, like `identity` and `bundle` — one asset's missing declaration should not hide
+/// another's changed bytes.
+fn run_assets(root: &Path, write: bool) -> bool {
+    match assets::check_or_write(root, write) {
+        Ok(violations) if violations.is_empty() => {
+            println!(
+                "assets: clean (every asset under crates/ is recorded in {} with a declared \
+                 provenance and a matching hash)",
+                assets::ASSET_MANIFEST_PATH
+            );
+            true
+        }
+        Ok(violations) => {
+            println!(
+                "assets: {} violation(s) found (NFR-LIC-050):",
+                violations.len()
+            );
+            for v in &violations {
+                println!("  - {v}");
+            }
+            false
+        }
+        Err(e) => {
+            println!("assets: could not run check: {e}");
             false
         }
     }
@@ -916,7 +948,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|params-lock [--write]|attribution [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
     );
 }
 
@@ -936,6 +968,10 @@ fn main() {
         Some("attribution") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_attribution(&root, write)
+        }
+        Some("assets") => {
+            let write = args.iter().skip(1).any(|a| a == "--write");
+            run_assets(&root, write)
         }
         Some("identity") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
