@@ -152,6 +152,7 @@ name = "namir-ir-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "namir-core",
  "namir-ir",
 ]
 
