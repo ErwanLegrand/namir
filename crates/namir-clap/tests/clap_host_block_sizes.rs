@@ -563,15 +563,25 @@ mod loaded {
     /// loads both resources without processing a single block). So a wait here that outlasts the
     /// whole serialised recall — parse the model, offer it, wait one crossfade, parse the IR, offer
     /// it, wait another — leaves **both** offers sitting in the ring before frame 0, and every run
-    /// in this module then installs them on the same block. That matters: the resampler's FIFO fill
-    /// and the convolver's partition phase are both counted from install, so two runs that
-    /// installed on different blocks would differ for a reason that has nothing to do with their
-    /// block schedules. Asserted, not assumed — [`LoadedRun::landed_at`] is compared across runs.
+    /// in this module then installs them promptly. That matters: the resampler's FIFO fill and the
+    /// convolver's partition phase are both counted from install, so two runs whose comparison
+    /// began at different distances *from* install would differ for a reason that has nothing to
+    /// do with their block schedules.
+    ///
+    /// **This settle is a head start, not the synchronisation** (M14, 2026-08-12). It used to be
+    /// both: runs were required to install on the same absolute warm-up block, which asked two
+    /// independent worker threads to finish inside the same 512-frame window and failed on a
+    /// loaded macOS runner at 1 vs 2. `run_loaded` now pumps until the install actually lands and
+    /// only then runs [`WARMUP_BLOCKS`], so equal post-install phase is structural and this
+    /// duration only keeps the landing quick.
     const RECALL_SETTLE: Duration = Duration::from_millis(750);
 
     /// Silent blocks of [`DEFAULT_MAX_BLOCK`] frames every run processes between the install and the
-    /// signal under test. Fixed, so every run reaches frame 0 of the comparison having processed
-    /// the identical number of frames.
+    /// signal under test. Fixed, and counted from the block on which the install landed rather than
+    /// from the start of the run, so every run reaches frame 0 of the comparison having processed
+    /// the identical number of frames *through the loaded chain* — which is the number the
+    /// resampler FIFO and the convolver partition phase are functions of. Blocks before the install
+    /// are pass-through silence with no model and no IR, so they leave no state behind to differ.
     ///
     /// 128 x 512 = 65 536 frames. Two things have to have finished by then, and both do by orders
     /// of magnitude: the model's own causal-convolution history has to be flushed with the zeros
@@ -583,11 +593,11 @@ mod loaded {
     /// flush rather than a `reset()` call.
     const WARMUP_BLOCKS: usize = 128;
 
-    /// The block by which the reported latency must have moved off zero, counted from the first
-    /// block after [`RECALL_SETTLE`]. `nam.rs` only moves `active` once the handover crossfade
-    /// completes (20 ms, so under two 512-frame blocks), so with both offers already in the ring
-    /// this is a small constant; a larger value means the settle above was outrun, which the
-    /// failure message says.
+    /// The number of blocks `run_loaded` will pump waiting for the reported latency to move off
+    /// zero, counted from the first block after [`RECALL_SETTLE`]. `nam.rs` only moves `active`
+    /// once the handover crossfade completes (20 ms, so under two 512-frame blocks), so with both
+    /// offers already in the ring this is a small constant. Exhausting it means the model never
+    /// reached the engine at all — a real failure, not a phase difference, and the panic says so.
     const LANDING_LIMIT: usize = 8;
 
     /// The artefact limb's excitation amplitude on the loaded chain — a tenth of what the
@@ -617,9 +627,11 @@ mod loaded {
     struct LoadedRun {
         /// The processed signal.
         output: Stereo,
-        /// Index of the first warm-up block at which the plugin reported non-zero latency — i.e.
-        /// the block on which the model's handover crossfade completed. Compared across runs; see
-        /// [`RECALL_SETTLE`].
+        /// Index of the block at which the plugin first reported non-zero latency — i.e. the block
+        /// on which the model's handover crossfade completed. A diagnostic only: it is bounded by
+        /// [`LANDING_LIMIT`] inside `run_loaded` and deliberately *not* compared across runs, since
+        /// the warm-up is counted from it rather than from the start of the run. See
+        /// [`RECALL_SETTLE`] for what that replaced and why.
         landed_at: usize,
         /// The latency the plugin reported once warm.
         latency: u32,
@@ -778,14 +790,27 @@ mod loaded {
         let mut bufs = StereoBuffers::new(DEFAULT_MAX_BLOCK as usize);
         bufs.silence_input();
 
+        // Phase 1 -- pump silent blocks until the handover has actually completed, rather than
+        // assuming `RECALL_SETTLE` was long enough. See `WARMUP_BLOCKS` for why the split matters:
+        // what has to match across runs is the number of blocks *since install*, and only this
+        // shape guarantees it.
         let mut landed_at = None;
-        for block in 0..WARMUP_BLOCKS {
+        for block in 0..LANDING_LIMIT {
             // Inside the marker deliberately: these are the blocks carrying D-8.1's install and
             // the handover crossfade, which is where an allocation on the audio thread would be.
             audio_section(|| bufs.process_block(&mut processor, DEFAULT_MAX_BLOCK))
                 .expect("a warm-up block must process");
-            if landed_at.is_none() && latency_ext.get(&mut main_thread_handle(&mut instance)) != 0 {
+            if latency_ext.get(&mut main_thread_handle(&mut instance)) != 0 {
                 landed_at = Some(block);
+                break;
+            }
+        }
+
+        // Phase 2 -- exactly `WARMUP_BLOCKS` blocks *after* the install, in every run.
+        if landed_at.is_some() {
+            for _ in 0..WARMUP_BLOCKS {
+                audio_section(|| bufs.process_block(&mut processor, DEFAULT_MAX_BLOCK))
+                    .expect("a warm-up block must process");
             }
         }
         let latency = latency_ext.get(&mut main_thread_handle(&mut instance));
@@ -804,18 +829,11 @@ mod loaded {
         }
         let landed_at = landed_at.unwrap_or_else(|| {
             panic!(
-                "the plugin still reports zero latency after {WARMUP_BLOCKS} warm-up blocks -- the \
-                 {MODEL_RATE_HZ} Hz model never reached the engine, so this run would be comparing \
-                 two pass-through chains and proving nothing"
+                "the plugin still reports zero latency after {LANDING_LIMIT} blocks past the \
+                 {RECALL_SETTLE:?} settle -- the {MODEL_RATE_HZ} Hz model never reached the engine, \
+                 so this run would be comparing two pass-through chains and proving nothing"
             )
         });
-        assert!(
-            landed_at < LANDING_LIMIT,
-            "the model's handover only completed on warm-up block {landed_at}, past the {LANDING_LIMIT} \
-             this file allows -- the {RECALL_SETTLE:?} settle was outrun, so the install frame is no \
-             longer the same in every run and the comparison below would be measuring install \
-             phase rather than block schedule"
-        );
         LoadedRun {
             output,
             landed_at,
@@ -864,13 +882,18 @@ mod loaded {
         let varying = run_loaded(&with_both, &varying_schedule, &input);
 
         // -- The resources are in the engine, and both of them ------------------------------
-        assert_eq!(
-            reference.landed_at, varying.landed_at,
-            "the two runs installed the model on different warm-up blocks ({} and {}), so their \
-             resampler FIFOs and convolver partitions are at different phases and the comparison \
-             below would not be measuring the block schedule -- raise RECALL_SETTLE",
-            reference.landed_at, varying.landed_at
-        );
+        //
+        // `landed_at` is deliberately *not* compared across runs any more. It used to be, with the
+        // failure message "raise RECALL_SETTLE" -- and that assertion was the flake: it required
+        // two independent worker threads to finish a recall within the same 512-frame block, which
+        // a loaded CI runner does not owe anybody. It failed on macOS at 1 vs 2 (M14, 2026-08-12).
+        //
+        // Raising `RECALL_SETTLE` would have made the race rarer, not absent. What the comparison
+        // actually needs is equal *post-install* phase, and `run_loaded` now establishes that
+        // structurally by pumping until the install lands and only then running exactly
+        // `WARMUP_BLOCKS` blocks. So the two runs agree by construction and `landed_at` is free to
+        // differ -- it is kept as a diagnostic, and its own bound is asserted inside `run_loaded`.
+
         for (run, what) in [(&reference, "fixed-block"), (&varying, "varying-block")] {
             assert_eq!(
                 run.latency, expected_latency,
