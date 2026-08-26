@@ -53,8 +53,18 @@ step 11 — not something to settle silently by leaving it unmentioned.
 - A `.nam` model and a `.wav` IR in the library root — on Windows `%APPDATA%\Namir\Library`, on
   macOS `~/Library/Application Support/Namir/Library`, on Linux `$XDG_CONFIG_HOME/namir/Library`
   (`namir_platform::config_dir` plus `LibraryService::open_default`'s `Library` subdirectory).
-  Generate them with `namir_fixtures::library::generate_shared_corpus(1)` and copy from the fixture
-  cache, per D-19.1 — do not add a captured/licensed model or IR.
+  Generate them straight into that directory, per D-19.1 — do not add a captured/licensed model or
+  IR:
+
+  ```
+  cargo run -p namir-fixtures --example seed-library -- "%APPDATA%\Namir\Library"
+  ```
+
+  That writes `namir_fixtures::library::mutable_probe_set`'s 12 IRs and 4 models (all
+  `WaveNetShape::Nano`, cloned from one base model — thin but valid), plus a `nam_standard.nam`
+  generated at `WaveNetShape::Standard`, which is the shape worth using for steps 3, 8 and 9 since
+  its output is worth judging by ear. Seeded from 1 by default; pass a second argument to vary it.
+  Then launch and press **Rescan library** — the index only picks up files present at scan time.
 
 ## Script
 
