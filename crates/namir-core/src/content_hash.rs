@@ -60,9 +60,12 @@ impl ContentHash {
             return Err(ContentHashParseError::WrongLength);
         }
         let mut out = [0u8; 32];
-        for (i, pair) in s.chunks_exact(2).enumerate() {
-            let hi = hex_nibble(pair[0]).ok_or(ContentHashParseError::NotHex)?;
-            let lo = hex_nibble(pair[1]).ok_or(ContentHashParseError::NotHex)?;
+        // `as_chunks` rather than `chunks_exact`: the length is already known to be 64, so the
+        // remainder is provably empty and each pair arrives as a `[u8; 2]` that indexes without a
+        // bounds check.
+        for (i, &[hi, lo]) in s.as_chunks::<2>().0.iter().enumerate() {
+            let hi = hex_nibble(hi).ok_or(ContentHashParseError::NotHex)?;
+            let lo = hex_nibble(lo).ok_or(ContentHashParseError::NotHex)?;
             out[i] = (hi << 4) | lo;
         }
         Ok(Self(out))
