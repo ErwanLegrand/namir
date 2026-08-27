@@ -310,8 +310,8 @@ fn vectorize_unary(x: &mut [f32], vec_fn: impl Fn(f32x8) -> f32x8, scalar_fn: im
     let n = x.len();
     let lanes = n - n % 8;
     let (vec_part, rem) = x.split_at_mut(lanes);
-    for chunk in vec_part.chunks_exact_mut(8) {
-        let v = vec_fn(f32x8::from(&*chunk));
+    for chunk in vec_part.as_chunks_mut::<8>().0 {
+        let v = vec_fn(f32x8::from(*chunk));
         chunk.copy_from_slice(&v.to_array());
     }
     for v in rem.iter_mut() {
@@ -493,10 +493,12 @@ fn axpy(out: &mut [f32], in_: &[f32], w: f32) {
 
     let w_vec = f32x8::splat(w);
     for (o, i) in out_vec_part
-        .chunks_exact_mut(8)
-        .zip(in_vec_part.chunks_exact(8))
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .zip(in_vec_part.as_chunks::<8>().0)
     {
-        let sum = f32x8::from(&*o) + w_vec * f32x8::from(i);
+        let sum = f32x8::from(*o) + w_vec * f32x8::from(*i);
         o.copy_from_slice(&sum.to_array());
     }
     for (o, &i) in out_rem.iter_mut().zip(in_rem.iter()) {

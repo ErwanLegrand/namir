@@ -1843,7 +1843,7 @@ not adjudicate them further.
 | 5.10 LIB | 5 | 2 | 3 | 0 |
 | 5.11 IO | 8 | 2 | 6 | 0 |
 | 5.12 CLAP | 11 | 4 | 7 | 0 |
-| 5.13 UI | 7 | 1 | 6 | 0 |
+| 5.13 UI | 7 | 2 | 5 | 0 |
 | 5.14 ERR | 6 | 1 | 5 | 0 |
 | 5.15 PKG | 4 | 3 | 1 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
@@ -1854,7 +1854,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **40** | **90** | **0** |
+| **Total** | **130** | **41** | **89** | **0** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -4495,6 +4495,139 @@ D-18.5's flip stays unmade. Recorded so the next session does not spend the hour
 `docs/manual-tests/fr-ui-020-single-screen-elements.md` and `fr-ui-070-non-modal-error-notices.md`
 on a machine with a display, a real audio interface and an instrument, their results recorded in
 those documents, and only then the flip and NFR-QUAL-010's closure.
+
+### M9b close-out — the two scripts were run by a human, and the flip still does not happen, 2026-08-27
+
+Appended per this document's convention; nothing above is edited. **This is the close-out the
+status subsection above deferred**, and it discharges what that subsection said M9b still owed: a
+human running both blocking scripts on a machine with a display, a real audio interface and an
+instrument. That happened on 2026-08-27, on SALON — a 1440p display at 100 % scale, a PreSonus
+AudioBox 22VSL monitoring audibly, an instrument playing, and the CLAP plugin loaded in **Reaper**
+for the plugin halves. Library fixtures came from a new `namir-fixtures` example, below.
+
+**Both documents now carry per-step verdicts and a real `Result:` line.**
+
+- **FR-UI-020 — PASS, all twelve steps**, in both product configurations
+  (`docs/manual-tests/fr-ui-020-single-screen-elements.md`).
+- **FR-UI-070 — FAIL**, twelve of fifteen steps passing; **steps 4, 8 and 14 fail**
+  (`docs/manual-tests/fr-ui-070-non-modal-error-notices.md`).
+
+**FR-UI-070 is now verified and failing, which is a better state than unverified and a worse one
+than the ledger implied.** Its first sentence holds and was observed rather than argued from the
+source: notices are non-modal under real clicking, typing, scrolling and window dragging, and audio
+never broke across a corrupt model, a deleted file, a truncating IR load, a full rescan against an
+unwritable index, or a project reload with a missing reference. Its second sentence — "an error
+shall state what failed, which file or device it concerned, and what the user can do" — does not.
+**Of the 69 `message_template` values in the tree, none tells the user what they can do**; two state
+what the *system* did instead. Two notices name neither the file nor the device.
+
+**The run produced seven findings, and their most useful property is that they compound.** Filed as
+issues #39-#45, with #15, #24, #26 and #34 updated from the same evidence rather than duplicated.
+The chain worth reading in full is step 14's: the code-and-template duplication (#39) roughly
+doubles a notice's rendered length; `notices.rs`'s `ui.horizontal` row does not wrap, so the
+`Dismiss` button lands past the right edge; the CLAP editor is fixed at 960x640 with
+`can_resize() == false` because FR-CLAP-110 is a scoped-out Should; and notices never expire, since
+`Dismiss` is the only removal path. **The result is a notice that can never be removed**, occupying
+part of a screen that FR-UI-020's own run shows already cannot display every element at once. Four
+defensible decisions, no author of the outcome, and a defect that looked cosmetic at step 1 turning
+functional at step 14. That is the argument for manual tests stated better than this document could
+state it in the abstract.
+
+**Two other requirements gained real evidence on the same pass.**
+
+- **FR-IO-070's step 2 was executed** — not with the failable virtual device R-5 asks for, but by
+  physically unplugging the interface while audio flowed
+  (`docs/manual-tests/fr-io-070-device-removal.md`). Crash-free, hang-free, no error spam, window
+  functional: those clauses hold. The naming clause fails, and **the classification is a direct R-5
+  data point**: the unplug arrived as `StreamFailure::Other` carrying an unmapped OS error, **not**
+  as `DeviceLost`, so `to_stream_failure`'s mapping is now known to be incomplete against a real
+  case. Namir reported it as a device loss anyway, by luck — the code is chosen from the direction,
+  never from the classification. Step 3 is now observed rather than inferred: re-plugging does not
+  resume, and no device-selection surface exists to recover with (§15 item 16, issue #26).
+- **Tooling the run needed, added mid-run rather than worked around.**
+  `crates/namir-fixtures/examples/seed-library.rs` writes both scripts' fixtures into the library
+  root with one command, including the over-10-second IR neither fixture generator produces; and
+  `crates/namir-app/examples/list-devices.rs` prints endpoint names as `audio-settings.json` must
+  spell them and probes exclusive mode per device — the two facts steps 11 and 12 cannot be run
+  without. Both replace instructions that told a human to find a hash-named directory under
+  `target/` or to guess a localised Windows endpoint name.
+
+### The flip does not happen here, and the reason has changed
+
+**M9b's own text says this milestone's close-out owns D-18.5's flip. It does not happen, and this
+subsection is the correction rather than an edit to the sentences that said it would.**
+
+The status subsection above blocked the flip on one thing: these two documents saying `NOT
+EXECUTED`. They no longer do. **But M14's planning pass, which landed between that subsection and
+this one, found the hole is larger than the two documents M9b knew about: six `Verify: M` Musts are
+unexecuted, not two** — FR-UI-020, -030, -040, -050, -070 and FR-IO-030. This pass executed two of
+the six. **FR-UI-030, FR-UI-040, FR-UI-050 and FR-IO-030 remain unexecuted**, and `xtask
+traceability` still cannot tell, so deleting `--allow-uncovered` today would make the required check
+green on evidence nobody has produced — the same inversion the status subsection refused, at a
+smaller number.
+
+**§21's Phase 3 already states the sequencing this implies**, and it is now the plan of record:
+issue #34's fix — teaching the tool to read a manual document's `Result:` line — "**must land before
+D-18.5's flip**, or the flip inherits the same hole". So the flip is **M14's**, after that fix, and
+**NFR-QUAL-010 closes with the flip, not at M9b**. Every reason the status subsection gave for the
+flip being M9b's still holds against *M13*; what it did not anticipate was a milestone arriving
+between M9b and M8.
+
+**This run also sharpens what #34's fix must do, and the sharpening comes from a document that
+passes its own script's structure while failing the requirement.** FR-UI-070's document now says
+`Result: FAIL`, and `xtask traceability` prints `clean -- all 130 Must requirements are covered`
+regardless. A fix that keys only on the literal `NOT EXECUTED` would credit a **failing** manual test
+as covering its Must. It must treat anything other than a pass as uncovered.
+
+### §14 moves, and one that deliberately does not
+
+**M9b close-out moves, 2026-08-27 — one row, one requirement**, appended per D-23.2's "every later
+milestone moves only the cells its own evidence justifies". **5.13 UI becomes 2 / 5 / 0** (was
+1 / 6 / 0); **Total becomes 41 / 89 / 0** (was 40 / 90 / 0).
+
+- **FR-UI-020 — Partial → Done.** Its `Verify:` is `M`, its manual document is the traced artifact
+  under D-18.6, and that document now records twelve of twelve steps passing in both shells with the
+  window size, display scale, host and fixture provenance stated. M9a's adjudication of Partial rested
+  on there being no `fr-ui-020-*.md` at all; M9b's build pass wrote one and this pass ran it. **The
+  verdict rests on one recorded judgement and should not be read without it**: the runner adjudicated,
+  in writing and as step 11 demands, that scrolling within the single screen is *not* navigation. Had
+  it gone the other way, FR-UI-020 would **fail in the plugin shell**, where the fixed 960x640 editor
+  puts everything below `EQ Enabled` behind a scroll with no way to widen the window. The requirement's
+  standing in the plugin is therefore contingent on a Should (FR-CLAP-110) that was scoped out — a link
+  no decision, requirement or comment records, and worth one when someone revisits FR-CLAP-110.
+- **FR-UI-070 — stays Partial, for an entirely new reason.** M9a adjudicated it Partial because "M
+  against the error catalogue of FR-ERR-020" had been run against no catalogue entry. It has now been
+  run against thirteen, and the requirement **fails**. A Partial cell that used to mean "unverified"
+  now means "verified and not met", which is the same cell carrying a different and more actionable
+  claim. It cannot become Done until #41's catalogue work lands, and it is not Not-started: the
+  non-modality and never-interrupt-audio clauses are built, observed and passing.
+- **5.11 IO does not move**, and the absence is deliberate. FR-IO-070 gained real evidence — a
+  physical unplug, executed and recorded — and stays **Partial**, because that evidence establishes
+  the requirement is *not met* rather than that it is: its "allow the user to select another device"
+  clause has no implementation to verify. The cell is unchanged; what changed is that its
+  `uncovered:` claim is now backed by an observation instead of an inspection.
+
+### What M9b leaves for M14
+
+M9b's build work is complete and its two blocking scripts are executed. What it hands on, beyond the
+58 partials the status subsection re-booked to M8:
+
+1. **The flip and NFR-QUAL-010**, sequenced behind issue #34's fix (§21 Phase 3), with the
+   additional requirement that the fix treat a `FAIL` result as uncovered and not only a `NOT
+   EXECUTED` one.
+2. **Four unexecuted `Verify: M` Musts** — FR-UI-030, -040, -050 and FR-IO-030. The first three need
+   the same machine this pass used and roughly the same hour; FR-IO-030 needs Linux and macOS
+   hardware, and until it runs **neither Linux nor macOS audio has ever moved a sample**.
+3. **Issues #39-#45**, all seven from one manual run, of which #41 (the catalogue says nothing about
+   what to do) and #42 (undismissable notices) are the two that block FR-UI-070 from ever reading
+   Done.
+
+**The case for M14 existing, restated from this milestone's own evidence.** M9b found two real DSP
+defects by running tests that had never run against a loaded chain, and this pass found seven
+user-facing defects by running two scripts nobody had ever executed. Both are the same finding at
+different altitudes: **this project's remaining risk is concentrated in the checks that were written
+and never run**, not in the code that was written and never checked. §21 Phase 4 makes that argument
+for the engine; the record above makes it for the interface.
 
 ---
 
