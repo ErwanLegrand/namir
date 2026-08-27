@@ -288,7 +288,7 @@ mod tests {
     // uncovered: files is in progress", is absent from the measurement: the tagged test builds its
     // uncovered: snapshot with scan: None so render's scan branch never executes, and holds the
     // uncovered: index identity constant so ensure_filtered's re-filter path — the reason the
-    // uncovered: memoization exists — never runs inside the timed frame; closes M9b
+    // uncovered: memoization exists — never runs inside the timed frame; closes M8
     #[test]
     fn rendering_ten_thousand_entries_stays_well_under_the_100ms_frame_budget() {
         let corpus = namir_fixtures::library::generate_shared_corpus(20_260_807)

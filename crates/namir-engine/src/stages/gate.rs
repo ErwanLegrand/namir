@@ -271,7 +271,7 @@ mod tests {
     // uncovered: FR-GATE-010 — of the five controls the "U per control" method names, Attack and
     // uncovered: Release are exercised by no test: ATTACK_MS_ID is never written anywhere in the
     // uncovered: workspace, and RELEASE_MS_ID only as a helper inside a test whose assertion is
-    // uncovered: about hold; closes M9b
+    // uncovered: about hold; closes M8
     #[test]
     fn burst_opens_and_silence_closes_through_the_stage() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -462,7 +462,7 @@ mod tests {
     // uncovered: only: NamStage has no multi-channel content assertion (every nam.rs test is
     // uncovered: ChannelConfig::Mono bar one that asserts nothing about channel content), and
     // uncovered: ChannelConfig::MonoToStereo appears in no gate.rs or nam.rs test at all;
-    // uncovered: closes M9b
+    // uncovered: closes M8
     #[test]
     fn stereo_duplicates_the_mono_core_gate_result_onto_every_channel() {
         let mut stage = stage(ChannelConfig::Stereo);

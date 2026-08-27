@@ -100,7 +100,7 @@ mod tests {
     // uncovered: unspanned: the EQ's frequencies and Q interpolate through Biquad::set_coeffs
     // uncovered: rather than GainRamp, and the only coefficient-ramp test asserts a relative
     // uncovered: comparison (ramped < jumped) rather than the 20 ms-linear-ramp bound this
-    // uncovered: requirement names; closes M9b
+    // uncovered: requirement names; closes M8
     #[test]
     fn full_range_jump_is_no_worse_than_a_20ms_linear_ramp() {
         let sample_rate = 48_000u32;

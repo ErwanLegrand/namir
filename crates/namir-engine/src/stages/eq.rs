@@ -473,7 +473,7 @@ mod tests {
     // uncovered: gain at DC and at Nyquist only, against hand-written constants at 0.3 dB, so the
     // uncovered: low-shelf corner (40-500 Hz), the mid peak (200 Hz-5 kHz), the high-shelf corner
     // uncovered: (1-12 kHz) and the 0.2-5.0 Q range's effect on magnitude are unmeasured;
-    // uncovered: closes M9b
+    // uncovered: closes M8
     #[test]
     fn low_shelf_gain_reflected_at_dc_and_flat_at_nyquist() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -639,7 +639,7 @@ mod tests {
     // uncovered: IR bypass toggles are never exercised mid-signal (nam.rs:1080 and ir.rs:1151
     // uncovered: both apply ENABLED=0 before any processing, then assert steady-state
     // uncovered: passthrough), and no test toggles one stage's bypass inside an assembled chain
-    // uncovered: to show the others undisturbed; closes M9b
+    // uncovered: to show the others undisturbed; closes M8
     #[test]
     fn enabled_toggle_mid_signal_has_no_large_single_sample_jump() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -660,7 +660,7 @@ mod tests {
         // uncovered: FR-EQ-030 — "changing any EQ parameter" spans one of EqStage's twelve: only
         // uncovered: ENABLED is toggled, and no test changes a band gain, a band frequency, mid
         // uncovered: Q, or either high-pass/low-pass defeat or corner frequency and measures
-        // uncovered: click-freedom; closes M9b
+        // uncovered: click-freedom; closes M8
         stage.apply(ParamChange {
             id: ENABLED_ID,
             value: 1.0,

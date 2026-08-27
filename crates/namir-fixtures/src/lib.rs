@@ -7,6 +7,9 @@
 //! - [`ir`] — convolution correctness fixtures (delta / delayed delta / decaying noise /
 //!   designed minimum-phase).
 //! - [`mutate`] — seeded mutation operators for fuzzer-corpus seeding (robustness row).
+//! - [`resample_response`] — M9b's frequency-response instrument for FR-NAM-060/FR-IR-030: a
+//!   measuring device rather than a fixture, kept here because the two crates that own a
+//!   resampler must be measured against the same yardstick, not two copies of one.
 //! - [`library`] — M5's cached, 10,000-file synthetic model+IR library (FR-LIB-020,
 //!   NFR-PERF-060/FR-LIB-030, FR-LIB-070; earmarked for M6's FR-UI-060).
 //!
@@ -18,9 +21,10 @@
 // uncovered: is a runtime generator whose output is never committed: the fifteen assets tracked
 // uncovered: under crates/*/fuzz/corpus, including a .wav impulse response and a .nam model, are
 // uncovered: recorded nowhere and no check would catch a captured asset added beside them;
-// uncovered: closes M9b
+// uncovered: closes M8
 
 pub mod ir;
 pub mod library;
 pub mod mutate;
 pub mod nam;
+pub mod resample_response;

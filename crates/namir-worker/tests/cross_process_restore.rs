@@ -175,7 +175,7 @@ fn run_as_child() {
 // uncovered: namir_worker::Instance directly, never loading namir-clap or calling its state
 // uncovered: extension, and it writes both file references with an embedded blob and no path
 // uncovered: against an empty resolver, so the requirement's "identity of the loaded model and IR
-// uncovered: files" clause is bypassed; closes M9b
+// uncovered: files" clause is bypassed; closes M8
 #[test]
 fn fr_state_060_two_independent_processes_produce_bit_identical_output() {
     if std::env::var(CHILD_ENV_VAR).is_ok() {

@@ -1017,11 +1017,15 @@ mod tests {
     /// [`check`] the packaging step runs — and asserted to *fail* when one of them is removed,
     /// since a presence check that passes on an empty tree asserts nothing.
     // trace-partial: FR-PKG-040
-    // uncovered: FR-PKG-040 — only the staging tree is spanned. The requirement quantifies over
-    // uncovered: "every distribution, installer and archive alike", and the Windows installer, the
-    // uncovered: macOS .pkg/.dmg and the plain archives are later deliverables of this milestone
-    // uncovered: that do not exist yet, so nothing asserts the three files inside a produced
-    // uncovered: distribution; closes M13
+    // uncovered: FR-PKG-040 — the requirement quantifies over "every distribution, installer and
+    // uncovered: archive alike", and only macOS re-opens what it produced: make_installer.sh's
+    // uncovered: verify_outputs unpacks the produced .pkg, mounts the .dmg and extracts the .zip,
+    // uncovered: asserting the three files inside each (packaging/macos/make_installer.sh:717-769).
+    // uncovered: Windows and Linux assert the *staging tree* only — namir.iss reads it, the ZIP and
+    // uncovered: the .tar.gz are copies of it, and nothing opens the produced installer, ZIP or
+    // uncovered: tarball. This test spans neither, asserting a synthetic staging tree, and ci.yml
+    // uncovered: never runs xtask bundle at all, so every assertion against a real tree happens
+    // uncovered: only on a v* tag in release.yml; closes M8
     #[test]
     fn every_staged_tree_carries_the_attribution_file_and_both_licence_texts() {
         let (repo, build) = synthetic_inputs("licences");

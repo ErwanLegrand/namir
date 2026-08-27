@@ -156,7 +156,7 @@ fn ms(d: Duration) -> f64 {
 // uncovered: with an unchanged 10 000-file library is measurably faster than the first, is printed
 // uncovered: as CONCLUSIVE or INCONCLUSIVE and asserted by nothing; the persistence half is
 // uncovered: unmeasured too, arms C and D reusing an in-memory prior index rather than one written
-// uncovered: to disk and reloaded; closes M9b
+// uncovered: to disk and reloaded; closes M8
 fn main() {
     pin_to_measurement_core();
 

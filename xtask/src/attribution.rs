@@ -8,14 +8,24 @@
 //!
 //! Scope note, recorded rather than silently assumed: this closes *production* of the artifact
 //! and its CI-gated freshness. Physically bundling it into a release installer/zip is a packaging
-//! concern with no pipeline yet (that's M8 territory, docs/03-implementation-roadmap.md §12) --
-//! this file does not claim to close that half.
+//! concern this file does not claim to close.
+//!
+//! **That note said "no pipeline yet" until M9b; M13 built one and the sentence went stale.**
+//! `.github/workflows/release.yml` runs `xtask bundle`, which stages `THIRD-PARTY-NOTICES.md`
+//! beside the built artifacts, and `packaging/macos/make_installer.sh` re-checks it inside the
+//! produced `.pkg`/`.dmg`/`.zip`. What is still unclosed is narrower than "no pipeline": nothing
+//! opens the Windows installer or ZIP or the Linux tarball to assert the file is in it, and
+//! `ci.yml` invokes `xtask bundle` nowhere, so none of it runs outside a tag. The annotation
+//! below carries that as its gap.
 
 // trace-partial: NFR-LIC-030
-// uncovered: NFR-LIC-030 — the "shipped with the binaries" clause is half closed as of M13's
-// uncovered: `xtask bundle`, which stages THIRD-PARTY-NOTICES.md beside the built artifacts and
-// uncovered: asserts it is there; but there is still no release workflow, no installer and no
-// uncovered: archive, so no check asserts its presence in a distributed artifact; closes M13
+// uncovered: NFR-LIC-030 — the "shipped with the binaries" clause is asserted for one platform of
+// uncovered: three and only on a tag: M13's release.yml runs `xtask bundle`, which stages
+// uncovered: THIRD-PARTY-NOTICES.md beside the built artifacts and asserts it is there, and
+// uncovered: packaging/macos/make_installer.sh re-checks it inside the produced .pkg/.dmg/.zip —
+// uncovered: but nothing opens the Windows installer or ZIP or the Linux tarball to assert it,
+// uncovered: and ci.yml invokes `xtask bundle` nowhere, so no ordinary run checks any of it;
+// uncovered: closes M8
 
 use std::path::Path;
 

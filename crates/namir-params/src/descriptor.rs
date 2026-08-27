@@ -204,7 +204,7 @@ mod tests {
     // uncovered: makes two format_value calls against a fabricated const declared inside mod
     // uncovered: tests, and nothing anywhere asserts a name, unit, minimum, maximum or default
     // uncovered: over REGISTRY's continuous entries, params.lock recording only key, id, kind and
-    // uncovered: smoothing; closes M9b
+    // uncovered: smoothing; closes M8
     #[test]
     fn continuous_formats_with_fixed_decimals() {
         assert_eq!(TRIM.format_value(-6.0), "-6.0");
@@ -216,7 +216,7 @@ mod tests {
     // uncovered: spanned: the tagged test asserts format_value against a fabricated const
     // uncovered: declared inside mod tests whose key appears in no registry, and nothing asserts
     // uncovered: that any shipped discrete parameter is Stepped rather than Continuous or that
-    // uncovered: its values are named; closes M9b
+    // uncovered: its values are named; closes M8
     #[test]
     fn stepped_formats_via_named_values() {
         assert_eq!(CHANNEL_MODE.format_value(0.0), "Mono");

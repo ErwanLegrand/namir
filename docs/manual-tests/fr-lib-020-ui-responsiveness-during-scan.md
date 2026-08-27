@@ -5,15 +5,27 @@ block the user interface. Progress shall be visible and the scan cancellable."
 **Verify:** I with a synthetic library of at least 10 000 files.
 
 **This document is supplementary evidence, never the traced artifact.** FR-LIB-020 is `Verify: I`,
-so under `02-architecture.md` D-18.6 it is traced only by an annotated in-process artifact — the
-`// trace-partial: FR-LIB-020` at `crates/namir-worker/src/library.rs`. `xtask traceability` does
-not read this file for anything (its manual-document lookup applies to `Verify: M` only), so nothing
-mechanical will notice if this script rots. It exists because one clause of the requirement — "shall
-not block the user interface" — has a residue that only a human at a screen can observe, and writing
-that down is better than letting the in-process tests be read as covering it.
+so under `02-architecture.md` D-18.6 it is traced only by an annotated in-process artifact — since
+M9b, the plain `// trace: FR-LIB-020` at
+`crates/namir-worker/tests/library_scan_scale.rs` (before M9b it was a `// trace-partial:` at
+`crates/namir-worker/src/library.rs`, whose declared gap that new test closed). `xtask traceability`
+does not read this file for anything (its manual-document lookup applies to `Verify: M` only), so
+nothing mechanical will notice if this script rots. It exists because one clause of the
+requirement — "shall not block the user interface" — has a residue that only a human at a screen can
+observe, and writing that down is better than letting the in-process tests be read as covering it.
 
 ## What is built and automatically tested
 
+- **All four clauses at once, at the requirement's own scale (M9b).**
+  `fr_lib_020_a_ten_thousand_file_scan_blocks_neither_the_audio_thread_nor_the_ui`
+  (`crates/namir-worker/tests/library_scan_scale.rs`) scans the 10 000-file shared corpus while its
+  own thread runs a live `namir_engine::AudioEngine` inside D-7.5's `assert_no_alloc` harness and a
+  second thread plays the UI's part at ~60 Hz (`snapshot()`, `is_scanning()`, `namir_library::filter`
+  over the snapshot — the calls `namir-ui`'s library view makes per frame). It asserts zero
+  audio-thread allocations, no silent block, no block over 200x its period, that a simulated UI
+  frame observed the scan *in flight* and that no frame's work exceeded its ceiling, more than one
+  progress report reaching the full 10 000 files, and then cancels a second scan of the same corpus
+  with the audio loop still running.
 - **"Progress shall be visible", at the requirement's own scale.**
   `a_full_scan_of_the_shared_corpus_reports_progress_more_than_once`
   (`crates/namir-worker/src/library.rs`) runs `namir-fixtures`' 10 000-file shared corpus to
@@ -36,10 +48,13 @@ that down is better than letting the in-process tests be read as covering it.
 
 The FR-UI-060 test above renders with `scan: None` — `02-architecture.md` §22's **R-12** records
 that limitation against this exact reading — so it measures a *settled* 10 000-entry list, never a
-frame drawn while a scan is in flight. Nothing in the automated set therefore covers the condition
-FR-LIB-020's own sentence names: the UI thread and a scanning pool thread running at once, competing
-for the same disk and (once FR-ERR-010's synchronous logger exists, D-16.5) the same logger mutex,
-with the index being replaced underneath the view every time a scan commits.
+frame drawn while a scan is in flight. M9b's `library_scan_scale.rs` closes half of that: a UI-rate
+thread and a scanning pool thread genuinely do run at once there, competing for the same disk, with
+the index replaced underneath the reader when the scan commits. What it still does not do is
+*render* — `namir-ui` sits below `namir-worker` in D-5.1's table, so nothing at that layer may drive
+egui, and no crate that can see both a live `LibraryService` and `namir-ui` has a test that does.
+So the automated set proves the scan never blocks the calls a UI makes; it does not prove a window
+keeps painting during one.
 
 "Shall not block the user interface" is also, in the end, a claim about what a person experiences:
 whether the window keeps repainting, whether the search box still accepts typing, whether the

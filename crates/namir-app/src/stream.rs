@@ -573,7 +573,7 @@ mod tests {
     // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
     // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
     // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
-    // uncovered: anywhere in the window; closes M9b
+    // uncovered: anywhere in the window; closes M8
     #[test]
     fn an_output_pull_with_no_input_yet_counts_an_xrun() {
         let backend = FakeBackend::new();

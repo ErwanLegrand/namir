@@ -27,6 +27,36 @@ missing_docs = "warn"
 [lib]
 crate-type = ["cdylib", "lib"]
 
+# **D-18.7 (M9b): the one feature this crate has, and it must stay non-default.**
+#
+# `clack-extensions`' own `clack-host` feature turns on the *host* halves of `audio-ports`,
+# `params`, `state`, `latency` and `gui` -- `PluginState::save`/`load`, `PluginParams::count`/
+# `get_info`, `PluginAudioPorts::count`/`get`, `PluginLatency::get`, and the `Host*Impl` traits a
+# test host implements to receive callbacks. Without them the in-process host harness under
+# `tests/support/` can instantiate and process, but cannot *observe* any extension, which is the
+# whole of what M9b's six CLAP tests need to assert.
+#
+# The blocker that kept it off at M9a (see the `clack-host` dev-dependency comment below) was
+# NFR-LIC-030: `clack-extensions` declares `clack-host` as an *optional normal* dependency, so
+# turning that feature on unconditionally would make `clack-extensions -> clack-host` a `Normal`
+# edge in `cargo metadata`'s unified resolve, and `xtask attribution` would then add a
+# `clack-host` row to THIRD-PARTY-NOTICES.md for a crate no shipped binary links. Putting the
+# switch behind a **non-default** feature resolves it exactly: `xtask attribution` walks the
+# *default-feature* resolve (`xtask/src/cargo_meta.rs`), so with this feature off its output is
+# byte-identical to baseline -- measured, not predicted -- and the cdylib links no `clack_host`.
+#
+# Consequences, both load-bearing:
+#  - **Never `--all-features`.** Any `--all-features` invocation (CI step, local habit, a future
+#    xtask) turns this on for the *cdylib* too, which is R-17: `clack-host` linked into the shipped
+#    plugin, and an attribution file that no longer describes the artifact. The feature is only
+#    ever selected explicitly, by name, on a `cargo test -p namir-clap` command.
+#  - Because it is non-default, `cargo test --workspace` does **not** compile the feature-gated
+#    tests. `.github/workflows/ci.yml`'s `build-test` job therefore carries a second, required step
+#    running `cargo test -p namir-clap --features host-ext-tests`; without it these tests are dead
+#    weight that nothing executes.
+[features]
+host-ext-tests = ["clack-extensions/clack-host"]
+
 [dependencies]
 namir-core = { path = "../namir-core", version = "0.1.0" }
 namir-params = { path = "../namir-params", version = "0.1.0" }
@@ -68,6 +98,62 @@ baseview = "0.2"
 # it and re-exports nothing narrower for this purpose.
 serde_json = "1"
 
+# M9b: generated `.nam` models and IRs for the in-process CLAP tests. Every other crate in this
+# workspace that has tests already takes `namir-fixtures` on exactly this line; `namir-clap` was
+# the sole exception, and that absence was doing real damage rather than being a tidy omission --
+# two M9b tests independently worked around it, one hand-rolling `.nam` JSON with `serde_json` and
+# one booking its own coverage gap to a later milestone, because a resource-loaded chain was
+# unreachable from `tests/`. D-19.1 holds either way: these are generated from a seed, never
+# captured. Dev-dependency only, and `xtask`'s layering table exempts `namir-fixtures` entirely.
+namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
+
+# M9b: **`namir-app`, dev-only, for FR-CFG-020 and for nothing else**
+# (`tests/fr_cfg_020_shell_parity.rs`).
+#
+# FR-CFG-020 ("bit-identical output in both configurations for identical input, identical parameter
+# values and identical block sizes", `Verify: G`) is the one requirement in the FRS whose subject is
+# *both* product shells at once, so its test is the one test that has to drive both. Bit-identity is
+# only a meaningful claim inside one process and one build: the chain reaches `f32::tanh`/`exp`/
+# `sin`/`cos` through the platform's libm, so splitting the comparison across two test binaries via
+# a checked-in expected-output file would assert cross-platform bit-exactness of libm -- something
+# Namir never claims, and which CI's Linux and macOS runners would be entitled to fail on. And only
+# one direction is expressible: D-5.1's `namir-app` row does not name `namir-clap`, so `namir-app`
+# cannot see this crate at all.
+#
+# **Why this does not breach D-5.1's "everything except app" row.** `xtask layering` checks only
+# *normal* edges (`xtask/src/cargo_meta.rs`'s `normal_namir_edges`), and this is a dev edge -- but
+# the exemption is not what makes it legitimate. The row exists so the shipped plugin cannot require
+# the standalone application to be installed (FR-CFG-030), and a dev-dependency is linked into no
+# shipped artifact: the `cdylib` this crate produces reaches nothing new. The mirror-image argument
+# `xtask/src/layering.rs`'s own doc comment makes for FR-CFG-030's other half -- that `namir-app`'s
+# row never names `namir-clap` -- is likewise untouched, which is precisely why the parity test
+# lives here and not there.
+#
+# NFR-LIC-030 is unaffected for the same reason `clack-host` is: `xtask attribution` walks *normal*
+# edges outward from the `namir-app`/`namir-clap` roots, and both packages are already workspace
+# members, so THIRD-PARTY-NOTICES.md gains no row -- verified by running it, not assumed.
+#
+# Cost, stated rather than hidden: `cargo test -p namir-clap` now builds `namir-app` and therefore
+# `cpal`. Nothing else in this crate may name `namir_app`; it is that one test file's alone.
+namir-app = { path = "../namir-app", version = "0.1.0" }
+
+# M9b: D-7.5's RT-allocation harness, for the CLAP side. `tests/support/mod.rs` installs
+# `AllocDisabler` as this test binary's `#[global_allocator]` and wraps every `process()` call in
+# an `audio_section` marker, exactly as `namir-engine/src/rt_harness.rs` does -- that module is
+# `#[cfg(test)]`-private to its own crate and cannot be imported, so the ~10 lines are restated
+# there rather than shared. Same composition argument as `namir-engine`'s own entry: this crate's
+# `unsafe_code = "deny"` (and `forbid` everywhere else) means `unsafe impl GlobalAlloc` has to live
+# in a dependency whose `unsafe` is already audited, not here.
+# `warn_debug` + `warn_release` for the same reason `namir-engine` and `namir-nam` give: with
+# `warn_debug` alone the harness fails to *compile* under `cargo test --release`, and each feature
+# is gated on its own `debug_assertions` state. Dev-dependency only -- never linked into a release
+# build -- and already in this workspace's dependency register (§17), so it adds no
+# THIRD-PARTY-NOTICES.md row.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = [
+    "warn_debug",
+    "warn_release",
+] }
+
 # D-18.6 (M9a): the in-process CLAP host harness this crate's extension impls need to be callable
 # at all. `clack_extensions::audio_ports::AudioPortInfoWriter::from_raw` is `pub(crate) unsafe fn`
 # and the `HostInfo`/`Host*Handle` `from_raw` family is `unsafe` throughout, so an in-crate host
@@ -92,16 +178,40 @@ serde_json = "1"
 clack-host = { version = "0.1.1", features = [
     "clack-plugin",
 ], default-features = false }
-# NOT enabled here, deliberately, and this is a blocker M9b inherits rather than an oversight:
-# `clack-extensions`' own `clack-host` feature (the host halves of audio-ports/params/state/latency
-# that a harness observing those extensions will eventually want) is **not** turned on, because
-# doing so fails D-18.6's third landing gate. `clack-extensions` declares `clack-host` as an
-# *optional normal* dependency (its `Cargo.toml:118-121`), so enabling that feature -- even from a
-# `[dev-dependencies]` entry here -- makes `clack-extensions -> clack-host` a `Normal`-kind edge in
-# `cargo metadata`'s single unified resolve. `xtask attribution` walks exactly that resolve keeping
-# any edge with a `Normal` `dep_kinds` entry (`xtask/src/cargo_meta.rs:82-91`), so it then adds
-# `| clack-host | 0.1.1 | MIT OR Apache-2.0 |` to THIRD-PARTY-NOTICES.md -- the one thing §17's row
-# says must not happen ("must not gain a row for a dev-only crate"). Measured, not predicted:
-# `cargo tree -e normal` agrees the cdylib never reaches it and the release build links nothing new,
-# so this is `xtask attribution`'s fidelity, not a real leak. Whoever needs the feature at M9b must
-# resolve that first; see this session's report.
+# M9a left `clack-extensions`' own `clack-host` feature off and recorded it as a blocker M9b would
+# inherit: `clack-extensions` declares `clack-host` as an *optional normal* dependency (its
+# `Cargo.toml:118-121`), so enabling that feature -- even from a `[dev-dependencies]` entry here --
+# makes `clack-extensions -> clack-host` a `Normal`-kind edge in `cargo metadata`'s single unified
+# resolve. `xtask attribution` walks exactly that resolve keeping any edge with a `Normal`
+# `dep_kinds` entry (`xtask/src/cargo_meta.rs:82-91`), so it would add `| clack-host | 0.1.1 |
+# MIT OR Apache-2.0 |` to THIRD-PARTY-NOTICES.md -- the one thing §17's row says must not happen
+# ("must not gain a row for a dev-only crate"). Measured, not predicted: `cargo tree -e normal`
+# agrees the cdylib never reaches it and the release build links nothing new, so this was `xtask
+# attribution`'s fidelity, not a real leak.
+#
+# **Resolved at M9b by D-18.7**: the switch is the non-default `host-ext-tests` feature above, not
+# an unconditional enable. `cargo metadata`'s resolve that `xtask attribution` reads is the
+# *default-feature* one, so with the feature off nothing changes and the attribution file stays
+# byte-identical; with it on, only that `cargo test` invocation sees the edge. See the `[features]`
+# table's own comment for the full argument and for why `--all-features` must never be used.
+#
+# The `clack-host` dev-dependency below stays as M9a wrote it -- `host-ext-tests` turns on the
+# *extensions*' host halves, not this entry, which the harness needs either way.
+
+# D-2.4's core pinning, for `benches/plugin_instantiation.rs`. The same entry, at the same version,
+# that `namir-engine`, `namir-ir`, `namir-library`, `namir-nam` and `namir-worker` already carry for
+# their own benches -- a `set_for_current` call is per-thread, so it is declared per crate rather
+# than shared. Dev-dependency only, so it is never linked into the shipped cdylib and adds no
+# THIRD-PARTY-NOTICES.md row (`xtask attribution` keeps only `Normal`-kind edges).
+core_affinity = "0.8"
+
+# NFR-PERF-040 (M9b): plugin instantiation in a host, within 200 ms, excluding model loading.
+# D-2.6 elects the in-process `clack-host` harness as this requirement's *certified* vehicle, so
+# this bench drives the real plugin through the real C vtable and asserts the 200 ms ceiling
+# in-process rather than printing it. It needs no `host-ext-tests`: `PluginEntry::load_from_clack`
+# lives in `clack-host` itself, not in `clack-extensions`. See the file's own doc comment for where
+# the timing window opens and closes, for why the library-index open is inside it, and for how the
+# binary re-execs itself into a sandboxed configuration directory so it never resolves the real one.
+[[bench]]
+name = "plugin_instantiation"
+harness = false

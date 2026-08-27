@@ -1495,6 +1495,22 @@ P0 subsection records the reasoning and the phase membership. The preamble to §
 added 2026-08-08") repeats the unrefined arrow for a reader who skipped this section; it is left as
 written too, and read through this note.
 
+*Consequence (added M14, 2026-08-12)* — the arrow is **refined again, and again not replaced**. A
+sweep of every open register after M9b — §15's open decisions, §22's risks, all 66 partials, all 26
+manual-test documents, every Should, and a grep for in-code deferrals — established that M8 as
+written cannot hold what it now inherits. **M8 is "Size: S, a gate, not a construction phase", and
+what stands in front of it includes nine user-facing surfaces that do not exist in `namir-ui` at
+all, six unexecuted `Verify: M` Musts, and six open §15 decisions, two of them past their own
+deadlines.** §21 adds **M14 — Pre-1.0 closure** to hold that work, so M8 remains the gate its own
+text describes. The order is:
+
+> **M9a → M10 → M11 → M12 → M13 → M9b → M14 → M8.**
+
+M14 is numbered by when it joined the plan, not by when it runs — the same convention this section
+established for M9 through M13, and for the same reason: renumbering would destroy the audit trail
+that every existing reference to M8 forms. Nothing above this note is rewritten, M8 keeps its number
+and its text, and §21 states its own depends-on and blocks relationships in its header line.
+
 ---
 
 ## 13. Explicit non-goals for this roadmap (restated, not re-decided)
@@ -1814,31 +1830,31 @@ not adjudicate them further.
 
 | FRS area | Must count | Done | Partial | Not started |
 |---|---|---|---|---|
-| 4 CFG | 3 | 1 | 2 | 0 |
+| 4 CFG | 3 | 2 | 1 | 0 |
 | 5.1 CHAIN | 8 | 3 | 5 | 0 |
 | 5.2 IN | 3 | 1 | 2 | 0 |
 | 5.3 GATE | 3 | 1 | 2 | 0 |
-| 5.4 NAM | 13 | 6 | 7 | 0 |
+| 5.4 NAM | 13 | 4 | 9 | 0 |
 | 5.5 IR | 7 | 4 | 3 | 0 |
 | 5.6 EQ | 3 | 0 | 3 | 0 |
 | 5.7 OUT | 2 | 0 | 2 | 0 |
 | 5.8 PARAM | 5 | 0 | 5 | 0 |
 | 5.9 STATE | 7 | 2 | 5 | 0 |
-| 5.10 LIB | 5 | 1 | 4 | 0 |
+| 5.10 LIB | 5 | 2 | 3 | 0 |
 | 5.11 IO | 8 | 2 | 6 | 0 |
-| 5.12 CLAP | 11 | 2 | 9 | 0 |
-| 5.13 UI | 7 | 1 | 6 | 0 |
-| 5.14 ERR | 6 | 1 | 4 | 1 |
+| 5.12 CLAP | 11 | 4 | 7 | 0 |
+| 5.13 UI | 7 | 2 | 5 | 0 |
+| 5.14 ERR | 6 | 1 | 5 | 0 |
 | 5.15 PKG | 4 | 3 | 1 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
-| 6.2 PERF | 6 | 0 | 6 | 0 |
+| 6.2 PERF | 6 | 1 | 5 | 0 |
 | 6.3 PORT | 5 | 3 | 2 | 0 |
 | 6.4 QUAL | 6 | 2 | 4 | 0 |
 | 6.5 LIC | 6 | 3 | 3 | 0 |
 | 6.6 SEC | 3 | 0 | 3 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **37** | **92** | **1** |
+| **Total** | **130** | **41** | **89** | **0** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2338,14 +2354,151 @@ that never happened — and M9a had already adjudicated both **Partial** by hand
 "Divergence 2". This change makes the tool agree with a verdict that was already correct, which is
 not evidence for moving it.
 
-**One row deliberately not moved, recorded so its absence is not read as an oversight.** 6.7 BUILD
-stays **0 / 2 / 0**. M12 improved NFR-BUILD-020 — the README documents the build, run and test
+**One row deliberately not moved, recorded so its absence is not read as an oversight (M13's).** 6.7
+BUILD stays **0 / 2 / 0**. M12 improved NFR-BUILD-020 — the README documents the build, run and test
 commands, and `xtask identity` pins those exact strings, so the document can no longer drift
 silently from what CI runs — but the requirement's "exercised by CI" clause is still unmet: nothing
 executes a command *as documented*. That tag's `uncovered:` field is rewritten to say so and its
 closing milestone moved from M12 to M13, which is a correction to a claim M12 would otherwise have
 been recorded as meeting. **FR-UI-110 appears in no row here**: it is a Should, and §14 counts Musts
 only. It stays open after M12 — see `docs/manual-tests/fr-ui-110-brand-mark.md`.
+
+**M9b moves, 2026-08-12 — five rows, six requirements, appended per D-23.2's "every later
+milestone moves only the cells its own evidence justifies."** 4 CFG becomes **2 / 1 / 0** (was
+1 / 2 / 0); 5.10 LIB becomes **2 / 3 / 0** (was 1 / 4 / 0); 5.12 CLAP becomes **4 / 7 / 0** (was
+2 / 9 / 0); 5.14 ERR becomes **1 / 5 / 0** (was 1 / 4 / 1); 6.2 PERF becomes **1 / 5 / 0** (was
+0 / 6 / 0); **Total** becomes **42 / 88 / 0** (was 37 / 92 / 1). **The Not-started column reaches
+zero for the first time**, 5.14 ERR having been its only non-zero cell since M13 emptied 5.15 PKG's.
+That is a real fact about the ledger and a small one: it says every Must now has *some* artifact, not
+that any additional Must is met — 88 of 130 are still Partial, which is the number that matters.
+
+**M14 moves, 2026-08-12 — one row, two requirements, and the reason is worth stating.** 5.4 NAM
+becomes **4 / 9 / 0** (was 6 / 7 / 0); **Total** becomes **40 / 90 / 0** (was 42 / 88 / 0).
+FR-NAM-030 and FR-NAM-150 both move Done → Partial, not because anything regressed but because the
+owner asked whether A2 support had ever been tested and the answer was that it has never been
+compared against the reference implementation at all. FR-NAM-030's golden pair spans WaveNet-A1 and
+LSTM; `tests/golden/` holds no A2 model, and the comment claiming an A1 golden covers A2 was false
+on the facts. FR-NAM-150's own `Verify:` line elects an in-house reference, so that half is not a
+gap — its "to the accuracy of FR-NAM-030" clause is, since the probe is 4 000 samples against a
+receptive field of roughly 6 300. §21 Phase 4b owns both, R-9 is reopened, and issue #37 tracks it.
+**This is the third time in two sessions that a question asked from outside the ledger found a
+requirement the ledger read as Done** — after M9b's own two demotions, and it is the strongest
+argument in this document for §22 **R-14**, which says the verdict columns sit outside every gate.
+
+**Two of those cells moved back inside this same milestone, and the figures above are the corrected
+ones.** M9b's build phase first recorded **44 / 86 / 0**, counting FR-CLAP-080 and FR-ERR-010 Done;
+this section's `### M9b addendum` re-read both against D-23.1 and demoted their tags to
+`trace-partial:`, so 5.12 CLAP is 4 / 7 / 0 rather than 5 / 6 / 0 and 5.14 ERR is 1 / 5 / 0 rather
+than 2 / 4 / 0. The earlier figure is left standing where the status subsection first recorded it,
+per this document's convention, and corrected here rather than there. It is worth naming what that
+means: **the milestone built to enforce a tagging doctrine shipped two tags that failed it**, which
+is the second time M9's own phases have done exactly that — M9a's `### M9a status` records the same
+thing happening to NFR-PERF-050, caught the same way, by adversarial review rather than by any gate.
+
+- **FR-CFG-020: Partial → Done.** The M9a bullet above named the gap in full — "no golden vector
+  exists anywhere in the tree and nothing runs one through both configurations".
+  `crates/namir-clap/tests/fr_cfg_020_shell_parity.rs` closes both halves as the `Verify: G` method
+  words them: a committed, generated (D-19.1) input vector and preset
+  (`crates/namir-clap/tests/golden/fr-cfg-020/input.f32`, `preset.namirpreset`) driven through each
+  configuration's **own** code — the plugin through `clap_plugin.process`, the standalone through the
+  real output callback `namir_app::stream::open` builds, not through a shared helper that would prove
+  only that one engine equals itself — and compared bit-identically at three block sizes. This is the
+  requirement §12's M8 exit checklist nominates as its final integration test and the one §14's own
+  2026-08-08 note recorded as "gated by a table it has never appeared in"; it is now the 4 CFG row's
+  second Done.
+- **FR-CLAP-040: Partial → Done.** The M9a bullet's gap was that the notify path was "built and
+  driven by nothing" with its document recording Not executed.
+  `crates/namir-clap/tests/clap_host_latency.rs` drives it in-process through `clack-host`: latency
+  is both **reported** on the extension and the host **notified** across three transitions, and the
+  reported value is checked against an independently constructed `AudioEngine` rather than against
+  the plugin's own accessor, so a stage's latency contribution going unreported would fail. Both
+  verbs of the requirement's own text are spanned by one artifact executing its `Verify: I` method.
+- **FR-CLAP-070: Partial → Done.** M9a: "no artifact anywhere compares a varying-block run against a
+  fixed-block reference at chain or plugin level". `crates/namir-clap/tests/clap_host_block_sizes.rs`
+  is that comparison at plugin level — a fixed-block reference against randomised block runs
+  including a 256-block sequence of one-frame blocks, with a model and an IR actually loaded rather
+  than through an empty chain where any block division trivially agrees. It earned its Done the hard
+  way: the test found a real engine defect on first run, and the cell moves on the fixed code.
+- **FR-CLAP-080: stays Partial, and its M9a gap narrows without closing.** M9a: "`activate` takes
+  the host's rate and neither the 44.1-192 kHz range nor a mid-session change is exercised".
+  `crates/namir-clap/tests/clap_host_sample_rates.rs` now exercises both — 154 rates including both
+  endpoints the requirement names, plus a mid-session rate change through the deactivate/reactivate
+  cycle. It is not Done, on both of D-23.1's questions. The requirement's own quantifier is "**every
+  sample rate the host may present** within 44.1 kHz to 192 kHz inclusive"
+  (`01-functional-requirements.md:763`), and `crates/namir-clap/src/audio.rs:125` rounds the host's
+  rate to an integer, so that set is ~147 900 distinct `SampleRate` values of which the sweep
+  reaches 154 — the same shape as FR-NAM-060's own `uncovered:` field, and D-23.2's clause 4 makes a
+  quantified requirement whose test spans part of the set Partial. And nothing is loaded at any of
+  those rates: the file never touches `PluginState`, so D-9.2's `SlotResampler` — the one
+  rate-dependent subsystem in the chain, and the one this very milestone found broken at 192 kHz —
+  runs at none of them, and the mid-session limb asserts only a 1 kHz tone's RMS through a
+  pass-through chain. The tag is `// trace-partial:` at `clap_host_sample_rates.rs:219`, and that
+  pair is this cell's named evidence.
+- **FR-ERR-010: Not started → Partial.** M9a's finding was categorical — "nothing writes a log
+  record anywhere", with `crates/namir-clap/src/shared.rs`'s sink recorded as a deliberate no-op and
+  D-16.5's six parameters wholly unimplemented. `crates/namir-platform/src/logging.rs` is the writer
+  and `crates/namir-platform/tests/logging.rs` its coverage, spanning D-16.5's parameters rather
+  than asserting that a file appears. This empties the Not-started column. It is Partial and not
+  Done because the requirement has **three** clauses and the covering test spans two: the six clause
+  helpers verify configurable verbosity and boundedness, while **the per-user-location clause is
+  asserted by nothing**. The logger is driven against a caller-supplied temporary path throughout
+  (`crates/namir-platform/tests/logging.rs:17-19`) and the covering test asserts
+  `logging::logger().is_none()` (`:606`); the only code binding the sink to a per-user path is
+  `logging::init` via `crate::log_file_path` (`crates/namir-platform/src/logging.rs:614-620`), which
+  no test calls. `crates/namir-platform/src/paths.rs:123-133` is the nearest evidence and is not it:
+  `#[cfg(target_os)]`-gated, vacuous when its environment variable is unset, and untagged. The tag
+  is `// trace-partial:` at `crates/namir-platform/tests/logging.rs:615`, and that pair is this
+  cell's named evidence.
+- **FR-LIB-020: Partial → Done.** M9a's gap was one clause of four: three met the 10 000-file scale
+  and "the off-the-audio-thread clause is exercised against a 6-file corpus only".
+  `crates/namir-worker/tests/library_scan_scale.rs` runs all four clauses against a 10 000-file
+  corpus, which is the scale the method itself names — the case D-23.1's first question is written
+  for, where the requirement quantifies over a set *and the method names its size*.
+- **NFR-PERF-040: Partial → Done, and read the next paragraph before reading this as a certified
+  figure.** M9a's gap was the whole `Verify: B` half — "no `Verify: B` harness exists and the 200 ms
+  bound has never been measured". `crates/namir-clap/benches/plugin_instantiation.rs` is that
+  harness, and it **asserts** the bound in-process rather than printing it for a human, which is what
+  D-2.6 settles as the satisfied form and what D-23.1's second question demands of a `Verify: B`
+  plain tag. §15 item 14 — which of an in-process instantiation and a real host counts as "in a host"
+  — is answered by D-2.6 for the purpose of this cell and is not otherwise reopened here.
+
+**Eight requirements gained real evidence this milestone and stay Partial, deliberately.**
+FR-NAM-060, FR-IR-030, FR-CLAP-030, FR-CLAP-100, FR-CLAP-130, FR-ERR-030, NFR-PERF-010 and
+NFR-PERF-050 each carry more than they did at M9a and each still carries a `// trace-partial:` whose
+`uncovered:` field names what is unmet; under D-23.2 a Partial is not Done, and the cells stay where
+M9a put them. None of the eight sat in **Not started**, so none moves one column either — worth
+saying because the instruction to move a Not-started requirement to Partial would have been
+justified had any of them been there, and checking the M9a bullets above shows none was.
+
+**FR-UI-020 and FR-UI-070 do not move, and this is the most important caveat on this table.** Both
+are `Verify: M`. `docs/manual-tests/fr-ui-020-single-screen-elements.md` and
+`docs/manual-tests/fr-ui-070-non-modal-error-notices.md` now exist — closing the M9a bullet's literal
+complaint that "there is **no** `docs/manual-tests/fr-ui-020-*.md`" — and `xtask traceability`
+therefore counts both **covered**, the filename arm doing exactly what §15 item 15's fix left it
+doing. **Neither script has been executed by a human.** Both documents say so in as many words:
+each records **Result: NOT EXECUTED**, with no step run in either product configuration. A `Verify: M`
+requirement is met by *running* its script, not by the file existing, and under D-18.6 that document
+is the requirement's whole traced artifact — so the file's existence moves the tool's reading and
+nothing else. The mechanical gate and the honest verdict disagree here, §14 is the place that
+disagreement is resolved in the requirement's favour rather than the tool's, and a later reader must
+not "reconcile" these two cells by promoting them to match `docs/03-test-plan.md`. Both stay
+**Partial**, where M9a put them; 5.13 UI stays **1 / 6 / 0**, unchanged for the second milestone
+running and for the same reason M13 recorded.
+
+**FR-STATE-040 does not move either, and its stability is not evidence of anything.** 5.9 STATE stays
+**2 / 5 / 0**. Its `Verify:` is `M plus S (schema check)`; the parser keeps only the first code, so
+the requirement resolves plainly covered from a filename match while **no schema check exists
+anywhere in the tree**. M9b found this while building FR-ERR-030's static check and recorded the full
+analysis — the six compound-method Musts, why five self-correct through their `uncovered:` fields and
+this one structurally cannot, and the three candidate fixes — as **§15 item 21**, due before M8.
+Cited rather than restated here so there is one copy of it.
+
+**The performance figures behind this milestone are not certified, and NFR-PERF-040's Done does not
+claim they are.** They were taken on `docs/02-architecture.md` §2's pinned reference machine but not
+on a *quiet* one, which fails D-2.4's second condition, so under this project's own standing rule
+they are informational. NFR-PERF-040's promotion rests on D-2.6 — an in-process benchmark that
+asserts its threshold is the satisfied form of a `Verify: B` — and not on any measured number being
+certified. NFR-PERF-010 stays **Partial** for the separate reason its own tag names.
 
 ---
 
@@ -2455,7 +2608,7 @@ that happens to depend on them first.
    way until M13 — and one thing this item did not know: FR-UI-110's *window* icon is blocked in M12
    as well, `baseview` 0.2.2's `WindowOpenOptions` having no icon field at all, so the two clauses
    defer together rather than one moving and one landing. **Deferred to M13 (§20 below).**
-8. **Whether the plugin configuration ever gets a persisted verbosity setting, or stays
+8. ~~**Whether the plugin configuration ever gets a persisted verbosity setting, or stays
    environment-variable-only.** Raised 2026-08-08 by M9's P0 decision pass while settling
    `02-architecture.md` **D-16.5**. D-16.4 says FR-ERR-010's verbosity is "configurable from
    settings and overridable by an environment variable", and in the standalone application both
@@ -2471,8 +2624,23 @@ that happens to depend on them first.
    worth of value; or move the verbosity level into a shared, non-preset settings record both shells
    read, which is the general fix and the largest. **Due before M8**, since it is a user-guide and
    support-story question rather than an engine one, and cheap to answer while D-16.5's own text is
-   fresh.
-9. **Whether FR-CLAP-030 ships with a single Stereo port configuration.** Raised 2026-08-08 in M9's
+   fresh.~~
+   **Resolved 2026-08-12, at M9b's start: the first answer — environment-variable-only for the
+   plugin in 1.0**, recorded as a dated Consequence note on **D-16.5** itself rather than as a new
+   decision, because D-16.5's level-resolution rule already reads "the persisted setting **where one
+   exists**" and therefore needs no amendment. That the writer was *already* specified to work in a
+   configuration with no settings file is the argument for this answer, not merely its cheapness.
+   The obligation it creates is a documentation one and is recorded at D-16.5 so it is not lost: the
+   user guide's troubleshooting section must tell a plugin user how to raise verbosity with
+   `NAMIR_LOG`, **including that it must be set in the environment the host inherits** — a DAW
+   launched from a desktop shortcut does not see a variable exported in a terminal, which is the
+   detail separating an instruction that works from a support thread. Both other answers are
+   recorded rejected there: a `namir-clap` preferences file (a new persisted artifact and migration
+   surface for one enum, and the plugin's only host-machine state — a category declined once already
+   when device selection was kept out of the preset document at M5), and a shared non-preset
+   settings record (the general fix, far too large to buy for a log level, and reasonable to raise
+   again when a second such setting actually exists).
+9. ~~**Whether FR-CLAP-030 ships with a single Stereo port configuration.** Raised 2026-08-08 in M9's
    P0 decision pass. The requirement says the plugin "shall declare audio port configurations
    corresponding to FR-CHAIN-060", and FR-CHAIN-060 names three (Mono, Mono→stereo, Stereo);
    `crates/namir-clap/src/audio_ports_ext.rs` declares **Stereo only** and does not implement CLAP's
@@ -2485,7 +2653,22 @@ that happens to depend on them first.
    requirement as written; declare Stereo only and record it as an accepted, FRS-level scope
    reduction with a Consequence note at FR-CLAP-030 itself; or keep the current silence, which is the
    one option M9 exists to stop doing. **Due before M8**, since 5.12 CLAP cannot be marked Done
-   without it.
+   without it.~~
+   **Resolved 2026-08-12, at M9b's start: the second answer — Stereo only, recorded as an accepted
+   FRS-level scope reduction**, with the Consequence note written at **FR-CLAP-030 itself** in
+   `01-functional-requirements.md` as this item prescribes. The requirement text is deliberately left
+   unamended: the FRS states what Namir must do, and lowering it to match what was built would erase
+   the gap rather than record it. Three things that note settles so no later pass re-derives them.
+   **FR-CLAP-030 stays `trace-partial:` for 1.0** — the unspanned member is the negotiation limb,
+   one configuration of FR-CHAIN-060's three. **Satisfying "at least two host implementations" does
+   not promote it**: the in-process `clack-host` harness and the commit-pinned `clap-validator` CI
+   job are two genuinely independent hosts, but D-23.1's enumerated-set rule bites regardless of how
+   many hosts ask. And **this does not obstruct NFR-QUAL-010 closing at M9b**, since a partial counts
+   as covered — what it does mean is that **5.12 CLAP cannot read Done in §14** while the reduction
+   stands, which is exactly what this item's own "Due before M8" clause was protecting. Implementing
+   `audio-ports-config` is recorded as rejected-for-now rather than dismissed: it remains the only
+   route to a plain tag, and it was declined because M9b is scoped to verification infrastructure
+   and this is a feature touching the audio path.
 10. ~~**Whether `xtask traceability`'s scanned-file list gains `.github/workflows/release.yml` when M13
     creates it.** Raised 2026-08-08 by M9's P0 decision pass. The list at `xtask/src/main.rs:205-216`
     is hard-coded to `ci.yml`, `fuzz.yml`, `Cargo.toml` and `deny.toml` — nothing derives it, so a
@@ -2541,7 +2724,7 @@ that happens to depend on them first.
     workspace's own pin. The exposure itself does not disappear with the
     pin — a git-sourced build input on every merge is still the class **R-10** tracks, and
     `deny.toml` still cannot see it — so the pin is the mitigation, not a closure of the concern.
-12. **What happens if FR-NAM-060's measurement legitimately fails.** The resampler's stopband
+12. ~~**What happens if FR-NAM-060's measurement legitimately fails.** The resampler's stopband
     attenuation (≥100 dB) and passband ripple (≤0.1 dB up to 20 kHz or Nyquist) have never been
     measured; FR-NAM-050's resampling is tested for *correctness*, not *quality*, and the plan's row
     for FR-NAM-060 is `**UNRESOLVED**`. This is a genuine first look and it may fail. Three branches,
@@ -2549,8 +2732,28 @@ that happens to depend on them first.
     requirement's figures in the FRS with a stated justification; or record a deviation. **Decide the
     branch policy before the number exists** — deciding afterwards means the rule gets chosen to suit
     the measurement, which is the failure mode D-2.2's own history already demonstrates. **Due at
-    M9b's start.**
-13. **What happens if FR-CLAP-070's block-size parity test fails.** The requirement demands arbitrary
+    M9b's start.**~~
+    **Resolved 2026-08-12, at M9b's start, before the measurement was taken: the three branches are
+    ordered as a hierarchy, not offered as a choice.** Taken in order, and a later branch may be
+    reached only when the one before it has been tried and written up:
+    1. **Meet the requirement as written.** `SlotResampler` (`crates/namir-engine/src/stages/nam.rs:351`)
+       uses two `rubato::FftFixedInOut<f32>` "as configured by `rubato` itself, not tuned or
+       verified" — that module's own doc comment. A bar missed by a resampler nobody has *tried* to
+       configure is not evidence the bar is wrong. Configuration, or a different `rubato` resampler
+       type, is the first move, bounded by NFR-PERF-010's budget.
+    2. **Amend the FRS figures** — permitted only with a stated justification in terms of what a
+       user would *hear*, not in terms of what the current implementation happens to achieve. A
+       figure edited to match a measurement is not a requirement.
+    3. **Record a deviation** — last, and it must name the audible consequence.
+    *Why a hierarchy rather than a choice:* the item's own warning is that deciding afterwards means
+    the rule gets chosen to suit the measurement. Three peer branches do not prevent that; they
+    merely make the choice look deliberate. Ordering them does prevent it, because branch 2 is
+    unreachable without a written record of branch 1 having failed. **This applies unchanged to
+    `namir-ir`'s second resampler**, `resample_mono` (`crates/namir-ir/src/convolver.rs:845`), whose
+    own `trace-partial:` at `:1408-1413` imports the same bar and records it "measured nowhere …
+    which a 40 dB-stopband, 3 dB-ripple resampler would pass". Both sites are measured in M9b and
+    both are governed by this order.
+13. ~~**What happens if FR-CLAP-070's block-size parity test fails.** The requirement demands arbitrary
     and varying block sizes "including a block size of one sample", `Verify: U`, and the test has
     **never been run** — `namir-clap` carries `// trace:` tags for FR-CLAP-010/-050/-060/-090 only.
     `02-architecture.md` D-6.2's consequence asserts the design handles it (buffers sized for the
@@ -2559,8 +2762,24 @@ that happens to depend on them first.
     schedule and the NAM stage's history are the plausible places a one-sample block breaks. Same
     branch structure as item 12 and the same reason to settle it first, with one addition: **"declare
     a minimum block size" is not an available branch** without an FRS change, because the requirement
-    names one sample explicitly. **Due at M9b's start.**
-14. **Whether an in-process instantiation counts as "a host" for NFR-PERF-040's certified figure.**
+    names one sample explicitly. **Due at M9b's start.**~~
+    **Resolved 2026-08-12, at M9b's start, before the test was written: fix the engine. Item 12's
+    hierarchy does not transfer here, and the difference is the point.** FR-NAM-060 measures a
+    quantity nobody has ever claimed, so a failure there is new information about an untuned
+    component. FR-CLAP-070 is not that: **D-6.2's consequence already asserts the design handles it**
+    — buffers sized for the declared maximum, a smaller block using a prefix, an over-declared block
+    processed in slices rather than allocating. A failing parity test therefore does not report that
+    the requirement is too strict; it reports that **the implementation has diverged from a decision
+    this document already made**. The remedy for that is to fix the implementation.
+    Consequently, for this requirement: amending the FRS is **not** an available branch, and neither
+    is recording a deviation, unless the failure first proves D-6.2 itself unimplementable — which
+    would be a finding about the architecture, would be written up as an amendment to D-6.2 rather
+    than to the FRS, and is not something a test failure alone establishes. The item's own exclusion
+    stands and is widened: "declare a minimum block size" remains unavailable, and so does every
+    other route that changes the requirement instead of the code. The plausible failure sites named
+    above — the partitioned convolver's schedule and the NAM stage's history — are where to look
+    first.
+14. ~~**Whether an in-process instantiation counts as "a host" for NFR-PERF-040's certified figure.**
     The requirement caps plugin instantiation at 200 ms excluding model loading, `Verify: B`; nothing
     measures it and the identifier appears nowhere in the codebase. **D-18.6 settles the vehicle** —
     the `clack-host` harness instantiates this crate's real plugin in-process through the real C
@@ -2569,7 +2788,20 @@ that happens to depend on them first.
     DAW is required for that and the in-process figure is the regression test beside it. The choice
     decides whether this requirement closes with a repeatable benchmark, a one-time recorded figure,
     or both; D-2.4's "certified means the §2 reference machine and at least five repetitions" binds
-    either way. **Due at M9b's start.**
+    either way. **Due at M9b's start.**~~
+    **Resolved 2026-08-12, at M9b's start: `02-architecture.md` **D-2.6** — the in-process harness
+    certifies; a real-DAW figure is supplementary and is not a precondition for closure.** The
+    deciding argument is D-2.4's own definition rather than a judgement about realism: "certified"
+    means the §2 reference machine and at least five repetitions with a contaminated run discarded,
+    and five hand-timed instantiations inside a DAW measure the operator as much as the plugin. The
+    vehicle is not a stub — `PluginEntry::load_from_clack::<SinglePluginEntry<NamirClapPlugin>>`
+    drives the real `activate` path through the real C vtable — and the split mirrors D-18.6's
+    existing doctrine rather than inventing a second one: the in-process artifact is traced, the
+    manual document is the residue a real host is needed to observe. D-2.6 records the honest limit
+    in full: a DAW also does plugin scanning, sandboxing and host-thread contention, so this figure
+    is the plugin's own instantiation cost and a lower bound on what a user experiences. **Both
+    rejected options are recorded there**, including "both required", which was declined because it
+    would make a `Verify: B` requirement's closure depend on a manual session.
 15. ~~**How a `Verify: M` Must is matched to its manual-test document.** Raised 2026-08-09 by M9a's
     set-quantification sweep. `build_report` credits a manual document to a `Verify: M` requirement
     if **either** the filename starts with the id's lowercase prefix **or** the file's text contains
@@ -2784,6 +3016,32 @@ that happens to depend on them first.
     honest without pretending the limitation is smaller than it is. **Due before M8**, since
     FR-CLAP-100 feeds 5.12 CLAP's row and M8's exit gate reads every row Done. Tracked as a GitHub
     issue so it is visible outside this appendix.
+21. **`xtask traceability` keeps only the first code of a compound `Verify:` method, and for one
+    requirement that silently hides an unexecuted half.** Raised 2026-08-12 at M9b, found while
+    building FR-ERR-030's static check. **Six** Musts state a compound method: FR-STATE-040
+    (`M plus S (schema check)`), FR-CLAP-090 (`I plus B`), FR-CLAP-130 (`S plus I`), FR-ERR-030
+    (`S plus I`), NFR-RT-020 (`S plus code review`) and NFR-PERF-010 (`B, as a CI regression gate`).
+    The parser records only the first, so `docs/03-test-plan.md` shows a weaker bar than the FRS
+    states for all six. **Five self-correct and one cannot, and the difference is structural.** For
+    the five whose first code is not `M`, the annotation author can write the missing half into the
+    `uncovered:` field, and at M9b four of them do exactly that, naming the `B` half, the `S` half,
+    the `I` half and the unasserted threshold respectively — the doctrine working as intended.
+    **FR-STATE-040 cannot**, because its first code *is* `M`: under D-18.6 a `Verify: M` Must is
+    traced by its manual document, `xtask` hard-refuses a `trace-partial:` naming one, and so it
+    resolves **plainly covered** from a filename match alone. Its `S` half is a schema check that
+    **does not exist** — nothing under `crates/namir-state/src/` mentions a schema, `xtask preset`
+    is a sample *generator* rather than a validator, and no `trace:` tag anywhere in the tree names
+    FR-STATE-040. So one Must reads fully green while half its stated method is unexecuted, and no
+    mechanism in the current design could ever say so. Three answers, and the cheapest is not
+    obviously right: **teach the parser compound methods**, which is the general fix and would catch
+    this class automatically, but will demote rows and reopen adjudications; **build FR-STATE-040's
+    schema check** and tag it, which closes this instance and leaves the class open — and requires
+    deciding what the schema *is*, which the FRS does not say; or **narrow the FRS line** to the half
+    that is actually verified, which is honest bookkeeping and gives up a check the requirement's
+    author evidently wanted. **Due before M8**, since M8's exit gate reads §14 and 5.9 STATE's row
+    depends on it. **Recorded rather than acted on at M9b by decision**, and M9b's close-out states
+    the caveat plainly rather than letting NFR-QUAL-010's first-ever closure be read as stronger
+    than it is.
 
 ---
 
@@ -3867,6 +4125,429 @@ now blocks for the duration of any in-flight job. Library scans are cancelled co
 so those are bounded by one `Scanner::step`; recall jobs have no cancel flag and are joined
 outright. If a real DAW ever shows this as a stall, the remedy is to give recall jobs the same
 cooperative cancel the scanner already has.
+
+---
+
+### M9b P0 decision pass — 2026-08-12 (decisions only; one measurement, nothing else implemented)
+
+Appended per this document's convention; nothing above is edited. M9a opened with a documented
+decision pass and M9b does the same, for the same reason: three §15 items were explicitly **due at
+M9b's start**, and two of the three are branch policies that must be fixed *before* the measurement
+they govern exists, or the rule gets chosen to suit the number.
+
+**Five §15 items are struck in this pass** — 8, 9, 12, 13 and 14. Each carries its resolution at the
+item; only what a later reader would not find there is repeated here.
+
+**The one thing that was measured, because the decision turned on a fact nobody had checked.**
+D-18.6's landing note hands M9b a named blocker: a harness wanting the host-side halves of
+`audio-ports`/`params`/`state`/`latency` must "first make `xtask attribution` resolve dependency kind
+per shipped path rather than per unified-resolve node, or observe those extensions another way". A
+spike in an isolated worktree measured all three arms and found a **third** route that note did not
+consider. `xtask attribution` walks `cargo metadata`'s **default-feature** resolve, so a feature that
+is off by default never enters the graph it reads. `02-architecture.md` **D-18.7** adopts it:
+`host-ext-tests = ["clack-extensions/clack-host"]`, non-default, with a **required** CI step running
+`cargo test -p namir-clap --features host-ext-tests` — because a feature-gated test that no gate runs
+is not evidence, and tagging FR-CLAP-030/-040/-100 against tests nobody executes would be the exact
+over-claiming D-23.1 exists to prevent. §22 gains **R-17** for the landmine this creates: nothing
+mechanical stops `--all-features` from linking `clack-host` into the shipped cdylib, and what catches
+it is `xtask attribution` going red, which is a real gate but a late one.
+
+**Recorded because the pass first drafted it wrongly:** the spike reported that
+`crates/namir-clap/Cargo.toml:95-107` was "right for the wrong reason", and a draft of D-18.7 said so.
+It is not. That comment does not claim `cargo tree -e normal` predicts attribution; it uses
+`cargo tree` to establish that the **cdylib** is unaffected and therefore that the row would be a
+fidelity artifact rather than a real leak — which is correct as written, and which **R-15 already
+names as its own detector**. Arm A reproduced the comment's prediction to the character, including
+the row text. The correction was made before the decision landed rather than after.
+
+**What this pass did *not* do: the ~52 partials declaring `closes M9b`.** M9b's scope is the twelve
+uncovered Musts plus the partials its own new infrastructure promotes for free. The great majority of
+partials naming M9b were booked there **by default** — M9b was the open-ended "missing verification
+infrastructure" bucket, as §16's own note above says in as many words — not by anyone sizing them.
+They do not block D-18.5's flip, because a partial counts as covered for the ordinary run. The
+policy set here is that **each is re-booked explicitly rather than silently carried**, and the
+mechanical re-booking is deliberately deferred to M9b's close-out rather than done now, for one
+reason: the correct destination for a given partial depends on whether M9b's own work happens to
+close it, which is not knowable at the milestone's start. Doing it now would mean editing 52
+annotations twice. Three stale declarations are already known and are fixed in the same close-out
+pass: **FR-CFG-030** and **NFR-LIC-030** declare `closes M13`, a milestone that has *completed*, and
+**NFR-QUAL-010** still declares `closes M13` when §20's own second scope note moved that flip to
+M9b.
+
+**Two counts corrected against the tool rather than inherited from prose.** §16's restated acceptance
+and §20's correction both say **ten** uncovered Musts are M9b's. `cargo run -p xtask -- traceability`
+reports **twelve**, and M13's close-out already recorded why: it closed four of its own five and
+**added two**, FR-UI-020 and FR-UI-070, which §15 item 15's fix demoted by stopping a prose mention
+from crediting a manual document. That close-out left them as "gaps no milestone has claimed" and
+addressed the next planner directly — "whoever plans M9b should read that as work arriving, not as
+bookkeeping". **M9b adopts both.** Neither can be a partial: `xtask` refuses a `trace-partial:` on a
+`Verify: M` Must, so the only disposition is a manual-test document, and neither
+`docs/manual-tests/fr-ui-020-*.md` nor `fr-ui-070-*.md` exists. **The zero-uncovered gate cannot flip
+without them**, which makes two documents nobody had scoped into a precondition for NFR-QUAL-010
+closing.
+
+---
+
+### M9b status — the build work, and why this is not yet a close-out, 2026-08-12
+
+Appended per this document's convention; nothing above is edited. **This is deliberately a `status`
+and not a `close-out`**, because the two things M9b was created to deliver last — D-18.5's flip and
+NFR-QUAL-010's closure — are blocked on a precondition no amount of code can satisfy. See the final
+subsection below.
+
+**`xtask traceability` reports `clean -- all 130 Must requirements are covered`.** That sentence has
+never been printable before. Twelve uncovered Musts at this milestone's start are zero: FR-CFG-020,
+FR-NAM-060, FR-CLAP-030/-040/-070/-080/-100/-130, FR-ERR-010, NFR-PERF-040, and the two M13 handed
+over unclaimed, FR-UI-020 and FR-UI-070. §14's table moves 37 / 92 / 1 to **44 / 86 / 0**, emptying
+the Not-started column for the first time.
+
+**Two real DSP defects were found, and finding them is the milestone's strongest justification.**
+Neither was a tagging gap; both had shipped undetected because the test that would catch them did
+not exist.
+
+- **FR-NAM-060 had never been measured at all**, and failed at both resampling sites on its first
+  measurement. `rubato` places an antialias cutoff as a function of filter *length*, so a short
+  filter loses passband rather than widening a transition. The NAM stage sized its FFT in *engine*
+  frames, so at a 192 kHz engine against a 48 kHz model the filter was 64 frames in the model's
+  domain: **−14.95 dB at 20 kHz** against a 0.1 dB ripple bar. `namir-ir`'s `SincFixedIn(256)`
+  measured **−17.7 dB** stopband at 192→48 against a 100 dB bar. Both now size the FFT in the lower
+  rate's domain — worst ripple 1.9e-5 dB, worst stopband −129 dB, and 48 kHz output byte-identical.
+- **FR-CLAP-070 had never run with a model loaded**, and found a live engine bug. `SlotResampler`
+  primed its output FIFO only to the current call's length and substituted zeros when starved, so
+  every starved frame spliced in a sample of silence never taken back. The stage's delay became a
+  function of block-size **history** — 63 accumulated samples under one-frame blocks — and the shift
+  arrived **mid-stream** when a host changed block size, which a user hears as a glitch. Both the
+  parity clause and the "without artefacts" clause were failing. Priming the FIFO with one engine
+  block makes `in.len() + out.len() == engine_block` an invariant the loop cannot starve under, and
+  makes the reported `latency_samples` exactly true where it had been an upper bound met by
+  accident.
+
+**The branch policies fixed at this milestone's start are why neither turned into an argument.**
+§15 item 12's hierarchy sent FR-NAM-060 to configuration before any thought of amending the FRS;
+§15 item 13 sent FR-CLAP-070 straight to the engine, because D-6.2 had already asserted the
+behaviour and a failure therefore reported an implementation that had diverged from a decision. Both
+failures arrived exactly as those items predicted they might, and in neither case was the rule chosen
+to suit the measurement — which is the whole reason they were decided in advance.
+
+**Scope taken on beyond the plan, each by explicit decision rather than drift.** FR-ERR-030's static
+half, once the logger made an abstract gap live — both shells now link a logger their audio callbacks
+could reach, and `xtask rt-logging` forbids the logger's name in the six modules that carry
+audio-thread code. `namir-fixtures` as a `namir-clap` dev-dependency, whose absence had already
+forced two tests into workarounds. And a `namir-app` dev-edge for FR-CFG-020, recorded at D-5.1,
+because bit-identity is only a meaningful claim within one process and one build.
+
+**Three findings recorded rather than acted on**, each with its own home so none rests only here:
+**R-17** (D-18.7's `--all-features` landmine), **R-18** (NFR-PERF-040's margin is governed by the
+user's library size, not by plugin code — the index parse reaches the 200 ms ceiling near 12 000
+entries), and **§15 item 21** (the traceability parser keeps only the first code of a compound
+`Verify:` method; five such Musts self-correct through their `uncovered:` field and FR-STATE-040
+cannot, because its first code is `M`).
+
+**The 51 partials that declared `closes M9b` are re-booked to M8**, discharging the deferral this
+section's P0 pass recorded. M9b closed none of them. **That destination is a default, not a scoping
+decision**, and saying so is the point: they were booked here because M9b was the open-ended bucket,
+and M8 is now simply the only milestone that follows. Whoever plans M8 inherits 58 partials and
+should expect to triage them, not assume someone already has.
+
+### M9b's two outstanding preconditions — what this milestone must not claim, 2026-08-12
+
+**D-18.5's flip has not happened and NFR-QUAL-010 is not closed.** Both are M9b's to do, and M9b
+alone is permitted to do them. Neither is done, for one reason, stated plainly because the mechanical
+gate now disagrees with it.
+
+**FR-UI-020 and FR-UI-070 are covered on paper and unexecuted in fact.** Both are `Verify: M`, and
+since §15 item 15's fix a `Verify: M` Must resolves against a manual-test document by filename. Those
+two documents now exist and are written as runnable scripts — so `xtask traceability` counts them
+covered and prints `clean -- all 130 Must requirements are covered`. **Both documents say
+`Result: NOT EXECUTED`.** A `Verify: M` requirement is met by a human running its script, not by the
+file being present, and the gate structurally cannot tell the difference: `xtask` refuses a
+`trace-partial:` on a `Verify: M` Must, so there is no disposition between "no document" and "fully
+covered" for it to express.
+
+**Deleting `--allow-uncovered` today would therefore make the required check green on evidence
+nobody has produced** — the precise inversion of what D-18.5's split was for. The flip waits on those
+two scripts being run and their results recorded in their own documents, and **NFR-QUAL-010 closes
+with the flip, not before**. §14's own prose carries the same caveat at 5.13 UI.
+
+**A second caveat on the closure, when it comes: FR-STATE-040.** Its `Verify:` is `M plus S (schema
+check)`; the parser keeps only `M`, so it reads plainly covered from a filename match while no schema
+check exists anywhere in the tree. NFR-QUAL-010's own text asks for a check that "fails on any
+uncovered **Must**", and by the tool's rules that will be true — but one Must's coverage is weaker
+than its stated method, and the closure should be recorded with that said rather than left to be
+discovered. §15 item 21 carries the analysis and the three candidate fixes.
+
+**The performance figures, re-taken on an idle machine, 2026-08-12.** The first set was measured
+while this session's own tooling compiled throughout, which D-2.4 condition 2 disqualifies. All three
+benchmarks were re-run after the build work finished, on §2's reference machine with nothing else
+this session was running. **Every arm passes**, and each benchmark's own output still declines to
+call itself certified — `six_stage_chain` prints, in as many words, that a certified figure is one
+measured on that machine *quiet* and that its own PASS line "is not by itself evidence that it was".
+That caution is warranted and is not boilerplate: see the discarded repetitions below.
+
+| Requirement | Ceiling | Measured (worst of the runs below) | Headroom |
+|---|---|---|---|
+| **NFR-PERF-040**, empty library index | 200 ms | **229 µs** | ~99.9% |
+| **NFR-PERF-040**, 10 000-entry index, 48 kHz / 512 | 200 ms | **181.2 ms** | 9.4% |
+| **NFR-PERF-040**, 10 000-entry index, 192 kHz / 4096 | 200 ms | **187.5 ms** | **6.2%** |
+| **NFR-PERF-050**, ~50 MB model from a real path | 500 ms | **152.5 ms** | 69.5% |
+| **NFR-PERF-050**, ~50 MB payload already in memory | 500 ms | **129.6 ms** | 74.1% |
+| **NFR-PERF-010**, schedule's own worst block (estimator) | 25% of one core | **14.56%** | 41.8% |
+| **NFR-PERF-010**, raw p99.9 over quotable repetitions | 25% of one core | **16.39%** | 34.4% |
+
+NFR-PERF-040: 5 runs × 20 repetitions per arm. NFR-PERF-050: 5 runs. NFR-PERF-010: 3 runs × 5
+repetitions, all 15 reported individually by the harness.
+
+**Three things these numbers say that the pass/fail does not.**
+
+*NFR-PERF-040's margin is not Namir's.* The harness reports the create and activate halves
+separately, and `activate` — constructing the entire six-stage chain — is **6 µs** on the empty arm
+and **147 µs** at 192 kHz with 4096-frame blocks. Everything else in the 187.5 ms is parsing
+`library-index.json`. The idle re-run *tightened* the medians (161–165 ms) and *worsened* the tail,
+leaving 6.2% headroom on the worst arm, which strengthens **R-18** rather than softening it: a user
+whose library passes roughly 12 000 entries breaches a Must requirement with no code change at all.
+
+*NFR-PERF-050's file arm costs about 23 ms over its byte arm* on a 49.6 MiB model (152.5 vs
+129.6 ms), so even reading 50 MB from a warm page cache, **~85% of what a user waits for is parse and
+prepare, not I/O**. D-2.5's page-cache condition is stated by the harness at runtime: these are warm
+reads, so that delta is a floor on cold-read cost.
+
+*D-2.4's validity check earned its place on this very run.* One NFR-PERF-010 repetition set
+discarded **2 of its 5** repetitions — p99.9 of 24.35% and 24.54%, one with a `max` of **76.09%** —
+while the contamination-immune estimator across those same repetitions read 14.38%, moving by
+hundredths of a point. An idle machine is not a quiet one, the difference is measurable, and the
+estimator is the figure to trust when they disagree. That is the argument for asserting on it, made
+by the instrument rather than about it.
+
+### M9b addendum: an adversarial re-read of this milestone's own ledger, 2026-08-12
+
+Appended per this document's convention; nothing above is edited. **This is still not a close-out** —
+the two preconditions above are unchanged and unmet. What this pass did is re-read M9b's own output
+against the tree, on the principle the milestone itself is built on, and it found the ledger
+over-claiming in eleven places. None of it changes what the suite does; all of it changes what the
+ledger says.
+
+**The verification state was confirmed first, so the findings below are corrections to a green tree
+rather than excuses for a red one.** `cargo fmt`, `cargo clippy --workspace --all-targets -D
+warnings`, `cargo test --workspace`, D-18.7's `cargo test -p namir-clap --features host-ext-tests`,
+all six `xtask` subcommands and `cargo deny check` pass — the last in the full form AGENTS.md names
+*and* in each of the three `ci.yml` runs separately (`check licenses`, `check sources`, `check
+bans`), all four categories reporting ok, which matters because the `clack-host` dev-dependency
+D-18.6 adopted is exactly what those gates were told to watch. Three environment defects were fixed
+to get there and none is a repository defect: the sandbox's toolchain was 1.94.1 against this
+workspace's 1.97 MSRV, ALSA development headers were absent — which `alsa-sys`' `build.rs` fails on
+exactly as `ci.yml`'s own Linux step predicts — and `cargo-deny` was not installed at all, so that
+gate had never run in this sandbox.
+
+**Two plain tags were demoted to `trace-partial:`, and both were written by M9b.** This is the same
+class of error M9a's sweep existed to find, committed by the milestone that inherited the doctrine.
+
+- **FR-CLAP-080.** Its test sweeps 154 rates — both endpoints, the six standard rates, a 1 kHz grid
+  and one fractional value — against a requirement reading "**every** sample rate the host may
+  present within 44.1 kHz to 192 kHz inclusive". `src/audio.rs` rounds to an integer, so the set is
+  ~147 900 values. **That is the identical argument by which this same milestone made FR-NAM-060 a
+  partial**, applied to the same milestone's own other tag and reaching the opposite verdict; the
+  two sat a few hundred lines apart. The second gap is larger: the file never touches
+  `PluginState`, so no model and no IR are loaded, and D-9.2's `SlotResampler` — the one
+  rate-dependent subsystem in the chain, and the thing M9b itself found broken at 192 kHz — runs at
+  none of the 154 rates.
+- **FR-ERR-010.** The requirement has three clauses; the covering test asserts two. The logger is
+  driven against a caller-supplied temporary path throughout, and the covering test asserts
+  `logging::logger().is_none()` — the per-user-location clause is asserted by nothing, and
+  `logging::init`, the only thing binding the sink to `log_file_path()`, is called by no test. The
+  test's own *name* claimed the clause it did not assert.
+
+§14's table moves **44 / 86 / 0 → 42 / 88 / 0** accordingly. The Not-started column stays empty.
+
+**Nine `uncovered:` fields asserted facts that were false when read.** D-23.1 makes this field the
+ledger entry a Partial is retired against, and it is rendered verbatim into checked-in
+`docs/03-test-plan.md`, so a stale field is a false statement in a generated document. Four were
+falsified by M9b's own work, because the re-booking commit changed the milestone token in 104 lines
+and re-validated none of the text: **FR-CLAP-090** said this crate "has no benches directory" when
+M9b had just added one; **NFR-RT-010** said `namir-clap`'s `process()` runs under no
+`assert_no_alloc` anywhere when M9b's own harness wraps every call (and mis-stated the surviving
+`namir-app` half besides); **FR-CLAP-050** said `PluginState::load` "is called by no test" and its
+`spawn_recall` sequel "runs nowhere" when four M9b suites drive it through the real vtable and one
+*depends* on it; **NFR-QUAL-010** said "20 uncovered Musts stand with CI green" against a tool that
+now reports zero.
+
+**Six declared a milestone that cannot close them.** Three are the ones this section's P0 pass
+named and said would be fixed in the close-out — FR-CFG-030, NFR-LIC-030 and NFR-QUAL-010 — and the
+P0 pass's own count was short: **FR-PKG-040, NFR-BUILD-020 and NFR-DOC-040 declare `closes M13`
+too**, and M13 has completed. NFR-LIC-030's and FR-PKG-040's *text* was stale in the same direction
+as the milestone, both asserting that no release workflow, installer or archive exists — M13 built
+all three. All six are re-booked to **M8**, on the same "only milestone that follows" default the
+51 partials took, and their gap text is re-derived rather than carried.
+
+**Two stale prose comments and one stale test doc were corrected.**
+`crates/namir-clap/tests/clap_host_block_sizes.rs`'s module doc still read, in the present tense,
+"**why it is currently red**" and "`NamStage::reset`… **which currently clears both FIFOs**", with
+the remedy described as something to run "at a distance, without touching `namir-engine`" — all
+falsified by the fix that landed in the same commit, in the most load-bearing place in the
+milestone: the file carrying FR-CLAP-070's plain tag. The investigation is kept and re-tensed
+rather than deleted with the bug.
+
+**D-6.2 gains a consequence note, because the finding was a gap in its reasoning and not only in
+the code.** That decision's stated consequence is about buffer *sizing* — "a smaller block simply
+uses a prefix" — which is true of the buffers and false of a stateful stage's delay. The general
+form, which nothing in the decision implied: a stage carrying its own FIFOs owes a
+block-size-independent delay invariant, which buffer sizing neither supplies nor can check.
+
+**One audit finding was investigated and rejected**, recorded because a rejected finding is worth
+as much as an accepted one here. It was argued that the FR-NAM-060 fix materially raises reported
+latency at high engine rates with nothing saying so. The consequence *is* recorded, twice — D-9.3's
+own `*Consequence (added M9b)*` note gives it as "a constant ~5.3 ms internal block rather than a
+constant 256 frames", and this section's status subsection records the FIFO priming making
+`latency_samples` exactly true where it had been an upper bound met by accident.
+
+**The two blocking manual scripts were attempted, and the attempt is why R-16 is now precise.**
+FR-UI-020's and FR-UI-070's scripts were run as far as a headless Linux container allows, which
+turned out to be not at all: neither product can open a window on a software-GL X server. **R-16
+already predicted this and gave the wrong reason** — "`xvfb-run` not helping because that path needs
+a GLX-capable display". An Xvfb display *is* GLX-capable; Mesa 25.2.8 / llvmpipe reports direct
+rendering, a 4.5 core profile and 320 GLXFBConfigs on it. **None of the 320 is sRGB-capable**, and
+`egui-baseview`'s default `GlConfig` asks for one, so `glXChooseFBConfig` matches nothing and
+`baseview` panics on its own `.expect`. No Mesa configuration tried produces an sRGB config. R-16
+carries the mechanism now, with the consequence stated in the form that matters: **no headless CI or
+container can execute the `Verify: M` UI scripts**, so those two documents stay `NOT EXECUTED` and
+D-18.5's flip stays unmade. Recorded so the next session does not spend the hour again.
+
+**What M9b still owes is exactly what it owed before this pass**: a human running
+`docs/manual-tests/fr-ui-020-single-screen-elements.md` and `fr-ui-070-non-modal-error-notices.md`
+on a machine with a display, a real audio interface and an instrument, their results recorded in
+those documents, and only then the flip and NFR-QUAL-010's closure.
+
+### M9b close-out — the two scripts were run by a human, and the flip still does not happen, 2026-08-27
+
+Appended per this document's convention; nothing above is edited. **This is the close-out the
+status subsection above deferred**, and it discharges what that subsection said M9b still owed: a
+human running both blocking scripts on a machine with a display, a real audio interface and an
+instrument. That happened on 2026-08-27, on SALON — a 1440p display at 100 % scale, a PreSonus
+AudioBox 22VSL monitoring audibly, an instrument playing, and the CLAP plugin loaded in **Reaper**
+for the plugin halves. Library fixtures came from a new `namir-fixtures` example, below.
+
+**Both documents now carry per-step verdicts and a real `Result:` line.**
+
+- **FR-UI-020 — PASS, all twelve steps**, in both product configurations
+  (`docs/manual-tests/fr-ui-020-single-screen-elements.md`).
+- **FR-UI-070 — FAIL**, twelve of fifteen steps passing; **steps 4, 8 and 14 fail**
+  (`docs/manual-tests/fr-ui-070-non-modal-error-notices.md`).
+
+**FR-UI-070 is now verified and failing, which is a better state than unverified and a worse one
+than the ledger implied.** Its first sentence holds and was observed rather than argued from the
+source: notices are non-modal under real clicking, typing, scrolling and window dragging, and audio
+never broke across a corrupt model, a deleted file, a truncating IR load, a full rescan against an
+unwritable index, or a project reload with a missing reference. Its second sentence — "an error
+shall state what failed, which file or device it concerned, and what the user can do" — does not.
+**Of the 69 `message_template` values in the tree, none tells the user what they can do**; two state
+what the *system* did instead. Two notices name neither the file nor the device.
+
+**The run produced seven findings, and their most useful property is that they compound.** Filed as
+issues #39-#45, with #15, #24, #26 and #34 updated from the same evidence rather than duplicated.
+The chain worth reading in full is step 14's: the code-and-template duplication (#39) roughly
+doubles a notice's rendered length; `notices.rs`'s `ui.horizontal` row does not wrap, so the
+`Dismiss` button lands past the right edge; the CLAP editor is fixed at 960x640 with
+`can_resize() == false` because FR-CLAP-110 is a scoped-out Should; and notices never expire, since
+`Dismiss` is the only removal path. **The result is a notice that can never be removed**, occupying
+part of a screen that FR-UI-020's own run shows already cannot display every element at once. Four
+defensible decisions, no author of the outcome, and a defect that looked cosmetic at step 1 turning
+functional at step 14. That is the argument for manual tests stated better than this document could
+state it in the abstract.
+
+**Two other requirements gained real evidence on the same pass.**
+
+- **FR-IO-070's step 2 was executed** — not with the failable virtual device R-5 asks for, but by
+  physically unplugging the interface while audio flowed
+  (`docs/manual-tests/fr-io-070-device-removal.md`). Crash-free, hang-free, no error spam, window
+  functional: those clauses hold. The naming clause fails, and **the classification is a direct R-5
+  data point**: the unplug arrived as `StreamFailure::Other` carrying an unmapped OS error, **not**
+  as `DeviceLost`, so `to_stream_failure`'s mapping is now known to be incomplete against a real
+  case. Namir reported it as a device loss anyway, by luck — the code is chosen from the direction,
+  never from the classification. Step 3 is now observed rather than inferred: re-plugging does not
+  resume, and no device-selection surface exists to recover with (§15 item 16, issue #26).
+- **Tooling the run needed, added mid-run rather than worked around.**
+  `crates/namir-fixtures/examples/seed-library.rs` writes both scripts' fixtures into the library
+  root with one command, including the over-10-second IR neither fixture generator produces; and
+  `crates/namir-app/examples/list-devices.rs` prints endpoint names as `audio-settings.json` must
+  spell them and probes exclusive mode per device — the two facts steps 11 and 12 cannot be run
+  without. Both replace instructions that told a human to find a hash-named directory under
+  `target/` or to guess a localised Windows endpoint name.
+
+### The flip does not happen here, and the reason has changed
+
+**M9b's own text says this milestone's close-out owns D-18.5's flip. It does not happen, and this
+subsection is the correction rather than an edit to the sentences that said it would.**
+
+The status subsection above blocked the flip on one thing: these two documents saying `NOT
+EXECUTED`. They no longer do. **But M14's planning pass, which landed between that subsection and
+this one, found the hole is larger than the two documents M9b knew about: six `Verify: M` Musts are
+unexecuted, not two** — FR-UI-020, -030, -040, -050, -070 and FR-IO-030. This pass executed two of
+the six. **FR-UI-030, FR-UI-040, FR-UI-050 and FR-IO-030 remain unexecuted**, and `xtask
+traceability` still cannot tell, so deleting `--allow-uncovered` today would make the required check
+green on evidence nobody has produced — the same inversion the status subsection refused, at a
+smaller number.
+
+**§21's Phase 3 already states the sequencing this implies**, and it is now the plan of record:
+issue #34's fix — teaching the tool to read a manual document's `Result:` line — "**must land before
+D-18.5's flip**, or the flip inherits the same hole". So the flip is **M14's**, after that fix, and
+**NFR-QUAL-010 closes with the flip, not at M9b**. Every reason the status subsection gave for the
+flip being M9b's still holds against *M13*; what it did not anticipate was a milestone arriving
+between M9b and M8.
+
+**This run also sharpens what #34's fix must do, and the sharpening comes from a document that
+passes its own script's structure while failing the requirement.** FR-UI-070's document now says
+`Result: FAIL`, and `xtask traceability` prints `clean -- all 130 Must requirements are covered`
+regardless. A fix that keys only on the literal `NOT EXECUTED` would credit a **failing** manual test
+as covering its Must. It must treat anything other than a pass as uncovered.
+
+### §14 moves, and one that deliberately does not
+
+**M9b close-out moves, 2026-08-27 — one row, one requirement**, appended per D-23.2's "every later
+milestone moves only the cells its own evidence justifies". **5.13 UI becomes 2 / 5 / 0** (was
+1 / 6 / 0); **Total becomes 41 / 89 / 0** (was 40 / 90 / 0).
+
+- **FR-UI-020 — Partial → Done.** Its `Verify:` is `M`, its manual document is the traced artifact
+  under D-18.6, and that document now records twelve of twelve steps passing in both shells with the
+  window size, display scale, host and fixture provenance stated. M9a's adjudication of Partial rested
+  on there being no `fr-ui-020-*.md` at all; M9b's build pass wrote one and this pass ran it. **The
+  verdict rests on one recorded judgement and should not be read without it**: the runner adjudicated,
+  in writing and as step 11 demands, that scrolling within the single screen is *not* navigation. Had
+  it gone the other way, FR-UI-020 would **fail in the plugin shell**, where the fixed 960x640 editor
+  puts everything below `EQ Enabled` behind a scroll with no way to widen the window. The requirement's
+  standing in the plugin is therefore contingent on a Should (FR-CLAP-110) that was scoped out — a link
+  no decision, requirement or comment records, and worth one when someone revisits FR-CLAP-110.
+- **FR-UI-070 — stays Partial, for an entirely new reason.** M9a adjudicated it Partial because "M
+  against the error catalogue of FR-ERR-020" had been run against no catalogue entry. It has now been
+  run against thirteen, and the requirement **fails**. A Partial cell that used to mean "unverified"
+  now means "verified and not met", which is the same cell carrying a different and more actionable
+  claim. It cannot become Done until #41's catalogue work lands, and it is not Not-started: the
+  non-modality and never-interrupt-audio clauses are built, observed and passing.
+- **5.11 IO does not move**, and the absence is deliberate. FR-IO-070 gained real evidence — a
+  physical unplug, executed and recorded — and stays **Partial**, because that evidence establishes
+  the requirement is *not met* rather than that it is: its "allow the user to select another device"
+  clause has no implementation to verify. The cell is unchanged; what changed is that its
+  `uncovered:` claim is now backed by an observation instead of an inspection.
+
+### What M9b leaves for M14
+
+M9b's build work is complete and its two blocking scripts are executed. What it hands on, beyond the
+58 partials the status subsection re-booked to M8:
+
+1. **The flip and NFR-QUAL-010**, sequenced behind issue #34's fix (§21 Phase 3), with the
+   additional requirement that the fix treat a `FAIL` result as uncovered and not only a `NOT
+   EXECUTED` one.
+2. **Four unexecuted `Verify: M` Musts** — FR-UI-030, -040, -050 and FR-IO-030. The first three need
+   the same machine this pass used and roughly the same hour; FR-IO-030 needs Linux and macOS
+   hardware, and until it runs **neither Linux nor macOS audio has ever moved a sample**.
+3. **Issues #39-#45**, all seven from one manual run, of which #41 (the catalogue says nothing about
+   what to do) and #42 (undismissable notices) are the two that block FR-UI-070 from ever reading
+   Done.
+
+**The case for M14 existing, restated from this milestone's own evidence.** M9b found two real DSP
+defects by running tests that had never run against a loaded chain, and this pass found seven
+user-facing defects by running two scripts nobody had ever executed. Both are the same finding at
+different altitudes: **this project's remaining risk is concentrated in the checks that were written
+and never run**, not in the code that was written and never checked. §21 Phase 4 makes that argument
+for the engine; the record above makes it for the interface.
 
 ---
 
@@ -5047,3 +5728,295 @@ artifacts are developer-only until a signing identity exists. NFR-SEC-040's two 
 — hashes are published, bit-for-bit reproducibility is not claimed and is weakened by M11's git
 dependency. And the Linux tarball has never been unpacked by `install.sh` on any distribution, so
 the platform whose CI leg passed first is the one with the least evidence behind it.
+
+---
+
+## 21. M14 — Pre-1.0 closure
+
+**Size: XL.** **Depends on:** M9b, for the ledger this milestone is planned from — the triage below
+reads 66 `**PARTIAL**` rows, and until M9b those rows were neither complete nor trustworthy.
+**Blocks:** M8, entirely. **Governed by:** the decisions its Phase 0 makes, none of which exist yet.
+
+### Why this milestone exists
+
+**M8 says "Size: S, a gate, not a construction phase."** That is the right description of M8 and the
+wrong description of what M8 currently inherits. A sweep this session of every open register — §15's
+open decisions, §22's risk rows, all 66 partials, all 26 manual-test documents, every Should, and a
+grep for in-code deferrals — found that the work standing between today and the 1.0 exit checklist
+is not a checklist's worth. Three findings make the case, and each was verified against the source
+rather than inherited from a document:
+
+- **14 of the 66 partials are not verification debt.** They are Must requirements whose *product*
+  half was never built, wearing a coverage annotation. **Nine of those are user-facing surfaces that
+  do not exist in `namir-ui` at all** — `UiIntent` has seven variants and not one of them saves a
+  preset, adds a library root, selects a device, or resets a clip indicator. A milestone whose
+  entire content is "check that every row reads Done" cannot absorb a UI feature phase.
+- **Six `Verify: M` Musts are unexecuted**, not the two M9b's close-out names. FR-UI-020, -030,
+  -040, -050, -070 and FR-IO-030 all resolve to a manual document that says `NOT EXECUTED`, and
+  `xtask traceability` cannot tell — §15 item 15's filename arm was deliberately left unfixed, and
+  `xtask` refuses a `trace-partial:` on a `Verify: M` Must, so there is no disposition between "no
+  document" and "fully covered". **FR-IO-030 means neither Linux nor macOS audio has ever moved a
+  sample.**
+- **Six §15 items and eleven §22 risks are open**, two of them past their own stated deadlines. §15
+  item 16 — whether 1.0 ships an audio-device panel — was due before M9b's start, has not been
+  taken, and is upstream of five Musts' user-facing clauses.
+
+**The alternative was to let M8 discover all of this.** That is precisely the failure M9a was
+created to prevent one level up: a gate that first learns what it is gating when it runs. M8 keeps
+its number, its text and its meaning, and gains a milestone in front of it.
+
+### Sequencing
+
+> **M9a → M10 → M11 → M12 → M13 → M9b → M14 → M8.**
+
+M14 is numbered by when it joined the plan, not when it runs, exactly as §12's execution-order note
+established for M9–M13. Nothing above this section is rewritten; §12 carries a dated note recording
+the refinement.
+
+### Phase 0 — Decisions, before any of it is built
+
+**Nothing in Phases 1–6 starts until Phase 0 closes**, for the reason M9b's own P0 pass gives: a
+branch policy chosen after the measurement is a policy chosen to suit the measurement. Every item
+here is a paragraph in a governing document, not code.
+
+- **§15 item 16 — the audio-device panel.** Overdue. Answer 1 (build it) makes Phase 1 materially
+  larger; answer 2 (record an FRS scope reduction at FR-IO-010, -040, -050, -060, -070) deletes most
+  of Phase 1's device work and converts five Musts' clauses into recorded reductions. Answer 3
+  (silence) is not available at a 1.0 gate. **This is the single decision with the largest effect on
+  this milestone's size, and it must be first.** Issue #26.
+- **§15 item 3 — AQ-4 and factory presets.** Note a third resolution the item does not list:
+  FR-STATE-090 is a **Should**, §13 says no Should gates M8, and yet M8's exit checklist gates on
+  "factory presets ship". Striking that bullet is cheaper than either of the item's two answers and
+  is the only one consistent with §13. Whichever is chosen, no factory preset exists in the tree, so
+  the permitted route is still unbuilt work.
+- **§15 item 18 — FR-CHAIN-070's stereo source.** Decide; do not build. Dropping the Should costs no
+  Must and is recommended, because the alternative reopens D-9.8's stage order, which M9a re-affirmed.
+- **§15 item 19 — NFR-PORT-030's method vs. its text.** Decide whether the two mobile cross-builds
+  are the method or whether the five enumerated constraints need per-constraint checks. If the
+  latter, each becomes Phase 4 work.
+- **§15 item 20 / issue #18 — the plugin's missing editor on macOS and Linux.** A decision, not a
+  build; Cocoa and X11 embedding is a second and third `unsafe` surface under D-5.3 and is not 1.0
+  work.
+- **§15 item 21 / issue #27 — compound `Verify:` methods.** Six Musts state one; the parser keeps
+  the first code. Five self-correct through an `uncovered:` field; FR-STATE-040 structurally cannot,
+  and reads fully covered while its schema-check half exists nowhere.
+- **The sub-40 kHz clause (FR-NAM-060, FR-IR-030).** Where the lower rate falls below ~40 kHz, "0.1
+  dB to 20 kHz or Nyquist, whichever is lower" is unsatisfiable by any resampler. The honest fix is
+  an FRS clause bounding the supported range — a paragraph, not a test.
+- **R-13's fired condition.** The row says: if the partial count is not falling by M12, the mechanism
+  is being used as a bypass. M12 and M13 have both run and the count went 56 → 66. The rise is
+  honest accounting — M9b demoted two of its own tags and drove twelve uncovered Musts to zero — but
+  **a stated test that fires and is then reinterpreted needs the reinterpretation written down**,
+  not assumed.
+- **Accepted limitations, recorded as `*Consequence*` notes at their requirements** rather than
+  rolled forward as partials one more time: NFR-DOC-040's "stating what it does"; NFR-PERF-010's CI
+  regression gate (the figure passes with 34–42% headroom; closing it as written needs a self-hosted
+  runner on the §2 machine, which is disproportionate); NFR-PERF-030's stronger audible marker
+  (already considered and rejected once, on good grounds — ratify rather than reopen);
+  FR-CLAP-030's `audio-ports-config`; FR-NAM-090's true BS.1770 meter; FR-CLAP-090's memory
+  benchmark; NFR-LIC-010's SPDX-header clause, which is NFR-LIC-060's (a Should) work;
+  FR-CFG-030's "exercised" half for the standalone, which needs a device no runner has.
+
+### Phase 1 — The unbuilt user surfaces
+
+The nine Musts whose mechanism does not exist. Scope depends on Phase 0's item 16 answer.
+
+- **FR-STATE-030 — save and recall a named preset.** `AppHost::save_state`/`load_state` exist and
+  their own doc comment says they are wired to no control; their only caller is a test. `namir-clap`
+  has no equivalent. **`namir-app` constructs no `FileRef` anywhere**, so a save wired today would
+  write a state with no model or IR identity and silently break FR-STATE-060 and -070 — the
+  `FileRef` construction is a prerequisite of the save path, not a follow-up. Issue #32.
+- **FR-LIB-010 — nominate library directories.** Roots are hard-coded to `<config_dir>/Library`;
+  `AppSettings` has no roots field. Issue #32.
+- **FR-STATE-070 — locate a missing file manually.** Also `library_relative: None` on every
+  plugin-side `FileRef`, so FR-STATE-070's *first* resolution candidate is never recorded, in the
+  shell where project portability matters most. This is not the gap that row's `uncovered:` field
+  names.
+- **FR-NAM-080 — model metadata on screen.** `UiSnapshot` carries `loaded_model_name` only, filled
+  from the file basename, so author/gear/tone-type reach no screen.
+- **FR-IN-020, FR-IN-030, FR-OUT-020 — peak-hold, clip latch, output metering.** The engine already
+  publishes all of it; `MeterReading` carries `peak_db`/`rms_db` only and the string "clip" does not
+  appear anywhere in `crates/namir-ui/src`. `Meter::reset_clip` has no caller outside its unit test.
+  **The cheapest work in this phase** — the data exists one layer short of the screen.
+- **FR-IO-060, FR-IO-070 — xrun count and device re-selection.** The xrun counter surfaces only
+  through `eprintln!`. Gated on item 16.
+
+Every item here needs both `UiHost` bridges — `namir-app/src/host.rs` and `namir-clap/src/ui_host.rs`
+implement it independently by design — and any file dialog must respect NFR-PORT-030's no-blocking-
+dialog-on-an-audio-affecting-path clause.
+
+**FR-GATE-040 rides along.** It is a Should, it is one `UiSnapshot` field, and the engine already
+publishes `telemetry.gate.gain_reduction_db`. It is the cheapest Should in the FRS and the gate meter
+is currently computed and thrown away.
+
+### Phase 2 — The CLAP host contract
+
+- **FR-CLAP-060 — automation is applied at block boundaries.** `apply_automation` never reads
+  `ev.header().time()` and runs once before the block, so every automation point quantises to the
+  buffer size: ~10.7 ms at 48 kHz/512, ~85 ms at 4096. A Must, audible to the plugin's primary user
+  class, with **no recorded disposition anywhere**. Split the block at event offsets. Issue #30.
+- **FR-CLAP-060's click-freedom half.** Global bypass is a plain `bool` flip with no crossfade;
+  `GateStage` already has the pattern.
+- **Issue #36 — global bypass processes every stage when `prepare_crosscutting` was never called.**
+  Establish first whether any production path reaches it; fix or assert accordingly.
+
+### Phase 3 — Gates that do not gate
+
+Three mechanisms that exist, are green, and cannot detect what they were built to detect.
+
+- **FR-PARAM-020 — the tombstone mechanism is inoperable.** `check_manifest` has no caller outside
+  its own tests, and `xtask params-lock` byte-diffs against live-only output, so a committed
+  tombstone fails the gate permanently and `--write` deletes it. 1.0 is the version the stability
+  promise is measured from. Issue #31.
+- **FR-ERR-020 — `ErrorCode`'s fields are all `pub`** and one live site constructs an off-catalogue
+  code. The second conjunct of its `Verify: S` has no artifact. Issue #33.
+- **R-17 — nothing mechanical stops `--all-features`** linking `clack-host` into the shipped cdylib;
+  `xtask rt-logging` is the template for the guard. Issue #25.
+- **The manual-document verdict gap (issue #34).** Have `xtask traceability` read the `Result:` line
+  and treat `NOT EXECUTED` as uncovered, so the gate cannot print `clean` on evidence nobody
+  produced. **This must land before D-18.5's flip**, or the flip inherits the same hole.
+
+### Phase 4 — Engine and parameter verification
+
+~35 Musts of test debt against product code that is believed correct. No single theme needs its own
+phase; together they are the largest block of work in the milestone, and M9b's experience is the
+argument for doing it rather than deferring it again — **both DSP defects M9b found were found by
+running tests that had never run against a loaded chain.**
+
+- **Chain-level probes** (FR-CHAIN-010, -020, -050, -060, -080, NFR-PERF-020). The tagged
+  FR-CHAIN-010 test feeds zeros with nothing loaded and asserts zeros out; it cannot distinguish any
+  stage order from an empty chain. `ChannelConfig::MonoToStereo` appears in no gate or NAM test. No
+  NaN is ever injected into a real stage's state. One probe-signal harness through
+  `build_default_chain` closes most of this.
+- **Per-control DSP coverage** (FR-GATE-010, -030, FR-EQ-010, -020, -030, FR-IR-070, FR-PARAM-040).
+  Gate Attack/Release are exercised by no test. EQ magnitude is measured at DC and Nyquist only,
+  where the method says each band's own corner within 0.1 dB. FR-EQ-020 is a one-liner: the rate
+  array holds four of the six rates the requirement names.
+- **Parameter descriptors and delivery paths** (FR-PARAM-010, -030, -050, FR-OUT-010). Nothing
+  asserts a name, unit, range or default over a *shipped* `REGISTRY` entry — both tagged tests assert
+  against a fabricated const declared inside `mod tests`.
+- **Stage behaviour under a real signal** (FR-NAM-050, -110, FR-IR-060, FR-STATE-050). FR-NAM-110's
+  "cross-correlate an impulse through the stage" is performed by nothing — both tagged tests read an
+  accessor whose body is the literal `0` and assert it equals `0`.
+- **Sample-rate coverage** (FR-CLAP-080). The sweep loads nothing at any of its 154 rates, so
+  `SlotResampler` — the one rate-dependent subsystem, and the one M9b found broken at 192 kHz —
+  never runs in it. Loading a Nano fixture into the existing sweep is cheap and high-value.
+- **Cross-shell state interchange** (FR-STATE-030 test half, -060, FR-CLAP-050). Gated on Phase 1.
+- **RT safety and timing** (NFR-RT-010, -030, -040, NFR-PERF-050, FR-CLAP-130). The alloc harness
+  does not reach `namir-app`'s audio callback. NFR-RT-030 measures the assembled chain's aggregate,
+  in which a real denormal spike in one stage is diluted below the bound by the other five, where the
+  method says "drive each stage".
+- **Diagnostics and fault containment** (FR-ERR-010, -030, -040). FR-ERR-040 injects a fault only
+  into the generic worker pool — nothing into the scanner, the state path, settings I/O, the cache or
+  the GUI thread — and its "continue passing audio" clause is asserted by nothing, in the requirement
+  whose Rationale is "crashing a user's DAW loses their work".
+- **Static checks that under-approximate** (NFR-PORT-020, FR-ERR-060, NFR-QUAL-040, NFR-SEC-020,
+  NFR-LIC-010, NFR-LIC-050). `xtask layering`'s platform lint matches three literal substrings, so
+  `#[cfg(not(windows))]`, `cfg!(...)` and `#[cfg(target_arch)]` all pass unseen. Nothing detects
+  direct `std::net` use in a first-party crate.
+- **Benchmarks that assert nothing** (FR-LIB-030, FR-UI-060). Both already exist and print rather
+  than assert, which is the worst state a `Verify: B` can be in. FR-UI-060's timed frame uses
+  `scan: None`, so neither the scan branch nor the re-filter path — the reason the memoization exists
+  — runs inside it. Closing FR-UI-060's also closes **R-12**'s detector gap.
+
+### Phase 4b — A2's missing golden, added 2026-08-12
+
+**Added after the rest of this section was written, because the owner asked whether A2 support had
+ever actually been tested and the honest answer turned out to be "not against the reference".** It
+is recorded as its own phase rather than folded into Phase 4 because it is not test debt against
+code believed correct — it is an unverified numerical claim about a shipped architecture. Issue #37.
+
+**What exists and is real:** A2 loads and runs; two from-scratch Rust implementations written from
+the upstream C++ agree bit-exactly on both real shapes plus a bottleneck probe
+(`crates/namir-nam/tests/a2_fixtures.rs`); the unsupported-feature boundary is properly enforced and
+FR-NAM-140's test is honest (`crates/namir-nam/src/model.rs`); block-splitting, mutation-robustness
+and RT-allocation all hold.
+
+**What does not exist: any executable comparison of A2 against `NeuralAmpModelerCore`.**
+`crates/namir-nam/tests/golden/` holds `wavenet_nano.nam` and `lstm_tiny.nam` and no A2 model.
+`golden_reference.rs` argued one was not needed because "D-9.12 keeps A2 inside the 'WaveNet'
+architecture this test already covers" — **and that is false as a statement about code paths.**
+D-9.12 is a dispatch decision; `wavenet.rs`'s own module doc says A2's additions are "provably inert
+when the file is A1", which is exactly why an A1 golden cannot reach them. The A1 fixture takes the
+other side of every A2 branch — per-layer `kernel_sizes`, a `bottleneck` distinct from `channels`,
+the nested convolutional head, the per-layer activation array, and the k-tap causal head conv — and
+six of the ten activation variants go unreached, `LeakyReLU` among them, which is what real A2 uses.
+
+**Three further findings, each recorded rather than assumed:**
+
+- **R-9 is reopened** (§22, and its own row carries the analysis). Its retirement rested on a real-
+  reference A2 cross-check with no committed artifact, no tool that could regenerate it, and no
+  manual write-up — and the two records of it disagree about whether it measured A2 or an A1
+  `WaveNetShape::Standard`. Bit-exact agreement between two in-house ports proves they derived the
+  *same* weight order, not the *right* one, which is precisely what R-9 was raised about.
+- **No genuine A2 export has ever been loaded**, and both the generator and the parser derive the A2
+  schema from one reading of the same C++ — so a *shared* misreading is bit-exactly invisible to
+  every test in the tree. `file.rs`'s A2 fields are all `#[serde(default)] Option<_>` with no
+  `deny_unknown_fields`, so a real file carrying a feature under an unanticipated key is silently
+  ignored rather than rejected, which undercuts FR-NAM-140 *for real files* even though its test is
+  sound. This is the class AGENTS.md warns about, citing the post-M6 `null`-vs-omitted bug.
+- **Real A2 models in the wild take a path Namir has never been compared against.**
+  `NAM_ENABLE_A2_FAST` defaults to **ON** upstream and its `is_a2_shape` detector matches exactly
+  the two shapes FR-NAM-150 names, so a default-built host runs them through `a2_fast.cpp`; the one
+  unrecorded Namir comparison used `-DNAM_ENABLE_A2_FAST=OFF`. Excluding the fast path is
+  defensible, but the choice has **no recorded rationale** — `golden_reference.rs` attributes the
+  flag to D-9.12's PR #264 note, and that note discusses only `NAM_USE_INLINE_GEMM`.
+
+**Deliverables:** a committed A2-Full golden (and ideally A2-Lite) rendered through the pinned
+reference build over `tests/golden/input_10s.wav`, asserted beside the two existing golden tests,
+with a probe longer than A2's ~6300-sample receptive field — the same shape of work
+`golden_reference.rs` already did twice; one recorded run against a genuine trainer-produced A2
+export, written up as `docs/manual-tests/fr-nam-020-real-lstm-models.md` was for LSTM; and a
+recorded decision on the fast path. FR-NAM-030's and FR-NAM-150's tags are demoted to
+`trace-partial:` in the meantime, and R-9 stays reopened until the golden lands.
+
+### Phase 5 — Distribution and install verification
+
+Four requirements naming one hole: **`ci.yml` never runs `xtask bundle`**, so every assertion against
+a real produced tree happens only on a `v*` tag. Only macOS re-opens what it produced; Windows and
+Linux assert the staging tree only, so nothing opens the produced installer, ZIP or tarball to
+confirm the licence texts and `THIRD-PARTY-NOTICES.md` are inside (FR-CFG-030, FR-PKG-040,
+NFR-LIC-030, NFR-BUILD-020). Add bundle-and-inspect lanes on all three platforms, plus an
+`xtask identity`-style check tying README commands to `ci.yml` — they have already drifted.
+
+### Phase 6 — The human sessions, and R-18
+
+- **One Windows session** with a display, an audio interface and an instrument closes five of the six
+  unexecuted `Verify: M` Musts — FR-UI-020, -040, -050, -070 and, with a DAW, the residues of
+  FR-CLAP-040, -060, -090 and -100. **This is the highest-value single unblocking action in the
+  project**, and it also releases D-18.5's flip and NFR-QUAL-010's closure. Issue #34.
+- **FR-IO-030 needs a Linux box and a Mac.** Neither platform's audio path has ever moved a sample,
+  and both are claimed as supported.
+- **FR-UI-030 cannot be closed by running its script** — `egui-baseview` wires no `accesskit`
+  platform adapter, so a screen reader announces nothing and the script would fail. Decide it in
+  Phase 0; issue #35.
+- **R-18 / issue #22 — NFR-PERF-040's margin is not Namir's.** Instantiation is 187.5 ms against a
+  200 ms Must at 10 000 entries, of which chain construction is 147 µs; the rest is one JSON parse
+  of `library-index.json`, per plugin instance, with no cross-instance sharing. **Asserting on `max`
+  as the benchmark does puts the breach near 10 700 entries**, and FR-LIB-020's 10 000 is a floor on
+  what Namir claims to support. No regression test can ever catch this, because nothing regresses.
+  Take the index off the instantiation path.
+- **R-11 / issue #23 — signing.** If 1.0 is a public release, a quarantined macOS plugin has no
+  user-visible load path at all and the CI signing route is unreachable because the keychain import
+  is unbuilt. Decide, then build or record.
+
+### Acceptance
+
+- Phase 0's decisions are all recorded in the governing documents, each at its own requirement or
+  decision, before any Phase 1–6 commit lands.
+- Every partial that this milestone closes is closed by closing its named gap, never by promoting its
+  tag — D-23.1's own failure mode, and the one §22 **R-13** exists to catch.
+- The remaining partials are re-booked deliberately, with a stated reason, not by default onto
+  whatever milestone follows. M9b's own status subsection records that the last such re-booking was a
+  default and says so plainly; this milestone must not repeat it.
+- The six unexecuted `Verify: M` Musts either carry an executed per-step verdict or a recorded
+  scope reduction. **Neither `NOT EXECUTED` nor silence survives into M8.**
+- `xtask traceability` cannot print `clean` while any manual document reads `NOT EXECUTED`.
+- D-18.5's flip and NFR-QUAL-010's closure — inherited from M9b, which could not reach them — land
+  here, after Phase 3's verdict-parsing change and Phase 6's Windows session, and not before.
+
+**What this milestone deliberately does not do:** build a Wayland backend (R-16, issue #19), an
+accessibility platform adapter (issue #35, unless Phase 0 says otherwise), a Cocoa or X11 plugin
+editor (issue #18), a BS.1770 loudness meter, a memory benchmark, or a self-hosted benchmark runner.
+Each is recorded as an accepted limitation in Phase 0 rather than carried as an open partial into the
+1.0 gate.

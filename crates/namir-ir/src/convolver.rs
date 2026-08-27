@@ -163,10 +163,12 @@ fn axpy(out: &mut [f32], in_: &[f32], w: f32) {
 
     let w_vec = f32x8::splat(w);
     for (o, i) in out_vec_part
-        .chunks_exact_mut(8)
-        .zip(in_vec_part.chunks_exact(8))
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .zip(in_vec_part.as_chunks::<8>().0)
     {
-        let sum = f32x8::from(&*o) + w_vec * f32x8::from(i);
+        let sum = f32x8::from(*o) + w_vec * f32x8::from(*i);
         o.copy_from_slice(&sum.to_array());
     }
     for (o, &i) in out_rem.iter_mut().zip(in_rem.iter()) {
@@ -829,94 +831,104 @@ pub fn direct_convolve(h: &[f32], x: &[f32]) -> Vec<f32> {
 // Resampling (D-9.3's quality bar, FR-IR-030)
 // ---------------------------------------------------------------------------------------------
 
-/// Resamples one mono signal from `from_hz` to `to_hz` using `rubato`'s `SincFixedIn`, configured
-/// as a high-quality sinc resampler (`sinc_len = 256`, `BlackmanHarris2` window — good rolloff
-/// and the best stopband attenuation `rubato` offers, per `rubato::WindowFunction`'s own doc
-/// comments — `oversampling_factor = 256`, cubic interpolation between sinc-interpolated points,
-/// and `f_cutoff` computed by `rubato::calculate_cutoff` for this `sinc_len`/window pair rather
-/// than guessed), following the offline-clip recipe `rubato`'s own README documents: feed fixed-
-/// size chunks through `process_into_buffer`, flush the resampler's reported `output_delay` via
-/// `process_partial_into_buffer`, then drop the leading `output_delay` output frames and truncate
-/// to the exact expected output length.
+/// Minimum FFT length, in the lower of the two rates' domain, for the antialiasing filter
+/// `resample_mono` builds — the same figure and the same reasoning as `namir-engine`'s
+/// `MIN_RESAMPLE_FFT_FRAMES`, which FR-IR-030 ("meeting the quality requirement of FR-NAM-060")
+/// makes this crate owe as well. It is repeated here rather than shared because D-5.1's layering
+/// runs the other way: `namir-engine` depends on `namir-ir`, never the reverse.
 ///
-/// This is not a substitute for a direct frequency-response measurement against D-9.3's quality
-/// bar (>= 100 dB stopband, <= 0.1 dB ripple to 20 kHz) — see this crate's test suite for what
-/// coverage exists and its module doc comment's note on scope.
+/// `rubato`'s FFT resampler builds its antialiasing filter as a `BlackmanHarris2`-windowed sinc
+/// whose length *is* the FFT size, and `rubato::calculate_cutoff` places the cutoff at
+/// `1/(1 + 13.745/n + 121.7/n² + 5964/n³)` of the lower Nyquist for a length-`n` filter — so a
+/// short filter does not merely have a wide transition, it has its passband edge pulled in. At
+/// n = 256 the cutoff is 0.947 x Nyquist, which leaves 20 kHz flat to well within FR-NAM-060's
+/// 0.1 dB for every rate pair `resampler_frequency_response_meets_the_ir_quality_bar` measures.
+const MIN_RESAMPLE_FFT_FRAMES: usize = 256;
+
+/// Resamples one mono signal from `from_hz` to `to_hz` with `rubato`'s `FftFixedInOut`, sized by
+/// [`MIN_RESAMPLE_FFT_FRAMES`] so that its antialiasing filter meets the quality bar FR-IR-030
+/// imports from FR-NAM-060 (>= 100 dB stopband, <= 0.1 dB passband ripple to 20 kHz or the lower
+/// Nyquist). Offline and non-RT: this runs on a worker thread at IR load, never on the audio
+/// thread, so it is free to allocate and to choose a longer filter than an RT budget would allow.
+///
+/// The recipe: hand `FftFixedInOut::new` the exact `chunk_size_in` that makes it choose the FFT
+/// size wanted (its own `fft_size_in = k · from_hz/gcd`, so this multiplies rather than hints),
+/// feed whole chunks — zero-padding the last one, since a finite IR is zero after its end anyway —
+/// until enough output exists, then drop the resampler's reported `output_delay` leading frames
+/// and truncate to the exact expected length.
+///
+/// **Not a sinc resampler, since M9b.** This was `SincFixedIn` with `sinc_len = 256` and
+/// `rubato::calculate_cutoff`'s own cutoff, on the reasoning that it was the best-quality
+/// configuration `rubato` documents. The first actual measurement (M9b — nothing had ever measured
+/// either of Namir's two resamplers) found that it missed FR-NAM-060's stopband badly wherever the
+/// ratio was large: **−17.7 dB** at 192 → 48 kHz, −35.0 dB at 96 → 44.1 kHz, against a 100 dB bar,
+/// because a windowed sinc's transition band straddles the cutoff and so extends past the lower
+/// Nyquist, where it aliases. Lengthening the sinc and pulling its cutoff in does fix it
+/// (`sinc_len = 2048`, `f_cutoff = 0.96` measured −115 dB) at several times the cost, but an FFT
+/// resampler truncates the spectrum *at* the lower Nyquist by construction, which is what an
+/// antialiasing filter for a fixed rational ratio should do: it measures ≥ 129 dB with ~1e-5 dB
+/// of ripple, and it is the same mechanism, and the same constant, as the resampler FR-NAM-060
+/// names directly.
 fn resample_mono(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
-    use rubato::{
-        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-        calculate_cutoff,
-    };
+    use rubato::{FftFixedInOut, Resampler};
 
     if input.is_empty() || from_hz == to_hz {
         return input.to_vec();
     }
 
-    let ratio = to_hz as f64 / from_hz as f64;
-    let new_length = ((input.len() as f64) * ratio).round() as usize;
+    let new_length = ((input.len() as f64) * to_hz as f64 / from_hz as f64).round() as usize;
 
-    let sinc_len = 256;
-    let window = WindowFunction::BlackmanHarris2;
-    let f_cutoff = calculate_cutoff(sinc_len, window);
-    let params = SincInterpolationParameters {
-        sinc_len,
-        f_cutoff,
-        oversampling_factor: 256,
-        interpolation: SincInterpolationType::Cubic,
-        window,
-    };
-    let chunk_size = 1024.min(input.len());
-    let mut resampler = SincFixedIn::<f32>::new(ratio, 1.0, params, chunk_size.max(1), 1)
-        .expect("ratio > 0 and max_relative_ratio == 1.0 are always valid construction inputs");
+    let gcd = gcd(from_hz as usize, to_hz as usize);
+    let fft_unit_low = from_hz.min(to_hz) as usize / gcd;
+    let chunk_frames = MIN_RESAMPLE_FFT_FRAMES.div_ceil(fft_unit_low) * (from_hz as usize / gcd);
+    let mut resampler =
+        FftFixedInOut::<f32>::new(from_hz as usize, to_hz as usize, chunk_frames, 1)
+            .expect("both rates are nonzero, this function's callers having them from SampleRate");
 
+    let in_frames = resampler.input_frames_next();
+    let out_frames = resampler.output_frames_next();
     let delay = resampler.output_delay();
-    let mut out: Vec<f32> = Vec::with_capacity(new_length + delay + chunk_size);
-    let mut outbuf = resampler.output_buffer_allocate(true);
+    let mut out: Vec<f32> = Vec::with_capacity(new_length + delay + out_frames);
+    let mut chunk_out = vec![0f32; out_frames];
+    let mut chunk_in = vec![0f32; in_frames];
 
     let mut pos = 0usize;
-    loop {
-        let need = resampler.input_frames_next();
-        if input.len() - pos < need {
-            break;
-        }
-        let chunk = [&input[pos..pos + need]];
-        let (n_in, n_out) = resampler
-            .process_into_buffer(&chunk, &mut outbuf, None)
-            .expect("resample process_into_buffer");
-        out.extend_from_slice(&outbuf[0][..n_out]);
-        pos += n_in;
-    }
-    if pos < input.len() {
-        let chunk = [&input[pos..]];
-        let (_, n_out) = resampler
-            .process_partial_into_buffer(Some(&chunk), &mut outbuf, None)
-            .expect("resample process_partial_into_buffer");
-        out.extend_from_slice(&outbuf[0][..n_out]);
-    }
-    // Flush any frames still held in the resampler's internal delay line.
     while out.len() < new_length + delay {
-        let (_, n_out) = resampler
-            .process_partial_into_buffer::<&[f32], Vec<f32>>(None, &mut outbuf, None)
-            .expect("resample flush");
-        if n_out == 0 {
-            break;
-        }
-        out.extend_from_slice(&outbuf[0][..n_out]);
+        // Past the end of the input this feeds silence, which is what the signal is there.
+        let taken = in_frames.min(input.len().saturating_sub(pos));
+        chunk_in[..taken].copy_from_slice(&input[pos..pos + taken]);
+        chunk_in[taken..].fill(0.0);
+        pos += taken;
+
+        let wave_in: [&[f32]; 1] = [&chunk_in[..]];
+        let mut wave_out: [&mut [f32]; 1] = [&mut chunk_out[..]];
+        resampler
+            .process_into_buffer(&wave_in, &mut wave_out, None)
+            .expect("buffers are exactly this resampler's own declared chunk sizes");
+        out.extend_from_slice(&chunk_out);
     }
 
-    if out.len() > delay {
-        out.drain(0..delay);
-    } else {
-        out.clear();
-    }
+    out.drain(0..delay);
     out.resize(new_length, 0.0);
     out
+}
+
+/// Greatest common divisor, iterative Euclid — used only by [`resample_mono`], to reproduce the
+/// `gcd(rate_in, rate_out)` arithmetic `rubato::FftFixedInOut::new` does internally so that the
+/// chunk length handed to it lands exactly on the FFT size wanted rather than being rounded up.
+fn gcd(a: usize, b: usize) -> usize {
+    let (mut a, mut b) = (a, b);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use namir_fixtures::ir::{decaying_noise, delayed_delta, delta, minimum_phase_lowpass};
+    use namir_fixtures::resample_response::measure;
 
     // -------------------------------------------------------------------------------------
     // Schedule tests, ported from the spike plus new stagger-specific coverage.
@@ -1400,17 +1412,19 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------------------
-    // Resampling: a known-frequency test tone through PreparedIr::from_wav_bytes at a source
-    // rate different from engine_rate, checking the effect is sane. See resample_mono's doc
-    // comment for the scope note: this is not a rigorous stopband/ripple measurement.
+    // Resampling (FR-IR-030, which imports FR-NAM-060's quality bar by reference).
+    //
+    // Two shapes, and since M9b it is the second that carries the requirement: a known-frequency
+    // test tone through the whole PreparedIr::from_wav_bytes load path, checking the effect is
+    // sane; and a direct frequency-response measurement of resample_mono, which is the method
+    // FR-NAM-060 states ("measure the frequency response of the resampler in isolation") and
+    // which, the first time it was run, failed - see resample_mono's own doc comment.
     // -------------------------------------------------------------------------------------
 
-    // trace-partial: FR-IR-030
-    // uncovered: FR-IR-030 — the FR-NAM-060 quality bar this requirement imports (>= 100 dB
-    // uncovered: stopband, <= 0.1 dB passband ripple to 20 kHz or Nyquist) is measured nowhere
-    // uncovered: for resample_mono: the tagged test asserts only resampled length and that a
-    // uncovered: 1 kHz tone's magnitude exceeds 1 Hz by 10x, which a 40 dB-stopband, 3 dB-ripple
-    // uncovered: resampler would pass; closes M9b
+    /// Supplementary since M9b, when the quality bar this used to stand in for became a real
+    /// measurement (`resampler_frequency_response_meets_the_ir_quality_bar`, below, which carries
+    /// FR-IR-030's tag now). What it still contributes that the measurement does not: it drives
+    /// the whole `from_wav_bytes` load path, taps and all, rather than `resample_mono` alone.
     #[test]
     fn resampling_a_pure_tone_preserves_its_frequency_and_energy_roughly() {
         // A 1 kHz tone at 44.1 kHz, resampled (via being loaded as an "IR") to 48 kHz. This is
@@ -1493,6 +1507,69 @@ mod tests {
         let engine_rate = SampleRate::new(48_000).unwrap();
         let prepared = PreparedIr::from_wav_bytes(&bytes, engine_rate, 64).unwrap();
         assert_eq!(prepared.len_samples(), 500);
+    }
+
+    /// The source/engine rate pairs the measurement below covers. An IR is a `.wav` file, so its
+    /// rate is whatever a user's file declares rather than anything Namir chooses — these are the
+    /// standard rates such a file realistically carries, against the standard session rates.
+    const MEASURED_IR_RATE_PAIRS: [(u32, u32); 9] = [
+        (44_100, 48_000),
+        (48_000, 44_100),
+        (88_200, 48_000),
+        (96_000, 44_100),
+        (96_000, 48_000),
+        (192_000, 44_100),
+        (192_000, 48_000),
+        (48_000, 96_000),
+        (44_100, 96_000),
+    ];
+
+    // trace-partial: FR-IR-030
+    // uncovered: FR-IR-030 — measured across nine source/engine rate pairs drawn from the
+    // uncovered: standard rates (44.1/48/88.2/96/192 kHz sources against 44.1/48/96 kHz engine
+    // uncovered: rates), not every pair a `.wav` header and `SampleRate::new` between them admit:
+    // uncovered: both take any nonzero rate, and where the lower of the two falls below about
+    // uncovered: 40 kHz the imported FR-NAM-060 clause "up to 20 kHz or the Nyquist frequency,
+    // uncovered: whichever is lower" is unsatisfiable by construction, an antialiasing filter flat
+    // uncovered: to Nyquist not being able to be 100 dB down just above it, so that region needs
+    // uncovered: an FRS decision rather than a test; closes M8
+    #[test]
+    fn resampler_frequency_response_meets_the_ir_quality_bar() {
+        // The clause this requirement states in its own words, before the one it imports: a WAV
+        // at a foreign rate is resampled to the engine rate *on load*, which is what makes the
+        // function measured below the one that runs and its numbers this requirement's numbers.
+        let bytes = write_mono_wav(44_100, &delta(44_100));
+        let prepared =
+            PreparedIr::from_wav_bytes(&bytes, SampleRate::new(48_000).unwrap(), 64).unwrap();
+        assert_eq!(
+            prepared.len_samples(),
+            48_000,
+            "a 1 s IR at 44.1 kHz should load as 1 s of taps at a 48 kHz engine rate"
+        );
+
+        // And the clause it imports from FR-NAM-060, measured on the resampler `from_wav_bytes`
+        // just used. See `namir_fixtures::resample_response`'s module doc comment for the method
+        // and `resample_mono`'s for what this measurement found the first time it was run.
+        for (source_hz, engine_hz) in MEASURED_IR_RATE_PAIRS {
+            let band_edge_hz = source_hz.min(engine_hz) as f64 / 2.0;
+            let response = measure(source_hz, engine_hz, band_edge_hz, |input| {
+                resample_mono(input, source_hz, engine_hz)
+            });
+            let label = format!("{source_hz} Hz -> {engine_hz} Hz");
+            println!("FR-IR-030 {label}: {}", response.summary());
+            assert!(
+                response.ripple_db <= 0.1,
+                "FR-NAM-060 allows 0.1 dB of passband ripple; {label} measured {}",
+                response.summary()
+            );
+            if let Some(stopband_db) = response.stopband_db {
+                assert!(
+                    stopband_db <= -100.0,
+                    "FR-NAM-060 requires 100 dB of stopband attenuation; {label} measured {}",
+                    response.summary()
+                );
+            }
+        }
     }
 
     // -------------------------------------------------------------------------------------

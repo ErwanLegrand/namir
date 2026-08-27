@@ -149,7 +149,7 @@ enum Outcome {
 // uncovered: would still be timed as having reached an audible state, and nothing automated
 // uncovered: anywhere confirms audio left the interface. The stronger marking event was
 // uncovered: considered and rejected: it needs an observable inside crate::stream's audio
-// uncovered: callback, added purely to enable a measurement; closes M9b
+// uncovered: callback, added purely to enable a measurement; closes M8
 fn main() {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_namir"));
     let reps = std::env::var(REPS_ENV)

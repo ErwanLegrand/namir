@@ -78,6 +78,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p xtask -- layering       # D-5.1 dependency-graph + platform-cfg lint
+cargo run -p xtask -- rt-logging     # FR-ERR-030: no audio-thread module may name the logger
 cargo run -p xtask -- params-lock    # checks params.lock is in sync with namir-params::REGISTRY
 cargo run -p xtask -- attribution    # NFR-LIC-030 THIRD-PARTY-NOTICES.md freshness
 cargo run -p xtask -- identity       # M12: brand-mark blob freshness + README/TRADEMARK statements
@@ -180,8 +181,9 @@ argument; see `namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for th
 applies a package's `[lints]` table to bench and integration-test targets too, so a `namir-clap`
 bench *could* carry `#![allow(unsafe_code)]` — it may not, and nothing mechanical would catch it:
 `xtask`'s subcommands are `layering`, `params-lock`, `attribution`, `traceability`, `preset`,
-`nam-parity` (added M10), `identity` (added M12) and `bundle` (added M13),
-none of which reads for `unsafe`. When a harness looks like it needs `unsafe`, the answer this
+`nam-parity` (added M10), `identity` (added M12), `bundle` (added M13) and `rt-logging` (added
+M9b — FR-ERR-030's static half; it reads for the *logger's* name in the modules that carry
+audio-thread code, not for `unsafe`), none of which reads for `unsafe`. When a harness looks like it needs `unsafe`, the answer this
 project has reached every time is to take the capability from a dependency whose own `unsafe` is
 already audited, or to move the tested logic to a seam that takes plain types: `assert_no_alloc`
 for D-7.5's RT-allocation harness (`namir-dsp`/`namir-engine` say so in as many words in their own
