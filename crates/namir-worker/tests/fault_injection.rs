@@ -194,7 +194,13 @@ fn a_fault_in_any_non_audio_subsystem_is_contained_and_audio_keeps_flowing() {
     // ---- Subsystem 2: library index persistence -- a corrupt index file. ----
     let index_path = dir.join("library-index.json");
     std::fs::write(&index_path, b"{ this is not a library index").unwrap();
-    let (service, warnings) = LibraryService::open(index_path.clone(), vec![dir.clone()]);
+    let (service, _) = LibraryService::open(index_path.clone(), vec![dir.clone()]);
+    // M14 (§22 R-18): `open` no longer reads the file -- the load is deferred off the plugin's
+    // instantiation path -- so the warning is drained from the load rather than returned by
+    // `open`. What is under test here is unchanged: a corrupt index degrades to an empty one and
+    // says so through the catalogue.
+    service.ensure_loaded();
+    let warnings = service.take_load_warnings();
     assert!(
         !warnings.is_empty(),
         "a corrupt index must degrade with a warning rather than silently"
