@@ -84,22 +84,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # trace-partial: NFR-BUILD-020
-      # uncovered: NFR-BUILD-020 — M12 closed the "document" half: README.md carries the build,
-      # uncovered: run and test commands, and xtask identity asserts those exact strings are
-      # uncovered: present, so they cannot silently *disappear* from it. They can still drift from
-      # uncovered: this file — identity compares README.md against literals in
-      # uncovered: xtask/src/identity.rs and nothing compares either against ci.yml, and they are
-      # uncovered: already apart: this job runs `cargo build --workspace --all-targets` where the
-      # uncovered: README documents `cargo build --workspace`. "Exercised by CI" is unmet on top of
-      # uncovered: that — no step executes a command *because* it is documented (the test command
-      # uncovered: matches by coincidence, the build command does not), and docs/user-guide.md's
-      # uncovered: per-platform install and run instructions are unexercised. "Every product
-      # uncovered: configuration on every supported platform" is unspanned too: no job in this file
-      # uncovered: assembles a macOS bundle — release.yml's macos lane does, via xtask bundle and
-      # uncovered: packaging/macos/make_installer.sh, but only on a v* tag, never on a push or pull
-      # uncovered: request — and no job installs either product at its documented install path or
-      # uncovered: loads the plugin in a real host, clap-validator and M9b's in-process
-      # uncovered: host-ext-tests being neither an install nor a DAW; closes M8
+      # uncovered: NFR-BUILD-020 — M12 closed the "document" half and M14's `xtask ci-commands`
+      # uncovered: closes the drift half: every command README.md documents is run by this file and
+      # uncovered: every xtask subcommand this file runs is documented there, checked in both
+      # uncovered: directions on every pull request. What is left is the requirement's own scope
+      # uncovered: word: "every product configuration on every supported platform" is unspanned —
+      # uncovered: no job installs either product at its documented install path on Windows or
+      # uncovered: macOS or loads the plugin in a real host (clap-validator and the in-process
+      # uncovered: host-ext-tests are neither an install nor a DAW), and docs/user-guide.md's
+      # uncovered: per-platform install and run instructions are read by no check; closes M8
       - name: cargo build --workspace --all-targets
         run: cargo build --workspace --all-targets
 
@@ -160,6 +153,20 @@ jobs:
       - name: xtask identity (NFR-DOC-040, NFR-LIC-070)
         run: cargo run -p xtask -- identity
 
+      # M14 Phase 5: NFR-BUILD-020's *second* half. `identity` above asserts that README.md still
+      # contains the build, run and test commands -- they cannot silently disappear from it. It
+      # compares them against literals in `xtask/src/identity.rs` and against nothing in this file,
+      # so the two were free to drift apart, and had: this job ran `xtask rt-logging`, which the
+      # README's gate block did not list, and the README described a macOS `.clap` as something to
+      # "assemble by hand" three milestones after `xtask bundle` started producing one.
+      #
+      # This step compares the two files directly, in both directions -- every command the README
+      # documents is run here, and every `xtask` subcommand run here is documented there. It reads
+      # this file through the same YAML subset parser M13 wrote for `release.yml`, so a workflow
+      # edit that leaves the file unparseable fails here rather than on a runner.
+      - name: xtask ci-commands (NFR-BUILD-020)
+        run: cargo run -p xtask -- ci-commands
+
       # M9a: NFR-QUAL-010's traceability check, now **split into two steps with different flip
       # dates** per D-18.5 (`docs/02-architecture.md:2002-2079`). It was one `continue-on-error`
       # step from M7 until this commit, and the M7 comment it replaced was right about the coverage
@@ -177,7 +184,7 @@ jobs:
       #     derived half rides here, not on the informational one). Both are mechanical and
       #     satisfiable right now: `--write` regenerates the plan, and Section 14's row set is
       #     hand-fixed. Nothing about a milestone's progress can make this red.
-      #   * **Informational, until M9b's close-out.** Zero uncovered Musts. When this was written
+      #   * **Informational, until M14's Phase 6.** Zero uncovered Musts. When this was written
       #     it could not reach zero inside M9 for a reason that was not a verification gap -- ten of
       #     the then-uncovered ids belonged to milestones that had not run (M10, M12, M13), and the
       #     only route to zero was tagging unbuilt work, which D-23.1 forbids. Making it blocking
@@ -198,23 +205,34 @@ jobs:
       #     nobody has produced, the precise inversion of what this split is for. The flip waits on
       #     those two scripts being run by a human and their results recorded.
       #
+      #     **M9b closed out on 2026-08-27 without reaching it, and the flip is now M14's**
+      #     (`03-implementation-roadmap.md` §21, "What the automated half of M14 will and will not
+      #     attempt"): M9b's blocker is unchanged and is not a verification gap this workflow can
+      #     close -- no headless runner can execute either script (**R-16**: an Xvfb display is
+      #     GLX-capable but offers no sRGB framebuffer config, and `egui-baseview` asks for one).
+      #     M14's Phase 6 owns it, after a human at a screen has run the two scripts. **M14's
+      #     automated half, this step included, does not flip it**, and the two sentences above
+      #     naming M9b are left as the record of where it stood.
+      #
       # Both steps print the identical uncovered list, each id beside the milestone the roadmap
       # makes responsible for it -- a derived label the exit status never reads. The second step
       # exists so a non-zero count is a visible annotation on the run rather than a line in a log
       # nobody opens; the first would otherwise be green while printing the same gaps.
       #
-      # **The M9b close-out flip is the deletion of the flag and of the second step**, deliberately
-      # two edits and no restructuring. Do not flip it early by deleting only the flag.
+      # **The flip is the deletion of the flag and of the second step**, deliberately two edits and
+      # no restructuring. Do not flip it early by deleting only the flag. It is M14 Phase 6's,
+      # having been M13's and then M9b's -- and it moves with the evidence, never with a milestone
+      # boundary.
       #
       # One interaction worth knowing rather than rediscovering: if the required step fails, the job
       # stops and the informational step does not run, so a stale plan temporarily hides the
       # coverage annotation. Harmless -- the required step has already printed the same list -- and
-      # left alone rather than papered over with `if: always()`, which would make the M9b flip a
+      # left alone rather than papered over with `if: always()`, which would make the flip a
       # three-line edit instead of the two D-18.5 specifies.
       - name: xtask traceability -- plan + Section 14 denominators (D-18.5, required)
         run: cargo run -p xtask -- traceability --allow-uncovered
 
-      - name: xtask traceability -- uncovered Musts (NFR-QUAL-010, informational until M9b)
+      - name: xtask traceability -- uncovered Musts (NFR-QUAL-010, informational until M14 Phase 6)
         run: cargo run -p xtask -- traceability
         continue-on-error: true
 
@@ -380,6 +398,189 @@ jobs:
       # makes this a gate (upstream `src/commands/validate.rs:83-87`).
       - name: clap-validator validate
         run: clap-validator validate staging/Namir.clap
+
+  # ---------------------------------------------------------------------------------------------
+  # M14 Phase 5 -- the distribution lane. **`xtask bundle` had never run outside a `v*` tag.**
+  # Everything that asserts a real produced tree lived in `release.yml`, so a packaging regression
+  # was discoverable only at the moment it is most expensive: cutting a release. This job runs the
+  # same commands on every push and pull request, on all three platforms, and then **opens what it
+  # produced** rather than the tree that went in.
+  #
+  # The distinction is the whole point of the lane and is worth stating rather than assuming.
+  # `xtask bundle` produces a *staging tree*; `release.yml` archives and hashes it. A check that
+  # reads the staging tree cannot catch a packaging step that drops a file -- only unpacking the
+  # artifact a user would download can. So each platform below builds its archive with the same
+  # commands `release.yml` uses, **deletes the intermediate copy**, unpacks the archive into a fresh
+  # directory and points `xtask bundle --inspect` at *that*. The check it runs is the same
+  # `bundle::check` the packaging step runs, so an archive that lost `LICENSE-APACHE`, or whose
+  # `Namir.clap` stopped being a bundle directory on macOS, fails here by name.
+  #
+  # ---- What this lane does **not** do, so nothing above is read as more than it is.
+  #   * **The Windows installer is not built or opened here.** Inno Setup would build it (`iscc` is
+  #     preinstalled), but the payload `namir.iss` reads is the staging tree this job already
+  #     inspects, and opening the produced `.exe` needs `innoextract` -- a second pinned
+  #     Chocolatey input on the merge path, for a container whose contents this lane has already
+  #     asserted twice. `release.yml` remains the only place it is built.
+  #   * **Nothing is exercised.** Not the standalone (no runner has an audio device or a display,
+  #     §22 R-16 -- FR-CFG-030's own *Consequence (added M14)* accepts that clause as
+  #     unautomatable), and not the plugin: `clap-validator` runs in its own job above, against a
+  #     staged `cdylib` on Windows, for the product reason that job's comment gives.
+  #   * **The version string is a CI placeholder** (`0.0.0-ci` on macOS, which is the only platform
+  #     whose packaging takes one). A tagged release names the tag; nothing here is publishable and
+  #     nothing here is uploaded.
+  #
+  # ---- Cost. A release build of the workspace on three runners. `Swatinem/rust-cache` is on, as
+  # in `build-test` -- unlike `release.yml`, which deliberately runs uncached because a *published*
+  # artifact should be a function of the source tree and the toolchain alone. Nothing this job
+  # produces is published, so the cache is free here and the argument against it does not apply.
+  #
+  # trace-partial: FR-PKG-040
+  # uncovered: FR-PKG-040 — this lane opens the plain archive of every platform (the ZIP, the
+  # uncovered: tarball, and on macOS the .pkg, .dmg and .zip through make_installer.sh's own
+  # uncovered: verify_outputs) but not the **Windows installer**: `namir.iss` reads the staging
+  # uncovered: tree, `release.yml` builds the .exe only on a v* tag, and nothing anywhere unpacks
+  # uncovered: the produced installer to assert the three files inside it; closes M8
+  bundle-and-inspect:
+    name: bundle + inspect the produced distribution (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # See `build-test`'s identical step: `namir-app` takes `cpal`, whose ALSA backend needs real
+      # development headers at build time, and this job builds the whole workspace in release.
+      - name: Install ALSA development headers (Linux only, for cpal's alsa-sys)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # D-18.3's fixed order, first two steps: build, then bundle. `xtask bundle` copies artifacts
+      # a release build has already produced and builds nothing itself, so a debug build here would
+      # stage nothing.
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
+
+      # No `--target`: `Platform::host()` resolves it from the runner, which is exactly what the
+      # README documents a developer running, and what `xtask ci-commands` checks this file against.
+      # A materialising run asserts its own output before returning (FR-PKG-020's method), so this
+      # step is already the staging-tree half of the check.
+      #
+      # trace-partial: NFR-LIC-030
+      # uncovered: NFR-LIC-030 — the "shipped with the binaries" clause is now asserted on all
+      # uncovered: three platforms on every push and pull request, from the *produced* archive
+      # uncovered: rather than the staging tree — but the Windows installer's payload is still
+      # uncovered: opened by nothing, and no check anywhere reads the attribution file's *contents*
+      # uncovered: after packaging: `bundle::check` asserts the three documents are present, not
+      # uncovered: that the notices file inside an archive is the current one; closes M8
+      - name: xtask bundle (stage this runner's platform, and assert what it staged)
+        run: cargo run -p xtask -- bundle
+
+      # Windows: FR-PKG-050's plain ZIP, built with `release.yml`'s own `Compress-Archive` block
+      # (which takes its wording from `packaging/windows/README.md`). The staging copy is removed
+      # before the archive is expanded, so what `--inspect` reads can only have come out of the
+      # ZIP's bytes.
+      - name: Build the plain ZIP and open it again (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $Name  = "namir-ci-windows-x86_64"
+          $Stage = "target\dist\$Name"
+          Remove-Item -Recurse -Force target\dist -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path target\dist | Out-Null
+          Copy-Item -Recurse "target\bundle\windows" $Stage
+          Compress-Archive -Path $Stage -DestinationPath "target\dist\$Name.zip" -Force
+          Remove-Item -Recurse -Force $Stage
+          Expand-Archive -Path "target\dist\$Name.zip" -DestinationPath "target\dist\unpacked" -Force
+          cargo run -p xtask -- bundle --inspect "target\dist\unpacked\$Name"
+
+      # Linux: the deterministic tarball, verbatim from `release.yml`, which took it from
+      # `packaging/linux/README.md`. `SOURCE_DATE_EPOCH` is fixed rather than read from the commit
+      # -- this archive is never published, and a constant keeps the step reproducible on a rerun.
+      - name: Build the tarball and open it again (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          PKG="namir-ci-linux-$(uname -m)"
+          rm -rf target/package
+          mkdir -p "target/package/${PKG}"
+          cp -R target/bundle/linux/. "target/package/${PKG}/"
+          cp packaging/linux/install.sh "target/package/${PKG}/install.sh"
+          cp packaging/linux/README.md  "target/package/${PKG}/INSTALL.md"
+          chmod 755 "target/package/${PKG}/install.sh" \
+                    "target/package/${PKG}/namir" \
+                    "target/package/${PKG}/Namir.clap"
+          tar --create \
+              --directory target/package \
+              --format=gnu \
+              --sort=name \
+              --owner=0 --group=0 --numeric-owner \
+              --mtime="@0" \
+              --file - "${PKG}" \
+            | gzip -9 -n > "target/package/${PKG}.tar.gz"
+          rm -rf "target/package/${PKG}"
+          mkdir -p target/package/unpacked
+          tar -xzf "target/package/${PKG}.tar.gz" -C target/package/unpacked
+          cargo run -p xtask -- bundle --inspect "target/package/unpacked/${PKG}"
+
+      # Linux, second half: the tarball's own `install.sh` runs against a throwaway prefix and a
+      # throwaway CLAP directory -- a clean environment in the only sense a runner can offer one --
+      # and the three FR-PKG-040 documents are asserted at the paths the script's `--help` promises.
+      # This is the first time any installer in this repository has been executed anywhere.
+      #
+      # trace-partial: FR-CFG-030
+      # uncovered: FR-CFG-030 — the method's four clauses are two products x (installed alone in a
+      # uncovered: clean environment, exercised there). Only Linux installs at all, `install.sh`
+      # uncovered: places **both** products in one run so neither is installed *alone*, no Windows
+      # uncovered: or macOS installer is executed by any job, and nothing is exercised afterwards:
+      # uncovered: the standalone's exercising clause is the FRS's accepted limitation (no runner
+      # uncovered: has an audio device), the plugin's is not accepted and stays open; closes M8
+      - name: Install the unpacked tarball into a throwaway prefix (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          PKG="namir-ci-linux-$(uname -m)"
+          ROOT="${PWD}/target/package/install-root"
+          rm -rf "$ROOT"
+          sh "target/package/unpacked/${PKG}/install.sh" \
+            --prefix "${ROOT}/prefix" --clap-dir "${ROOT}/clap"
+          test -f "${ROOT}/clap/Namir.clap"
+          test -x "${ROOT}/prefix/bin/namir"
+          for document in THIRD-PARTY-NOTICES.md LICENSE-MIT LICENSE-APACHE; do
+            test -f "${ROOT}/prefix/share/doc/namir/${document}" \
+              || { echo "::error::${document} is not at the installed documents path"; exit 1; }
+          done
+
+      # macOS: `packaging/macos/make_installer.sh`, the same invocation `release.yml` makes, minus
+      # the signing secrets it does not have (every signing variable is optional by that script's
+      # design; unset means the unsigned path, which is today's state on a tag too). It builds the
+      # `.pkg`, the `.dmg` and FR-PKG-050's `.zip`, and its own `verify_outputs` expands the `.pkg`,
+      # mounts the `.dmg` and extracts the `.zip` to assert the three documents inside each.
+      #
+      # **No line of that script had ever been executed anywhere when this step was written** --
+      # its own header says so. This lane is where it stops being true, and the first run finding
+      # something is the lane working: the alternative is finding it while cutting a release.
+      - name: Package with make_installer.sh, which opens what it produced (macOS)
+        if: matrix.os == 'macos-latest'
+        run: bash packaging/macos/make_installer.sh --version 0.0.0-ci
+
+      # The same `.zip`, re-opened by `xtask` rather than by the packaging script. Not redundant:
+      # `make_installer.sh` cannot be FR-PKG-040's traced artifact -- `xtask traceability` does not
+      # scan `packaging/**`, as that function's own note to whoever closes the requirement says --
+      # and `bundle::check` asserts more than the script's presence loop does, re-deriving the whole
+      # macOS layout including both `Info.plist` files byte for byte.
+      - name: xtask bundle --inspect (what came out of the .zip, macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          rm -rf target/packaging/macos/unpacked
+          ditto -x -k target/packaging/macos/Namir-0.0.0-ci-macos.zip target/packaging/macos/unpacked
+          cargo run -p xtask -- bundle --inspect target/packaging/macos/unpacked/Namir-0.0.0-ci
 
   # Covers D-18.1's "an MSRV pin ... enforced" (NFR-PORT-010). The pinned version is read out of
   # root Cargo.toml's [workspace.package].rust-version at run time rather than hardcoded here, so

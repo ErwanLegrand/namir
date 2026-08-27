@@ -41,10 +41,11 @@
 // artifact its gap is about; D-23.1's adjacency rule takes one anchor per tag, so the two ids this
 // site carried until M9a are now annotated separately rather than stacked here.
 // trace-partial: FR-CFG-030
-// uncovered: FR-CFG-030 — the Verify: I method's "each is installed alone into a clean
-// uncovered: environment and exercised" is executed by nothing: the artifact is xtask layering's
-// uncovered: compile-time dependency-edge lint over LAYERING_TABLE, which argues compile-time
-// uncovered: reachability and neither installs nor exercises either product; closes M8
+// uncovered: FR-CFG-030 — the artifact annotated here is xtask layering's compile-time
+// uncovered: dependency-edge lint over LAYERING_TABLE, which argues compile-time reachability and
+// uncovered: neither installs nor exercises either product. M14's bundle-and-inspect lane in
+// uncovered: ci.yml executes the Linux installer into a throwaway prefix, which is the first half
+// uncovered: of one platform's clause; the tag there carries what that still leaves; closes M8
 
 const FIXTURES: &str = "namir-fixtures";
 
