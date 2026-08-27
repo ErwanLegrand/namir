@@ -215,6 +215,75 @@ pub enum StreamFailure {
     Other(String),
 }
 
+/// `Display`, added M14 (issue #44), because the `Debug` rendering was reaching a user's screen:
+/// `crate::app`'s stream-error callback built its notice detail with `format!("{other:?}")`, so a
+/// human running `docs/manual-tests/fr-ui-070-non-modal-error-notices.md` on 2026-08-27
+/// transcribed `Other("OS Error -2004287450 (FormatMessageW() returned error 317) ...")` — the
+/// Rust variant name and all — off a real window.
+impl std::fmt::Display for StreamFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeviceLost => f.write_str("the device is no longer available"),
+            Self::Xrun => f.write_str("the audio buffer under- or overran"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Message fragments a backend uses for "this endpoint has gone away", for a failure that reached
+/// [`StreamFailure::Other`] because `cpal` did not classify it.
+///
+/// # Why this exists at all — and it is a live **R-5** data point, not a tidy-up
+///
+/// `to_stream_failure` maps `cpal::ErrorKind::DeviceNotAvailable`/`HostUnavailable` onto
+/// [`StreamFailure::DeviceLost`], and that mapping is **known incomplete against a real observed
+/// case**. On 2026-08-27 an interface was physically unplugged while audio was flowing on the
+/// reference machine, and the failure arrived as `Other` carrying an unmapped OS error — the
+/// WASAPI `AUDCLNT_E_RESOURCES_INVALIDATED` (`0x88890026`, which prints as the signed decimal
+/// `-2004287450`), the code WASAPI raises for exactly "the endpoint device has been unplugged, or
+/// the hardware has been reconfigured, disabled or removed". Namir reported a device loss anyway,
+/// because [`crate::host`]'s code was chosen from the stream's *direction* and never from its
+/// classification: right by accident, and equally willing to call an unrelated driver fault a
+/// device loss.
+///
+/// So the classification was wrong, not merely its rendering. This recovers the device-loss cases
+/// that reach `Other`, matching on the backend's own message because that is the only thing
+/// `cpal::Error` exposes once its `ErrorKind` has come back as something else. §22's **R-5** says
+/// device-removal handling is weak in any cross-platform audio library and that the happy path is
+/// not the thing to test; this is that risk arriving, with a transcript.
+///
+/// **What it does not claim.** Matching on message text is a recovery, not a classification
+/// scheme: a backend that reworded its errors would silently fall back to
+/// [`crate::error_codes::STREAM_FAILED`], which is the safe direction (a truthful "the stream
+/// stopped" rather than an invented "your device was unplugged"). The real fix is upstream, in
+/// `cpal`'s own `ErrorKind`, and stays R-5's business.
+const DEVICE_LOSS_MARKERS: &[&str] = &[
+    // WASAPI, as the fork surfaces them: AUDCLNT_E_DEVICE_INVALIDATED (0x88890004) and
+    // AUDCLNT_E_RESOURCES_INVALIDATED (0x88890026), in both the hex and signed-decimal spellings
+    // an `OS Error` message can carry.
+    "-2004287484",
+    "0x88890004",
+    "-2004287450",
+    "0x88890026",
+    // Backend-agnostic phrasings.
+    "device was disconnected",
+    "device is no longer",
+    "device not available",
+    "devicenotavailable",
+    "no longer available",
+    "unplugged",
+    "invalidated",
+    "disconnected",
+];
+
+/// Whether a [`StreamFailure::Other`] message names a device that has gone away. See
+/// [`DEVICE_LOSS_MARKERS`] for the observed case that made this necessary.
+#[must_use]
+pub fn classifies_as_device_loss(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    DEVICE_LOSS_MARKERS.iter().any(|m| lowered.contains(m))
+}
+
 /// Why an [`AudioBackend`] operation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioIoError {
@@ -523,13 +592,28 @@ mod cpal_impl {
         super::block_frames(params.buffer_frames) * params.channels.max(1) as usize
     }
 
+    /// Classifies one `cpal::Error` into this crate's own vocabulary (D-13.1).
+    ///
+    /// **The `_` arm is not a fall-through any more (issue #44).** `cpal`'s own `ErrorKind` is
+    /// known incomplete against a real observed case: the physical unplug of 2026-08-27 arrived
+    /// here as neither `DeviceNotAvailable` nor `HostUnavailable`, but as an unclassified error
+    /// carrying WASAPI's `AUDCLNT_E_RESOURCES_INVALIDATED`. So the message is read before giving
+    /// up on it — see [`super::classifies_as_device_loss`] for the marker list, the transcript it
+    /// came from, and what this recovery does and does not claim.
     fn to_stream_failure(error: cpal::Error) -> StreamFailure {
         match error.kind() {
             cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::HostUnavailable => {
                 StreamFailure::DeviceLost
             }
             cpal::ErrorKind::Xrun => StreamFailure::Xrun,
-            _ => StreamFailure::Other(error.to_string()),
+            _ => {
+                let message = error.to_string();
+                if super::classifies_as_device_loss(&message) {
+                    StreamFailure::DeviceLost
+                } else {
+                    StreamFailure::Other(message)
+                }
+            }
         }
     }
 
@@ -1036,6 +1120,60 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    /// **The transcript from the 2026-08-27 manual run, verbatim.** A physical unplug of a
+    /// PreSonus AudioBox 22VSL, while audio was flowing, reached
+    /// `docs/manual-tests/fr-ui-070-non-modal-error-notices.md`'s step 8 in this shape: `cpal`
+    /// classified it as neither `DeviceNotAvailable` nor `HostUnavailable`, so it arrived as a
+    /// message rather than as a `DeviceLost`. That the *classification* was wrong — not merely
+    /// its rendering — is issue #44's larger half, and this is the case it was found on.
+    #[test]
+    fn the_unplug_observed_on_2026_08_27_classifies_as_a_device_loss() {
+        let observed = "OS Error -2004287450 (FormatMessageW() returned error 317)";
+        assert!(classifies_as_device_loss(observed), "{observed}");
+    }
+
+    /// The device-invalidated codes in every spelling an `OS Error` line can carry, plus the
+    /// backend-agnostic phrasings.
+    #[test]
+    fn the_device_loss_markers_cover_both_wasapi_codes_and_plain_english() {
+        for message in [
+            "OS Error -2004287484 (AUDCLNT_E_DEVICE_INVALIDATED)",
+            "0x88890004",
+            "0x88890026",
+            "The device was disconnected",
+            "audio endpoint unplugged",
+        ] {
+            assert!(classifies_as_device_loss(message), "{message}");
+        }
+    }
+
+    /// The safe direction: an error that says nothing about a device stays unclassified, so it is
+    /// reported as a stream failure rather than as an invented device removal. This is exactly
+    /// what the pre-M14 code could not do, since it chose from the stream's direction alone.
+    #[test]
+    fn an_unrelated_error_is_not_promoted_to_a_device_loss() {
+        for message in [
+            "the requested buffer size is not supported",
+            "OS Error -2004287465 (AUDCLNT_E_UNSUPPORTED_FORMAT)",
+            "",
+        ] {
+            assert!(!classifies_as_device_loss(message), "{message:?}");
+        }
+    }
+
+    /// Issue #44's rendering half: no `Debug` shape may reach a user-facing string. `Other`'s
+    /// message is written through, without the variant name and quotes `format!("{:?}")` adds.
+    #[test]
+    fn stream_failure_displays_without_its_debug_variant_name() {
+        let failure = StreamFailure::Other("OS Error -1 (something)".to_string());
+        assert_eq!(failure.to_string(), "OS Error -1 (something)");
+        assert!(!failure.to_string().contains("Other("));
+        assert_eq!(
+            StreamFailure::DeviceLost.to_string(),
+            "the device is no longer available"
+        );
     }
 
     /// FR-IO-020/FR-IO-080: a session that never asked for anything gets shared mode. Pinned on

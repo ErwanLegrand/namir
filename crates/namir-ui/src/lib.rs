@@ -77,3 +77,6 @@ pub use host::{
     UiSnapshot,
 };
 pub use library_view::{LibraryViewState, entry_label};
+// The list-side half of FR-UI-070, shared by both shells rather than copied into each -- see
+// `notices`' own module doc comment for the duplicate-notice and unbounded-list defects it closes.
+pub use notices::{MAX_NOTICES, push_deduplicated};

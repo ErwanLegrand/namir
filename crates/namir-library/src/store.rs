@@ -157,19 +157,19 @@ impl IndexStore {
         let tmp_path = self.path.with_extension("tmp");
         let mut file = File::create(&tmp_path).map_err(|e| {
             LibraryError::new(
-                error_codes::INDEX_CORRUPT,
+                error_codes::INDEX_SAVE_FAILED,
                 format!("{}: {e}", tmp_path.display()),
             )
         })?;
         file.write_all(&bytes).map_err(|e| {
             LibraryError::new(
-                error_codes::INDEX_CORRUPT,
+                error_codes::INDEX_SAVE_FAILED,
                 format!("{}: {e}", tmp_path.display()),
             )
         })?;
         file.sync_all().map_err(|e| {
             LibraryError::new(
-                error_codes::INDEX_CORRUPT,
+                error_codes::INDEX_SAVE_FAILED,
                 format!("{}: {e}", tmp_path.display()),
             )
         })?;
@@ -177,7 +177,7 @@ impl IndexStore {
 
         std::fs::rename(&tmp_path, &self.path).map_err(|e| {
             LibraryError::new(
-                error_codes::INDEX_CORRUPT,
+                error_codes::INDEX_SAVE_FAILED,
                 format!(
                     "renaming {} to {}: {e}",
                     tmp_path.display(),
@@ -300,6 +300,32 @@ mod tests {
         assert!(index.is_empty());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code.id, error_codes::INDEX_CORRUPT.id);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// **Issue #40: the save path reports a save failure, not a corrupt index.** Every one of
+    /// `save_atomic`'s four error paths reported `library.index.corrupt` until M14, whose text
+    /// says the index "could not be read ... and will be rebuilt by the next scan" -- on this path
+    /// nothing was read, the previous index is intact, and what was lost is the *new* scan's
+    /// results. The 2026-08-27 FR-UI-070 run induced both cases (steps 7 and 10) and recorded that
+    /// every word of that text was true on the open path and false on this one.
+    ///
+    /// Induced by making the destination a *directory*, so the final rename cannot succeed on any
+    /// platform, while the earlier temp-file steps do.
+    #[test]
+    fn a_failed_save_reports_the_save_entry_and_not_the_corrupt_one() {
+        let path = temp_index_path("save_failure");
+        let (store, mut index, _) = IndexStore::open(path.clone());
+        index.upsert(sample_entry());
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(&path).unwrap();
+
+        let err = store
+            .save_atomic(&index)
+            .expect_err("renaming onto a directory cannot succeed");
+        assert_eq!(err.code.id, error_codes::INDEX_SAVE_FAILED.id);
+        assert_ne!(err.code.id, error_codes::INDEX_CORRUPT.id);
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

@@ -129,7 +129,11 @@ impl LoadSource {
                 if meta.len() as usize > MAX_FILE_BYTES {
                     return Err(WorkerError::new(
                         error_codes::FILE_TOO_LARGE,
-                        format!("{display}: {} bytes", meta.len()),
+                        format!(
+                            "{display}: {} bytes, limit {} MB",
+                            meta.len(),
+                            MAX_FILE_BYTES / (1024 * 1024)
+                        ),
                     ));
                 }
                 let bytes = std::fs::read(path).map_err(|e| {

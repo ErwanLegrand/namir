@@ -63,7 +63,10 @@ pub struct PrepareError {
 
 impl std::fmt::Display for PrepareError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code.id, self.code.message_template)
+        // `render`, not `message_template`: a template may carry one `{detail}` placeholder since
+        // M14, and printing it raw is issue #15's defect. This error carries no detail of its own,
+        // so `render` is handed an empty one.
+        write!(f, "{}: {}", self.code.id, self.code.render(""))
     }
 }
 
