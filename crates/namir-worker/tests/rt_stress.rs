@@ -184,11 +184,15 @@ fn check_recall_outcome(nam: &ResourceRecall, ir: &ResourceRecall, uncatalogued:
 }
 
 // trace-partial: NFR-RT-010
-// uncovered: NFR-RT-010 — the allocation harness does not reach namir-app's audio callback:
-// uncovered: #[global_allocator] AllocDisabler is installed there (src/rt_harness.rs) but
-// uncovered: audio_section wraps only audio_io::convert's sample-format arithmetic, so the
-// uncovered: callbacks stream.rs drives through FakeBackend run under no assertion and the cpal
-// uncovered: data callbacks in audio_io.rs are executed by no test at all; closes M8
+// uncovered: NFR-RT-010 — the requirement enumerates six properties and the harness detects one.
+// uncovered: assert_no_alloc sees heap allocation only; "no lock any non-real-time thread can
+// uncovered: hold", "no file or network I/O" and "no system call that may block" are asserted by
+// uncovered: nothing anywhere and rest on review, and the bounded-worst-case pair is covered only
+// uncovered: indirectly, by this file's MAX_BLOCK_MULTIPLE and by NFR-RT-040's own benchmark.
+// uncovered: Separately, the cpal data callbacks in namir-app/src/audio_io.rs are executed by no
+// uncovered: test, needing a real device — M14 closed the rest of that gap by putting stream.rs's
+// uncovered: real input and output callbacks under D-7.5's harness, which found and fixed two
+// uncovered: allocations there; closes M8
 #[test]
 fn nfr_rt_010_three_axes_run_concurrently_with_zero_audio_thread_allocation() {
     let c = ctx();

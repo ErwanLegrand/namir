@@ -182,17 +182,27 @@ fn build_input(
     channel_count: usize,
     on_failure: Arc<dyn Fn(Direction, StreamFailure) + Send + Sync>,
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
-    let mut mono_scratch: Vec<f32> = Vec::with_capacity(setup.max_block_size);
+    let max_block = setup.max_block_size.max(1);
+    let mut mono_scratch: Vec<f32> = Vec::with_capacity(max_block);
     let on_data = Box::new(move |data: &[f32]| {
         if channel_count == 0 {
             return;
         }
-        mono_scratch.clear();
-        mono_scratch.extend(
-            data.chunks_exact(channel_count)
-                .map(|frame| frame.get(channel_index).copied().unwrap_or(0.0)),
-        );
-        producer.push_captured(&mono_scratch);
+        // Chunked at `max_block` frames rather than extending over the whole callback in one go
+        // (NFR-RT-010, found by `the_audio_callbacks_this_module_builds_allocate_nothing` at M14):
+        // `mono_scratch` is reserved for exactly `max_block` samples, so a host that hands this
+        // callback a buffer larger than the block size the engine was prepared for — which is
+        // legal, and is why `build_output` below already chunks — would grow the `Vec` from inside
+        // the audio callback. Chunking keeps every `extend` inside the reservation.
+        for frames in data.chunks(channel_count * max_block) {
+            mono_scratch.clear();
+            mono_scratch.extend(
+                frames
+                    .chunks_exact(channel_count)
+                    .map(|frame| frame.get(channel_index).copied().unwrap_or(0.0)),
+            );
+            producer.push_captured(&mono_scratch);
+        }
     });
     let on_error = {
         let on_failure = Arc::clone(&on_failure);
@@ -225,7 +235,15 @@ fn build_output(
 
     let priority_elevated = AtomicBool::new(false);
     let mut mono_in = vec![0.0f32; max_block];
-    let mut engine_channels: Vec<Vec<f32>> = vec![vec![0.0f32; max_block]; engine_channel_count];
+    // Two named buffers rather than a `Vec<Vec<f32>>`, because `StageIo::new` wants a
+    // `&mut [&mut [f32]]` and building that from a `Vec<Vec<f32>>` means collecting a fresh
+    // `Vec<&mut [f32]>` — an allocation, on the audio thread, once per chunk. `ChannelConfig`
+    // has exactly two output-channel counts (1 and 2), so the two cases below are exhaustive and
+    // the borrow can be a stack array instead. Found by
+    // `the_audio_callbacks_this_module_builds_allocate_nothing` at M14, which is the first thing
+    // in this crate to run these callbacks under D-7.5's harness (NFR-RT-010).
+    let mut engine_left = vec![0.0f32; max_block];
+    let mut engine_right = vec![0.0f32; max_block];
 
     let on_data = Box::new(move |out: &mut [f32]| {
         if !priority_elevated.swap(true, Ordering::AcqRel) {
@@ -254,19 +272,22 @@ fn build_output(
                 xruns.record();
             }
 
-            for (ch_index, channel) in engine_channels.iter_mut().enumerate() {
-                if ch_index == 0 || duplicate_into_stereo {
-                    channel[..chunk].copy_from_slice(&mono_in[..chunk]);
+            engine_left[..chunk].copy_from_slice(&mono_in[..chunk]);
+            if engine_channel_count > 1 {
+                if duplicate_into_stereo {
+                    engine_right[..chunk].copy_from_slice(&mono_in[..chunk]);
                 } else {
-                    channel[..chunk].fill(0.0);
+                    engine_right[..chunk].fill(0.0);
                 }
             }
 
-            {
-                let mut refs: Vec<&mut [f32]> = engine_channels
-                    .iter_mut()
-                    .map(|c| &mut c[..chunk])
-                    .collect();
+            if engine_channel_count > 1 {
+                let mut refs: [&mut [f32]; 2] =
+                    [&mut engine_left[..chunk], &mut engine_right[..chunk]];
+                let mut io = StageIo::new(&mut refs, chunk);
+                engine.process(&mut io);
+            } else {
+                let mut refs: [&mut [f32]; 1] = [&mut engine_left[..chunk]];
                 let mut io = StageIo::new(&mut refs, chunk);
                 engine.process(&mut io);
             }
@@ -276,12 +297,12 @@ fn build_output(
                     [(done + frame) * output_channels..(done + frame + 1) * output_channels];
                 out_frame.fill(0.0);
                 if let Some(slot) = out_frame.get_mut(left) {
-                    *slot = engine_channels[0][frame];
+                    *slot = engine_left[frame];
                 }
                 if engine_channel_count > 1
                     && let Some(slot) = out_frame.get_mut(right)
                 {
-                    *slot = engine_channels[1][frame];
+                    *slot = engine_right[frame];
                 }
             }
 
@@ -613,6 +634,74 @@ mod tests {
         input_cb(&[0.1f32; 100]);
         let mut out = [0.0f32; 200]; // 100 frames, over max_block_size (32)
         output_cb(&mut out); // must not panic
+    }
+
+    /// **NFR-RT-010 for this crate's own audio callbacks.** D-7.5's `assert_no_alloc` harness has
+    /// been installed in this crate since M11 (`crate::rt_harness`), but until M14 the only thing
+    /// it wrapped was `audio_io::convert`'s sample-format arithmetic — so the two closures
+    /// [`build_input`] and [`build_output`] construct, which are the whole of `namir-app`'s
+    /// audio-thread code, ran under no allocation assertion anywhere. These are the callbacks a
+    /// real `cpal` stream invokes; [`FakeBackend`] hands them back verbatim, so driving them here
+    /// runs the same code a device would, minus the device.
+    ///
+    /// **It found two allocations on the first run, both now fixed** and both commented at their
+    /// sites: `build_output` collected a fresh `Vec<&mut [f32]>` for `StageIo::new` once per
+    /// internal chunk, on every single callback; and `build_input`'s `mono_scratch` grew past its
+    /// reservation whenever the host delivered more frames than the negotiated block size.
+    ///
+    /// Both buffer sizes are driven here — one callback at exactly `max_block_size`, and one
+    /// larger than it so `build_output`'s chunking loop runs more than once and `build_input`'s
+    /// new chunking loop does too. The first callback pair is deliberately *outside* the harness:
+    /// `build_output`'s first invocation elevates the thread's priority once (D-13.2), a one-time
+    /// OS call rather than per-callback work, and a real stream pays it once as well.
+    #[test]
+    fn the_audio_callbacks_this_module_builds_allocate_nothing() {
+        const MAX_BLOCK: usize = 64;
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, MAX_BLOCK),
+            engine(MAX_BLOCK),
+            Arc::clone(&xruns),
+            |_, _| {},
+        )
+        .unwrap();
+
+        let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+
+        let exact_in = [0.1f32; MAX_BLOCK];
+        let mut exact_out = [0.0f32; MAX_BLOCK * 2];
+        // Deliberately not a multiple of MAX_BLOCK, so the final chunk of each callback is a
+        // partial one -- the shape most likely to be got wrong by a fixed-size buffer.
+        let big_in = [0.1f32; 200];
+        let mut big_out = [0.0f32; 400];
+
+        // Warm-up, un-asserted: see this test's own doc comment.
+        input_cb(&exact_in);
+        output_cb(&mut exact_out);
+        input_cb(&big_in);
+        output_cb(&mut big_out);
+
+        let mut saw_output = false;
+        for _ in 0..32 {
+            crate::rt_harness::audio_section(|| input_cb(&exact_in));
+            crate::rt_harness::audio_section(|| output_cb(&mut exact_out));
+            saw_output |= exact_out.iter().any(|s| s.abs() > 1e-6);
+            crate::rt_harness::audio_section(|| input_cb(&big_in));
+            crate::rt_harness::audio_section(|| output_cb(&mut big_out));
+            saw_output |= big_out.iter().any(|s| s.abs() > 1e-6);
+        }
+
+        // The run has to have produced real audio somewhere, or the assertions above would hold
+        // over callbacks that all returned early. Deliberately "somewhere across the run" rather
+        // than "on the last callback": the oversized pair pushes more frames than the bridge ring
+        // holds, so individual pulls legitimately underrun and pad with silence (that is what
+        // `xruns` counts, and FR-IO-060's own test asserts it).
+        assert!(
+            saw_output,
+            "every output callback produced silence -- nothing above was actually exercised"
+        );
     }
 
     /// FR-IO-020: whatever share mode [`crate::app`] settled on reaches **both** backend opens
