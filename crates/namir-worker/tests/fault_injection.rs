@@ -84,6 +84,11 @@ fn assert_catalogued(label: &str, error: &WorkerError) {
     );
 }
 
+/// The fewest blocks the probe must run for "audio kept flowing" to carry meaning. `finish` waits
+/// for this many before stopping, and the assertion at the end of the test re-checks it -- one
+/// constant so the wait and the guard cannot drift apart.
+const MIN_PROBE_BLOCKS: usize = 51;
+
 /// Runs the audio loop on its own thread until told to stop, reporting whether any block was
 /// silent and how many blocks ran.
 struct AudioProbe {
@@ -144,7 +149,31 @@ impl AudioProbe {
         }
     }
 
+    /// Stops the probe and reports `(blocks, silent_blocks)` -- **after** letting it reach
+    /// [`MIN_PROBE_BLOCKS`].
+    ///
+    /// The wait is the point. Until M14 this stopped the probe the instant the last fault was
+    /// injected, so the block count measured *how long fault injection took* rather than how long
+    /// audio flowed. That made the guard below a function of machine speed: this test passed on a
+    /// loaded sandbox, where the faults are slow, and failed on all three CI runners, where they
+    /// are fast, with "the audio probe ran only 45 blocks".
+    ///
+    /// Lowering the threshold would have been the wrong repair -- the guard's intent is sound, and
+    /// a smaller number is just a quieter version of the same coupling. Waiting decouples it: the
+    /// assertion now means "audio flowed across the whole fault window *and* for long enough to be
+    /// evidence", which is what it was written to say. When the faults already took longer than
+    /// the floor, this returns immediately and costs nothing.
     fn finish(mut self) -> (usize, usize) {
+        let block_period = Duration::from_secs_f64(BLOCK as f64 / SR as f64);
+        // A bound, so a wedged probe fails the assertion with its real count instead of hanging
+        // the suite. Generous: the floor is ~0.5 s of audio at this block size.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while self.blocks.load(Ordering::Relaxed) < MIN_PROBE_BLOCKS
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(block_period);
+        }
+
         self.stop.store(true, Ordering::Release);
         let handle = self.handle.take().expect("finish is called once");
         assert!(handle.join().is_ok(), "the audio probe thread panicked");
@@ -340,9 +369,10 @@ fn a_fault_in_any_non_audio_subsystem_is_contained_and_audio_keeps_flowing() {
     // ---- And through all of it, audio never stopped. ----
     let (blocks, silent) = audio.finish();
     assert!(
-        blocks > 50,
+        blocks >= MIN_PROBE_BLOCKS,
         "the audio probe ran only {blocks} blocks -- too few for 'audio kept flowing' to mean \
-         anything about the faults injected beside it"
+         anything about the faults injected beside it. `finish` waits for {MIN_PROBE_BLOCKS}, so \
+         reaching here means the probe stalled rather than that the faults were quick."
     );
     assert_eq!(
         silent, 0,
