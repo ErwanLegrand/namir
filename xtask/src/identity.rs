@@ -515,9 +515,11 @@ pub fn decode_alpha(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 
     let frame = &buf[..info.buffer_size()];
     if let Some((i, px)) = frame
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
-        .find(|(_, px)| px[3] >= FILL_ALPHA_FLOOR && !is_mark_fill(px))
+        .find(|(_, px)| px[3] >= FILL_ALPHA_FLOOR && !is_mark_fill(px.as_slice()))
     {
         let i = i as u32;
         let (x, y) = (i % info.width.max(1), i / info.width.max(1));
