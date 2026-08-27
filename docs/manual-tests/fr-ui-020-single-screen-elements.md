@@ -57,7 +57,10 @@ step 11 — not something to settle silently by leaving it unmentioned.
   IR:
 
   ```
-  cargo run -p namir-fixtures --example seed-library -- "%APPDATA%\Namir\Library"
+  # PowerShell -- %APPDATA% does not expand here, and passing it creates a directory
+  # literally named "%APPDATA%" under the working directory instead:
+  cargo run -p namir-fixtures --example seed-library -- "$env:APPDATA\Namir\Library"
+  # cmd.exe: cargo run -p namir-fixtures --example seed-library -- "%APPDATA%\Namir\Library"
   ```
 
   That writes `namir_fixtures::library::mutable_probe_set`'s 12 IRs and 4 models (all
