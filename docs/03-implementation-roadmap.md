@@ -6429,6 +6429,29 @@ Both fixes were verified as detectors rather than assumed: the A2 guard accepts 
 and still fails on a weight perturbed in its eighth significant digit, and the probe's wait was
 proved real by raising the floor to 400 blocks and watching the test still pass.
 
+**Closed 2026-08-27: three causes, not two, and the mechanism that hid the third.** The two above
+were fixed and confirmed on real runners — but run 80 then failed on **one** job of seventeen, with
+a third cause the first two had been masking:
+`a_planted_conditional_outside_src_fails_the_lint` asserted `"tests/probe.rs:1"` against a violation
+string built from a real `Path`, which renders `tests\probe.rs:1` on Windows. 284 passed, 1 failed,
+Windows only. **W1's `xtask layering` lint was never at fault** — only the test's hard-coded forward
+slash was, and it was the sole instance of that assumption in the tree.
+
+**The masking is the finding, and it now has a fix rather than a lesson.** `cargo test` stops after
+the first test *target* that fails, so every red run named one cause and never ran the remaining
+binaries; within a target libtest still reports all of its own failures, but the targets behind it
+do not execute. All three causes were present in the first red run and each surfaced only once its
+predecessor was fixed. `--no-fail-fast` now applies in `ci.yml`'s two test steps, in `README.md`, and
+in `AGENTS.md`'s gate block, with the reasoning written at each site so it is not later trimmed as
+noise. Demonstrated rather than assumed: one planted failure in `namir-dsp` and another in
+`namir-params` report only the first by default, and both with the flag. It does not weaken the gate
+— the command still exits non-zero on any failure.
+
+**Run 33115645137 (`9d0be74`) is green: `success`, 0 failed jobs of 17** — the first green CI this
+branch has had, after eight consecutive failures from 2026-08-12. The generalisation worth keeping is
+that **a green local run beside a red CI run is not one discrepancy but a queue of them**, which is
+why the correction is to read CI after every push rather than at the end of a milestone.
+
 #### One integrator override, made and then retired the same day
 
 Both macOS packaging steps in `ci.yml`'s new `bundle-and-inspect` job were given
