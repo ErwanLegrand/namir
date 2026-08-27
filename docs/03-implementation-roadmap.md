@@ -6356,10 +6356,11 @@ properties), NFR-RT-040.
   other than a pass — `NOT EXECUTED`, `PARTIAL`, `FAIL`, a `PASS` qualified by an unexecuted step, or
   no readable verdict at all. M9b's close-out asked that a `FAIL` be treated as uncovered; the fix
   had already landed when that was written.
-- **Two gates in the documented set never ran on this branch, and neither is claimed green.**
-  *Clippy* ran, but on `rustc 1.94.1`; `trunk`'s `4b0d49a` fixes lints new in **1.98**, so CI
-  compiles with something this sandbox cannot reproduce and no local run is evidence about it.
-  *`cargo deny check`* could not run at all — `cargo-deny` is not installed here. What is checked
+- **Two gates in the documented set never ran during this branch's work, and neither was claimed
+  green at the time.** *Clippy* ran, but on `rustc 1.94.1`; `trunk`'s `4b0d49a` fixes lints new in
+  **1.98**. **Closed after the merge:** the sandbox is now on 1.98 and
+  `cargo clippy --workspace --all-targets -- -D warnings` is **clean on CI's exact compiler**.
+  *`cargo deny check`* still could not run — `cargo-deny` is not installed here. What is checked
   instead, and is the reason this is a note rather than a risk: the licence and advisory surface is
   **unchanged** from `trunk`. `Cargo.lock` gains no dependency on this branch, `deny.toml`'s diff is
   its `# trace-partial:` annotation text with no `allow` or `deny` entry touched, and the manifest
@@ -6406,13 +6407,20 @@ Two causes, both of them a guard another workstream wrote catching something rea
 
 - **The A2 golden is not reproducible across toolchains, and D-19.1's premise is narrower than it
   reads.** `the_a2_golden_models_match_their_generator` compared 205 986 bytes; **two differed**,
-  both occurrences of one value — `"head_scale": 0.15790403` on `rustc 1.94.1` against
-  `0.15790401` on CI's 1.98. Every one of the ~50 000 weights matched bit for bit, which is the
+  both occurrences of one value — `"head_scale": 0.15790403` in this sandbox against
+  `0.15790401` on every CI runner. Every one of the ~50 000 weights matched bit for bit, which is the
   diagnosis: weights come straight from the seeded RNG and reproduce anywhere, while `head_scale`
   is calibrated as `base * (target_rms / measured_rms)` with `measure_output_rms` running the
   **whole inference** over a probe. One ULP anywhere in those thousands of `f32` operations lands
   in that float. So a fixture is reproducible from `(shape, seed)` only up to floating-point
-  inference, which Rust does not promise across compiler releases. The guard now compares every
+  inference, which nothing promises across execution environments. **Corrected 2026-08-27, later
+  the same day:** this was first recorded as a 1.94.1-against-1.98 split, because those were the
+  two compilers to hand. Installing `cargo-llvm-cov` required upgrading the sandbox to **1.98 —
+  CI's exact compiler — and `generate_a2` still regenerates the committed file byte for byte
+  there**, while all three CI runners agree with each other on the other value across **two
+  architectures**. The variable is the environment, not the compiler version, and a target-feature
+  story resting on one instruction set does not fit either. What differs has not been isolated;
+  that it varies by machine is a stronger argument for the tolerance than the version story was. The guard now compares every
   weight and the whole config byte-exactly and `head_scale` within 1e-6 relative — and *only*
   where the differing value is the committed `head_scale`, so a drifting weight still fails. No
   regeneration: one ULP of `head_scale` moves the render by ~−144 dB, below the −132.58 dB and
