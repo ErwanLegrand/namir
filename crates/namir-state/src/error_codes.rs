@@ -22,6 +22,8 @@ pub const MALFORMED_JSON: ErrorCode = ErrorCode::new(
     "state.document.malformed_json",
     Severity::Error,
     "This file is not a valid Namir state document ({detail}).",
+    "Restore the file from a backup, or save the preset again from Namir. A `.namirpreset` is JSON \
+     text and cannot be repaired by loading it differently.",
 );
 
 /// NFR-SEC-020: the document (or an embedded resource inside it, FR-STATE-080) exceeded the
@@ -30,7 +32,9 @@ pub const MALFORMED_JSON: ErrorCode = ErrorCode::new(
 pub const DOCUMENT_TOO_LARGE: ErrorCode = ErrorCode::new(
     "state.document.too_large",
     Severity::Error,
-    "This state document is larger than the {limit_mb} MB limit.",
+    "This state document is larger than the size limit Namir will read ({detail}).",
+    "Save the preset without embedding its model and impulse response, so it refers to them by \
+     path instead of carrying their bytes.",
 );
 
 /// D-11.2's first tolerance rule: a key in the `parameters` block that no `ParamDescriptor` in
@@ -40,8 +44,10 @@ pub const DOCUMENT_TOO_LARGE: ErrorCode = ErrorCode::new(
 pub const UNKNOWN_PARAMETER: ErrorCode = ErrorCode::new(
     "state.param.unknown_key",
     Severity::Warning,
-    "The parameter \"{key}\" is not recognised by this build and was left \
-                        unchanged.",
+    "A parameter in this file is not recognised by this build and was left unchanged \
+     ({detail}).",
+    "Nothing to do; the value is kept and written back untouched when you save, so a newer Namir \
+     will read it again. It is ignored only because this build has no such parameter.",
 );
 
 /// A recognised parameter whose stored value falls outside its descriptor's range — clamped,
@@ -49,8 +55,10 @@ pub const UNKNOWN_PARAMETER: ErrorCode = ErrorCode::new(
 pub const PARAMETER_OUT_OF_RANGE: ErrorCode = ErrorCode::new(
     "state.param.out_of_range",
     Severity::Warning,
-    "The parameter \"{key}\" had a value outside its valid range and was \
-                        clamped to {clamped}.",
+    "A parameter in this file had a value outside its valid range and was clamped \
+     ({detail}).",
+    "Check the affected control and set it where you want it, then save again to store the \
+     corrected value.",
 );
 
 /// A recognised parameter's stored value could not be read as a finite number at all (wrong JSON
@@ -59,8 +67,10 @@ pub const PARAMETER_OUT_OF_RANGE: ErrorCode = ErrorCode::new(
 pub const PARAMETER_INVALID: ErrorCode = ErrorCode::new(
     "state.param.invalid",
     Severity::Warning,
-    "The parameter \"{key}\" had an invalid value and was reset to its \
-                        default.",
+    "A parameter in this file had an invalid value and was reset to its default \
+     ({detail}).",
+    "Check the affected control and set it where you want it, then save again. The stored value \
+     was not a usable number, so the default was used instead.",
 );
 
 /// FR-STATE-070: none of a `FileRef`'s three resolution candidates (library-relative path,
@@ -70,7 +80,10 @@ pub const PARAMETER_INVALID: ErrorCode = ErrorCode::new(
 pub const REFERENCE_NOT_FOUND: ErrorCode = ErrorCode::new(
     "state.reference.not_found",
     Severity::Warning,
-    "The file \"{display_name}\" (hash {hash}) could not be found.",
+    "A file this preset refers to could not be found ({detail}).",
+    "Put the file back where it was, or load a replacement from the library and save the preset \
+     again. A rescan also helps: Namir can find a moved file by its content hash once the library \
+     has seen it.",
 );
 
 /// D-11.1: `format_version` is the one field this format treats as non-negotiable — a document
@@ -81,6 +94,8 @@ pub const MISSING_FORMAT_VERSION: ErrorCode = ErrorCode::new(
     Severity::Error,
     "This file has no format_version field and cannot be identified as a Namir \
                         state document.",
+    "Choose a `.namirpreset` file saved by Namir. This one carries no version field, so it is not \
+     a Namir state document at all.",
 );
 
 /// D-11.2: a document from a build newer than this one loads tolerantly rather than being
@@ -89,9 +104,11 @@ pub const MISSING_FORMAT_VERSION: ErrorCode = ErrorCode::new(
 pub const NEWER_FORMAT_VERSION: ErrorCode = ErrorCode::new(
     "state.format.newer",
     Severity::Warning,
-    "This document was saved by a newer version of Namir (format_version \
-                        {found}, this build understands up to {understood}). Some settings may \
-                        not be applied.",
+    "This document was saved by a newer version of Namir, so some of its settings may not \
+     have been applied ({detail}).",
+    "Nothing has to be done -- everything this build understands was applied. Update Namir if you \
+     want the rest, and save from the newer build rather than this one to avoid dropping what it \
+     added.",
 );
 
 #[cfg(test)]
@@ -113,10 +130,8 @@ mod tests {
     /// statically. Same check every other crate's catalogue carries.
     #[test]
     fn catalogue_ids_are_unique_and_namespaced() {
-        for (i, a) in ALL.iter().enumerate() {
-            for b in ALL.iter().skip(i + 1) {
-                assert_ne!(a.id, b.id, "duplicate catalogue id {}", a.id);
-            }
+        namir_core::assert_unique_ids(ALL);
+        for a in ALL {
             assert!(a.id.starts_with("state."), "{} is not namespaced", a.id);
         }
     }

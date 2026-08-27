@@ -90,10 +90,35 @@ pub fn settings_path(config_dir: &Path) -> PathBuf {
     config_dir.join("audio-settings.json")
 }
 
+/// Where [`load`] moves a settings file it could not parse, so that the shutdown save does not
+/// destroy it (issue #45). A sibling of the real path, so the move is a rename within one
+/// directory and therefore within one filesystem.
+#[must_use]
+pub fn preserved_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".corrupt");
+    path.with_file_name(name)
+}
+
 /// Loads settings from `path`. Never fails (P8, mirroring `namir_library::IndexStore::open`'s own
 /// guarantee): a missing file is the ordinary first-run case and produces no warning; a
 /// present-but-corrupt one degrades to [`AppSettings::default`] plus a warning, rather than
 /// refusing to start.
+///
+/// # A file that cannot be parsed is moved aside, not left to be overwritten (issue #45)
+///
+/// `crate::app::run` persists the negotiated settings unconditionally when the window closes —
+/// FR-IO-080's own intent, "persist whatever was actually negotiated ... so the next launch starts
+/// from what worked this time". Applied to a file the user was in the middle of hand-editing, that
+/// intent silently destroys their work: the 2026-08-27 FR-UI-070 run induced a corrupt
+/// `audio-settings.json` at step 9, watched it survive the session, and found it replaced by
+/// defaults at exit. The notice said "using defaults"; it did not say the file would be
+/// overwritten, and there is no window left to say so *at* shutdown by design.
+///
+/// So the preservation happens here, at load, where a notice can still be shown: the unparseable
+/// bytes are renamed to [`preserved_path`] and the warning's detail names where they went. If the
+/// rename itself fails, the warning says so instead of claiming a copy that does not exist — a
+/// promise about a file must not be made unless the file is there.
 pub fn load(path: &Path) -> (AppSettings, Option<SettingsWarning>) {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -101,24 +126,41 @@ pub fn load(path: &Path) -> (AppSettings, Option<SettingsWarning>) {
             return (AppSettings::default(), None);
         }
         Err(e) => {
+            // Unreadable rather than unparseable: there is nothing to preserve, because nothing
+            // could be read. The file is left exactly where it is.
             return (
                 AppSettings::default(),
                 Some(SettingsWarning {
                     code: error_codes::SETTINGS_UNREADABLE,
-                    detail: e.to_string(),
+                    detail: format!("{}: {e}", path.display()),
                 }),
             );
         }
     };
     match serde_json::from_slice::<AppSettings>(&bytes) {
         Ok(settings) => (settings, None),
-        Err(e) => (
-            AppSettings::default(),
-            Some(SettingsWarning {
-                code: error_codes::SETTINGS_UNREADABLE,
-                detail: e.to_string(),
-            }),
-        ),
+        Err(e) => {
+            let preserved = preserved_path(path);
+            let detail = match std::fs::rename(path, &preserved) {
+                Ok(()) => format!(
+                    "{}: {e}; the unreadable file was kept as {}",
+                    path.display(),
+                    preserved.display()
+                ),
+                Err(move_error) => format!(
+                    "{}: {e}; it could not be moved aside ({move_error}), so closing Namir will \
+                     overwrite it",
+                    path.display()
+                ),
+            };
+            (
+                AppSettings::default(),
+                Some(SettingsWarning {
+                    code: error_codes::SETTINGS_UNREADABLE,
+                    detail,
+                }),
+            )
+        }
     }
 }
 
@@ -215,6 +257,48 @@ mod tests {
         assert_eq!(warning.code.id, error_codes::SETTINGS_UNREADABLE.id);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Issue #45, end to end.** A hand-edited settings file the parser rejects must survive the
+    /// shutdown save that FR-IO-080 requires — the 2026-08-27 manual run watched one be replaced
+    /// by defaults with no notice at all. The bytes must be recoverable *after* a full
+    /// load-then-save cycle, which is the exact sequence `crate::app::run` performs.
+    #[test]
+    fn a_corrupt_file_survives_the_shutdown_save_that_replaces_it() {
+        let dir = temp_dir("preserved");
+        let path = settings_path(&dir);
+        let original = b"{ \"input_device_name\": \"Scarlett 2i2\", oops";
+        std::fs::write(&path, original).unwrap();
+
+        let (settings, warning) = load(&path);
+        // The shutdown save, verbatim in shape: whatever was negotiated is written over `path`.
+        save(&path, &settings).unwrap();
+
+        let preserved = preserved_path(&path);
+        assert!(
+            preserved.exists(),
+            "the unreadable file must be kept, not overwritten"
+        );
+        assert_eq!(std::fs::read(&preserved).unwrap(), original);
+        let warning = warning.expect("a corrupt file should report a warning");
+        assert!(
+            warning.detail.contains("audio-settings.json.corrupt"),
+            "the notice must name where the file went: {:?}",
+            warning.detail
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The remedy points at the preserved file, so the notice and the behaviour cannot drift
+    /// apart: if the file stopped being kept, this assertion is what says the text is now a lie.
+    #[test]
+    fn the_unreadable_remedy_names_the_preserved_file() {
+        assert!(
+            error_codes::SETTINGS_UNREADABLE.remedy.contains(".corrupt"),
+            "{}",
+            error_codes::SETTINGS_UNREADABLE.remedy
+        );
     }
 
     /// `save` creates its parent directory when it doesn't exist yet (a fresh config dir).

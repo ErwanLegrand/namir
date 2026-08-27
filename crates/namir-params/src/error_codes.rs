@@ -16,6 +16,8 @@ pub const ID_CHANGED: ErrorCode = ErrorCode::new(
     "params.manifest.id_changed",
     Severity::Error,
     "A parameter's identifier changed from its manifest entry.",
+    "Restore the parameter's key text, or retire the old key with a tombstone and add the new one \
+     beside it. Never edit a live line in params.lock by hand.",
 );
 
 /// An id that the old manifest already tombstoned (whether under the same key or, via an FNV
@@ -25,6 +27,8 @@ pub const TOMBSTONE_REUSED: ErrorCode = ErrorCode::new(
     "params.manifest.tombstone_reused",
     Severity::Error,
     "A parameter reuses an identifier that was already tombstoned.",
+    "Choose a different key. A tombstoned identifier is retired permanently, so that presets saved \
+     by an older build cannot be read back as some other parameter.",
 );
 
 /// A key stayed live across old and new manifests but its kind shape (continuous vs. stepped)
@@ -34,6 +38,8 @@ pub const KIND_CHANGED: ErrorCode = ErrorCode::new(
     "params.manifest.kind_changed",
     Severity::Error,
     "A live parameter changed kind (continuous/stepped) in place.",
+    "Retire the existing key with a tombstone and add a new key for the new kind, rather than \
+     changing the existing entry in place.",
 );
 
 /// Two descriptors in the same new descriptor set derive the same id (an FNV-1a collision between
@@ -42,6 +48,8 @@ pub const DUPLICATE_ID: ErrorCode = ErrorCode::new(
     "params.manifest.duplicate_id",
     Severity::Error,
     "Two parameters in the new descriptor set derive the same identifier.",
+    "Rename one of the two keys. Two distinct keys deriving one identifier is an FNV collision, \
+     and any spelling change to either key resolves it.",
 );
 
 /// The same key string appears more than once in the same new descriptor set.
@@ -49,6 +57,7 @@ pub const DUPLICATE_KEY: ErrorCode = ErrorCode::new(
     "params.manifest.duplicate_key",
     Severity::Error,
     "A key is declared more than once in the new descriptor set.",
+    "Remove the duplicate descriptor from the registry; a key names one parameter.",
 );
 
 /// A key was live in the old manifest and is absent from the new descriptor set without ever
@@ -57,8 +66,9 @@ pub const DUPLICATE_KEY: ErrorCode = ErrorCode::new(
 pub const DROPPED: ErrorCode = ErrorCode::new(
     "params.manifest.dropped",
     Severity::Error,
-    "A parameter live in the old manifest is missing from the new descriptor \
-        set. Retire it with a tombstone entry instead of deleting its line.",
+    "A parameter live in the old manifest is missing from the new descriptor set.",
+    "Retire it with a tombstone entry instead of deleting its line, so its identifier stays \
+     accounted for and can never be handed to a different parameter.",
 );
 
 /// A line in the old manifest text didn't parse as either a comment, the `format_version` line,
@@ -67,6 +77,8 @@ pub const MALFORMED_LINE: ErrorCode = ErrorCode::new(
     "params.manifest.malformed_line",
     Severity::Error,
     "A line in the manifest text could not be parsed.",
+    "Restore params.lock from version control and regenerate it with `cargo run -p xtask -- \
+     params-lock --write` rather than editing it by hand.",
 );
 
 /// One diagnosed manifest problem: a catalogued [`ErrorCode`] plus a `detail` string naming the
@@ -81,11 +93,9 @@ pub struct ManifestViolation {
 
 impl std::fmt::Display for ManifestViolation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}: {} ({})",
-            self.code.id, self.code.message_template, self.detail
-        )
+        // `render`, not `message_template`: since M14 a template may carry one `{detail}`
+        // placeholder, and printing it raw is issue #15's defect at a second layer.
+        write!(f, "{}: {}", self.code.id, self.code.render(&self.detail))
     }
 }
 

@@ -14,14 +14,19 @@ use namir_core::{ErrorCode, Severity};
 pub const JOB_PANICKED: ErrorCode = ErrorCode::new(
     "worker.job.panicked",
     Severity::Fault,
-    "An internal error occurred while loading {path}.",
+    "An internal error interrupted a background job ({detail}).",
+    "Audio is unaffected and Namir keeps running; retry whatever you were loading. If it happens \
+     every time on the same file, that file is the thing to report -- namir.log in Namir's \
+     configuration directory carries the record.",
 );
 
 /// The file could not be read at all — missing, permissions, or an I/O error partway through.
 pub const FILE_UNREADABLE: ErrorCode = ErrorCode::new(
     "worker.file.unreadable",
     Severity::Error,
-    "The file {path} could not be read.",
+    "The file could not be read ({detail}).",
+    "Check the file is still where the library lists it and that you have permission to read it. \
+     If it has moved or been deleted, rescan the library so the list matches the disk.",
 );
 
 /// NFR-SEC-020 wants "a documented upper bound on the resources a single file may cause it to
@@ -35,7 +40,9 @@ pub const FILE_UNREADABLE: ErrorCode = ErrorCode::new(
 pub const FILE_TOO_LARGE: ErrorCode = ErrorCode::new(
     "worker.file.too_large",
     Severity::Error,
-    "The file {path} is larger than the {limit_mb} MB limit.",
+    "The file is larger than the limit Namir will load ({detail}).",
+    "Use a smaller file. A `.nam` model or `.wav` impulse response this large is almost always a \
+     mistake -- the wrong file extension, or a recording saved in place of an export.",
 );
 
 /// D-9.7 truncates an impulse response at ten seconds at the engine rate, and says so should be
@@ -46,7 +53,10 @@ pub const FILE_TOO_LARGE: ErrorCode = ErrorCode::new(
 pub const IR_TRUNCATED: ErrorCode = ErrorCode::new(
     "worker.ir.truncated",
     Severity::Warning,
-    "The impulse response {path} was longer than 10 seconds and was truncated.",
+    "The impulse response was longer than 10 seconds and only its first 10 seconds are being used \
+     ({detail}).",
+    "Nothing needs doing -- the impulse response is loaded and audible. If you meant to use its \
+     tail, trim the file to 10 seconds or less in an audio editor and load it again.",
 );
 
 /// The prepared resource could not be handed to the audio thread within the submission deadline,
@@ -59,7 +69,9 @@ pub const IR_TRUNCATED: ErrorCode = ErrorCode::new(
 pub const NOT_DELIVERED: ErrorCode = ErrorCode::new(
     "worker.submit.not_delivered",
     Severity::Error,
-    "The engine did not accept {path} in time; it was not loaded.",
+    "The audio engine did not accept the prepared file in time, so it was not loaded ({detail}).",
+    "Load it again. If Namir is a plugin, check the host's transport is running -- a deactivated \
+     plugin has no audio thread to hand the file to.",
 );
 
 #[cfg(test)]
@@ -77,10 +89,10 @@ mod tests {
             IR_TRUNCATED,
             NOT_DELIVERED,
         ];
-        for (i, a) in all.iter().enumerate() {
-            for b in all.iter().skip(i + 1) {
-                assert_ne!(a.id, b.id, "duplicate catalogue id {}", a.id);
-            }
+        // `assert_unique_ids` also carries FR-UI-070's remedy clause and issue #15's
+        // one-placeholder rule; the namespacing check below is this crate's own addition.
+        namir_core::assert_unique_ids(&all);
+        for a in &all {
             assert!(a.id.starts_with("worker."), "{} is not namespaced", a.id);
         }
     }
