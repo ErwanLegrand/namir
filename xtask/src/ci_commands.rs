@@ -416,7 +416,7 @@ jobs:
     // uncovered: unspanned: nothing installs either product at its documented install path or
     // uncovered: loads the plugin in a real host, docs/user-guide.md's per-platform install and
     // uncovered: run instructions are read by no check, and this module's UNEXERCISABLE table
-    // uncovered: holds one command that is documented but unrunnable on any runner; closes M14
+    // uncovered: holds one command that is documented but unrunnable on any runner; closes M8
     #[test]
     fn the_readme_and_ci_yml_agree_about_this_repositorys_commands() {
         let violations = check(&real_root()).expect("both files exist and the workflow parses");

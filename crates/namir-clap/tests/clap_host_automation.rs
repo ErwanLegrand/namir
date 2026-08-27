@@ -235,7 +235,7 @@ fn first_difference(a: &[f32], b: &[f32]) -> Option<usize> {
 // uncovered: crossfade, so the transition this file locates to the frame completes in one sample
 // uncovered: (measured at ~0.5x the settled peak, by this file's last test) where FR-CHAIN-020's
 // uncovered: per-stage bypass fades over 15 ms; the fix belongs to Chain, in namir-engine, and
-// uncovered: this crate cannot make it; closes M14
+// uncovered: this crate cannot make it; closes M8
 #[test]
 fn host_bypass_automation_takes_effect_at_the_event_s_own_frame() {
     for split in SPLIT_OFFSETS {

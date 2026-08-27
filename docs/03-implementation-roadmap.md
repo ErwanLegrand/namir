@@ -1555,7 +1555,7 @@ status: five of its rows carry the wrong denominator, and it omits two FRS secti
 | 5.3 GATE | 3 | 0 | 3 | 0 |
 | 5.4 NAM | 11 | 3 | 4 | 4 |
 | 5.5 IR | 7 | 1 | 0 | 6 |
-| 5.6 EQ | 3 | 0 | 3 | 0 |
+| 5.6 EQ | 3 | 2 | 1 | 0 |
 | 5.7 OUT | 2 | 0 | 1 | 1 |
 | 5.8 PARAM | 5 | 0 | 1 | 4 |
 | 5.9 STATE | 7 | 0 | 0 | 7 |
@@ -1831,30 +1831,30 @@ not adjudicate them further.
 | FRS area | Must count | Done | Partial | Not started |
 |---|---|---|---|---|
 | 4 CFG | 3 | 2 | 1 | 0 |
-| 5.1 CHAIN | 8 | 3 | 5 | 0 |
+| 5.1 CHAIN | 8 | 6 | 2 | 0 |
 | 5.2 IN | 3 | 1 | 2 | 0 |
-| 5.3 GATE | 3 | 1 | 2 | 0 |
-| 5.4 NAM | 13 | 4 | 9 | 0 |
-| 5.5 IR | 7 | 4 | 3 | 0 |
+| 5.3 GATE | 3 | 3 | 0 | 0 |
+| 5.4 NAM | 13 | 6 | 7 | 0 |
+| 5.5 IR | 7 | 7 | 0 | 0 |
 | 5.6 EQ | 3 | 0 | 3 | 0 |
-| 5.7 OUT | 2 | 0 | 2 | 0 |
-| 5.8 PARAM | 5 | 0 | 5 | 0 |
-| 5.9 STATE | 7 | 2 | 5 | 0 |
-| 5.10 LIB | 5 | 2 | 3 | 0 |
+| 5.7 OUT | 2 | 1 | 1 | 0 |
+| 5.8 PARAM | 5 | 3 | 2 | 0 |
+| 5.9 STATE | 7 | 3 | 4 | 0 |
+| 5.10 LIB | 5 | 3 | 2 | 0 |
 | 5.11 IO | 8 | 2 | 6 | 0 |
 | 5.12 CLAP | 11 | 4 | 7 | 0 |
-| 5.13 UI | 7 | 2 | 5 | 0 |
-| 5.14 ERR | 6 | 1 | 5 | 0 |
+| 5.13 UI | 7 | 3 | 4 | 0 |
+| 5.14 ERR | 6 | 3 | 3 | 0 |
 | 5.15 PKG | 4 | 3 | 1 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
-| 6.2 PERF | 6 | 1 | 5 | 0 |
-| 6.3 PORT | 5 | 3 | 2 | 0 |
+| 6.2 PERF | 6 | 2 | 4 | 0 |
+| 6.3 PORT | 5 | 4 | 1 | 0 |
 | 6.4 QUAL | 6 | 2 | 4 | 0 |
-| 6.5 LIC | 6 | 3 | 3 | 0 |
-| 6.6 SEC | 3 | 0 | 3 | 0 |
+| 6.5 LIC | 6 | 4 | 2 | 0 |
+| 6.6 SEC | 3 | 1 | 2 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **41** | **89** | **0** |
+| **Total** | **130** | **66** | **64** | **0** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -6245,3 +6245,155 @@ Stated plainly, because Phase 0's job is to size the phases that follow it.
   sit under; or let M8 fail on them — and **Phase 0 takes none of them**, because all three are
   decisions about the 1.0 gate and belong to whoever owns M8. It is recorded here so M8 does not
   discover it, which is the failure §21 exists to prevent one level up.
+
+### M14 status — the machine-closable half, and an honest account of the rest, 2026-08-27
+
+Appended per this document's convention; nothing above is edited. **This is a status subsection and
+not a close-out**, for the reason stated up front rather than discovered at the end: §21's Acceptance
+requires the six unexecuted `Verify: M` Musts to carry a verdict or a recorded scope reduction, and
+requires D-18.5's flip. Two of the six were executed by M9b's close-out. **Four are not, and the flip
+does not happen here.**
+
+The milestone ran as ten workstreams on one branch — Phase 0's decisions, seven build workstreams in
+parallel, a notice-pipeline workstream added mid-milestone, and this integration pass.
+
+#### What moved
+
+| | At `trunk` | Now |
+|---|---|---|
+| Partials (§22 R-13) | 69 | **40** |
+| Uncovered Musts | 6 | **6** |
+| §14 Done / Partial | 41 / 89 | **66 / 64** |
+
+**Twenty-five requirements moved Partial → Done**, each by closing the gap its own `// uncovered:`
+field named and then promoting — never by promoting alone, which is D-23.1's failure mode and what
+§22 **R-13** exists to catch. Each promotion was verified by hand at integration before its merge was
+accepted. Evidence, per D-23.2's rule that every moved cell names a file path:
+
+- **5.1 CHAIN +3** — FR-CHAIN-010, -050, -080 (`crates/namir-engine/src/chain_probes.rs:116`, `:368`, `:592`).
+- **5.3 GATE +2** — FR-GATE-010 (`crates/namir-engine/src/stages/gate.rs:467`), FR-GATE-030 (`crates/namir-dsp/src/gate.rs:360`).
+- **5.4 NAM +2** — FR-NAM-110 (`crates/namir-engine/src/stages/nam.rs:1641`), FR-NAM-150 (`crates/namir-nam/tests/golden_reference.rs:409`).
+- **5.5 IR +3** — FR-IR-030 (`crates/namir-ir/src/convolver.rs:1632`), FR-IR-060 (`crates/namir-engine/src/engine.rs:582`), FR-IR-070 (`crates/namir-engine/src/stages/ir.rs:1371`).
+- **5.6 EQ +2** — FR-EQ-010 (`crates/namir-engine/src/stages/eq.rs:664`), FR-EQ-020 (`crates/namir-dsp/src/biquad.rs:461`).
+- **5.7 OUT +1** — FR-OUT-010 (`crates/namir-engine/src/stages/out.rs:286`).
+- **5.8 PARAM +3** — FR-PARAM-010, -050 (`crates/namir-params/tests/registry_descriptors.rs:248`, `:406`), FR-PARAM-020 (`xtask/src/params_lock.rs:33`).
+- **5.9 STATE +1** — FR-STATE-050 (`crates/namir-worker/tests/recall_continuity.rs:277`).
+- **5.10 LIB +1** — FR-LIB-030 (`crates/namir-library/benches/library_scan.rs:395`).
+- **5.13 UI +1** — FR-UI-060 (`crates/namir-ui/benches/library_frame.rs:184`).
+- **5.14 ERR +2** — FR-ERR-010 (`crates/namir-platform/tests/logging.rs:756`), FR-ERR-020 (`crates/namir-core/src/error.rs:233`).
+- **6.2 PERF +1** — NFR-PERF-020 (`crates/namir-engine/src/chain_probes.rs:693`).
+- **6.3 PORT +1** — NFR-PORT-020 (`xtask/src/main.rs:1254`).
+- **6.5 LIC +1** — NFR-LIC-050 (`crates/namir-fixtures/src/lib.rs:28`).
+- **6.6 SEC +1** — NFR-SEC-020 (`crates/namir-state/src/document.rs:227`).
+
+**5.11 IO, 5.12 CLAP, 5.15 PKG, 6.1 RT, 6.4 QUAL, 6.7 BUILD and 6.8 DOC do not move**, and the
+absences are deliberate: every partial in them is blocked on a human, on hardware, on an owner
+decision, or on product that was never built. See the classification below.
+
+#### The forty remaining partials, classified — not re-booked by default
+
+§21's Acceptance forbids re-booking "by default onto whatever milestone follows", recording that
+M9b's last such re-booking was a default and saying so plainly. **After M14 the sequence has only M8
+left, so the destination is not the variable — the reason is.** Every tag keeps `closes M8`; what
+follows is why, for each. No Must requirement's text was narrowed to improve a count.
+
+**A. Accepted limitation, already recorded in the FRS by Phase 0 (8).** These reach M8 as recorded
+reductions to *ratify*, not as work. **The ledger and the documents currently disagree about them** —
+the FRS carries the acceptance, the annotation still reads like an open gap — and that disagreement
+is itself something M8 must dispose of, by the three routes M14 Phase 0's own closing note lists.
+FR-CFG-030 (the standalone "exercised" clause), FR-CLAP-030 (`audio-ports-config`), FR-CLAP-090 (the
+memory benchmark), FR-NAM-090 (a true BS.1770 meter), NFR-DOC-040 ("stating what it does"),
+NFR-LIC-010 (the SPDX-header clause), NFR-PERF-010 (the CI-regression-gate half), NFR-PERF-030 (the
+stronger audible marker — ratified, not reopened).
+
+**B. Blocked on a human, on hardware, or on an owner decision (13).** No coding milestone closes
+these; naming what each waits on is the whole value.
+- **A Windows session with a DAW:** FR-CLAP-050 (the host-driven half), FR-CLAP-080, FR-CLAP-130,
+  FR-IN-020 (the `M` half of its compound method).
+- **§2's pinned reference machine:** NFR-RT-030 ("on any supported platform"), NFR-PERF-050. D-2.4
+  makes the certified figure the one measured there; every number in this milestone is a sandbox
+  reading and is labelled as such wherever it is recorded.
+- **§15 item 16 / issue #26, the audio-device panel:** FR-IO-060, FR-IO-070. Overdue before M9b
+  started, and M14 scoped itself around it rather than deciding it to suit a measurement.
+- **Issue #18:** FR-CLAP-100, the embedded editor on macOS and Linux — a second and third `unsafe`
+  surface under D-5.3, and not 1.0 work.
+- **A real runner, or a second pinned tool:** NFR-BUILD-020 and NFR-LIC-030 (the per-platform install
+  half), FR-PKG-040 (the Windows installer's interior needs `innoextract`, a second Chocolatey input
+  on the merge path — deliberately not taken).
+- **The four unexecuted scripts:** NFR-QUAL-010. Its tag read `closes M9b` — a milestone that has
+  closed out — and now reads `closes M8`.
+
+**C. Deferred product work — a Must whose product half was never built (10).** §21 Phase 1's scope,
+which this milestone deliberately did not enter: FR-IN-030, FR-LIB-010, FR-NAM-080, FR-OUT-020,
+FR-PARAM-030, FR-STATE-030, FR-STATE-070 — seven user-facing clauses with no `UiIntent` behind them —
+plus FR-CLAP-060's click-free limb, which needs a crossfade in `Chain` that does not exist, and
+**FR-EQ-030 and FR-PARAM-040, which are one finding rather than two**: eight of `EqStage`'s twelve
+parameters exceed FR-PARAM-040's click bound, `eq.enabled` by 16.8x, and a 20 ms ramp improves three
+rows while worsening two. The cause is D-9.9's smoothing *mechanism*, not its duration, so choosing
+is D-9.9's call and not a workstream's. Two workstreams reached that conclusion independently, from
+different crates, without contact.
+
+**D. Machine work, scoped and not taken (9).** The honest residue: nothing blocks these but the
+milestone's own boundary, and they are the cheapest remaining wins. FR-ERR-030 (the `plus I` half —
+an integration test driving a real audio callback with the process-global logger installed),
+FR-ERR-040 (the GUI thread and the plugin-configuration sentence, both `namir-clap`'s), FR-ERR-060,
+FR-NAM-050, FR-NAM-060, FR-STATE-060 (the CLAP host save/reopen round trip), NFR-QUAL-040 (the fourth
+fuzz target in CI), NFR-RT-010 (the harness detects heap allocation; the requirement enumerates six
+properties), NFR-RT-040.
+
+#### What this milestone does not claim
+
+- **D-18.5's flip has not happened, and NFR-QUAL-010 is not closed.** §21 sequences the flip behind
+  Phase 3's verdict-parsing change *and* Phase 6's Windows session. Phase 3 landed; Phase 6 did not.
+- **Four `Verify: M` Musts stand unexecuted** — FR-UI-030, -040, -050 and FR-IO-030 — so Acceptance's
+  "neither `NOT EXECUTED` nor silence survives into M8" is **not met**. Recorded here so M8 does not
+  discover it. FR-UI-040 and -050 need the machine M9b already used and roughly an hour; FR-UI-030
+  cannot pass at all until issue #35 is resolved, since `egui-baseview` wires no `accesskit` adapter;
+  FR-IO-030 needs Linux and macOS hardware, and until it runs **neither platform's audio has ever
+  moved a sample**.
+- **Issue #34 needs no further work, and that is the one Acceptance criterion this milestone did
+  meet.** `xtask traceability` can no longer print `clean` while a manual document records anything
+  other than a pass — `NOT EXECUTED`, `PARTIAL`, `FAIL`, a `PASS` qualified by an unexecuted step, or
+  no readable verdict at all. M9b's close-out asked that a `FAIL` be treated as uncovered; the fix
+  had already landed when that was written.
+- **No clippy result on this branch was produced on CI's compiler.** This sandbox is `rustc 1.94.1`;
+  `trunk`'s `4b0d49a` fixes lints new in 1.98. Every gate below is green here and none of it is
+  evidence about 1.98.
+- **FR-UI-070 is fixable but not fixed in the ledger's eyes.** All eight defects behind it are
+  closed. Its cell moves when a human re-runs the fifteen steps, and not before.
+
+#### Findings worth carrying past the workstreams that made them
+
+- **Two real audio-thread allocations in `namir-app`**, found the first time `stream.rs`'s callbacks
+  ran under D-7.5's harness: a `Vec` collected per chunk on every callback, and a scratch buffer that
+  grew past its reservation whenever the host delivered more frames than the negotiated block size.
+  Both fixed, and the harness verified as a real detector by restoring each form.
+- **Automation was quantised to the block boundary** — the apply path never read
+  `ev.header().time()` — so at 4096 frames every automation point landed up to ~85 ms late. Fixed by
+  splitting the block at each event's own frame (issue #30).
+- **`to_stream_failure`'s classification was wrong, not merely its rendering.** M9b's physical unplug
+  arrived as `StreamFailure::Other` with an unmapped OS error; Namir called it a device loss by luck,
+  choosing the code from the stream's direction. A live **R-5** data point (issue #44).
+- **FR-LIB-030's newly-real margin is thin.** `IndexStore`'s JSON reload of 10 000 entries costs
+  ~70 ms, roughly twice the incremental scan it enables, so a second start-up beats a first by ~15 %,
+  not the ~4x the old arms implied.
+- **The cheap stages carry the largest denormal penalty by ratio** — EQ 32.9x, trim 10.2x — which is
+  exactly the dilution NFR-RT-030's aggregate arm cannot see, and the reason its method says "each
+  stage". Sandbox figures, informational.
+- **Two tests were found not to test what they claimed**, both at integration and both replaced:
+  W8's anti-erase test passed with the ordering it protects transposed (it verified sharing, not
+  sequencing, on the one path with a history of silently erasing a user's library), and W10 caught
+  its own first dismissability test measuring a hand-copied layout whose click hit nothing. Each was
+  established by breaking the thing deliberately, which is the only way either was going to surface.
+
+#### One integrator override, recorded so it is not read as an oversight
+
+Both macOS packaging steps in `ci.yml`'s new `bundle-and-inspect` job carry `continue-on-error: true`
+for their first runs, **against the recommendation of the workstream that wrote them**. Its argument
+is sound about defects — "the first run finding something is the lane working; the alternative is
+finding it while cutting a release" — and is left in the file. The override is about *absence*: no
+line of `packaging/macos/make_installer.sh` has ever executed anywhere, no runner was available to
+try it, and a failure for the runner's reasons rather than this repository's would red-block every
+pull request. Those risks are not symmetric. This follows the visible-before-blocking shape D-18.5
+already uses. **The flip condition — one green run on a real macOS runner — is written at the step,
+and removing the two lines is the whole of it.**
