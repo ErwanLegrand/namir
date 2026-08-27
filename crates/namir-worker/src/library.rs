@@ -651,6 +651,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **The load-then-read-`prior` ordering inside `start_scan`'s job, discriminated.** Its
+    /// neighbour above shares an already-loaded `SharedIndex` between two services, so the
+    /// deferred load has always finished before the scan job runs: that test passes with the two
+    /// lines transposed and verifies sharing, not sequencing.
+    ///
+    /// Three things are needed to reach the not-yet-loaded state deterministically, and a fourth
+    /// to make it observable.
+    ///
+    /// The first service is **dropped**, so its `Weak` registry entry dies and the next open
+    /// builds a `SharedIndex` that has parsed nothing. The test then takes `for_path`'s `Arc`
+    /// *before* opening the service and holds its `loaded` mutex -- exactly the condition
+    /// `schedule_load` reads as "a loader is already running" (`TryLockError::WouldBlock`) and
+    /// returns on, so no loader thread is spawned and the state cannot resolve behind the test's
+    /// back. Releasing the guard afterwards lets both orderings finish; only one read the index
+    /// first.
+    ///
+    /// The observable is `upserted`, and it needs the sleep. `removed` cannot serve: an empty
+    /// `prior` has no entries to conclude removals about, so it is `0` either way. `upserted`
+    /// distinguishes them only once the file is outside `namir_library`'s two-second mtime
+    /// settling window relative to the first scan's completion -- inside it the file is rehashed
+    /// unconditionally and upserted whatever `prior` said, which is correct behaviour and is why
+    /// the sleep is before the first scan rather than after it.
+    #[test]
+    fn a_scan_that_starts_before_the_deferred_load_still_sees_the_saved_index() {
+        let dir = temp_dir("scan_before_load");
+        let pool = ThreadPool::with_threads(1);
+        let index_path = dir.join("library-index.json");
+
+        // A first service scans and saves, then goes away entirely. The file is written well
+        // before that scan completes, so the settling window does not cover it next time.
+        {
+            let (first, _) = LibraryService::open_at(&dir);
+            write_nam(&dir.join("Library"), "a.nam");
+            std::thread::sleep(Duration::from_millis(2_100));
+            let (tx, rx) = mpsc::channel();
+            first
+                .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+                .unwrap();
+            let outcome = recv(&rx);
+            assert!(outcome.complete && outcome.save_error.is_none());
+            assert_eq!(outcome.upserted, 1, "the first scan discovers the file");
+        }
+
+        // Pin the fresh shared entry and hold its load, so `open_at` below spawns no loader.
+        let shared = SharedIndex::for_path(index_path);
+        let held: MutexGuard<'_, Option<Loaded>> = lock(&shared.loaded);
+        assert!(
+            held.is_none(),
+            "a dropped service must not leave a parse behind"
+        );
+
+        let (second, warnings) = LibraryService::open_at(&dir);
+        assert!(
+            warnings.is_empty(),
+            "open reads nothing, so it can warn about nothing"
+        );
+        assert_eq!(second.snapshot().len(), 0, "nothing is loaded yet");
+
+        let (tx, rx) = mpsc::channel();
+        second
+            .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+            .unwrap();
+
+        // The job is now blocked inside `ensure_loaded` on the guard this thread holds -- or, if
+        // the two lines were transposed, has already taken an empty `prior` and blocks after the
+        // fact.
+        drop(held);
+
+        let outcome = recv(&rx);
+        assert!(outcome.complete);
+        assert_eq!(
+            outcome.upserted, 0,
+            "the file is unchanged and already in the saved index, so a job that read the index \
+             before taking `prior` has nothing to upsert -- a non-zero count here means it took \
+             `prior` from the not-yet-loaded empty index"
+        );
+        assert_eq!(second.snapshot().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A second `start_scan` while one is already running is refused rather than started, and
     /// `is_scanning()` reflects the running job.
     #[test]
