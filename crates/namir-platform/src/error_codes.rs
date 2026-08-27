@@ -18,7 +18,9 @@ use namir_core::{ErrorCode, Severity};
 pub const LOG_SESSION_STARTED: ErrorCode = ErrorCode::new(
     "platform.log.session_started",
     Severity::Info,
-    "Diagnostic logging started at level {level}.",
+    "Diagnostic logging started ({detail}).",
+    "Nothing to do; this record only marks where a session's log begins. Set NAMIR_LOG to `off`, \
+     `error`, `info` or `verbose` to change how much follows it.",
 );
 
 /// The log reached [`crate::logging::LOG_MAX_BYTES`] and the generations were rotated (D-16.5).
@@ -27,7 +29,9 @@ pub const LOG_SESSION_STARTED: ErrorCode = ErrorCode::new(
 pub const LOG_ROTATED: ErrorCode = ErrorCode::new(
     "platform.log.rotated",
     Severity::Info,
-    "The diagnostic log reached {bytes} bytes and was rotated.",
+    "The diagnostic log reached its size limit and was rotated ({detail}).",
+    "Nothing to do; the previous generation is kept beside this file. Copy both if you are \
+     attaching a log to a bug report.",
 );
 
 /// `NAMIR_LOG` was set to something the level parser does not recognise (D-16.5). The level falls
@@ -46,7 +50,9 @@ pub const LOG_ROTATED: ErrorCode = ErrorCode::new(
 pub const LOG_BAD_LEVEL: ErrorCode = ErrorCode::new(
     "platform.log.bad_level",
     Severity::Warning,
-    "NAMIR_LOG was set to {value}, which is not a known verbosity level.",
+    "NAMIR_LOG was set to a value that is not a known verbosity level ({detail}).",
+    "Set NAMIR_LOG to one of `off`, `error`, `info` or `verbose`, or unset it. Logging is running \
+     at its normal level in the meantime, not switched off.",
 );
 
 #[cfg(test)]

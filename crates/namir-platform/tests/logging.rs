@@ -44,10 +44,10 @@ use namir_platform::logging::{
 // `fs.rs`, `namir-app`'s `settings.rs`), and D-16.5 rules out adding a crate for this module.
 // ---------------------------------------------------------------------------------------------
 
-const INFO: ErrorCode = ErrorCode::new("platform.test.info", Severity::Info, "");
-const WARNING: ErrorCode = ErrorCode::new("platform.test.warning", Severity::Warning, "");
-const ERROR: ErrorCode = ErrorCode::new("platform.test.error", Severity::Error, "");
-const FAULT: ErrorCode = ErrorCode::new("platform.test.fault", Severity::Fault, "");
+const INFO: ErrorCode = ErrorCode::new("platform.test.info", Severity::Info, "", "n/a");
+const WARNING: ErrorCode = ErrorCode::new("platform.test.warning", Severity::Warning, "", "n/a");
+const ERROR: ErrorCode = ErrorCode::new("platform.test.error", Severity::Error, "", "n/a");
+const FAULT: ErrorCode = ErrorCode::new("platform.test.fault", Severity::Fault, "", "n/a");
 
 struct Scratch {
     dir: PathBuf,
@@ -218,7 +218,7 @@ fn submit_one_of_each(logger: &Logger) {
     logger.record(ERROR, "error-record");
     logger.record(FAULT, "fault-record");
     logger.record_verbose(
-        ErrorCode::new("platform.test.verbose", Severity::Info, ""),
+        ErrorCode::new("platform.test.verbose", Severity::Info, "", "n/a"),
         "verbose-record",
     );
 }

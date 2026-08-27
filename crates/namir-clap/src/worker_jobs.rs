@@ -135,6 +135,15 @@ pub(crate) fn spawn_recall(shared: Arc<SharedInner>) {
             let outcome = instance.recall(&shared.cache, &state, &resolver);
             for recall in [&outcome.nam, &outcome.ir] {
                 if let namir_worker::recall::ResourceRecall::Missing { missing, .. } = recall {
+                    // **Both triggers reporting is correct; both being *shown* was not** (issue
+                    // #43). This function is deliberately called from two places -- a host `state`
+                    // load (`crate::state_ext`) and every activation (`crate::audio`) -- and the
+                    // replay itself is idempotent, but its reporting was not: one deleted `.nam`
+                    // produced two indistinguishable `state.reference.not_found` notices in the
+                    // 2026-08-27 manual run's step 15. `SharedInner::push_notice` now goes through
+                    // `namir_ui::push_deduplicated`, so the second is folded into the first here
+                    // and at every other push site in either shell, rather than being suppressed
+                    // by a special case at this one.
                     let warning = missing.warning();
                     shared.push_notice(warning.code, warning.detail);
                 }

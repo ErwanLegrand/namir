@@ -16,6 +16,9 @@ pub const MALFORMED_JSON: ErrorCode = ErrorCode::new(
     "nam.load.malformed_json",
     Severity::Error,
     "The model file is not valid JSON.",
+    "Re-export the model from the Neural Amp Modeler trainer. A `.nam` file is JSON text, so a \
+     download that was truncated -- or an error page saved under the wrong name -- fails exactly \
+     here.",
 );
 
 /// `architecture` is neither `"WaveNet"` nor `"LSTM"` (FR-NAM-040: "of an unknown architecture")
@@ -29,6 +32,8 @@ pub const UNSUPPORTED_ARCHITECTURE: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_architecture",
     Severity::Error,
     "This model's architecture is not supported by this build of Namir.",
+    "Load a WaveNet or LSTM model; those are the two Namir plays. Re-export the profile as one of \
+     them, or choose a different model in the library.",
 );
 
 /// `config.head` is present (non-null). Ordinary exported WaveNet models leave it null; a
@@ -38,6 +43,8 @@ pub const UNSUPPORTED_HEAD_CONFIG: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_head_config",
     Severity::Error,
     "This model uses a post-stack head configuration, which is not supported.",
+    "Load a model exported without a post-stack head. Re-exporting from the trainer with its \
+     default settings produces one.",
 );
 
 /// A layer array's `activation` string is not one of `Tanh`, `ReLU`, `Sigmoid`, `Identity`.
@@ -45,6 +52,8 @@ pub const UNSUPPORTED_ACTIVATION: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_activation",
     Severity::Error,
     "This model uses an activation function that is not supported.",
+    "Load a model whose layers use Tanh, ReLU, Sigmoid or Identity -- the four Namir implements. \
+     Re-export from the trainer with a standard activation.",
 );
 
 /// `config.layers` is empty — there is no WaveNet stack to build at all.
@@ -52,6 +61,8 @@ pub const EMPTY_LAYER_ARRAYS: ErrorCode = ErrorCode::new(
     "nam.load.empty_layer_arrays",
     Severity::Error,
     "This model declares no WaveNet layer arrays.",
+    "This file has no model in it to play. Re-export it from the trainer, or choose a different \
+     model in the library.",
 );
 
 /// A layer array's `condition_size != 1`. This implementation always feeds the raw mono input as
@@ -62,6 +73,8 @@ pub const UNSUPPORTED_CONDITION_SIZE: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_condition_size",
     Severity::Error,
     "This model's conditioning signal size is not supported.",
+    "Load a plain, non-parametric model. Namir feeds one mono signal, so a model expecting several \
+     conditioning inputs has nothing here to drive them with.",
 );
 
 /// The flat `weights` array's length doesn't match what the declared config implies (FR-NAM-040:
@@ -71,6 +84,8 @@ pub const WEIGHT_COUNT_MISMATCH: ErrorCode = ErrorCode::new(
     "nam.load.weight_count_mismatch",
     Severity::Error,
     "This model's weight count does not match its declared configuration.",
+    "The file is damaged or was edited by hand. Download or export it again rather than repairing \
+     it in a text editor.",
 );
 
 /// Adjacent layer arrays' `head_size`/`channels`/`input_size` don't chain correctly (see the S-1
@@ -79,6 +94,8 @@ pub const LAYER_ARRAY_CHAINING_MISMATCH: ErrorCode = ErrorCode::new(
     "nam.load.layer_array_chaining_mismatch",
     Severity::Error,
     "This model's layer arrays do not chain together correctly.",
+    "The file is damaged or was assembled by something other than the trainer. Export it again \
+     from the Neural Amp Modeler trainer.",
 );
 
 /// A declared dimension (channels, head_size, input_size, condition_size, kernel_size,
@@ -90,6 +107,8 @@ pub const DIMENSION_LIMIT_EXCEEDED: ErrorCode = ErrorCode::new(
     "nam.load.dimension_limit_exceeded",
     Severity::Error,
     "This model declares a dimension larger than Namir's supported limit.",
+    "Load a model of an ordinary size. A file declaring dimensions this large is damaged or was \
+     not produced by the trainer at all -- treat one from an untrusted source with suspicion.",
 );
 
 /// `sample_rate` is present but zero. Distinct from `WEIGHT_COUNT_MISMATCH`: this is a
@@ -98,6 +117,8 @@ pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode::new(
     "nam.load.invalid_sample_rate",
     Severity::Error,
     "This model declares a sample rate of 0 Hz, which is not valid.",
+    "Re-export the model with its sample rate recorded (48 kHz is the usual choice); Namir cannot \
+     resample from a declared 0 Hz to your device's rate.",
 );
 
 /// An LSTM model's `input_size`, `in_channels`, or `out_channels` is not `1` — this
@@ -109,6 +130,8 @@ pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_lstm_channels",
     Severity::Error,
     "This LSTM model's input/output channel configuration is not supported.",
+    "Load a plain, non-parametric LSTM model -- one mono input, one mono output. Re-export from \
+     the trainer without the extra input channels.",
 );
 
 /// FR-NAM-140: the file is well-formed and its `architecture` is supported, but its `config` uses
@@ -124,6 +147,8 @@ pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_configuration",
     Severity::Error,
     "This model uses a configuration option that this build of Namir does not support.",
+    "Load a model exported without that option; the detail above names which one. Re-exporting \
+     from the trainer with default settings avoids all of them.",
 );
 
 /// The file is well-formed and every feature it uses is one this build supports, but its declared
@@ -138,6 +163,8 @@ pub const INCONSISTENT_CONFIGURATION: ErrorCode = ErrorCode::new(
     "nam.load.inconsistent_configuration",
     Severity::Error,
     "This model's declared configuration is internally inconsistent.",
+    "The file contradicts itself, so no other way of loading it will help. Export it again from \
+     the trainer.",
 );
 
 /// Carries a `namir_core::ErrorCode` (D-16.1) plus a `detail` string naming the specific reason
@@ -156,11 +183,9 @@ pub struct NamLoadError {
 
 impl std::fmt::Display for NamLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}: {} ({})",
-            self.code.id, self.code.message_template, self.detail
-        )
+        // `render`, not `message_template`: since M14 a template may carry one `{detail}`
+        // placeholder, and printing it raw is issue #15's defect at a second layer.
+        write!(f, "{}: {}", self.code.id, self.code.render(&self.detail))
     }
 }
 

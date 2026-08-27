@@ -9,42 +9,134 @@
 //! layout flow, with its own dismiss button -- never an `egui::Window`/modal overlay that blocks
 //! interaction with the rest of the screen until acknowledged.
 //!
-//! The message text itself (`{code.id}: {message_template} ({detail})`) matches
-//! `namir_library::LibraryError`/`namir_state::StateError`'s own `Display` format exactly, so a
-//! host that forwards one of those errors' `(code, detail)` pair into a [`UiNotice`] produces the
-//! same text a developer would see logging that error directly (FR-ERR-020's "documented,
-//! searched and tested" catalogue identifier stays visible either way).
+//! # What M14 changed here, and why the four links are one defect
+//!
+//! A human ran `docs/manual-tests/fr-ui-070-non-modal-error-notices.md` on 2026-08-27 and this
+//! module's row was the last link in a chain of four defensible decisions that compose into an
+//! unusable state (step 14, issue #42). Taken in the order they compound:
+//!
+//! 1. **The text was too long**, because the code and template were rendered twice (issue #39,
+//!    fixed in `namir-worker` and `namir-app`), and because the template's own `{placeholder}`
+//!    tokens reached the screen unsubstituted (issue #15, fixed by `namir_core::ErrorCode::render`,
+//!    which [`notice_text`] now calls instead of printing `message_template` raw).
+//! 2. **The row did not wrap.** An `egui` horizontal layout does not wrap, so a long label pushed
+//!    the `Dismiss` button off the right edge.
+//! 3. **The editor could not be widened.** The CLAP editor is fixed at 960x640 with
+//!    `can_resize() == false`, so the standalone's escape hatch does not exist there.
+//! 4. **Notices never expired**, and `Dismiss` was the only removal path.
+//!
+//! The result was a notice that could never be removed, occupying part of a screen that
+//! FR-UI-020's own run shows already cannot display every element at once. [`render`] now draws
+//! the control **first**, in a right-to-left layout, so it is placed against the panel's right
+//! edge before the label is given any room at all -- the button's position stops depending on the
+//! text's length, which is what makes it reachable at *any* geometry rather than at generous ones.
+//! The label then wraps inside whatever is left.
+//! `a_long_notice_keeps_its_dismiss_button_reachable_in_a_960x640_editor` asserts that against the
+//! plugin's real geometry, because a test that passes only in a wide default window is the defect
+//! rather than the check.
+//!
+//! **The remedy line costs vertical space in the top panel**, and FR-UI-020's own manual run
+//! records that the 960x640 editor already cannot show every element at once. That cost is
+//! accepted rather than overlooked: it is paid only while a notice is showing, the notice is
+//! dismissible again, and FR-UI-070's third clause is not satisfiable by text nobody can see.
+//!
+//! [`push_deduplicated`] is the shared list-side half (issues #43 and #42's fourth link). It lives
+//! here, in the one crate both shells already depend on, rather than as a copy in each -- this
+//! project has had a real bug from duplicating shell logic once already.
 
 use egui::Ui;
 
 use crate::UiIntent;
 use crate::host::UiNotice;
 
+/// How many notices a shell keeps on screen at once (see [`push_deduplicated`]).
+pub const MAX_NOTICES: usize = 16;
+
 /// Renders every notice in `notices`, each as its own non-modal, dismissible line. Appends
 /// [`UiIntent::DismissNotice`] to `intents` for whichever notice's dismiss button was clicked
 /// this frame (at most one per frame, since a click can only land on one button).
 pub fn render(ui: &mut Ui, notices: &[UiNotice], intents: &mut Vec<UiIntent>) {
     for notice in notices {
-        ui.horizontal(|ui| {
-            ui.label(notice_text(notice));
-            if ui
-                .button("Dismiss")
-                .on_hover_text("Dismiss this notice. It does not affect audio.")
-                .clicked()
-            {
-                intents.push(UiIntent::DismissNotice { id: notice.id });
-            }
-        });
+        if render_one(ui, notice).clicked() {
+            intents.push(UiIntent::DismissNotice { id: notice.id });
+        }
     }
 }
 
-/// `{code.id}: {message_template} ({detail})` -- see this module's doc comment for why this
-/// exact shape was chosen. Pure and separately testable from the widget it feeds.
+/// Draws one notice's row and returns its dismiss button's `Response`.
+///
+/// Split out of [`render`] so a test can find the button's rectangle **through the real layout
+/// code** rather than by reproducing it. That distinction is not cosmetic here: the defect this
+/// row's layout was changed to fix (issue #42) is entirely about where the button ends up, so a
+/// test that measured a hand-copied second version of the layout would be measuring the wrong
+/// thing the moment the two drifted apart — and the first draft of
+/// `a_long_notice_keeps_its_dismiss_button_reachable_in_a_960x640_editor` did exactly that, found
+/// a plausible-looking rectangle belonging to a row `render` had never drawn, and its synthetic
+/// click landed on nothing.
+fn render_one(ui: &mut Ui, notice: &UiNotice) -> egui::Response {
+    // Right-to-left: the button is laid out against the right edge *before* the text is measured,
+    // so its position cannot depend on how long the text is. See this module's doc comment for the
+    // 960x640 case that made the previous left-to-right row unusable.
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+        let dismiss = ui
+            .button("Dismiss")
+            .on_hover_text("Dismiss this notice. It does not affect audio.");
+        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.add(egui::Label::new(notice_text(notice)).wrap());
+            // FR-UI-070's third clause, in its own weaker style: what failed reads as the notice,
+            // what to do about it reads as advice. That separation is the whole argument for
+            // `remedy` being a field rather than a sentence inside the template -- see
+            // `namir_core::ErrorCode`'s doc comment.
+            ui.add(egui::Label::new(egui::RichText::new(notice.code.remedy).weak().small()).wrap());
+        });
+        dismiss
+    })
+    .inner
+}
+
+/// Appends `notice` to `notices` unless an identical one is already showing, and keeps the list to
+/// [`MAX_NOTICES`] by dropping the oldest.
+///
+/// # Deduplication (issue #43)
+///
+/// One event produced several identical notices in both shells. `worker_jobs::spawn_recall` has two
+/// deliberate triggers -- a host `state` load and an activation -- and the comments at both
+/// anticipate them both running; the replay itself is idempotent and its *reporting* was not, so a
+/// single deleted `.nam` produced two indistinguishable `state.reference.not_found` lines. The
+/// device-lost pair was the same shape from the other shell.
+///
+/// Identity is `(code.id, detail)`: two notices a user cannot tell apart are one notice. The
+/// **existing** entry is kept rather than replaced, so a notice's id -- and therefore whatever the
+/// user is about to click -- stays stable while it is on screen.
+///
+/// # The cap, and why it is a cap and not a timer
+///
+/// Notices never expired and the list was unbounded. A timed expiry was considered and rejected:
+/// a notice that vanishes on its own is exactly the "I never saw what went wrong" failure
+/// FR-UI-070's second sentence exists to prevent, and severity is no guide either -- the warning a
+/// user most needs to read (a truncated IR, a settings file about to be overwritten) is the one
+/// whose severity would earn it the shortest timeout. What was actually broken was unboundedness,
+/// so what is bounded is the list. Nothing is lost from the *record* when the oldest is dropped:
+/// both shells write an FR-ERR-010 log record from the same function that pushes the notice.
+pub fn push_deduplicated(notices: &mut Vec<UiNotice>, notice: UiNotice) {
+    if notices
+        .iter()
+        .any(|n| n.code.id == notice.code.id && n.detail == notice.detail)
+    {
+        return;
+    }
+    notices.push(notice);
+    if notices.len() > MAX_NOTICES {
+        notices.remove(0);
+    }
+}
+
+/// `{code.id}: {rendered message}` -- the code id stays visible so FR-ERR-020's "documented,
+/// searched and tested" identifier is the thing a user quotes in a bug report, and the message is
+/// [`namir_core::ErrorCode::render`]'s output rather than the raw template (issue #15). Pure and
+/// separately testable from the widget it feeds.
 fn notice_text(notice: &UiNotice) -> String {
-    format!(
-        "{}: {} ({})",
-        notice.code.id, notice.code.message_template, notice.detail
-    )
+    format!("{}: {}", notice.code.id, notice.code.render(&notice.detail))
 }
 
 #[cfg(test)]
@@ -55,41 +147,147 @@ mod tests {
     const SAMPLE: ErrorCode = ErrorCode::new(
         "ui.example.file_missing",
         Severity::Error,
-        "The file could not be found.",
+        "The file could not be found ({detail}).",
+        "Check the file is still where the library lists it, then rescan.",
     );
+
+    const SELF_CONTAINED: ErrorCode = ErrorCode::new(
+        "ui.example.self_contained",
+        Severity::Warning,
+        "This model's architecture is not supported by this build of Namir.",
+        "Load a WaveNet or LSTM model instead.",
+    );
+
+    fn notice(id: u64, code: ErrorCode, detail: &str) -> UiNotice {
+        UiNotice {
+            id,
+            code,
+            detail: detail.to_string(),
+        }
+    }
 
     #[test]
     fn notice_text_includes_code_id_template_and_detail() {
-        let notice = UiNotice {
-            id: 1,
-            code: SAMPLE,
-            detail: "C:/models/plexi.nam".to_string(),
-        };
-        let text = notice_text(&notice);
+        let text = notice_text(&notice(1, SAMPLE, "C:/models/plexi.nam"));
         assert!(text.contains("ui.example.file_missing"));
-        assert!(text.contains("The file could not be found."));
+        assert!(text.contains("The file could not be found"));
         assert!(text.contains("C:/models/plexi.nam"));
+    }
+
+    /// Issue #15, at the layer a user actually reads: the eight literal `{placeholder}` tokens a
+    /// human transcribed off a real window in the 2026-08-27 run came from this function printing
+    /// `message_template` raw. Nothing rendered here may contain a brace.
+    #[test]
+    fn no_placeholder_token_survives_into_the_rendered_line() {
+        let text = notice_text(&notice(1, SAMPLE, "C:/models/plexi.nam"));
+        assert_eq!(
+            text,
+            "ui.example.file_missing: The file could not be found (C:/models/plexi.nam)."
+        );
+        assert!(!text.contains('{'), "{text}");
+        assert!(!text.contains('}'), "{text}");
+    }
+
+    /// A template with no placeholder keeps the pre-M14 shape, detail appended in parentheses --
+    /// the contract this module's doc comment has always described, now with one renderer.
+    #[test]
+    fn a_self_contained_template_still_gets_its_detail_appended() {
+        let text = notice_text(&notice(1, SELF_CONTAINED, "architecture=Transformer"));
+        assert!(text.ends_with("(architecture=Transformer)"), "{text}");
+    }
+
+    /// Issue #43: two triggers, one event, one notice.
+    #[test]
+    fn an_identical_notice_is_not_shown_twice() {
+        let mut notices = Vec::new();
+        push_deduplicated(&mut notices, notice(1, SAMPLE, "plexi.nam"));
+        push_deduplicated(&mut notices, notice(2, SAMPLE, "plexi.nam"));
+        assert_eq!(notices.len(), 1);
+        // The *first* notice survives, so an id already on screen stays clickable.
+        assert_eq!(notices[0].id, 1);
+    }
+
+    /// Deduplication must not merge two different failures. The device-lost pair of step 8 was
+    /// indistinguishable only because `{direction}` was never substituted; once the details differ,
+    /// they are two facts and both belong on screen.
+    #[test]
+    fn notices_differing_only_in_detail_are_both_kept() {
+        let mut notices = Vec::new();
+        push_deduplicated(&mut notices, notice(1, SAMPLE, "input device \"A\""));
+        push_deduplicated(&mut notices, notice(2, SAMPLE, "output device \"B\""));
+        assert_eq!(notices.len(), 2);
+    }
+
+    /// The list is bounded, and the bound drops the oldest rather than refusing the newest.
+    #[test]
+    fn the_notice_list_is_capped() {
+        let mut notices = Vec::new();
+        for i in 0..(MAX_NOTICES as u64 + 5) {
+            push_deduplicated(&mut notices, notice(i, SAMPLE, &format!("file{i}.nam")));
+        }
+        assert_eq!(notices.len(), MAX_NOTICES);
+        assert_eq!(notices[0].detail, "file5.nam");
+    }
+
+    /// **Step 14's defect, at the geometry that produced it.**
+    ///
+    /// The CLAP editor is fixed at 960x640 with `can_resize() == false`
+    /// (`crates/namir-clap/src/gui.rs`), so a notice whose `Dismiss` button lands past x=960 can
+    /// never be dismissed and never expires. This drives `render` at exactly that size with a
+    /// notice longer than the row, and asserts both halves of "reachable": the button's rectangle
+    /// is inside the window, and a real synthetic click on it emits that notice's intent.
+    ///
+    /// The detail is deliberately far longer than anything the catalogue produces -- the point is
+    /// that the button's position does not depend on the text at all.
+    #[test]
+    fn a_long_notice_keeps_its_dismiss_button_reachable_in_a_960x640_editor() {
+        const EDITOR: egui::Vec2 = egui::vec2(960.0, 640.0);
+        let long_detail = "C:/Users/somebody/Documents/Namir/Library/marshall/\
+                           a-very-long-model-name-of-the-kind-a-capture-session-produces-\
+                           plexi-1959-bright-channel-treble-boosted-take-3.nam: \
+                           the file could not be read (os error 2)";
+        let notices = vec![notice(7, SAMPLE, long_detail)];
+
+        let ctx = egui::Context::default();
+        let mut button_rect = None;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, EDITOR)),
+                ..Default::default()
+            },
+            // `render_one`, which is what `render` itself calls -- see its doc comment for why the
+            // rectangle must come from the real layout and not from a copy of it.
+            |ui| button_rect = Some(render_one(ui, &notices[0]).rect),
+        );
+        let rect = button_rect.expect("dismiss button laid out");
+        assert!(
+            rect.max.x <= EDITOR.x && rect.min.x >= 0.0,
+            "Dismiss button at {rect:?} is outside a {EDITOR:?} editor"
+        );
+
+        let pos = rect.center();
+        let mut intents = Vec::new();
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, EDITOR)),
+                events: click_at(pos),
+                ..Default::default()
+            },
+            |ui| {
+                render(ui, &notices, &mut intents);
+            },
+        );
+        assert_eq!(intents, vec![UiIntent::DismissNotice { id: 7 }]);
     }
 
     #[test]
     fn dismissing_a_notice_emits_its_own_id_not_anothers() {
         let ctx = egui::Context::default();
-        let notices = vec![
-            UiNotice {
-                id: 7,
-                code: SAMPLE,
-                detail: "first".to_string(),
-            },
-            UiNotice {
-                id: 9,
-                code: SAMPLE,
-                detail: "second".to_string(),
-            },
-        ];
+        let notices = vec![notice(7, SAMPLE, "first"), notice(9, SAMPLE, "second")];
 
-        // Discover the second notice's dismiss-button position by reproducing `render`'s exact
-        // widget sequence (both rows, in order) -- the second row's vertical position depends on
-        // the first row already having been laid out above it.
+        // Discover the second notice's dismiss-button position by driving `render`'s own per-row
+        // function for both rows, in order -- the second row's vertical position depends on the
+        // first row already having been laid out above it.
         let mut button_pos = None;
         let _ = ctx.run_ui(
             egui::RawInput {
@@ -101,13 +299,10 @@ mod tests {
             },
             |ui| {
                 for (i, notice) in notices.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(notice_text(notice));
-                        let response = ui.button("Dismiss");
-                        if i == 1 {
-                            button_pos = Some(response.rect.center());
-                        }
-                    });
+                    let response = render_one(ui, notice);
+                    if i == 1 {
+                        button_pos = Some(response.rect.center());
+                    }
                 }
             },
         );
@@ -120,21 +315,7 @@ mod tests {
                     egui::Pos2::ZERO,
                     egui::vec2(500.0, 300.0),
                 )),
-                events: vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
+                events: click_at(pos),
                 ..Default::default()
             },
             |ui| {
@@ -153,5 +334,24 @@ mod tests {
             render(ui, &[], &mut intents);
         });
         assert!(intents.is_empty());
+    }
+
+    /// One press-and-release of the primary button at `pos`.
+    fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
     }
 }
