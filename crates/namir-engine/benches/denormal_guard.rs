@@ -121,6 +121,21 @@
 //! counts) is left to the coordinating session on the project's own pinned reference machine,
 //! exactly as `handover_crossfade.rs`'s own doc comment defers its certified numbers.
 //!
+//! # Result of the per-stage arms' first run (added M14 — INFORMATIONAL, not a certified figure)
+//!
+//! Five repetitions of `NAMIR_DENORMAL_WARMUP_BLOCKS=2000
+//! NAMIR_DENORMAL_MEASURED_BLOCKS=3000`, un-pinned, in the same shared development sandbox the
+//! smoke run above was taken in — **not** the `docs/02-architecture.md` §2 reference machine, so
+//! per D-2.4 none of it is the number that closes NFR-RT-030. All six stages stayed inside the
+//! 10 % budget in all five repetitions; the A-vs-C spread across those repetitions was gate
+//! -0.52…+0.22 %, trim -0.79…+0.32 %, nam -6.55…-4.19 %, ir -0.01…+6.35 %, eq -0.25…-0.18 %,
+//! out -0.83…-0.42 %. Two things in the arm-B column are the reason these arms exist at all: the
+//! *cheap* stages carry the largest denormal penalty by ratio — trim 10.2x, out 6.4x, eq 32.9x,
+//! gate 2.5x guard-engaged cost — while contributing a few hundred nanoseconds each to an
+//! assembled block that costs hundreds of microseconds, which is exactly the dilution the
+//! aggregate arms cannot see. `ir` is the stage whose A-vs-C figure moves most between
+//! repetitions and is the one to watch on a certified run.
+//!
 //! # Block counts are overridable, unlike every other benchmark here
 //!
 //! Every other `[[bench]]` in this crate hard-codes `WARMUP_BLOCKS`/`MEASURED_BLOCKS` because
@@ -408,11 +423,332 @@ fn pin_to_measurement_core() {
     core_affinity::set_for_current(ids[idx]);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Per-stage arms (added M14) — the half of NFR-RT-030's *Verify:* method the aggregate arms above
+// cannot execute.
+//
+// The method's words are "drive **each** stage with a decaying signal into the denormal range and
+// assert processing time stays within 10 % of nominal", and the requirement's own words are "in
+// any stage". The three arms above drive the *assembled* chain, in which a spike confined to one
+// stage is diluted by the five running beside it: on the smoke figures in this file's module doc
+// comment the whole chain's nominal p50 is ~110 µs, while `per_stage_cost.rs` measures the gate,
+// trim, eq and out stages at a few hundred nanoseconds each — so one of those stages could go
+// 100x slower on denormal input and still move the assembled p50 by well under the 10 % the
+// aggregate assertion tests. The aggregate arms are therefore necessary (they are the condition a
+// real callback actually runs under) and not sufficient (they cannot fail for the reason the
+// requirement names). These arms are the other half: six independent A/B/C triples, one per
+// stage, each asserted at the same 10 % budget against its own nominal.
+//
+// Everything else follows the aggregate arms rather than re-deciding it: the same [`Ringdown`]
+// generators, generated outside every timed region and outside every guard scope; a fresh
+// [`DenormalGuard`] per measured block in the guard-engaged arms; A/B/C interleaved inside one
+// block iteration so drift over the run's lifetime cancels; arm B informational only, for the
+// hardware reason the module doc comment gives. Each stage gets three freshly-prepared instances
+// so no arm inherits another's internal state, and its own pair of generators so every stage sees
+// the same stimulus sequence rather than a continuation of the previous stage's.
+//
+// **What these arms still do not span, and why the tag below stays `trace-partial`.** The
+// requirement reads "in any stage, **on any supported platform**". This binary is portable source
+// and asserts its budget wherever it runs, but one run measures one platform, and per D-2.4 a
+// certified figure is a `docs/02-architecture.md` §2 reference-machine figure — Windows 11 on
+// x86-64. Nothing runs it on macOS or Linux, and `DenormalGuard`'s own per-architecture
+// degradation (D-7.4, NFR-PORT-030) makes that a substantive rather than a formal gap: on a
+// target where the guard degrades to a no-op these arms are the measurement that would say so.
+
+/// The six stages [`Chain`] runs in order, which is the set NFR-RT-030's "in any stage"
+/// quantifies over. Enumerated explicitly rather than derived from a `Chain`, so a seventh stage
+/// added to the chain without being added here is a visible omission in this file rather than a
+/// silently narrower measurement.
+#[derive(Clone, Copy)]
+enum StageKind {
+    Gate,
+    Trim,
+    Nam,
+    Ir,
+    Eq,
+    Out,
+}
+
+const ALL_STAGES: [(StageKind, &str); 6] = [
+    (StageKind::Gate, "gate"),
+    (StageKind::Trim, "trim"),
+    (StageKind::Nam, "nam"),
+    (StageKind::Ir, "ir"),
+    (StageKind::Eq, "eq"),
+    (StageKind::Out, "out"),
+];
+
+/// One freshly-prepared stage of `kind`, carrying the same real resources and the same non-default
+/// gate/EQ activation [`assemble_real_chain`] gives its own copy — so a stage measured in
+/// isolation here is the same stage, in the same configuration, that the aggregate arms measure
+/// inside the chain.
+fn build_stage(
+    kind: StageKind,
+    ctx: &PrepareContext,
+    nam_model: &Arc<PreparedNam>,
+    ir: &Arc<PreparedIr>,
+) -> Box<dyn Stage> {
+    match kind {
+        StageKind::Gate => {
+            let mut stage: GateStage = GatePrep.prepare(ctx).expect("GatePrep::prepare");
+            stage.apply(ParamChange {
+                id: ParamId(gate::ENABLED.id.0),
+                value: 1.0,
+            });
+            stage.apply(ParamChange {
+                id: ParamId(gate::THRESHOLD_DB.id.0),
+                value: GATE_THRESHOLD_DB,
+            });
+            Box::new(stage)
+        }
+        StageKind::Trim => Box::new(TrimPrep.prepare(ctx).expect("TrimPrep::prepare")),
+        StageKind::Nam => {
+            let mut stage: NamStage = NamPrep.prepare(ctx).expect("NamPrep::prepare");
+            stage.load_model(Arc::clone(nam_model));
+            Box::new(stage)
+        }
+        StageKind::Ir => {
+            let mut stage: IrStage = IrPrep.prepare(ctx).expect("IrPrep::prepare");
+            stage.load_ir(Arc::clone(ir));
+            Box::new(stage)
+        }
+        StageKind::Eq => {
+            let mut stage: EqStage = EqPrep.prepare(ctx).expect("EqPrep::prepare");
+            stage.apply(ParamChange {
+                id: ParamId(eq::ENABLED.id.0),
+                value: 1.0,
+            });
+            stage.apply(ParamChange {
+                id: ParamId(eq::LOW_SHELF_GAIN_DB.id.0),
+                value: EQ_LOW_SHELF_GAIN_DB,
+            });
+            Box::new(stage)
+        }
+        StageKind::Out => Box::new(OutPrep.prepare(ctx).expect("OutPrep::prepare")),
+    }
+}
+
+/// [`process_block_guarded`]'s single-stage equivalent — a fresh guard scoped to exactly this
+/// block, inside the timed window, for the reason the module doc comment gives.
+fn process_stage_block_guarded(stage: &mut dyn Stage, io: &mut StageIo) -> Duration {
+    let start = Instant::now();
+    let guard = DenormalGuard::new();
+    stage.process(io);
+    drop(guard);
+    start.elapsed()
+}
+
+/// [`process_block_unguarded`]'s single-stage equivalent.
+fn process_stage_block_unguarded(stage: &mut dyn Stage, io: &mut StageIo) -> Duration {
+    let start = Instant::now();
+    stage.process(io);
+    start.elapsed()
+}
+
+/// One stage's three-arm result. `delta_ac_pct` is the figure NFR-RT-030's 10 % budget applies to.
+struct StageVerdict {
+    name: &'static str,
+    p50_a: u64,
+    p50_b: u64,
+    p50_c: u64,
+    p99_a: u64,
+    p99_c: u64,
+    delta_ac_pct: f64,
+}
+
+/// Drives one stage through the same interleaved A/B/C loop `main` runs for the assembled chain.
+/// Asserts nothing about the budget itself — [`run_per_stage_arms`] does, so that every stage's
+/// figure is printed before the first failure rather than the run stopping at whichever stage
+/// happens to be measured first.
+fn measure_stage(
+    kind: StageKind,
+    name: &'static str,
+    ctx: &PrepareContext,
+    nam_model: &Arc<PreparedNam>,
+    ir: &Arc<PreparedIr>,
+    warmup_blocks: usize,
+    measured_blocks: usize,
+) -> StageVerdict {
+    let mut stage_a = build_stage(kind, ctx, nam_model, ir);
+    let mut stage_b = build_stage(kind, ctx, nam_model, ir);
+    let mut stage_c = build_stage(kind, ctx, nam_model, ir);
+
+    let mut denormal_gen = denormal_ringdown();
+    let mut nominal_gen = nominal_ringdown();
+
+    let mut denormal_block = vec![0f32; BLOCK_SIZE];
+    let mut nominal_block = vec![0f32; BLOCK_SIZE];
+    let mut a_left = vec![0f32; BLOCK_SIZE];
+    let mut a_right = vec![0f32; BLOCK_SIZE];
+    let mut b_left = vec![0f32; BLOCK_SIZE];
+    let mut b_right = vec![0f32; BLOCK_SIZE];
+    let mut c_left = vec![0f32; BLOCK_SIZE];
+    let mut c_right = vec![0f32; BLOCK_SIZE];
+
+    let mut durations_a = Vec::with_capacity(measured_blocks);
+    let mut durations_b = Vec::with_capacity(measured_blocks);
+    let mut durations_c = Vec::with_capacity(measured_blocks);
+
+    let mut saw_subnormal_input = false;
+    let mut saw_nominal_subnormal = false;
+
+    for b in 0..(warmup_blocks + measured_blocks) {
+        denormal_gen.fill_block(&mut denormal_block);
+        nominal_gen.fill_block(&mut nominal_block);
+
+        a_left.copy_from_slice(&denormal_block);
+        a_right.copy_from_slice(&denormal_block);
+        b_left.copy_from_slice(&denormal_block);
+        b_right.copy_from_slice(&denormal_block);
+        c_left.copy_from_slice(&nominal_block);
+        c_right.copy_from_slice(&nominal_block);
+
+        if b >= warmup_blocks {
+            if denormal_block.iter().any(|s| s.is_subnormal()) {
+                saw_subnormal_input = true;
+            }
+            if nominal_block.iter().any(|s| s.is_subnormal()) {
+                saw_nominal_subnormal = true;
+            }
+        }
+
+        let dur_a = {
+            let mut channels: [&mut [f32]; 2] = [&mut a_left, &mut a_right];
+            let mut io = StageIo::new(&mut channels, BLOCK_SIZE);
+            process_stage_block_guarded(stage_a.as_mut(), &mut io)
+        };
+        let dur_b = {
+            let mut channels: [&mut [f32]; 2] = [&mut b_left, &mut b_right];
+            let mut io = StageIo::new(&mut channels, BLOCK_SIZE);
+            process_stage_block_unguarded(stage_b.as_mut(), &mut io)
+        };
+        let dur_c = {
+            let mut channels: [&mut [f32]; 2] = [&mut c_left, &mut c_right];
+            let mut io = StageIo::new(&mut channels, BLOCK_SIZE);
+            process_stage_block_guarded(stage_c.as_mut(), &mut io)
+        };
+
+        if b >= warmup_blocks {
+            durations_a.push(dur_a.as_nanos() as u64);
+            durations_b.push(dur_b.as_nanos() as u64);
+            durations_c.push(dur_c.as_nanos() as u64);
+        }
+    }
+
+    assert!(
+        saw_subnormal_input,
+        "stage {name}: the denormal ring-down never produced a subnormal sample during the \
+         measured window -- this arm would be testing nothing"
+    );
+    assert!(
+        !saw_nominal_subnormal,
+        "stage {name}: the 'nominal' ring-down produced a subnormal sample during the measured \
+         window -- this arm would no longer isolate signal magnitude"
+    );
+
+    durations_a.sort_unstable();
+    durations_b.sort_unstable();
+    durations_c.sort_unstable();
+
+    let p50_a = percentile(&durations_a, 0.50);
+    let p50_c = percentile(&durations_c, 0.50);
+    assert!(
+        p50_c > 0,
+        "stage {name}: nominal p50 measured as 0 ns -- the clock's resolution is coarser than this \
+         stage's per-block cost on this platform, so no ratio against it means anything"
+    );
+
+    StageVerdict {
+        name,
+        p50_a,
+        p50_b: percentile(&durations_b, 0.50),
+        p50_c,
+        p99_a: percentile(&durations_a, 0.99),
+        p99_c: percentile(&durations_c, 0.99),
+        delta_ac_pct: (p50_a as f64 - p50_c as f64) / p50_c as f64 * 100.0,
+    }
+}
+
+/// Runs and asserts the per-stage half of NFR-RT-030's method.
+fn run_per_stage_arms(
+    ctx: &PrepareContext,
+    nam_model: &Arc<PreparedNam>,
+    ir: &Arc<PreparedIr>,
+    warmup_blocks: usize,
+    measured_blocks: usize,
+) {
+    println!();
+    println!("=== NFR-RT-030, per stage: 'drive each stage ... within 10 % of nominal' ===");
+    println!(
+        "Six independent A/B/C triples, one per stage, with the same generators and the same \n\
+         per-block guard scoping as the assembled arms above. A spike confined to one cheap stage \n\
+         is invisible in the assembled figure; here it is not."
+    );
+    println!();
+    println!(
+        "  {:<6} {:>12} {:>12} {:>12} {:>12}",
+        "stage", "A p50 (ns)", "B p50 (ns)", "C p50 (ns)", "A vs C"
+    );
+
+    let verdicts: Vec<StageVerdict> = ALL_STAGES
+        .iter()
+        .map(|&(kind, name)| {
+            let verdict = measure_stage(
+                kind,
+                name,
+                ctx,
+                nam_model,
+                ir,
+                warmup_blocks,
+                measured_blocks,
+            );
+            println!(
+                "  {:<6} {:>12} {:>12} {:>12} {:>11.2}%",
+                verdict.name, verdict.p50_a, verdict.p50_b, verdict.p50_c, verdict.delta_ac_pct
+            );
+            verdict
+        })
+        .collect();
+
+    println!();
+    for v in &verdicts {
+        println!(
+            "  {:<6} p99: A {:>12} ns   C {:>12} ns   [informational, as above]",
+            v.name, v.p99_a, v.p99_c
+        );
+    }
+
+    let over: Vec<&StageVerdict> = verdicts
+        .iter()
+        .filter(|v| v.delta_ac_pct.abs() > NFR_RT_030_TOLERANCE_PCT)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "NFR-RT-030: {} of the six stages left the {NFR_RT_030_TOLERANCE_PCT:.0}% budget against \
+         their own nominal: {}",
+        over.len(),
+        over.iter()
+            .map(|v| format!(
+                "{} ({:+.2}%, A p50 {} ns vs C p50 {} ns)",
+                v.name, v.delta_ac_pct, v.p50_a, v.p50_c
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!();
+    println!(
+        "PASS: each of the six stages stayed within the {NFR_RT_030_TOLERANCE_PCT:.0}% NFR-RT-030 \
+         budget of its own nominal arm."
+    );
+}
+
 // trace-partial: NFR-RT-030
-// uncovered: NFR-RT-030 — the method's "drive each stage with a denormal-producing signal"
-// uncovered: measures no stage individually: the binary compares the assembled six-stage chain's
-// uncovered: aggregate per-block p50 against nominal, in which a real spike confined to one stage
-// uncovered: is diluted below the asserted 10% bound by the other five; closes M8
+// uncovered: NFR-RT-030 — the "on any supported platform" clause. Both the assembled arms and the
+// uncovered: per-stage arms added at M14 assert the 10% budget wherever this binary is run, but
+// uncovered: one run measures one platform and D-2.4 certifies only the 02-architecture.md §2
+// uncovered: reference machine (Windows 11, x86-64); nothing runs this on macOS or Linux, where
+// uncovered: DenormalGuard's own per-architecture degradation (D-7.4) is what would show up;
+// uncovered: closes M8
 fn main() {
     pin_to_measurement_core();
 
@@ -622,4 +958,9 @@ fn main() {
     println!(
         "PASS: arm A stayed within the {NFR_RT_030_TOLERANCE_PCT:.0}% NFR-RT-030 budget of nominal arm C."
     );
+
+    // The assembled arms above are the condition a real callback runs under; these are the
+    // "**each** stage" half of the same *Verify:* line. See the section comment above
+    // `run_per_stage_arms` for why one cannot stand in for the other.
+    run_per_stage_arms(&ctx, &nam_model, &ir, warmup_blocks, measured_blocks);
 }
