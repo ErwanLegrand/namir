@@ -13,19 +13,19 @@
 //! **That note said "no pipeline yet" until M9b; M13 built one and the sentence went stale.**
 //! `.github/workflows/release.yml` runs `xtask bundle`, which stages `THIRD-PARTY-NOTICES.md`
 //! beside the built artifacts, and `packaging/macos/make_installer.sh` re-checks it inside the
-//! produced `.pkg`/`.dmg`/`.zip`. What is still unclosed is narrower than "no pipeline": nothing
-//! opens the Windows installer or ZIP or the Linux tarball to assert the file is in it, and
-//! `ci.yml` invokes `xtask bundle` nowhere, so none of it runs outside a tag. The annotation
-//! below carries that as its gap.
+//! produced `.pkg`/`.dmg`/`.zip`. **M14 Phase 5 moved the rest off the tag**: `ci.yml`'s
+//! `bundle-and-inspect` job runs `xtask bundle` on all three platforms on every push and pull
+//! request, builds each platform's archive and unpacks it again, so the ZIP and the tarball are
+//! now opened too. What is left is narrower still, and it is what the annotation below carries:
+//! the Windows *installer* is opened by nothing, and this file's own check is about the artifact's
+//! freshness in the repository, never about what is inside a distribution.
 
 // trace-partial: NFR-LIC-030
-// uncovered: NFR-LIC-030 — the "shipped with the binaries" clause is asserted for one platform of
-// uncovered: three and only on a tag: M13's release.yml runs `xtask bundle`, which stages
-// uncovered: THIRD-PARTY-NOTICES.md beside the built artifacts and asserts it is there, and
-// uncovered: packaging/macos/make_installer.sh re-checks it inside the produced .pkg/.dmg/.zip —
-// uncovered: but nothing opens the Windows installer or ZIP or the Linux tarball to assert it,
-// uncovered: and ci.yml invokes `xtask bundle` nowhere, so no ordinary run checks any of it;
-// uncovered: closes M8
+// uncovered: NFR-LIC-030 — the artifact annotated here closes "produced by the build" and its
+// uncovered: freshness only; the "shipped with the binaries" clause is not this check's and never
+// uncovered: was. ci.yml's bundle-and-inspect lane (M14) is what asserts the file inside a
+// uncovered: produced archive on all three platforms, and even there the Windows installer's
+// uncovered: payload is unopened and no check reads the shipped file's *contents*; closes M8
 
 use std::path::Path;
 
