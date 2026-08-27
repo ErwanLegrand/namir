@@ -74,7 +74,7 @@ mod tests {
     // uncovered: error paths, ErrorCode's three fields are all pub so a call site can construct
     // uncovered: an off-catalogue code inline, and
     // uncovered: crates/namir-ui/examples/manual_window_smoke.rs:27 is a live instance of exactly
-    // uncovered: that; closes M9b
+    // uncovered: that; closes M8
     #[test]
     fn unique_ids_pass() {
         assert_unique_ids(&[A, B]);

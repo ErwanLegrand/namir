@@ -91,21 +91,39 @@ jobs:
       # uncovered: xtask/src/identity.rs and nothing compares either against ci.yml, and they are
       # uncovered: already apart: this job runs `cargo build --workspace --all-targets` where the
       # uncovered: README documents `cargo build --workspace`. "Exercised by CI" is unmet on top of
-      # uncovered: that — nothing executes a command *as documented*, docs/user-guide.md's
-      # uncovered: per-platform install and run instructions are unexercised, and "every product
-      # uncovered: configuration on every supported platform" is unspanned while no job assembles a
-      # uncovered: macOS bundle or installs the plugin into a host; closes M13
+      # uncovered: that — no step executes a command *because* it is documented (the test command
+      # uncovered: matches by coincidence, the build command does not), and docs/user-guide.md's
+      # uncovered: per-platform install and run instructions are unexercised. "Every product
+      # uncovered: configuration on every supported platform" is unspanned too: no job in this file
+      # uncovered: assembles a macOS bundle — release.yml's macos lane does, via xtask bundle and
+      # uncovered: packaging/macos/make_installer.sh, but only on a v* tag, never on a push or pull
+      # uncovered: request — and no job installs either product at its documented install path or
+      # uncovered: loads the plugin in a real host, clap-validator and M9b's in-process
+      # uncovered: host-ext-tests being neither an install nor a DAW; closes M8
       - name: cargo build --workspace --all-targets
         run: cargo build --workspace --all-targets
 
       - name: cargo test --workspace
         run: cargo test --workspace
 
+      # M9b (D-18.7). `namir-clap`'s `host-ext-tests` feature is **non-default**, so the step above
+      # does not compile the tests behind it -- the in-process CLAP host tests that observe the
+      # plugin's audio-ports/params/state/latency extensions through `clack-extensions`' host
+      # halves. Without this step those tests are dead weight nothing ever runs, so it is required,
+      # not `continue-on-error`.
+      #
+      # It must stay a named, single-feature invocation. **Never `--all-features`**: that would
+      # switch the feature on for the shipped `cdylib` too, linking `clack-host` into the plugin
+      # and desynchronising THIRD-PARTY-NOTICES.md from the artifact (risk R-17). The feature is
+      # deliberately invisible to `xtask attribution`, which walks the default-feature resolve.
+      - name: cargo test -p namir-clap --features host-ext-tests (D-18.7)
+        run: cargo test -p namir-clap --features host-ext-tests
+
   # Covers D-18.1's "the layering lint" (D-5.2) and "the params.lock diff" (FR-PARAM-020).
   # Pure static checks over the dependency graph and a checked-in manifest -- not
   # platform-dependent, so one OS is enough.
   layering-and-params:
-    name: layering + params.lock + attribution + identity
+    name: layering + rt-logging + params.lock + attribution + identity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +134,14 @@ jobs:
 
       - name: xtask layering (D-5.2)
         run: cargo run -p xtask -- layering
+
+      # M9b: FR-ERR-030's static half. `namir-app` and `namir-clap` are the two crates D-5.1 lets
+      # depend on `namir-platform` *and* the two that own the audio callbacks, so they are the only
+      # place a log record could be emitted from the audio thread; this rejects the logger being
+      # named in any module that carries audio-thread code. Same class as the step above -- a
+      # line-based scan over checked-in source, with no OS-specific behaviour to matrix over.
+      - name: xtask rt-logging (FR-ERR-030)
+        run: cargo run -p xtask -- rt-logging
 
       - name: xtask params-lock (FR-PARAM-020)
         run: cargo run -p xtask -- params-lock
@@ -151,29 +177,44 @@ jobs:
       #     derived half rides here, not on the informational one). Both are mechanical and
       #     satisfiable right now: `--write` regenerates the plan, and Section 14's row set is
       #     hand-fixed. Nothing about a milestone's progress can make this red.
-      #   * **Informational, until M13's close-out.** Zero uncovered Musts. It cannot reach zero
-      #     inside M9 for a reason that is not a verification gap -- ten of the currently uncovered
-      #     ids belong to milestones that have not run (M10, M12, M13), and the only route to zero
-      #     today is tagging unbuilt work, which D-23.1 forbids. Making this blocking now would
-      #     recreate exactly the permanently-red check M7 argued against.
+      #   * **Informational, until M9b's close-out.** Zero uncovered Musts. When this was written
+      #     it could not reach zero inside M9 for a reason that was not a verification gap -- ten of
+      #     the then-uncovered ids belonged to milestones that had not run (M10, M12, M13), and the
+      #     only route to zero was tagging unbuilt work, which D-23.1 forbids. Making it blocking
+      #     then would have recreated exactly the permanently-red check M7 argued against.
+      #
+      #     **The milestone named above was M13 until M9b corrected it** -- D-18.5's
+      #     *Consequence (added M13, 2026-08-11)* moved the flip to M9b, because M9's own share of
+      #     the uncovered Musts is fourteen and this document's own §16 puts those in M9b, which it
+      #     then orders *after* M13. Flipping at M13's close would have made a required check red
+      #     for ten requirements no earlier milestone was asked to close.
+      #
+      #     **The count is now zero and the flag is still here, deliberately.** FR-UI-020 and
+      #     FR-UI-070 are `Verify: M`, and since §15 item 15 a `Verify: M` Must resolves against a
+      #     manual-test document *by filename*. Both documents exist and both say
+      #     `Result: NOT EXECUTED`. `xtask` refuses a `trace-partial:` on a `Verify: M` Must, so
+      #     there is no disposition between "no document" and "fully covered" for the tool to
+      #     express -- deleting the flag today would make the required check green on evidence
+      #     nobody has produced, the precise inversion of what this split is for. The flip waits on
+      #     those two scripts being run by a human and their results recorded.
       #
       # Both steps print the identical uncovered list, each id beside the milestone the roadmap
       # makes responsible for it -- a derived label the exit status never reads. The second step
       # exists so a non-zero count is a visible annotation on the run rather than a line in a log
       # nobody opens; the first would otherwise be green while printing the same gaps.
       #
-      # **The M13 close-out flip is the deletion of the flag and of the second step**, deliberately
+      # **The M9b close-out flip is the deletion of the flag and of the second step**, deliberately
       # two edits and no restructuring. Do not flip it early by deleting only the flag.
       #
       # One interaction worth knowing rather than rediscovering: if the required step fails, the job
       # stops and the informational step does not run, so a stale plan temporarily hides the
       # coverage annotation. Harmless -- the required step has already printed the same list -- and
-      # left alone rather than papered over with `if: always()`, which would make the M13 flip a
+      # left alone rather than papered over with `if: always()`, which would make the M9b flip a
       # three-line edit instead of the two D-18.5 specifies.
       - name: xtask traceability -- plan + Section 14 denominators (D-18.5, required)
         run: cargo run -p xtask -- traceability --allow-uncovered
 
-      - name: xtask traceability -- uncovered Musts (NFR-QUAL-010, informational until M13)
+      - name: xtask traceability -- uncovered Musts (NFR-QUAL-010, informational until M9b)
         run: cargo run -p xtask -- traceability
         continue-on-error: true
 
@@ -263,11 +304,15 @@ jobs:
   #     artifact to reason about.
   #
   # ---- Runner scope: **Windows only**, and each exclusion is a reason rather than a default.
-  #   * **macOS is structurally impossible today**, not merely untested. A `.clap` on macOS is a
+  #   * **macOS is deferred, and the reason changed under this comment.** A `.clap` on macOS is a
   #     *bundle directory*, not a renamed dylib -- CLAP's own `entry.h` definition, recorded at
-  #     D-13.3's M8-planning Consequence (`02-architecture.md:1305-1316`) -- and `xtask bundle`, the
-  #     only thing that produces one, is D-18.3/M13 work that does not exist yet. There is no macOS
-  #     artifact to hand the validator; a renamed `.dylib` is something no host will load.
+  #     D-13.3's M8-planning Consequence (`02-architecture.md:1305-1316`). This said the exclusion
+  #     was "structurally impossible today" because `xtask bundle`, the only thing that produces
+  #     such a bundle, "is D-18.3/M13 work that does not exist yet". **M13 built it** (M9b corrected
+  #     this comment). What remains is a cost question rather than an impossibility: this job would
+  #     have to run `xtask bundle --target macos` first to have an artifact to hand the validator,
+  #     on a second runner, for a plugin whose editor is Win32-only anyway (see the Linux bullet
+  #     below, which applies to macOS identically). Left deferred deliberately, not overlooked.
   #   * **Linux is deferred for a product reason, not a runner one.** `crates/namir-clap/src/gui.rs`
   #     restricts `is_api_supported`/`get_preferred_api` to `GuiApiType::WIN32` with **no `cfg`**
   #     (`gui.rs:91-105`), so on a Linux runner this plugin declares the `gui` extension while
@@ -621,9 +666,20 @@ jobs:
   # too variable to regress against"). A shared, variable-hardware CI runner can never certify
   # NFR-PERF-010's percentage; it can only build the benchmark, run it, and preserve the numbers
   # for a human to look at. Final NFR-PERF-010 sign-off against the literal pinned reference
-  # machine remains a manual pre-1.0 step -- do not "fix" this job by adding a threshold; that
-  # would fail the build on noise from runner hardware this project has explicitly decided not to
-  # regress against.
+  # machine remains a manual pre-1.0 step -- do not "fix" this job by removing the environment
+  # variable below; that would fail the build on runner hardware this project has explicitly
+  # decided not to regress against.
+  #
+  # Since M9b the benchmark itself **asserts** the 25% budget by default (twice: on a
+  # contamination-immune per-residue-minimum estimator unconditionally, and on raw p99.9 over every
+  # repetition D-2.4 permits quoting) -- the `Verify: B` the FRS asks for, which the binary
+  # previously only printed. NAMIR_PERF_010_INFORMATIONAL turns both assertions into an explicit,
+  # printed skip, which is correct *here specifically*: the budget is 25% of one core **of the
+  # reference machine**, so on a slower shared runner an absolute 25% assertion is not a weaker
+  # measurement but a meaningless one. The consequence is booked honestly rather than glossed --
+  # the "as a CI regression gate" half of NFR-PERF-010's `Verify:` remains unspanned, and the
+  # `// trace-partial:` above that benchmark's `main` says exactly that. Closing it needs a
+  # self-hosted runner on the §2 machine, not a threshold on this one.
   nfr-perf-010-chain-bench:
     name: NFR-PERF-010 chain benchmark (informational)
     runs-on: ubuntu-latest
@@ -635,6 +691,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo bench -p namir-engine --bench six_stage_chain
+        env:
+          NAMIR_PERF_010_INFORMATIONAL: "1"
         run: cargo bench -p namir-engine --bench six_stage_chain | tee six-stage-chain-bench.txt
 
       - uses: actions/upload-artifact@v4

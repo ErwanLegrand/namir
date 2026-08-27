@@ -198,13 +198,22 @@ impl SharedInner {
         self.unsaved_changes.load(Ordering::Relaxed)
     }
 
+    /// Queues one FR-UI-070 notice **and writes the matching FR-ERR-010 log record**.
+    ///
+    /// Both from one function on purpose: a notice the user dismissed and a log record a bug report
+    /// is built from must describe the same event, and the only way they cannot drift apart is for
+    /// there to be no second call site to forget. Every caller of this — `crate::audio`'s
+    /// `activate`, `crate::gui`'s `set_parent`, `crate::state_ext`'s host `state` load,
+    /// `crate::worker_jobs`' three jobs, and [`Self::start_library_scan`] — is on the main, GUI or
+    /// pool thread; none is the audio thread, which is what keeps this side of D-16.2 true.
+    ///
+    /// The record is written *before* the notices lock is taken, so this never holds two locks at
+    /// once (the log has a process-global mutex of its own).
     pub(crate) fn push_notice(&self, code: ErrorCode, detail: impl Into<String>) {
         let id = self.next_notice_id.fetch_add(1, Ordering::Relaxed);
-        lock(&self.notices).push(UiNotice {
-            id,
-            code,
-            detail: detail.into(),
-        });
+        let detail = detail.into();
+        namir_platform::logging::record(code, &detail);
+        lock(&self.notices).push(UiNotice { id, code, detail });
     }
 
     pub(crate) fn dismiss_notice(&self, id: u64) {
@@ -299,15 +308,21 @@ impl SharedInner {
     }
 }
 
-/// A worker/library warning this crate has nowhere richer to send yet — surfaced as an FR-UI-070
-/// notice via the caller, not here (this only exists for warnings a callback receives with no
-/// `Arc<SharedInner>` in scope, i.e. genuinely unreachable paths); kept as a named function so a
-/// future real diagnostic sink (FR-ERR-050) has one call site to redirect.
-fn log_worker_warning(_w: &namir_worker::WorkerError) {
-    // Deliberately a no-op today: `namir-platform`'s log sink (D-13.2's `log_file_path`) computes
-    // a path but this crate has not wired an actual writer to it (out of this round's scope, see
-    // this crate's top-level doc comment). Named and called from every site that produces a
-    // worker warning so wiring a real sink later is a one-function change, not a grep-and-patch.
+/// A worker/library warning this crate has nowhere richer to send — it reaches no FR-UI-070 notice
+/// list, because every caller is a callback that receives it with no `Arc<SharedInner>` in scope.
+///
+/// **No longer a no-op (M9b).** It was one until FR-ERR-010's writer existed; the comment it
+/// carried promised that wiring a real sink would be "a one-function change, not a
+/// grep-and-patch", and this is that one function. Every record is catalogue-backed (D-16.5), and
+/// the warning already carries its own `ErrorCode` — passed through unchanged, per
+/// `namir_worker::WorkerError`'s own pass-through rule, so a `library.*` id stays a `library.*` id
+/// in the log.
+///
+/// Never reachable from the audio thread: the two call sites are `SharedInner::new` (main thread,
+/// via `clap_plugin.create`) and `start_library_scan`'s progress/completion callbacks, which run
+/// on `namir-worker`'s pool.
+fn log_worker_warning(w: &namir_worker::WorkerError) {
+    namir_platform::logging::record(w.code, &w.detail);
 }
 
 /// This instance's CLAP `[thread-safe]` half (`clack_plugin::plugin::PluginShared`). See this
@@ -404,9 +419,10 @@ mod tests {
     /// `ResourceCache::shared()`, not `ResourceCache::new()`.
     // trace-partial: FR-CLAP-090
     // uncovered: FR-CLAP-090 — the B half of "I plus B", that N instances of one model use
-    // uncovered: materially less memory than N separate copies, is measured by nothing: namir-clap
-    // uncovered: has no benches directory and no memory benchmark exists anywhere in the workspace;
-    // uncovered: closes M9b
+    // uncovered: materially less memory than N separate copies, is measured by nothing: this
+    // uncovered: crate's one bench (benches/plugin_instantiation.rs) times NFR-PERF-040's
+    // uncovered: instantiation window, and no benchmark anywhere in the workspace measures memory
+    // uncovered: at all; closes M8
     #[test]
     fn two_shared_inners_resolve_to_the_same_process_global_cache() {
         let a = SharedInner::new();

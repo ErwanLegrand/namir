@@ -567,7 +567,7 @@ mod tests {
     // uncovered: FR-NAM-080 — the "and display" half spans only the name field: UiSnapshot
     // uncovered: carries no metadata field beyond loaded_model_name, which namir-app fills from
     // uncovered: the file's basename rather than metadata.name, so author, gear make/model/type,
-    // uncovered: tone type and description reach no screen; closes M9b
+    // uncovered: tone type and description reach no screen; closes M8
     #[test]
     fn tolerates_null_metadata_fields_the_same_as_missing_ones() {
         let mut value: serde_json::Value = serde_json::from_slice(&minimal_valid_json()).unwrap();

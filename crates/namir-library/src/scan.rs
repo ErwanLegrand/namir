@@ -352,7 +352,7 @@ mod tests {
     // uncovered: library roots" clause has no mechanism to exercise: both shells open through
     // uncovered: LibraryService::open_at/open_default, which hard-code the single root
     // uncovered: <config_dir>/Library, AppSettings has no roots field and UiIntent has no add-root
-    // uncovered: or remove-root variant; closes M9b
+    // uncovered: or remove-root variant; closes M8
     #[test]
     fn a_full_scan_finds_every_file_under_nested_directories() {
         let root = temp_dir("full_scan");

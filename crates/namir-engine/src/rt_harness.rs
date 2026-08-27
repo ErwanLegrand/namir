@@ -51,12 +51,15 @@ mod tests {
     }
 
     /// (a): a deliberately-allocating fake `Stage` trips the harness.
-    // trace-partial: FR-ERR-030
-    // uncovered: FR-ERR-030 — the logging limb of "no logging, allocation or formatting for
-    // uncovered: logging" is checked by neither the S nor the I half of the Verify line:
-    // uncovered: assert_no_alloc catches allocation only, so a non-allocating log call on the
-    // uncovered: audio thread passes the harness clean, and no static check for logging calls
-    // uncovered: exists in xtask or anywhere else; closes M9b
+    ///
+    /// This is FR-ERR-030's **allocation** limb, and it carried that requirement's only annotation
+    /// until M9b. It no longer does: the tag moved to `xtask/src/main.rs`'s
+    /// `the_real_tree_names_no_logger_in_any_audio_thread_module`, beside the `xtask rt-logging`
+    /// check M9b built, because the gap the old `uncovered:` field named — "no static check for
+    /// logging calls exists in xtask or anywhere else" — is what that check closes, and the
+    /// requirement's `Verify:` code is **S**. A non-allocating log call (a below-threshold level
+    /// check returns without touching the sink) still passes this harness clean, which is exactly
+    /// why the static check had to exist separately rather than be claimed here.
     #[test]
     #[should_panic(expected = "allocation occurred inside an audio section")]
     fn harness_catches_a_real_allocation() {

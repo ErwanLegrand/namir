@@ -214,7 +214,7 @@ fn pin_to_measurement_core() {
 // uncovered: noise material at one amplitude, and the gate and EQ parameters are set once before
 // uncovered: the measured loop and never varied within it, so "shall not depend on audio content
 // uncovered: or parameter values" is untested and the residue analysis is reported rather than
-// uncovered: asserted; closes M9b
+// uncovered: asserted; closes M8
 fn main() {
     pin_to_measurement_core();
 

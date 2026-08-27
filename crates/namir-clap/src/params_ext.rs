@@ -199,7 +199,7 @@ mod tests {
     // uncovered: test asserting only that the bypass descriptor carries the IS_BYPASS flag and
     // uncovered: processing no audio; sample-accuracy is contradicted by apply_automation, which is
     // uncovered: called once before the block and applies every ParamValue event immediately
-    // uncovered: without reading the event header's sample offset; closes M9b
+    // uncovered: without reading the event header's sample offset; closes M8
     #[test]
     fn global_bypass_param_info_carries_the_is_bypass_flag() {
         let info = param_info(&GLOBAL_BYPASS);

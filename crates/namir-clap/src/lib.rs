@@ -111,6 +111,18 @@ impl DefaultPluginFactory for NamirClapPlugin {
     }
 
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
+        // FR-ERR-010, once per *process* rather than once per instance: several plugin instances
+        // share one host process, and `namir_platform::logging::init` is idempotent behind a
+        // `OnceLock`, so the first instance a host creates installs the writer and every later one
+        // resolves the same logger. Sited here rather than in `SharedInner::new` so it runs before
+        // that constructor's own first records (`LibraryService::open_default`'s warnings go
+        // through `log_worker_warning`), and so this crate's unit tests — which build a bare
+        // `SharedInner` — leave the user's real log alone.
+        //
+        // `None`: this crate has no settings file to hold a persisted verbosity (roadmap §15 item
+        // 8), so `NAMIR_LOG` is the plugin's only verbosity control in 1.0. Passing `None` is a
+        // decision, not an omission — see `namir_platform::logging::resolve_level`.
+        namir_platform::logging::init(None);
         Ok(NamirShared::new())
     }
 

@@ -296,7 +296,7 @@ mod tests {
     // uncovered: through a recall: the tagged test asserts only that the model and IR changeovers
     // uncovered: never overlap, and processes no audio at all, so no-discontinuity and no-dropout
     // uncovered: under a continuous signal across a preset-driven changeover are checked by
-    // uncovered: nothing; closes M9b
+    // uncovered: nothing; closes M8
     #[test]
     fn recalling_both_a_model_and_an_ir_never_offers_them_simultaneously() {
         let c = ctx();
@@ -451,7 +451,7 @@ mod tests {
     // uncovered: the standalone application and the CLAP plugin" are unspanned: the tagged test
     // uncovered: recalls an in-memory State and never writes or names a preset, and no artifact
     // uncovered: loads an app-written .namirpreset into the plugin or a plugin-written blob into
-    // uncovered: the app; closes M9b
+    // uncovered: the app; closes M8
     #[test]
     fn recall_applies_globals_and_parameters() {
         let c = ctx();

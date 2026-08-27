@@ -611,7 +611,7 @@ mod tests {
     // uncovered: on none of the six product stages: the only NaN write in the engine is
     // uncovered: chain.rs:546's test-local NanOnce fake writing into an output buffer, never into
     // uncovered: a real stage's filter, ramp, convolver or model state, and never through
-    // uncovered: build_default_chain; closes M9b
+    // uncovered: build_default_chain; closes M8
     #[test]
     fn fault_detection_zeroes_whole_block_then_processing_continues_next_call() {
         let mut chain = Chain::new(vec![Box::new(NanOnce { injected: false })]);

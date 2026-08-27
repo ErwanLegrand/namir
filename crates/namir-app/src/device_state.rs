@@ -245,7 +245,7 @@ mod tests {
     // uncovered: fail on demand, does not exist and the tagged test opens no device, its whole body
     // uncovered: asserting that selecting from an empty slice is None, so device removal while in
     // uncovered: use, "stop the stream cleanly" and "allow the user to select another device" are
-    // uncovered: all unexercised; closes M9b
+    // uncovered: all unexercised; closes M8
     #[test]
     fn no_devices_at_all_yields_none() {
         assert!(select_device(&[], Some("Anything")).is_none());

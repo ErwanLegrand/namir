@@ -45,8 +45,9 @@
 // trace-partial: NFR-QUAL-010
 // uncovered: NFR-QUAL-010 — the method's "fails on any uncovered Must" is not executed: CI's
 // uncovered: required step passes --allow-uncovered and derives its exit status from plan freshness
-// uncovered: and §14's denominators alone, while the plain form runs continue-on-error, so 20
-// uncovered: uncovered Musts stand with CI green; closes M13
+// uncovered: and §14's denominators alone, while the plain form runs continue-on-error, so an
+// uncovered: uncovered Must would leave CI green — none stands today, and nothing gates on that;
+// uncovered: closes M9b
 
 use std::collections::HashMap;
 
@@ -833,7 +834,7 @@ pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String
          listed under \"UNRESOLVED\" has neither -- `cargo run -p xtask -- traceability` exits \
          non-zero while any remain. CI's **required** step passes `--allow-uncovered` and gates on \
          this file's freshness (and on §14's denominators) alone; the zero-uncovered half stays \
-         informational until it becomes required at M13's close-out (D-18.5).\n\n\
+         informational until it becomes required at M9b's close-out (D-18.5).\n\n\
          | Requirement | Verify | Covered by |\n\
          |---|---|---|\n",
     );
@@ -951,7 +952,7 @@ pub struct TraceabilityArgs {
 /// `--write`, so a mistyped flag is silently ignored (`02-architecture.md:2025-2026`). Once the flag
 /// selects between a required and an informational gate, a typo must be loud. It is fail-safe in
 /// both directions -- a mistyped `--allow-uncovered` cannot make a lenient run look strict and
-/// green, and at M13's close-out a `ci.yml` that still passes the deleted flag hard-fails instead of
+/// green, and at M9b's close-out a `ci.yml` that still passes the deleted flag hard-fails instead of
 /// quietly running the strict form against a tree nobody expected it to gate.
 pub fn parse_traceability_args(args: &[String]) -> Result<TraceabilityArgs, String> {
     let mut parsed = TraceabilityArgs::default();
@@ -974,7 +975,7 @@ pub fn parse_traceability_args(args: &[String]) -> Result<TraceabilityArgs, Stri
 ///
 /// `required_half` is the conjunction of the two properties that are required from M9a onward: the
 /// generated-plan diff (D-18.5) and §14's derived denominators (D-23.2, `02-architecture.md:2892`).
-/// `coverage_clean` is the zero-uncovered half, which stays informational until M13's close-out.
+/// `coverage_clean` is the zero-uncovered half, which stays informational until M9b's close-out.
 /// `--allow-uncovered` relaxes **only** the second; it never softens the first, and it never softens
 /// a tool failure, which `main.rs` returns on before reaching here.
 ///

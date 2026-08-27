@@ -288,7 +288,7 @@ mod tests {
     // uncovered: FR-OUT-010 — of the requirement's three literal parameters only exact silence at
     // uncovered: or below -60 dB is asserted; the +12 dB maximum and the 0 dB default are declared
     // uncovered: in namir_params::stages::out::GAIN_DB and read back by no test, params.lock
-    // uncovered: recording only key, id, kind and smoothing; closes M9b
+    // uncovered: recording only key, id, kind and smoothing; closes M8
     #[test]
     fn silence_floor_is_exact_not_asymptotic() {
         let mut at_floor = stage(ChannelConfig::Mono);
@@ -392,7 +392,7 @@ mod tests {
     // uncovered: and FR-IN-030, only the clip latch is asserted at the stage: no test reads
     // uncovered: OutStage's published peak_db, average_db or peak_hold_db telemetry entries, so a
     // uncovered: wiring error emitting one under another's id would pass, and the clip indicator
-    // uncovered: is reachable by no user reset path; closes M9b
+    // uncovered: is reachable by no user reset path; closes M8
     #[test]
     fn clip_latches_and_is_reported_via_telemetry() {
         let mut stage = stage(ChannelConfig::Mono);

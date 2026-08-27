@@ -16,6 +16,15 @@
 //! module's own doc comment for the specifics of what it provides and, for `thread_priority`,
 //! exactly when and how a future caller should invoke it.
 //!
+//! **M9b adds the one module here that is not a pure computation**: [`logging`], FR-ERR-010's
+//! diagnostic-log writer, which does open files and does hold a `Mutex` — the D-13.2 clause
+//! "logging sink" that M6 left as a path ([`log_file_path`]) with nothing writing to it.
+//! Its siting in *this* crate is load-bearing rather than incidental: D-5.1 gives `namir-engine`
+//! no edge to `namir-platform` and `xtask layering` enforces that on every merge, so the audio
+//! thread cannot reach the writer's lock by a lint that already exists — which is what makes a
+//! mutex in a logger acceptable at all (D-16.5). It adds no `#[cfg(target_os)]`, no dependency and
+//! no `unsafe`; see the module's own doc comment for each of those.
+//!
 //! This is one of only two crates in the workspace (with `namir-clap`) D-5.3 permits to carry
 //! `unsafe` at all, and the only one with the `#[cfg(target_os)]` carve-out D-5.2's layering lint
 //! enforces (`xtask/src/layering.rs`'s `scan_platform_cfg`). Both carve-outs now have more than
@@ -25,10 +34,13 @@
 
 mod clap_paths;
 mod denormal;
+pub mod error_codes;
+pub mod logging;
 mod paths;
 mod thread_priority;
 
 pub use clap_paths::{ClapInstallScope, clap_install_dir};
 pub use denormal::DenormalGuard;
+pub use logging::{LogLevel, Logger};
 pub use paths::{config_dir, log_file_path};
 pub use thread_priority::{ThreadPriorityOutcome, elevate_current_thread_priority};

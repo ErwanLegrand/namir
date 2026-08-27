@@ -189,13 +189,27 @@ impl AppHost {
         }
     }
 
+    /// Queues one FR-UI-070 notice **and writes the matching FR-ERR-010 log record**.
+    ///
+    /// Wired here rather than at each of the ten call sites (`SCAN_SAVE_FAILED`,
+    /// `STATE_SAVE_FAILED`/`STATE_LOAD_FAILED`, `DEVICE_LOST`, `IR_TRUNCATED`, `LOAD_FAILED`,
+    /// `LOAD_NOT_DELIVERED`, `REFERENCE_MISSING`, the scan warnings, and everything
+    /// [`Self::report`] carries in from [`crate::app`]) for one reason: a notice the user dismissed
+    /// and the log line a bug report is reconstructed from must describe the same event, and one
+    /// function is the only shape in which they cannot drift apart. A record is a no-op until
+    /// [`crate::app::run`] has called `namir_platform::logging::init`, which it does first thing —
+    /// so this crate's own tests, which build an `AppHost` directly, write nothing.
+    ///
+    /// **Not an audio-thread path** (D-16.2/FR-ERR-030). Every caller is on the UI thread: either
+    /// [`crate::app::run`] before the window opens, or [`UiHost::snapshot`]'s drain of
+    /// [`crate::worker::WorkerHandle`]'s event queue. An engine-detected fault reaches the log by
+    /// exactly that route — the audio thread pushes a number through the telemetry ring and this
+    /// side maps it — never by the audio callback calling a logger itself.
     fn push_notice(&mut self, code: ErrorCode, detail: impl Into<String>) {
         let id = self.next_notice_id.fetch_add(1, Ordering::Relaxed);
-        self.notices.push(UiNotice {
-            id,
-            code,
-            detail: detail.into(),
-        });
+        let detail = detail.into();
+        namir_platform::logging::record(code, &detail);
+        self.notices.push(UiNotice { id, code, detail });
     }
 
     /// Public wrapper over [`Self::push_notice`] for [`crate::app`]'s own startup-time warnings

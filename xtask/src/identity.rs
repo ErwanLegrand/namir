@@ -82,7 +82,7 @@
 // uncovered: NFR-DOC-040 — the "stating what it does" clause has no artifact: this check asserts
 // uncovered: that `# Namir`, the two licence file names and the three build/run/test command lines
 // uncovered: are present as substrings, and no static check can extend that to whether the prose
-// uncovered: around them actually describes the product; closes M13
+// uncovered: around them actually describes the product; closes M8
 use std::path::{Path, PathBuf};
 
 /// Repository-relative path of the brand artwork every generated blob is derived from.
@@ -488,9 +488,11 @@ pub fn decode_alpha(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 
     let frame = &buf[..info.buffer_size()];
     if let Some((i, px)) = frame
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
-        .find(|(_, px)| px[3] >= FILL_ALPHA_FLOOR && !is_mark_fill(px))
+        .find(|(_, px)| px[3] >= FILL_ALPHA_FLOOR && !is_mark_fill(px.as_slice()))
     {
         let i = i as u32;
         let (x, y) = (i % info.width.max(1), i / info.width.max(1));

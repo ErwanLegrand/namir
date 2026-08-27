@@ -44,7 +44,7 @@
 // uncovered: FR-CFG-030 — the Verify: I method's "each is installed alone into a clean
 // uncovered: environment and exercised" is executed by nothing: the artifact is xtask layering's
 // uncovered: compile-time dependency-edge lint over LAYERING_TABLE, which argues compile-time
-// uncovered: reachability and neither installs nor exercises either product; closes M13
+// uncovered: reachability and neither installs nor exercises either product; closes M8
 
 const FIXTURES: &str = "namir-fixtures";
 
@@ -168,7 +168,7 @@ pub fn check_edges(edges: &[(String, String)]) -> Vec<String> {
 // uncovered: #[cfg(any(unix, windows))], cfg!(...), #[cfg_attr(windows, ...)] and
 // uncovered: #[cfg(target_arch/target_family/target_env ...)] all pass unseen, and its scanned set
 // uncovered: is crates/*/src only, excluding tests, benches, examples and Cargo.toml
-// uncovered: [target.'cfg(...)'] tables; closes M9b
+// uncovered: [target.'cfg(...)'] tables; closes M8
 const PLATFORM_CFG_PATTERNS: &[&str] = &["#[cfg(target_os", "#[cfg(windows", "#[cfg(unix"];
 /// The one crate D-5.1 permits to carry the patterns [`PLATFORM_CFG_PATTERNS`] flags.
 pub const PLATFORM_CFG_EXEMPT_CRATE: &str = "namir-platform";

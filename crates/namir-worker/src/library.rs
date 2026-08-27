@@ -503,32 +503,19 @@ mod tests {
     /// [`SCAN_PROGRESS_CADENCE`] window has elapsed; a `>= 2` assertion there would be flaky by
     /// construction rather than a check of anything.
     ///
-    /// # Why FR-LIB-020's tag is `trace-partial:` and not plain (D-23.1)
+    /// # Where FR-LIB-020's tag went (M9b)
     ///
-    /// D-23.1's **first** question: the `*Verify:*` method names a scale, which is a quantifier
-    /// even though the requirement's own sentence has none. Three of the four clauses are spanned
-    /// at that scale or structurally:
-    ///
-    /// - *"Progress shall be visible"* — this test, against the 10 000-file corpus.
-    /// - *"the scan cancellable"* — `cancelling_a_large_scan_stops_it_before_completion`, same
-    ///   corpus.
-    /// - *"shall not block the user interface"* — `start_scan` sets `scanning` synchronously and
-    ///   hands the walk to [`ThreadPool`], so it returns without doing the work
-    ///   (`a_second_concurrent_scan_is_refused` depends on exactly that ordering); the residue that
-    ///   only a human at a screen can observe is recorded in
-    ///   `docs/manual-tests/fr-lib-020-ui-responsiveness-during-scan.md`, which under D-18.6 is
-    ///   supplementary evidence and never the traced artifact, FR-LIB-020 being `Verify: I`.
-    ///
-    /// The fourth is not, and the `uncovered:` field below names it: *"shall occur off the audio
-    /// thread"* is evidenced only by `tests/rt_stress.rs` axis C, whose `write_small_scan_corpus`
-    /// writes **six** files. That is deliberate rather than an oversight to patch — that function's
-    /// own doc comment wants many fast scan cycles inside the run window rather than one slow one,
-    /// so re-pointing it at the shared corpus would destroy the axis it exists to run. Extending
-    /// the axis is harness work, and M9b owns it.
-    // trace-partial: FR-LIB-020
-    // uncovered: FR-LIB-020 — the off-the-audio-thread clause is exercised only against a
-    // uncovered: 6-file corpus in rt_stress.rs axis C, not the 10 000-file scale the Verify
-    // uncovered: method names; closes M9b
+    /// This test carried `// trace-partial: FR-LIB-020` from M9a until M9b, its `uncovered:` field
+    /// naming the one clause it could not reach: *"shall occur off the audio thread"* was evidenced
+    /// only by `tests/rt_stress.rs`'s axis C, whose corpus is six files. That axis was deliberately
+    /// left at six (see `write_small_scan_corpus`'s own doc comment: it wants many fast scan cycles
+    /// inside its run window, not one slow one), and the gap was closed instead by a new harness —
+    /// `tests/library_scan_scale.rs`, which runs a live `AudioEngine` and a simulated 60 Hz UI
+    /// thread across a full scan of this same corpus and spans all four of the requirement's
+    /// clauses at the scale its `*Verify:*` method names. **That** test is now FR-LIB-020's traced
+    /// artifact and carries the plain tag; this one keeps its own assertion, no longer tagged,
+    /// because a `trace:` is a per-site claim about the whole requirement and this site only ever
+    /// covered the progress clause.
     #[test]
     fn a_full_scan_of_the_shared_corpus_reports_progress_more_than_once() {
         let corpus =

@@ -412,7 +412,7 @@ fn pin_to_measurement_core() {
 // uncovered: NFR-RT-030 — the method's "drive each stage with a denormal-producing signal"
 // uncovered: measures no stage individually: the binary compares the assembled six-stage chain's
 // uncovered: aggregate per-block p50 against nominal, in which a real spike confined to one stage
-// uncovered: is diluted below the asserted 10% bound by the other five; closes M9b
+// uncovered: is diluted below the asserted 10% bound by the other five; closes M8
 fn main() {
     pin_to_measurement_core();
 
