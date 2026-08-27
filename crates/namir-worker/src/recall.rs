@@ -262,41 +262,22 @@ mod tests {
     /// `a_nam_and_an_ir_handover_are_never_offered_simultaneously` measures at the `Instance::load`
     /// level, but driven through a real recall naming *both* a model and an IR.
     ///
-    /// # FR-STATE-050's evidence, and why the tag below is partial rather than plain (D-23.1)
+    /// # FR-STATE-050's evidence, and why this test no longer carries its tag (M14)
     ///
-    /// *First question — does the requirement, or its `*Verify:*` method, quantify over a set?* No.
-    /// FR-STATE-050's own sentence is a **reference**, not a set: "Preset recall shall not glitch
-    /// the audio thread; the constraints of FR-NAM-070 apply to any model or IR change a preset
-    /// implies." It states no scale, enumerates no architectures, and its `*Verify:*` line is a bare
-    /// `I` — unlike FR-LIB-020's, which names 10 000 files and is a quantifier for that reason.
+    /// This test asserts serialisation, which is a *necessary* condition for the constraints
+    /// FR-STATE-050 imports from FR-NAM-070 and not the constraints themselves: it processes no
+    /// audio at all, so "no discontinuity, no dropout under a continuous signal across the
+    /// changeover" was asserted here by nothing, and the tag was a `trace-partial` naming exactly
+    /// that from M9a until M14.
     ///
-    /// *Second question — does this artifact execute the method as written?* **Only in part**,
-    /// which M9a's §14 re-audit corrected: the tag read plain until then. The integration half is
-    /// real — a real [`State`](namir_state::State) naming both resources, resolved through a real
-    /// [`namir_state::FileResolver`], loaded through a real [`ResourceCache`] and a real command
-    /// ring — and the elapsed-time assertion below rules out the one *structural* way recall could
-    /// break the constraints it inherits, overlapping the two handovers instead of serialising them
-    /// (R-7's measured 25.06-31.49% over-budget condition). But **this test processes no audio at
-    /// all**: it never calls `process` on a block, so the clause the requirement explicitly imports
-    /// from FR-NAM-070 — no discontinuity and no dropout under a continuous signal across the
-    /// changeover — is asserted here by nothing. Serialisation is a necessary condition for that
-    /// clause, not the clause itself.
-    ///
-    /// The "no click, no dropout" property those inherited constraints *are* is FR-NAM-070's own,
-    /// and is verified where that requirement lives, under a continuous sine with a self-calibrating
-    /// discontinuity threshold: `namir-engine`'s
-    /// `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`. This crate reaches
-    /// it *structurally* rather than by coincidence — R4 in this module's doc comment records that
-    /// every resource a recall implies goes through [`Instance::load`]/[`Instance::unload`] and
-    /// never a bespoke submit, so there is no second changeover path for FR-NAM-070's guarantee to
-    /// miss. That is an argument, though, and not an assertion; under D-23.2 clause 2 a named unmet
-    /// clause is Partial however good the argument for it is.
-    // trace-partial: FR-STATE-050
-    // uncovered: FR-STATE-050 — the FR-NAM-070 constraints this requirement imports are unasserted
-    // uncovered: through a recall: the tagged test asserts only that the model and IR changeovers
-    // uncovered: never overlap, and processes no audio at all, so no-discontinuity and no-dropout
-    // uncovered: under a continuous signal across a preset-driven changeover are checked by
-    // uncovered: nothing; closes M8
+    /// The gap is closed rather than the tag promoted: `tests/recall_continuity.rs`'s
+    /// `a_preset_recall_never_clicks_or_drops_out_for_any_change_it_implies` drives a real preset
+    /// recall onto a live [`namir_engine::AudioEngine`] processing a continuous sine and asserts
+    /// both halves in FR-NAM-070's own terms, for all three changes a preset can imply — a swap, an
+    /// unload, and a load into an empty slot. FR-STATE-050's tag lives there now. This test keeps
+    /// its own value undiminished: it is R4's regression evidence against the tempting parallel
+    /// submission design, and it is the only artifact that measures the *serialisation window*
+    /// directly rather than through its audible consequences.
     #[test]
     fn recalling_both_a_model_and_an_ir_never_offers_them_simultaneously() {
         let c = ctx();

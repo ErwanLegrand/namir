@@ -296,11 +296,158 @@ mod tests {
         );
     }
 
-    // trace-partial: FR-GATE-030
-    // uncovered: FR-GATE-030 — the requirement's "sample-accurate within the block, not stepped
-    // uncovered: at block boundaries" distinction cannot be falsified by the tagged test, which
-    // uncovered: drives one sample per process call so a block boundary and a sample boundary are
-    // uncovered: the same event; the closing ramp's per-sample delta is never measured; closes M8
+    /// Drives `input` through `gate` in `block`-sample calls and returns the gain that was
+    /// actually applied to each sample, recovered as `output / input`. Exact, and the reason every
+    /// caller below keeps its input non-zero everywhere: a gate driven with digital silence
+    /// multiplies its own ramp away and reveals nothing about it.
+    fn per_sample_gain(gate: &mut NoiseGate, input: &[f32], block: usize) -> Vec<f32> {
+        let mut output = input.to_vec();
+        for chunk in output.chunks_mut(block) {
+            gate.process(chunk);
+        }
+        output
+            .iter()
+            .zip(input)
+            .map(|(o, i)| (*o as f64 / *i as f64) as f32)
+            .collect()
+    }
+
+    /// The largest step between consecutive samples *inside* a block, and the largest step
+    /// *across* a block boundary, over the half-open index range `range`.
+    ///
+    /// This pair is the whole of FR-GATE-030's "within the block, not stepped at block
+    /// boundaries": a gate that recomputed its gain once per `process` call would show
+    /// `interior == 0` with a large `boundary`, and one that interpolates per sample shows the two
+    /// equal. Neither number is visible at all when `process` is called one sample at a time,
+    /// which is why the older test above cannot falsify the distinction.
+    fn interior_and_boundary_steps(
+        gain: &[f32],
+        block: usize,
+        range: std::ops::Range<usize>,
+    ) -> (f32, f32) {
+        let mut interior = 0.0f32;
+        let mut boundary = 0.0f32;
+        for i in range.start..range.end.min(gain.len()) - 1 {
+            let delta = (gain[i + 1] - gain[i]).abs();
+            if (i + 1) % block == 0 {
+                boundary = boundary.max(delta);
+            } else {
+                interior = interior.max(delta);
+            }
+        }
+        (interior, boundary)
+    }
+
+    /// The most distinct gain values any single block in `range` carries. One, for a gate that
+    /// steps at block boundaries; the block length, for one that ramps per sample.
+    fn most_distinct_gains_in_any_block(
+        gain: &[f32],
+        block: usize,
+        range: std::ops::Range<usize>,
+    ) -> usize {
+        gain[range]
+            .chunks(block)
+            .map(|c| {
+                let mut bits: Vec<u32> = c.iter().map(|v| v.to_bits()).collect();
+                bits.sort_unstable();
+                bits.dedup();
+                bits.len()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    // trace: FR-GATE-030
+    #[test]
+    fn both_gain_ramps_are_sample_accurate_inside_the_block() {
+        let sample_rate = 48_000u32;
+        let block = 64usize;
+        let mut gate = NoiseGate::new(sr(sample_rate));
+        let params = GateParams::default();
+        // FR-GATE-010's defaults at 48 kHz: 1 ms attack, 30 ms hold, 100 ms release.
+        let attack_samples = (params.attack_ms / 1000.0 * sample_rate as f32) as usize;
+        let release_samples = (params.release_ms / 1000.0 * sample_rate as f32) as usize;
+        assert_eq!((attack_samples, release_samples), (48, 4800));
+
+        let loud = namir_core::db_to_linear(-10.0);
+        // Below the close threshold (-70 dBFS minus 3 dB of hysteresis) but not silent, so
+        // `per_sample_gain` can still see the closing ramp. -90 dBFS at a gain of 1/4800 is
+        // ~6.6e-9, far above f32's smallest normal.
+        let quiet = namir_core::db_to_linear(-90.0);
+
+        // 30 ms loud (opens, then fully open), then 300 ms quiet (hold expires, releases fully).
+        let loud_samples = 1_440usize;
+        let mut input = vec![loud; loud_samples];
+        input.resize(loud_samples + 14_400, quiet);
+        let gain = per_sample_gain(&mut gate, &input, block);
+        assert_eq!(gate.status(), GateStatus::Closed, "gate never fully closed");
+
+        // --- Opening ramp: the first stretch where 0 < gain < 1.
+        let open_start = gain
+            .iter()
+            .position(|&g| g > 0.0)
+            .expect("gate never opened");
+        let open_end = gain[open_start..]
+            .iter()
+            .position(|&g| g >= 1.0)
+            .expect("gate never reached unity")
+            + open_start;
+        let opening = open_start..open_end + 1;
+        assert!(
+            opening.len() >= attack_samples - 2,
+            "opening ramp spans {} samples, expected about {attack_samples}",
+            opening.len()
+        );
+
+        // --- Closing ramp: from the last sample at unity to the first back at zero.
+        let close_start = gain
+            .iter()
+            .rposition(|&g| g >= 1.0)
+            .expect("never at unity");
+        let close_end = gain[close_start..]
+            .iter()
+            .position(|&g| g <= 0.0)
+            .expect("gate never reached zero")
+            + close_start;
+        let closing = close_start..close_end + 1;
+        assert!(
+            closing.len() >= release_samples - 2,
+            "closing ramp spans {} samples, expected about {release_samples}",
+            closing.len()
+        );
+
+        for (label, range, ramp_samples) in [
+            ("opening", opening, attack_samples),
+            ("closing", closing, release_samples),
+        ] {
+            // The per-sample delta the requirement's method names, on *both* edges: an ideal
+            // linear ramp over `ramp_samples` steps by 1/ramp_samples, and nothing may exceed it
+            // by more than rounding.
+            let (interior, boundary) = interior_and_boundary_steps(&gain, block, range.clone());
+            let ideal = 1.0 / ramp_samples as f32;
+            assert!(
+                interior > 0.0,
+                "{label}: gain never changed inside a block — that is a block-stepped ramp"
+            );
+            assert!(
+                interior <= ideal * 1.01,
+                "{label}: max in-block step {interior} exceeds the ideal {ideal}"
+            );
+            // The falsifiable half: a boundary step no larger than an interior one. A gate that
+            // updated its gain once per `process` call would put the whole ramp here.
+            assert!(
+                boundary <= interior * 1.01,
+                "{label}: step across a block boundary ({boundary}) exceeds the largest step \
+                 inside one ({interior}) — the ramp is stepped at block boundaries"
+            );
+            let distinct = most_distinct_gains_in_any_block(&gain, block, range);
+            assert!(
+                distinct >= (block / 2).min(ramp_samples),
+                "{label}: the busiest block carried only {distinct} distinct gain values"
+            );
+        }
+    }
+
     #[test]
     fn attack_ramps_sample_accurately_not_in_one_step() {
         let mut gate = NoiseGate::new(sr(48_000));

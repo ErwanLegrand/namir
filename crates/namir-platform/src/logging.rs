@@ -646,11 +646,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    const INFO_CODE: ErrorCode = ErrorCode {
-        id: "platform.test.info",
-        severity: Severity::Info,
-        message_template: "",
-    };
+    const INFO_CODE: ErrorCode = ErrorCode::new("platform.test.info", Severity::Info, "", "n/a");
 
     fn at(seconds: u64, millis: u32) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::new(seconds, millis * 1_000_000)

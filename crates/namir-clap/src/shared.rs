@@ -106,12 +106,13 @@ pub(crate) struct SharedInner {
 
 impl SharedInner {
     pub(crate) fn new() -> Self {
-        let library = LibraryService::open_default().map(|(service, warnings)| {
-            for w in warnings {
-                log_worker_warning(&w);
-            }
-            service
-        });
+        // M14 (§22 R-18, issue #22): `open_default` no longer reads `library-index.json` — the
+        // parse was the whole of NFR-PERF-040's missing margin, once per instance with no sharing
+        // between instances — so there are no warnings to report *here* any more, and this
+        // constructor must not ask for any: `ensure_loaded()` on this path would put the parse
+        // straight back where it was. The load's warnings are drained in `library_snapshot`
+        // instead, which the GUI calls every frame and which is off the instantiation path.
+        let library = LibraryService::open_default().map(|(service, _)| service);
 
         Self {
             params: ParamMirror::new(),
@@ -212,8 +213,11 @@ impl SharedInner {
     pub(crate) fn push_notice(&self, code: ErrorCode, detail: impl Into<String>) {
         let id = self.next_notice_id.fetch_add(1, Ordering::Relaxed);
         let detail = detail.into();
+        // Written before the deduplication and cap in `push_deduplicated` discard anything -- see
+        // `namir_ui::push_deduplicated`'s own doc comment, and `crate::worker_jobs::spawn_recall`,
+        // whose two deliberate triggers are what made deduplication necessary (issue #43).
         namir_platform::logging::record(code, &detail);
-        lock(&self.notices).push(UiNotice { id, code, detail });
+        namir_ui::push_deduplicated(&mut lock(&self.notices), UiNotice { id, code, detail });
     }
 
     pub(crate) fn dismiss_notice(&self, id: u64) {
@@ -224,11 +228,24 @@ impl SharedInner {
         lock(&self.notices).clone()
     }
 
+    /// The library as the GUI sees it this frame — and the point at which the deferred load's
+    /// warnings are reported (M14, see [`SharedInner::new`]).
+    ///
+    /// `snapshot()` never blocks: until the loader thread has finished parsing the index this
+    /// returns an empty one, so an instance whose window opens in the first fraction of a second
+    /// shows a library that fills in rather than a frame that stalls for the parse. Draining the
+    /// warnings here rather than at construction is what keeps a corrupt index reported at all,
+    /// and each is reported once — `take_load_warnings` empties the list it reads.
     pub(crate) fn library_snapshot(&self) -> namir_ui::LibrarySnapshot {
-        let index = lock(&self.library)
-            .as_ref()
-            .map(|s| s.snapshot())
-            .unwrap_or_else(|| Arc::new(namir_library::Index::empty()));
+        let guard = lock(&self.library);
+        let (index, warnings) = match guard.as_ref() {
+            Some(service) => (service.snapshot(), service.take_load_warnings()),
+            None => (Arc::new(namir_library::Index::empty()), Vec::new()),
+        };
+        drop(guard);
+        for w in &warnings {
+            log_worker_warning(w);
+        }
         let scan = *lock(&self.scan_progress);
         namir_ui::LibrarySnapshot { index, scan }
     }

@@ -14,34 +14,42 @@ use namir_core::{ErrorCode, Severity};
 /// header, a truncated or inconsistent chunk, or an I/O error while reading declared data that
 /// isn't actually present (including a `data` chunk whose declared size lies about what the byte
 /// slice actually contains).
-pub const MALFORMED_WAV: ErrorCode = ErrorCode {
-    id: "ir.load.malformed_wav",
-    severity: Severity::Error,
-    message_template: "The impulse response file is not a well-formed WAV file.",
-};
+pub const MALFORMED_WAV: ErrorCode = ErrorCode::new(
+    "ir.load.malformed_wav",
+    Severity::Error,
+    "The impulse response file is not a well-formed WAV file.",
+    "Open the file in an audio editor and export it again as a WAV. A file that will not open \
+     there either is damaged and should be downloaded again.",
+);
 
 /// The file's channel count is outside `1..=2` (mono/stereo only, FR-IR-010), or its
 /// bit-depth/sample-format combination is not one of the four FR-IR-010 supports: 16-bit int,
 /// 24-bit int, 32-bit int, 32-bit float.
-pub const UNSUPPORTED_FORMAT: ErrorCode = ErrorCode {
-    id: "ir.load.unsupported_format",
-    severity: Severity::Error,
-    message_template: "This impulse response file's channel count or sample format is not supported.",
-};
+pub const UNSUPPORTED_FORMAT: ErrorCode = ErrorCode::new(
+    "ir.load.unsupported_format",
+    Severity::Error,
+    "This impulse response file's channel count or sample format is not supported.",
+    "Export the impulse response as mono or stereo WAV at 16-, 24- or 32-bit integer, or 32-bit \
+     float -- the four formats Namir reads.",
+);
 
 /// The file's sample rate is outside FR-IR-010's supported matrix, `8_000..=192_000` Hz.
-pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode {
-    id: "ir.load.invalid_sample_rate",
-    severity: Severity::Error,
-    message_template: "This impulse response file declares a sample rate outside the supported range.",
-};
+pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode::new(
+    "ir.load.invalid_sample_rate",
+    Severity::Error,
+    "This impulse response file declares a sample rate outside the supported range.",
+    "Export the impulse response at a sample rate between 8 kHz and 192 kHz; Namir resamples \
+     anything in that range to your device's rate.",
+);
 
 /// The file declares zero audio frames — there is no impulse response to load at all.
-pub const EMPTY_IR: ErrorCode = ErrorCode {
-    id: "ir.load.empty_ir",
-    severity: Severity::Error,
-    message_template: "This impulse response file contains no audio frames.",
-};
+pub const EMPTY_IR: ErrorCode = ErrorCode::new(
+    "ir.load.empty_ir",
+    Severity::Error,
+    "This impulse response file contains no audio frames.",
+    "The file has no audio in it. Export the impulse response again, or choose a different one in \
+     the library.",
+);
 
 /// Carries a `namir_core::ErrorCode` (D-16.1) plus a `detail` string naming the specific reason.
 /// This crate only ever sees bytes, not a file path, so `detail` carries whatever numbers/names
@@ -57,11 +65,9 @@ pub struct IrLoadError {
 
 impl std::fmt::Display for IrLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}: {} ({})",
-            self.code.id, self.code.message_template, self.detail
-        )
+        // `render`, not `message_template`: since M14 a template may carry one `{detail}`
+        // placeholder, and printing it raw is issue #15's defect at a second layer.
+        write!(f, "{}: {}", self.code.id, self.code.render(&self.detail))
     }
 }
 

@@ -40,6 +40,17 @@ raw-window-handle = "0.6"
 
 [dev-dependencies]
 # NFR-PERF-060-scale library-list stress fixture for FR-UI-060's "stays responsive during a
-# 10,000-file scan" test (library_view.rs) -- the same generator namir-library's own benchmark
-# uses, not a hand-rolled guess at what 10,000 rows looks like.
+# 10,000-file scan" test (library_view.rs) and for its benchmark (benches/library_frame.rs), which
+# also *scans* the same corpus for real -- the same generator namir-library's own benchmark uses,
+# not a hand-rolled guess at what 10,000 rows looks like.
 namir-fixtures = { path = "../namir-fixtures", version = "0.1.0" }
+
+# M14: FR-UI-060's verification (Verify method B). Its annotation lived on library_view.rs's own
+# `#[test]` until M14, which renders with `scan: None` and a constant index identity -- neither of
+# which is the condition the requirement states. This one renders the whole FR-UI-020 screen beside
+# a real `namir_library::Scanner` pass over the generated 10,000-file corpus, re-filters on every
+# frame, and asserts the 100 ms ceiling against the slowest frame. See the file's own doc comment,
+# including for why it pins no core.
+[[bench]]
+name = "library_frame"
+harness = false

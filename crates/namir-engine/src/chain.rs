@@ -606,12 +606,12 @@ mod tests {
         assert_eq!(io.channel(0), &[0.0, 0.0, 0.0, 0.1, 0.2]);
     }
 
-    // trace-partial: FR-CHAIN-080
-    // uncovered: FR-CHAIN-080 — the method's "inject a NaN into each stage's state" is performed
-    // uncovered: on none of the six product stages: the only NaN write in the engine is
-    // uncovered: chain.rs:546's test-local NanOnce fake writing into an output buffer, never into
-    // uncovered: a real stage's filter, ramp, convolver or model state, and never through
-    // uncovered: build_default_chain; closes M8
+    /// **No FR-CHAIN-080 tag any more** (M14). `NanOnce` writes into an *output* buffer at the end
+    /// of a chain of one, so this reaches no product stage's state and never executes the
+    /// requirement's "inject a NaN into each stage's state". It still proves the containment
+    /// mechanism itself — whole block silenced, counter incremented exactly once, next block
+    /// normal — which is why it stays; the requirement resolves through `crate::chain_probes`,
+    /// which puts a NaN into each of the six product stages in turn.
     #[test]
     fn fault_detection_zeroes_whole_block_then_processing_continues_next_call() {
         let mut chain = Chain::new(vec![Box::new(NanOnce { injected: false })]);

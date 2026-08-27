@@ -5,11 +5,13 @@
 use namir_core::{ErrorCode, Severity};
 
 /// `PrepareContext::new` was called with a `max_block_size` of zero.
-pub const MAX_BLOCK_SIZE_ZERO: ErrorCode = ErrorCode {
-    id: "engine.prepare.max_block_size_zero",
-    severity: Severity::Error,
-    message_template: "Maximum block size must be greater than zero.",
-};
+pub const MAX_BLOCK_SIZE_ZERO: ErrorCode = ErrorCode::new(
+    "engine.prepare.max_block_size_zero",
+    Severity::Error,
+    "Maximum block size must be greater than zero.",
+    "This is an internal error rather than anything you configured. Report it with namir.log from \
+     Namir's configuration directory.",
+);
 
 // Only used by the uniqueness check below for now — will matter for real once a second code is
 // added, but `assert_unique_ids` over a catalogue of one is still worth running (FR-ERR-020).

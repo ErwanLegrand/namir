@@ -219,12 +219,12 @@ mod tests {
         assert!(!bytes.ends_with(b"\n\n"));
     }
 
-    // trace-partial: NFR-SEC-020
-    // uncovered: NFR-SEC-020 — of the four file kinds namir-core's limits doc comment enumerates,
-    // uncovered: the .nam/IR disk-load ceiling has no artifact: namir-worker/src/lib.rs:129 refuses
-    // uncovered: a file over MAX_FILE_BYTES with FILE_TOO_LARGE and no test drives that branch,
-    // uncovered: while namir-core's own limits test asserts only that the constant exceeds 50 MB,
-    // uncovered: never that a file over it is refused; closes M8
+    // The state/preset kind of the four `namir-core`'s limits doc comment enumerates. M14 closed
+    // the one that had no artifact -- the `.nam`/IR disk-load ceiling, now driven by
+    // `namir-worker`'s `a_file_over_the_ceiling_is_refused_before_its_bytes_are_read` -- so all
+    // four are refused by a test: this one, that one, `namir-ir`'s `wav.rs` MAX_LOAD_SECONDS
+    // ceiling and `namir-library`'s `scan.rs` MAX_INDEXED_FILE_BYTES.
+    // trace: NFR-SEC-020
     #[test]
     fn rejects_documents_over_the_size_ceiling() {
         // A byte slice over the ceiling never even reaches the JSON parser -- constructing it

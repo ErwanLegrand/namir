@@ -26,11 +26,9 @@ impl LibraryError {
 
 impl std::fmt::Display for LibraryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}: {} ({})",
-            self.code.id, self.code.message_template, self.detail
-        )
+        // `render`, not `message_template`: since M14 a template may carry one `{detail}`
+        // placeholder, and printing it raw is issue #15's defect at a second layer.
+        write!(f, "{}: {}", self.code.id, self.code.render(&self.detail))
     }
 }
 
@@ -58,11 +56,9 @@ impl LibraryWarning {
 
 impl std::fmt::Display for LibraryWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}: {} ({})",
-            self.code.id, self.code.message_template, self.detail
-        )
+        // `render`, not `message_template`: since M14 a template may carry one `{detail}`
+        // placeholder, and printing it raw is issue #15's defect at a second layer.
+        write!(f, "{}: {}", self.code.id, self.code.render(&self.detail))
     }
 }
 

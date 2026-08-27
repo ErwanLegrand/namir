@@ -144,6 +144,21 @@ for identical input, identical parameter values and identical block sizes.
 installed, and the CLAP plugin shall not require the standalone application to be installed.
 *Verify:* I — each is installed alone into a clean environment and exercised.
 
+*Consequence (added M14, 2026-08-12) — accepted limitation, on one clause of this method only.* The
+method has two clauses for each of two products, and exactly one of the four is accepted here.
+**The standalone's "exercised" clause is accepted as unautomatable**: exercising the standalone
+means opening an audio device and moving samples through it, and no CI runner has one — nor a
+display, per **R-16**, which is the same wall FR-UI-020's and FR-UI-070's scripts hit. That clause
+is a human's to execute, and it is the only automated evidence this requirement will not get.
+
+**The other three are not accepted and stay booked.** Installing each product alone into a clean
+environment, and exercising the *plugin* alone there, are all reachable from CI once `xtask bundle`
+runs outside a `v*` tag — which is roadmap §21's Phase 5, whose whole content is that hole. The
+plugin can be exercised headlessly by the in-process `clack-host` harness and by `clap-validator`,
+neither of which needs a device. What this note refuses is the reading in which one unautomatable
+clause excuses the three automatable ones; the tag's `uncovered:` field currently names the whole
+method and, after Phase 5, should name the standalone's exercising clause alone.
+
 **FR-CFG-040 (Should)** — The standalone application shall be usable without an installer,
 by running a single executable from any directory, storing its settings under the platform's
 per-user configuration directory.
@@ -297,6 +312,31 @@ whether the core is fed the left channel, the right channel, or the sum of both 
 The default shall be left channel.
 *Verify:* U.
 
+*Consequence (added M14, 2026-08-12; settles roadmap §15 item 18)* — **this Should is not
+implemented for 1.0. Namir ships the left channel only, with no chooser, and that is a recorded
+scope reduction rather than an outstanding defect.** The requirement text is deliberately left
+unamended and its priority marker is unchanged, for the reason FR-CLAP-030's own M9b note gives:
+lowering a requirement to match what was built erases the gap instead of recording it.
+
+*Why this answer and not the other two.* Of §15 item 18's three, **reorder** (input trim ahead of
+the noise gate) reopens `02-architecture.md` D-9.8, which M9a re-affirmed in the product's favour
+after seven milestones, and would move a **Must**'s behaviour to serve a **Should** — the wrong
+trade in both directions. **Teaching `GateStage` to preserve channels** is real DSP work needing a
+seam `namir_dsp::NoiseGate` does not expose (`process` applies its envelope in place to one buffer
+and reads out a single scalar), landing in a milestone that already carries roughly 35 Musts of test
+debt, and §13 of the roadmap says no Should gates M8. **Dropping it costs no Must**: FR-CHAIN-060's
+Stereo row reads `2 ch summed or L-only (FR-CHAIN-070)`, two permitted inputs with no default
+between them, and left-only is the second of them — so that Must is satisfied, as the FRS's own
+version 0.6 changelog row already records.
+
+*Two things stated so they are not rediscovered as findings.* The −6 dB sum **is** reachable today,
+but only as a side effect of switching the noise gate off (with the gate bypassed, each channel's
+pre-gate copy is restored and the trim stage sums both), and a behaviour reachable only by disabling
+an unrelated stage is not the *choice* this requirement asks for — it does not partially satisfy it.
+And the stale comment M9a identified as the likely source of the confusion,
+`crates/namir-engine/src/stages/trim.rs:19-21`'s reference to "FR-CHAIN-060's default", is still
+there; correcting it is a source change this documents-only pass does not make.
+
 **FR-CHAIN-080 (Must)** — Every sample the engine emits shall be a finite number. If any stage
 produces a NaN or an infinity, the engine shall replace the affected block with silence, set a
 fault indicator, and continue processing subsequent blocks.
@@ -400,6 +440,51 @@ least 100 dB and passband ripple no greater than 0.1 dB up to 20 kHz or the Nyqu
 whichever is lower.
 *Verify:* U — measure the frequency response of the resampler in isolation.
 
+*Consequence (added M14, 2026-08-12; settles roadmap §21 Phase 0's sub-40 kHz item)* — **the two
+figures above are stated for a conversion whose lower rate is at least 40 kHz. Below that rate the
+clause is not merely unmet, it is arithmetically unsatisfiable, and that is a defect in this
+requirement rather than in any resampler.** "Up to 20 kHz or the Nyquist frequency, whichever is
+lower" leaves a transition band only while 20 kHz is the lower of the two. At a 40 kHz rate the
+passband edge and Nyquist coincide; below it the sentence asks for a response flat *to* Nyquist and
+100 dB down immediately above it — a brick wall no filter of finite length realises. No
+configuration or replacement of `rubato` could ever satisfy it, so roadmap §15 item 12's hierarchy
+does not apply here: its branch 1, "meet the requirement as written", is empty rather than
+expensive, and this note is branch 2 taken on the only justification that item permits — what a
+user would hear — not on what the implementation happens to achieve.
+
+*The bound, stated once for both products.* **Namir's supported engine sample-rate range is 44.1 kHz
+to 192 kHz inclusive.** That is the range FR-CLAP-080 already states for the plugin; it is stated
+here for the standalone too, so FR-IO-040's "from those the selected device reports as supported" is
+read as intersected with it. Model rates a `.nam` file declares are inside the same range in every
+model any NAM trainer produces. **So every conversion on the FR-NAM-050 path is inside the ≥40 kHz
+region and this note costs the NAM stage nothing** — the figures above apply to it unchanged, and
+M9b's measurement of them stands.
+
+*What the region below 40 kHz is, and what is required in it.* One path reaches it: FR-IR-030,
+because FR-IR-010 admits an IR file "at any sample rate from 8 kHz to 192 kHz" and a 22 kHz IR
+loaded into a 48 kHz session is a conversion whose lower rate is 22 kHz. Such a file **still loads
+and is still resampled** — FR-IR-030's own first clause is unchanged, and FR-IR-010's 8 kHz floor is
+unchanged with it. What this note bounds is the *figures*, not which files load. In that region the
+bar above is restated proportionally: **passband ripple no greater than 0.1 dB up to 0.45 × the
+lower of the two rates, and stopband attenuation of at least 100 dB from 0.5 × the lower of the two
+rates upward.** The 0.45 is not a new, weaker allowance invented for the region — it is the tightest
+proportion the supported region already lives with (20 kHz against 44.1 kHz's 22.05 kHz Nyquist is
+0.4535 of the rate), so a low-rate conversion is held to the same relative transition band as the
+worst standard pair rather than to a softer one. Audibly this is the honest reading of what the
+original clause wanted: everything the source could carry is passed flat, and nothing above it is
+allowed back in.
+
+*What is not claimed.* The restated figures are **unmeasured**. FR-IR-030's `// trace-partial:`
+(`crates/namir-ir/src/convolver.rs:1525-1533`) names this region and says it "needs an FRS decision
+rather than a test"; after this note it needs a test, and that one word of its `uncovered:` field is
+now stale. Correcting it and measuring the region are source changes this Phase 0 pass deliberately
+does not make, and they are booked to M14's later phases rather than assumed. Nor is the bound
+executable: `SampleRate::new` accepts any nonzero `u32`
+(`crates/namir-core/src/sample_rate.rs:10-12`) and nothing rejects an out-of-range engine or model
+rate today. Making it executable — an FR-ERR-020 catalogue entry for a rate outside 44.1–192 kHz,
+and a standalone that filters what FR-IO-040 offers — is product work this note scopes and does not
+perform.
+
 **FR-NAM-070 (Must)** — Loading a model shall not block, glitch or mute the audio thread. The
 previously loaded model shall continue to process audio until the new model is fully prepared,
 at which point the changeover shall occur at a block boundary with an equal-power crossfade of
@@ -418,6 +503,20 @@ models of differing recorded loudness are perceived at comparable level when swa
 shall be able to disable this normalisation and to offset it.
 *Verify:* U — measure integrated loudness of two models with differing declared loudness driven
 by the same input; the difference shall be within 1 LU with normalisation enabled.
+
+*Consequence (added M14, 2026-08-12) — accepted limitation.* **No true BS.1770 meter exists anywhere
+in this codebase and none will be built for 1.0.** The method names "integrated loudness", which is
+ITU-R BS.1770's specific K-weighted, gated measurement; the covering test substitutes plain RMS in
+dB and says so in its own doc comment. The two agree for that test's otherwise-matched signal pairs
+— same input, same chain, two models differing only in declared loudness — which is why the
+behaviour under test is real: what the requirement asks the product to *do*, apply the model's
+declared normalisation, is asserted, and the user-facing disable and offset controls exist. What is
+not executed is the method in the general case. **The honest residue:** two models whose spectral
+content differs markedly could sit within 1 dB RMS and outside 1 LU, and nothing here would notice.
+Accepted because a conformant K-weighted gated loudness meter is a DSP component in its own right,
+built solely to verify a requirement whose product behaviour is already asserted by a weaker but
+directionally correct instrument — and a component that ships in the binary purely to serve a test
+is the shape D-19.1 and NFR-RT-010 both push back on.
 
 **FR-NAM-100 (Should)** — Where a model declares input and output calibration levels in dBu,
 Namir shall offer a calibrated mode in which the user states their interface's input
@@ -462,6 +561,15 @@ at any sample rate from 8 kHz to 192 kHz.
 **FR-IR-030 (Must)** — An IR whose sample rate differs from the engine sample rate shall be
 resampled to the engine sample rate on load, meeting the quality requirement of FR-NAM-060.
 *Verify:* U.
+
+*Consequence (added M14, 2026-08-12)* — this requirement imports FR-NAM-060's figures, so it imports
+that requirement's M14 note with them, and **it is the only path in Namir that reaches the region
+that note bounds.** FR-IR-010 admits an IR file at any rate from 8 kHz upward while the engine rate
+is 44.1 kHz or above, so the lower of the two rates can fall below 40 kHz here and nowhere else. In
+that case the bar this requirement imports is FR-NAM-060's restated proportional form (0.1 dB to
+0.45 × the lower rate, 100 dB from 0.5 × the lower rate up), not its literal one. Above 40 kHz
+nothing changes, and M9b's measurement across the nine standard source/engine pairs stands as
+recorded.
 
 **FR-IR-040 (Must)** — The IR stage shall add no latency beyond that inherent in the impulse
 response itself. Convolution shall be zero-latency with respect to the engine's block boundary.
@@ -596,6 +704,35 @@ plugin.
 format, so that a user can inspect, diff, version-control and hand-edit them.
 *Verify:* M plus S (schema check).
 
+*Consequence (added M14, 2026-08-12; settles roadmap §15 item 21 / issue #27)* — **this requirement
+reads fully covered and half its stated method is executed by nothing, and unlike the other five
+compound-method Musts it structurally cannot say so.** `xtask traceability` keeps only the first
+code of a compound `*Verify:*` line. For the five whose first code is not `M` the author writes the
+missing half into the `uncovered:` field and four of them do; here the first code **is** `M`, so
+under D-18.6 the requirement resolves against `docs/manual-tests/fr-state-040-*.md` by filename
+alone, `xtask` hard-refuses a `trace-partial:` naming a `Verify: M` Must, and there is no
+disposition between "no document" and "fully covered" for the tool to express. The manual half is
+real and executed — that document reads **PASS**. The `S` half, a schema check, exists nowhere.
+
+*Disposition, and the two answers not taken.* **Narrowing this line to the half that is verified is
+refused**, on FR-CLAP-030's precedent: the FRS states what Namir must do, and editing a method to
+match what was built erases a check the requirement's author wanted. **Building only the schema
+check** closes this instance and leaves the class open, so the next compound method to appear
+repeats the failure silently. The decision is therefore the general fix first and the instance
+second: **teach the parser compound `*Verify:*` methods**, so every code a requirement states has to
+resolve, and **then** build FR-STATE-040's schema check against the format
+`docs/04-state-and-preset-format.md` already documents — which is what makes the missing half
+buildable at all, the item having worried that the FRS does not say what the schema is. It does not,
+and §§3–7 of that document — top-level structure, `format_version`, `global`, `parameters`,
+`references` — do.
+
+*Two consequences stated rather than discovered.* Teaching the parser will **demote rows and reopen
+adjudications**, including possibly this one — that is the fix working, not a regression, and it is
+why it belongs in a milestone that expects it rather than in M8. And **until it lands, this
+requirement must not be counted Done by hand for roadmap §14 or for M8's exit checklist, whatever
+`xtask traceability` prints**, because what the tool prints here is a filename match and cannot be
+anything else.
+
 **FR-STATE-050 (Must)** — Preset recall shall not glitch the audio thread; the constraints of
 FR-NAM-070 apply to any model or IR change a preset implies.
 *Verify:* I.
@@ -623,6 +760,22 @@ choice with a configurable default.
 **FR-STATE-090 (Should)** — A factory set of presets shall ship with Namir, and factory presets
 shall be read-only, with "save as" offered instead of "save".
 *Verify:* M.
+
+*Consequence (added M14, 2026-08-12) — recorded as still open; this is not a decision.* **Roadmap
+§15 item 3 (AQ-4, the licence of NAM's standardised capture input signal) is unanswered and M14's
+Phase 0 does not answer it.** Its two listed answers both cost a capture session with real hardware
+— obtain written permission to use the standard reamp signal, or record a self-licensed one — and
+neither is a documentation decision. No factory preset exists anywhere in the tree.
+
+*The third resolution roadmap §21 names, recorded here so it is not lost, and deliberately not
+taken.* This requirement is a **Should**; roadmap §13 says no Should gates M8; and yet M8's exit
+checklist carries the bullet "Factory presets ship (post AQ-4)". Those two cannot both stand.
+**Striking that bullet is cheaper than either of item 3's answers and is the only disposition
+consistent with §13** — it changes what M8 gates, not what Namir ships, and leaves this Should
+exactly as free to be taken later as every other Should. It is recorded rather than performed
+because editing M8's checklist is a decision about the 1.0 gate, which is the owner's, and because
+whichever way it goes, shipping factory presets remains unbuilt work behind an unanswered licence
+question.
 
 ### 5.10 Model and IR library (LIB)
 
@@ -685,10 +838,35 @@ driver-reported latency where measurement is not possible, in both samples and m
 running count for the session, resettable by the user.
 *Verify:* I — induce an xrun with a synthetic overload and assert it is counted.
 
+*Consequence (added M14, 2026-08-12) — recorded as still open; this is not a decision.* **Roadmap
+§15 item 16 — whether 1.0 ships an audio-device panel in `namir-ui` — remains unanswered, is past
+its own stated deadline of "before M9b's start", and M14's Phase 0 does not take it.** It is a
+product-scope decision about what the user sees, and the two answers differ by a whole UI feature
+phase; that is an owner's call, not a documentation pass's. It is upstream of the user-facing clause
+of five Musts: this one and FR-IO-070 directly, FR-IO-010, -040 and -050 through the same absent
+surface.
+
+*What that costs this requirement, stated exactly.* The counting mechanism is real, tested and
+proven; the xrun count reaches no screen — it surfaces only through an `eprintln!` — and nothing
+resets it, so **"showing a running count for the session, resettable by the user" is
+unimplemented**. This requirement therefore **stays Partial through M14**, and its `//
+trace-partial:` is not promoted. **M14's automated half does no device work of any kind** — no
+device panel, no `UiSnapshot` device fields, no `UiIntent` device variant — and that is a scope
+statement, so that a later reader does not read this milestone's silence as the item having been
+answered in the negative.
+
 **FR-IO-070 (Must)** — Device removal while in use, or a device failing to open, shall be handled
 without crashing or hanging: the application shall report the condition, stop the stream cleanly,
 and allow the user to select another device.
 *Verify:* I with a virtual device that can be made to fail on demand.
+
+*Consequence (added M14, 2026-08-12) — recorded as still open; this is not a decision.* Same cause
+as FR-IO-060's note above: **roadmap §15 item 16 is unanswered and M14 does not answer it.** This
+requirement's third clause — "allow the user to select another device" — is a device panel by
+another name, so it cannot be satisfied before that item is. **Stays Partial through M14**, tag not
+promoted, and no device work is done. §22's **R-5** already records that device-removal handling is
+weak in any cross-platform audio library and that the happy path is not the thing to test; that
+remains true and untested against a failable virtual device.
 
 **FR-IO-080 (Must)** — Audio device selection, sample rate, buffer size and channel mapping shall
 persist between sessions, and the application shall degrade gracefully to a working default if the
@@ -744,6 +922,17 @@ the audio path — the reduction has stood unremarked for four milestones, and t
 write it down, not to bundle an audio-path change into the milestone that flips the traceability
 gate. *Rejected outright: leaving it unrecorded*, which is the disposition M9 exists to end.
 
+*Consequence (added M14, 2026-08-12) — accepted limitation; M9b's reduction is ratified and closed
+to re-triage.* M9b recorded the Stereo-only declaration and said it "stays partial for 1.0", but
+recorded it as a milestone's own scoping choice, which leaves the next reader free to reopen it.
+**M14's sweep of every open register re-read it and takes the same view**: implementing
+`audio-ports-config` is the only route to a plain tag, it is an audio-path feature, and it buys a
+host the ability to request a Mono or Mono→stereo port layout that the chain would then serve from
+the same six stages it already serves Stereo with. That is a real capability and it is not 1.0's.
+**Accepted.** The disposition M9b set is unchanged — the tag stays `trace-partial:`, the unspanned
+member stays the negotiation limb — and the only thing this note adds is that the question is
+settled rather than pending, so no later pass spends the analysis again.
+
 **FR-CLAP-040 (Must)** — The plugin shall report its total latency in samples and shall notify the
 host whenever that latency changes, including as a result of a model change under FR-NAM-050.
 *Verify:* I.
@@ -770,6 +959,17 @@ model's weights) where they reference the same file.
 *Verify:* I plus B — measure that N instances of one model use materially less memory than N
 separate copies.
 
+*Consequence (added M14, 2026-08-12) — accepted limitation.* **The `B` half is measured by nothing
+and will not be for 1.0.** No benchmark anywhere in the workspace measures memory at all; this
+crate's one bench times NFR-PERF-040's instantiation window. What *is* asserted, and is the stronger
+evidence of the two, is structural: two instances referencing the same file resolve to the same
+entry in the process-global resource cache, so the weights are shared by construction rather than by
+a figure that happens to come out low. A memory benchmark would have to measure resident set across
+three platforms' allocators, where the quantity that moves is as much the allocator's arena
+behaviour as Namir's sharing — an instrument whose noise floor is comparable to its signal.
+**Accepted.** The `I` half — instances coexisting without interfering with each other's state — is
+executed and unaffected.
+
 **FR-CLAP-100 (Must)** — The plugin shall provide an embedded graphical editor via the CLAP GUI
 extension, supporting the host embedding it, and shall function correctly if the host declines to
 show a GUI at all.
@@ -795,6 +995,18 @@ three supported platforms is a scope question, not a verification one** —
 `03-implementation-roadmap.md` §15 carries it as an open decision rather than this note settling it.
 The restriction was introduced at M6 following spike S-4, which ran on Windows only, and until this
 note it was recorded nowhere outside a code comment.
+
+*Consequence (added M14, 2026-08-12) — recorded as still open; this is not a decision.* **Roadmap
+§15 item 20 / issue #18 remains unanswered and M14's Phase 0 does not answer it.** Its three answers
+— ship Windows-first and say so in the user guide and release notes; add Cocoa and X11 backends;
+or narrow this requirement to name the platforms it applies to — are a product-positioning choice
+about what "supported platform" means for the plugin, and that is the owner's. What M14 does settle
+is that **the second answer is not this milestone's work**: Cocoa and X11 window embedding is a
+second and third `#![allow(unsafe_code)]` surface under D-5.3, on window-handle paths this project
+has never exercised, and roadmap §21 lists it among what the milestone deliberately does not build.
+So the requirement stays `**UNRESOLVED**` and unmet on two of three platforms through M14, and the
+ownership token in its ledger entry — which still reads M9b, a milestone that has run — is stale and
+needs re-booking by whoever takes the decision.
 
 **FR-CLAP-110 (Should)** — The GUI shall support host-driven resizing and shall report its size
 constraints and preferred aspect to the host.
@@ -823,6 +1035,24 @@ and level, and a global bypass.
 **FR-UI-030 (Must)** — Every control shall be operable by mouse and by keyboard, and every control
 shall have an accessible name.
 *Verify:* M against a written accessibility script.
+
+*Consequence (added M14, 2026-08-12) — recorded as still open; this is not a decision.* **This
+requirement cannot be closed by running its script, and issue #35 is the open question of what to do
+about that.** The script exists and is runnable
+(`docs/manual-tests/fr-ui-030-accessibility-script.md`, `Result: NOT EXECUTED`), but its own body
+records why executing it would fail: `egui-baseview` wires no `accesskit` platform adapter into the
+`baseview` window either product opens, so nothing is announced to a screen reader on any platform.
+The accessible name is real one layer up — `egui`'s `accesskit` tree carries it, and this repository
+asserts against that tree directly rather than against a substring — so what is missing is the
+adapter between that tree and the OS, not the naming.
+
+*Why this is not settled here.* The three answers — wire an `accesskit` platform adapter, narrow the
+requirement to the data level the product does reach, or ship and state the limitation — differ by
+whether Namir claims to be usable by a screen-reader user at 1.0, which is a product commitment and
+the owner's to make. **M14's automated half does not build the adapter**; roadmap §21 lists it among
+what the milestone deliberately does not do, "unless Phase 0 says otherwise", and Phase 0 does not
+say otherwise. The keyboard-operability half of this requirement is independent of the adapter and
+is still owed a human running the script.
 
 **FR-UI-040 (Must)** — Every control shall display its current value numerically on demand, and
 shall accept a typed numeric value.
@@ -1000,6 +1230,20 @@ of the reference machine, measured at the 99.9th percentile of per-block time.
 pending the spike (OQ-2).
 *Verify:* B, as a CI regression gate.
 
+*Consequence (added M14, 2026-08-12) — accepted limitation.* **The number is met; the "as a CI
+regression gate" half of the method is not, and closing it as written is disproportionate.** M9b
+made the threshold an in-process assertion twice over — the contamination-immune estimator
+unconditionally, raw p99.9 over every repetition D-2.4 permits quoting — and on §2's reference
+machine the figure passes with **34.4% headroom on raw p99.9 and 41.8% on the estimator**. What
+cannot be automated is the *gate*: the budget is 25% of one core of that specific machine, CI runs
+on GitHub-hosted shared runners whose per-block timing is not that machine's, so
+`ci.yml`'s `nfr-perf-010-chain-bench` job sets `NAMIR_PERF_010_INFORMATIONAL` and asserts nothing.
+Making the method literally true needs a self-hosted runner on the §2 machine — a permanently
+maintained piece of physical infrastructure for one requirement that currently passes with a third
+of its budget spare. Accepted. **The detector that remains is a human running the benchmark under
+D-2.4's conditions**, which this project has done at every milestone that touched the audio path,
+and the residual risk is that a regression lands in a milestone where nobody thinks to.
+
 **NFR-PERF-020 (Must)** — The engine shall add no latency beyond that reported per FR-CLAP-040, and
 that reported latency shall be zero when no sample-rate conversion is active and no limiter
 look-ahead is engaged.
@@ -1008,6 +1252,22 @@ look-ahead is engaged.
 **NFR-PERF-030 (Must)** — The standalone application shall reach an audible state (audio streaming,
 default state loaded) within 3 seconds on the reference machine with a warm library index.
 *Verify:* B.
+
+*Consequence (added M14, 2026-08-12) — accepted limitation; the earlier rejection is ratified, not
+reopened.* **"Audible" is measured as `RunningStreams::play()` returning `Ok(())`** — the instant
+both streams are told to run. No output callback is observed to have processed a block, so a launch
+that started its streams and then produced no sound would still be timed as having reached an
+audible state. The stronger marking event was considered once and rejected on the ground that it
+needs an observable placed inside `crate::stream`'s audio callback purely to enable a measurement —
+a probe on the one path NFR-RT-010 protects, added for the benefit of a benchmark. **That reasoning
+is good and this note ratifies it rather than re-litigating it**; M14 takes no fresh view of the
+trade, it records that the view was taken.
+
+*What covers the residue, since it is not nothing.* That audio actually leaves an interface is
+observed by a human, not by this benchmark: `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`
+reads **PASS** against real hardware in both WASAPI modes, and FR-IO-030 books the same observation
+for Linux and macOS, where it has never been made. So the marker's weakness costs a *timing* claim,
+not the claim that the product makes sound — and only on the two platforms FR-IO-030 already names.
 
 **NFR-PERF-040 (Must)** — Plugin instantiation in a host shall complete within 200 ms, excluding
 model loading.
@@ -1047,6 +1307,31 @@ the state, parameter and library systems.
 the cost of reopening it later is not.
 *Verify:* S — the engine and its supporting crates shall build for `aarch64-linux-android` and
 `aarch64-apple-ios` in CI, even though no application is shipped for those targets.
+
+*Consequence (added M14, 2026-08-12; settles roadmap §15 item 19)* — **the method above stands
+unamended, and what it proves is narrower than what this requirement's text says. The two mobile
+cross-builds are a door-open check, not a compliance check, and no later reader should mistake green
+CI for the five constraints holding.** A crate that assumes a mouse, blocks on a dialog on an
+audio-affecting path, or spawns a thread per scan job compiles for `aarch64-linux-android` exactly
+as well as one that does not. The item's own argument for that is unrebutted and is adopted here in
+full; what is decided is the disposition, which the item left open.
+
+*Why the method is kept rather than strengthened.* Making it mean the text needs five new static
+analyses that do not exist — a blocking-call lint over the audio-affecting path, a bound on spawned
+threads, a check for pointer-only input handling in `namir-ui`, and two more — each of them new
+tooling with its own false-positive surface, built for a platform FRS §1.4 lists as **Prospective**
+and RD-4 defers past 1.0. That is disproportionate at a 1.0 gate. What the five constraints rest on
+today is design and review: D-5.1's layering table and its platform-conditional lint, D-7.x's
+bounded worker pool, and this requirement being quoted in review whenever a dialog or a thread is
+added. That is weaker than a check and it is what exists.
+
+*The verdict this leaves.* NFR-PORT-030's §14 cell stays **Done**, because D-23.2 adjudicates
+against a requirement's own stated method and that method is executed as written — the gap is
+between the text and the method, and a verdict cell is not the instrument for closing it. **The cell
+should be read as "the door is open at compile time", not as "the five constraints hold."**
+Per-constraint checks are recorded as post-1.0 work, not built; `xtask rt-logging` (M9b), which
+forbids the logger's name in the modules carrying audio-thread code, is the working template for
+what one of them would look like if the work is ever taken.
 
 **NFR-PORT-040 (Must)** — Namir shall not require a C++ toolchain to build the standalone
 application or the CLAP plugin for any tier-1 or tier-2 platform.
@@ -1104,6 +1389,25 @@ forbid unsafe code by attribute.
 **NFR-LIC-010 (Must)** — Namir shall be published under `MIT OR Apache-2.0`, at the recipient's
 option, with the copyright held by Erwan Patrick Legrand.
 *Verify:* S — licence files present, manifest metadata correct, SPDX headers checked.
+
+*Consequence (added M14, 2026-08-12) — accepted limitation, on one of this method's three named
+checks and deliberately not on the other.* The method names three checks and its `uncovered:` field
+records two as having no artifact. They are not alike and are not disposed of alike.
+
+**The SPDX-header check is accepted as out of scope for 1.0.** Only two tracked files under
+`crates/` carry an SPDX header; making the check meaningful means putting one on every file in the
+repository, which is **NFR-LIC-060**'s work — REUSE compliance — and NFR-LIC-060 is a **Should**,
+which roadmap §13 says does not gate M8. Verifying a clause of a Must by doing a Should's work is
+the wrong way round: the right disposition is that this clause waits on NFR-LIC-060 being taken, and
+if it is never taken the clause is never executed. Accepted on that basis.
+
+**The licence-files-present check is not accepted and stays open.** It is a handful of lines in
+`xtask identity`, which already asserts that `README.md` *names* both licence files; asserting that
+the two files exist is the same shape of check against the same paths. Deleting `LICENSE-MIT` or
+`LICENSE-APACHE` would today go unnoticed by every gate in this repository, which is a real hole in
+a Must about how Namir is published. It is cheap, it is not a Should's work, and it is booked rather
+than accepted. What is decided here is only that the two halves have different answers, which the
+single `uncovered:` field could not say.
 
 **NFR-LIC-020 (Must)** — Every dependency, transitively, shall carry a licence compatible with
 distribution under both MIT and Apache-2.0. Copyleft licences (GPL, AGPL, LGPL where static linking
@@ -1189,6 +1493,17 @@ troubleshooting shall ship with 1.0.
 **NFR-DOC-040 (Must)** — The repository shall carry a README identifying the product, stating what
 it does, naming its licence, and giving the commands to build, run and test it.
 *Verify:* S.
+
+*Consequence (added M14, 2026-08-12) — accepted limitation.* **The "stating what it does" clause has
+no artifact and will not get one.** `xtask identity` asserts that `# Namir`, both licence file names
+and the three build/run/test command lines are present as substrings; no static check can extend
+that to whether the prose around them actually describes the product, and a check that could would
+be a language model in a build gate. The other three clauses are checked. What a reader loses is
+nothing they can observe: the README does state what Namir is, and `docs/manual-tests/nfr-doc-010-
+third-party-reader.md` — a real third party reading the repository cold — reads **PASS**. This is
+recorded as accepted rather than carried forward so that no later pass re-triages it; see roadmap
+§21's `M14 Phase 0 — decisions` subsection for what "accepted" does and does not do to a §14
+verdict.
 
 ---
 
@@ -1448,3 +1763,4 @@ of someone having looked at it rather than the check itself.
 | 0.5 | 2026-08-09 | M9a set-quantification sweep. **FR-CHAIN-010's chain order is amended to the order the product ships**, by an appended `*Consequence (added M9a, 2026-08-09)*` note that supersedes the original block rather than rewriting it: `input → noise gate → input trim → NAM → IR → EQ → output level → output`. The gate precedes the trim per `02-architecture.md` D-9.8 — a gate threshold should reference the interface's real noise floor and not move when the user adjusts trim. `build_default_chain` (`crates/namir-engine/src/stages/mod.rs:47-67`) has assembled it that way since M2 (2026-08-06; `7941577` declared the order in the doc comment with a `todo!()` body, the assembly landed later in the milestone) on `03-implementation-roadmap.md` §6's own direction, so the amendment makes this document describe the product rather than changing the product; D-9.8's *Rationale* had flagged the point for review and it went unresolved from M2 until this sweep read the requirement against its code and surfaced a requirement-versus-code conflict. Section 1.2's "noise gate ahead of the amp" and FR-GATE-010's "ahead of the NAM stage" are unaffected and stand as written. FR-CHAIN-010's `*Verify:*` line is deliberately **not** touched: its probe-signal method has never been executed, that gap is independent of the order, and it is what the requirement's `// trace-partial:` names. The same note records, without deciding, one interaction the amendment exposes: with Gate upstream of Trim, Gate's channel-0-then-duplicate pattern (`stages/gate.rs:163-172`) discards the right channel before Trim's −6 dB-per-term sum (`stages/trim.rs:145-156`) can use it, so the shipped Stereo configuration realises FR-CHAIN-070's default (left channel) rather than FR-CHAIN-060's table default (both channels summed). FR-CHAIN-060 and FR-CHAIN-070 are unchanged. |
 | 0.6 | 2026-08-09 | M9a §14 adjudication pass. **Corrects 0.5's own record of the Stereo interaction**, by a further appended `*Consequence (added M9a, 2026-08-09)*` note at FR-CHAIN-010 rather than an edit to the paragraph it corrects. That paragraph overstated the finding, in the direction of severity: naming shipped Stereo behaviour "not FR-CHAIN-060's table default (both channels summed)" reads as FR-CHAIN-060 — a Must — being unmet, when FR-CHAIN-060's Stereo row reads `2 ch summed or L-only (FR-CHAIN-070)`, two permitted inputs with no default between them, and left-only is the second of them. FR-CHAIN-060 is **satisfied**. What cannot be met is **FR-CHAIN-070**, whose clause is that the user shall be able to *choose* left, right or the −6 dB sum: `params.lock` carries no stereo-source parameter among its twenty-nine live ones, so the choose clause fails before the chain order is reached. FR-CHAIN-070 is a **Should** (§1.5's sole priority marker), so it sits in no `03-implementation-roadmap.md` §14 row — §5.1 CHAIN's 8 Musts out of 9 requirements — and no §14 verdict or M8 exit-gate item follows; the finding is a Should left open, not a Must left broken. The mechanism is also restated with the condition 0.5 omitted: the right channel is discarded only while the gate is **on** (`gate.enabled` defaults to "On", `crates/namir-params/src/stages/gate.rs:8-16`); with the gate off, `stages/gate.rs:174-192`'s bypass crossfade settles at 0.0, each channel's pre-gate copy is restored, and `stages/trim.rs:145-156` sums both — so the sum is reachable, though only as a side effect of disabling an unrelated stage, which is not the choice FR-CHAIN-070 asks for. The same mistaken "FR-CHAIN-060's default" phrasing at `crates/namir-engine/src/stages/trim.rs:19-21` is recorded as the likely source, not repaired. No requirement text, priority or `*Verify:*` line is changed by this row. |
 | 0.7 | 2026-08-10 | M12 (brand, README and product identity). **NFR-DOC-040 and NFR-LIC-070 gain their first artifacts**: `README.md` and `TRADEMARK.md` at the repository root, both asserted by a new `xtask identity` static check wired into CI, which is what makes a `Verify: S` method executable rather than a claim. NFR-LIC-070 is tagged plainly; **NFR-DOC-040 is `trace-partial:`** — a substring check cannot reach its "stating what it does" clause, and the gap is written down rather than papered over by a plain tag. **FR-UI-110 gains an appended `*Consequence*` note** recording that only its brand-mark clause is in scope for M12 and that both icon clauses defer to M13: the executable icon by `02-architecture.md` D-17.3's refusal to admit a build script into a shipped crate for a cosmetic feature, the window icon because `baseview` 0.2.2 has no icon field at all — which also makes `03-implementation-roadmap.md` §19's window-option instruction unfollowable, corrected there rather than here. No requirement text, priority or `*Verify:*` line is changed by this row. |
+| 0.8 | 2026-08-12 | M14 Phase 0 (pre-1.0 closure; decisions only, no code). **Eighteen appended `*Consequence (added M14, 2026-08-12)*` notes; no requirement text, priority or `*Verify:*` line is changed by this row.** Three ratifications. **FR-NAM-060 gains the sub-40 kHz clause**: its "0.1 dB up to 20 kHz or the Nyquist frequency, whichever is lower" leaves a transition band only while 20 kHz is the lower of the two, so below a 40 kHz rate it is arithmetically unsatisfiable rather than merely unmet; Namir's supported **engine** sample-rate range is stated as 44.1 kHz to 192 kHz for both products (the range FR-CLAP-080 already gives the plugin), which puts every FR-NAM-050 conversion inside the satisfiable region, and the one path that reaches below it — FR-IR-030, via FR-IR-010's 8 kHz IR-file floor — gets the bar restated proportionally (0.1 dB to 0.45 x the lower rate, 100 dB from 0.5 x the lower rate up), unmeasured and said to be unmeasured. **FR-CHAIN-070's Should is dropped for 1.0** (roadmap §15 item 18): left-only ships, no chooser, costing no Must since FR-CHAIN-060's Stereo row admits it — the alternatives reopen D-9.8 or need a new `namir_dsp::NoiseGate` seam. **NFR-PORT-030 keeps its method** (item 19) with the cross-build recorded as a door-open check rather than a compliance check, so its **Done** cell is read as "the door is open at compile time", not "the five constraints hold". **FR-STATE-040** (item 21 / issue #27): the FRS line is **not** narrowed; the parser is to learn compound methods first and the schema check follows, against `04-state-and-preset-format.md` §§3-7, and until then this Must is not counted Done by hand whatever the tool prints. Six accepted limitations outright, plus two splits — eight requirements in all — recorded at their own requirements rather than carried into the 1.0 gate as open partials: NFR-DOC-040 ("stating what it does"), NFR-PERF-010 (the CI-regression-gate half; the figure passes with 34.4-41.8% headroom and closing it as written needs a self-hosted runner on the §2 machine), NFR-PERF-030 (the stronger audible marker — the earlier rejection is **ratified, not reopened**), FR-CLAP-030 (`audio-ports-config`, ratifying M9b's reduction), FR-NAM-090 (a true BS.1770 meter), FR-CLAP-090 (the memory benchmark), plus **two splits**: NFR-LIC-010's SPDX-header clause is accepted as NFR-LIC-060's work (a Should) while its licence-files-present clause is **refused acceptance** and stays booked, and FR-CFG-030's standalone "exercised" clause is accepted as needing a device no runner has while its other three clauses stay Phase 5 work. Five recorded as **still open, deliberately not decided here**: FR-IO-060 and FR-IO-070 (roadmap §15 item 16, the audio-device panel — both stay Partial and M14 does no device work), FR-STATE-090 (item 3 / AQ-4, noting the third resolution §21 names: it is a Should, §13 says no Should gates M8, so striking M8's checklist bullet is cheaper than either listed answer), FR-CLAP-100 (item 20 / issue #18, the plugin's missing editor on macOS and Linux) and FR-UI-030 (issue #35: `egui-baseview` wires no `accesskit` platform adapter, so running its script would fail). |

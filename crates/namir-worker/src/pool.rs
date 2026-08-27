@@ -324,13 +324,15 @@ mod tests {
     /// **D-16.3 / FR-ERR-040:** a panicking job is contained at the job boundary and the pool keeps
     /// serving. The panic hook is silenced for the duration so the suite's output stays readable —
     /// noted because otherwise it looks like a test is failing.
-    // trace-partial: FR-ERR-040
-    // uncovered: FR-ERR-040 — the method's "inject a fault into each non-audio subsystem" reaches
-    // uncovered: only the generic worker thread pool: no fault is injected into the library
-    // uncovered: scanner, the state save/load path, settings I/O, the resource cache or the GUI
-    // uncovered: thread, and the plugin-configuration clause "continue passing audio, degraded if
-    // uncovered: necessary" is asserted by nothing, the tagged test running no audio at all;
-    // uncovered: closes M8
+    ///
+    /// **This is D-16.3's unit test, and since M14 it is no longer FR-ERR-040's tag site.** That
+    /// requirement's method is "inject a fault into **each** non-audio subsystem", and this test
+    /// reaches one of them and runs no audio at all — which is what its `trace-partial` said from
+    /// M9a until the gap was closed rather than the tag promoted.
+    /// `tests/fault_injection.rs` injects a fault into every non-audio subsystem this crate can
+    /// see, with a live `AudioEngine` running beside it, and carries the tag (still partial: see
+    /// its own `// uncovered:` field for the GUI thread and the plugin configuration).
+    /// `namir-app/tests/settings_faults.rs` covers the one subsystem that lives in the other crate.
     #[test]
     fn a_panicking_job_is_contained_and_the_pool_keeps_serving() {
         let previous = std::panic::take_hook();

@@ -20,12 +20,16 @@
 
 use libfuzzer_sys::fuzz_target;
 
+// M14 added `load_ir.rs` beside this file, which reaches everything past the header parse —
+// `decode`'s allocation, the MAX_LOAD_SECONDS clamp, resampling and FFT planning — so the
+// *artifact* half of the gap this tag recorded is closed. What is left is the method's other word:
+// "continuously", which is a CI step this workstream could not add.
 // trace-partial: NFR-QUAL-040
-// uncovered: NFR-QUAL-040 — of the parsers the method enumerates, the audio file reader is fuzzed
-// uncovered: header-only: the target calls probe_wav, which the crate documents as deliberately
-// uncovered: shallower, so decode's per-channel Vec::with_capacity, its MAX_LOAD_SECONDS clamp
-// uncovered: and PreparedIr::from_wav_bytes's resample and FFT planning — where a hang or an
-// uncovered: over-allocation would actually live — are never reached; closes M8
+// uncovered: NFR-QUAL-040 — the method's "fuzz targets run in CI" is executed for three of the
+// uncovered: four targets: .github/workflows/fuzz.yml has a job per load_nam, read_state and
+// uncovered: probe_wav, and M14's load_ir — the only target that reaches decode, the
+// uncovered: MAX_LOAD_SECONDS clamp, resampling and FFT planning — has none, so the deep audio
+// uncovered: reader is fuzzable but not fuzzed continuously; closes M8
 fuzz_target!(|data: &[u8]| {
     let _ = namir_ir::probe_wav(data);
 });

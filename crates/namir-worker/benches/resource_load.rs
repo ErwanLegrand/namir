@@ -100,19 +100,42 @@
 //!
 //! NFR-PERF-050 is two clauses joined by an "and" — "shall complete within 500 ms for files up to
 //! 50 MB **on the reference machine, and shall never delay the audio thread regardless of duration
-//! (FR-NAM-070)**". This binary measures the first and says nothing about the second: nothing here
-//! runs an audio thread at all. The nearest evidence is `tests/rt_stress.rs`'s axis A, which drives
-//! `Instance::load` in a loop against a live `AudioEngine` and asserts zero audio-thread
-//! allocation, zero dropout blocks and a bounded worst block — real evidence, but an integration
-//! test rather than the `Verify: B` NFR-PERF-050 names, and its models are `WaveNetShape::Nano`, so
-//! "regardless of duration" is exercised at no long duration by anything in this tree.
+//! (FR-NAM-070)**". Until M14 this binary measured the first and said nothing about the second:
+//! nothing here ran an audio thread at all. The nearest evidence was `tests/rt_stress.rs`'s axis A,
+//! which drives `Instance::load` in a loop against a live `AudioEngine` and asserts zero
+//! audio-thread allocation, zero dropout blocks and a bounded worst block — real evidence, but an
+//! integration test rather than the `Verify: B` NFR-PERF-050 names, and its models are
+//! `WaveNetShape::Nano`, so "regardless of duration" was exercised at no long duration by anything
+//! in this tree.
 //!
-//! That second clause is why the tag above `main` is still a `// trace-partial:` rather than a
-//! plain `// trace:` (D-23.1: a plain tag asserts the **whole** requirement by its stated `Verify:`
-//! method) — and it is now the *only* reason, the file-read gap having closed here at M9b. Nothing
-//! in this binary was extended to span it: an arm that ran a live `AudioEngine` alongside a 50 MB
-//! load would be a second, differently-shaped benchmark, and claiming the clause on the strength of
-//! the arms below would be exactly the over-claim D-23.1's two questions exist to catch.
+//! **M14 adds the audio-thread arm** (`measure_the_audio_thread_clause`, at the bottom of this
+//! file): a real `AudioEngine` running a real standard-model-plus-2 s-IR chain, paced to the block
+//! period on the measurement core, while a worker thread on a *different* core performs one whole
+//! `Instance::load` of the 50 MB file by path. Per-block times are collected with and without that
+//! load in flight, and the loading arm's p99.9 is asserted to stay inside a factor of the quiet
+//! arm's. That is the clause, measured as a benchmark with a numeric threshold, which is what its
+//! `Verify: B` asks for.
+//!
+//! **The tag above `main` nonetheless stays a `// trace-partial:`, with a narrower gap named.**
+//! The arm's measured window ends when `Instance::load` returns — i.e. when the offer has been
+//! submitted — and discards a few trailing blocks, because the model being offered is
+//! `generate_oversized_uncalibrated`'s 430-channel *size* fixture, whose per-block inference cost
+//! is enormous and is not a load cost at all. So what is measured is the window in which the long
+//! load is genuinely in flight, and the offer-and-crossfade half of a 50 MB changeover is measured
+//! by nothing at that size. That half belongs to FR-NAM-070 and is measured by
+//! `namir-engine/benches/handover_crossfade.rs` — against a standard model, not a 50 MB one.
+//! Claiming the whole clause on the strength of this arm would be exactly the over-claim D-23.1's
+//! two questions exist to catch.
+//!
+//! ## First run of the audio-thread arm (INFORMATIONAL — sandbox, not the reference machine)
+//!
+//! Five runs of the binary in this shared development sandbox, pinned per D-2.1 but on a machine
+//! that was not quiet: quiet-arm p99.9 775.6 / 873.6 / 895.2 / 786.6 / 784.0 µs, loading-arm p99.9
+//! 851.0 / 839.5 / 725.7 / 827.2 / 799.5 µs, so a p99.9 ratio of **0.81 - 1.10x** against the 2.0x
+//! bound. Two of the five ratios are *below* 1.0, which is the shape to expect if the load is
+//! genuinely off this thread: the difference between the two arms is then run-to-run noise rather
+//! than a signal, and noise goes both ways. Per D-2.4 none of these are certified figures — the
+//! reference machine's own run is what closes anything.
 //!
 //! # Read this before quoting any number from this binary
 //!
@@ -298,14 +321,265 @@ fn plant(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
+// ---------------------------------------------------------------------------------------------
+// The audio-thread arm (added M14) — NFR-PERF-050's second clause.
+//
+// See "The other half of the sentence" in this file's module doc comment for what this arm is
+// answering and why the arms above cannot. In outline: a real `AudioEngine` runs a real chain
+// (standard model, 2 s stereo IR) at 48 kHz / 64-sample blocks, paced to the block period as a
+// real callback thread is, while a worker thread performs one whole `Instance::load` of the 50 MB
+// file **by path** — `fs::metadata`, `fs::read`, parse, prepare, offer. Every block's own duration
+// is recorded. The same audio loop is then run with nothing happening beside it, and the two
+// distributions' p99.9 are compared.
+//
+// Three design points that are not incidental.
+//
+// **The measured window ends when `Instance::load` returns, not later.** `load` returns once the
+// offer has been *submitted*, so a block or two after the signal may already be running the
+// incoming model — and the incoming model here is a 430-channel size fixture whose *inference*
+// cost is enormous and is not a load cost at all. Charging it to this clause would be measuring
+// the wrong thing, so [`TRAILING_BLOCKS_DISCARDED`] blocks are dropped from the tail of every
+// repetition. What is left is the window in which the long-duration work is genuinely in flight,
+// which is the window the clause is about. The handover's own cost is FR-NAM-070's, and is
+// measured by `namir-engine/benches/handover_crossfade.rs`.
+//
+// **The worker thread is pinned to a different core than the audio loop.** `pin_to_measurement_core`
+// runs on the main thread and a spawned thread inherits its affinity mask, so without this the
+// worker and the audio loop would contend for one core and the arm would fail for a reason that is
+// a property of the harness rather than of the code under test. A real product runs them on
+// different cores; so does this.
+//
+// **A fresh engine, instance and cache per repetition**, for the same "Cold, not cached" reason
+// the arms above give: `ResourceCache` would otherwise make the second load nearly free, which is
+// the opposite of the long duration this arm needs.
+
+/// Blocks dropped from the tail of each repetition — see the section comment above.
+const TRAILING_BLOCKS_DISCARDED: usize = 5;
+
+/// Repetitions of the audio-thread arm. Each one is bounded by how long a 50 MB load takes
+/// (~150 ms on the §2 reference machine), so five repetitions is on the order of a second of
+/// measured audio, or roughly 500 blocks per arm.
+const AUDIO_ARM_REPS: usize = 5;
+
+/// How far the loading arm's p99.9 per-block time may exceed the quiet arm's.
+///
+/// **Not a performance measurement**, exactly as `rt_stress.rs`'s `MAX_BLOCK_MULTIPLE` is not:
+/// what this bound detects is the audio thread *waiting* on the load — a lock, an allocation
+/// serialised behind the worker's, a ring push that blocked. NFR-PERF-010 is where the chain's
+/// absolute per-block budget is judged, on `six_stage_chain.rs`'s figure and not on this one. A
+/// factor rather than an absolute so the bound means the same thing on a slow machine as on a
+/// fast one, and 2.0 rather than something tighter because a p99.9 taken over a few hundred blocks
+/// on a machine that is not a benchmarking rig carries real run-to-run spread of its own — see
+/// D-2.4.
+const AUDIO_DELAY_FACTOR: f64 = 2.0;
+
+/// One repetition of the audio-thread arm. Runs the audio loop, paced to the block period, until
+/// `work` (running on its own thread, on its own core) signals completion — or until
+/// `max_blocks`, whichever comes first — and returns each block's own duration with the tail
+/// discarded.
+fn audio_blocks_while<F>(max_blocks: usize, work: F) -> Vec<Duration>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let c = ctx();
+    let (mut engine, endpoint) = build_default_engine(&c).unwrap();
+    let cache = ResourceCache::new();
+    let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+    // A realistic chain to measure: the standard model and a 2 s stereo IR, the same pair
+    // `six_stage_chain.rs` measures NFR-PERF-010 against.
+    let standard: Arc<[u8]> = Arc::from(
+        generate(WaveNetShape::Standard, 1)
+            .expect("standard fixture should generate")
+            .to_json_bytes()
+            .into_boxed_slice(),
+    );
+    let ir_len = 2 * SR as usize;
+    let ir: Arc<[u8]> = Arc::from(
+        to_stereo_wav_bytes(
+            &decaying_noise(ir_len, 21, 8_000.0),
+            &decaying_noise(ir_len, 22, 8_000.0),
+            SR,
+        )
+        .into_boxed_slice(),
+    );
+    instance.load(&cache, Target::Nam, LoadSource::Bytes(standard));
+    instance.load(&cache, Target::Ir, LoadSource::Bytes(ir));
+    drop(instance);
+
+    let mut left = vec![0f32; BLOCK];
+    let mut right = vec![0f32; BLOCK];
+    let mut phase = 0.0f32;
+    let step = std::f32::consts::TAU * 220.0 / SR as f32;
+    let mut fill_and_process = |engine: &mut namir_engine::AudioEngine| -> Duration {
+        for i in 0..BLOCK {
+            let s = 0.5 * phase.sin();
+            phase += step;
+            if phase > std::f32::consts::TAU {
+                phase -= std::f32::consts::TAU;
+            }
+            left[i] = s;
+            right[i] = s;
+        }
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = namir_engine::StageIo::new(&mut channels, BLOCK);
+        let started = Instant::now();
+        engine.process(&mut io);
+        started.elapsed()
+    };
+
+    // Settle: both initial handovers complete here, before anything is recorded.
+    for _ in 0..SETTLE_BLOCKS {
+        fill_and_process(&mut engine);
+    }
+
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            pin_worker_away_from_the_measurement_core();
+            work();
+            done.store(true, std::sync::atomic::Ordering::Release);
+        })
+    };
+
+    let block_period = Duration::from_secs_f64(BLOCK as f64 / SR as f64);
+    let mut durations = Vec::with_capacity(max_blocks);
+    let started = Instant::now();
+    for b in 0..max_blocks {
+        let target = started + block_period * (b as u32);
+        let now = Instant::now();
+        if target > now {
+            std::thread::sleep(target - now);
+        }
+        durations.push(fill_and_process(&mut engine));
+        if done.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+    }
+    worker.join().expect("the loading thread panicked");
+
+    durations.truncate(durations.len().saturating_sub(TRAILING_BLOCKS_DISCARDED));
+    durations
+}
+
+/// Moves the calling (worker) thread off the core [`pin_to_measurement_core`] put the audio loop
+/// on — see the section comment above for why a thread that inherited that affinity would make
+/// this arm measure the harness rather than the code.
+fn pin_worker_away_from_the_measurement_core() {
+    let Some(ids) = core_affinity::get_core_ids() else {
+        return;
+    };
+    if ids.len() < 2 {
+        return;
+    }
+    let audio = std::env::var("NAMIR_PIN_CORE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4)
+        .min(ids.len() - 1);
+    let worker = if audio == 0 { 1 } else { audio - 1 };
+    core_affinity::set_for_current(ids[worker]);
+}
+
+/// NFR-PERF-050's second clause, asserted. Returns nothing — it panics on failure, like every
+/// other arm here.
+fn measure_the_audio_thread_clause(oversized_path: &Path) {
+    // Enough blocks that a repetition is bounded by the load rather than by this cap, and small
+    // enough that a load which somehow completed instantly cannot spin here for long.
+    const MAX_BLOCKS: usize = 3_000;
+
+    let mut quiet = Vec::new();
+    let mut loading = Vec::new();
+    let mut loads_completed = 0usize;
+
+    for _ in 0..AUDIO_ARM_REPS {
+        // The quiet arm: the same audio loop, the same length as the loading arm's typical
+        // window, with nothing happening beside it. `SETTLE_BLOCKS` of quiet come first in both.
+        quiet.extend(audio_blocks_while(QUIET_ARM_BLOCKS, || {
+            std::thread::sleep(Duration::from_secs_f64(
+                BLOCK as f64 / SR as f64 * QUIET_ARM_BLOCKS as f64,
+            ));
+        }));
+
+        let path = oversized_path.to_path_buf();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&completed);
+        loading.extend(audio_blocks_while(MAX_BLOCKS, move || {
+            let c = ctx();
+            let (_engine, endpoint) = build_default_engine(&c).unwrap();
+            let cache = ResourceCache::new();
+            let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+            let outcome = instance.load(&cache, Target::Nam, LoadSource::File(path));
+            if matches!(outcome.result, JobResult::Loaded { .. }) {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }));
+        if completed.load(std::sync::atomic::Ordering::Acquire) {
+            loads_completed += 1;
+        }
+    }
+
+    assert_eq!(
+        loads_completed, AUDIO_ARM_REPS,
+        "only {loads_completed} of {AUDIO_ARM_REPS} repetitions completed their 50 MB load -- \
+         this arm would then be reporting an audio loop that ran beside nothing"
+    );
+    assert!(
+        loading.len() > 100 && quiet.len() > 100,
+        "too few measured blocks to compare ({} loading, {} quiet)",
+        loading.len(),
+        quiet.len()
+    );
+
+    quiet.sort_unstable();
+    loading.sort_unstable();
+    let quiet_p50 = percentile(&quiet, 0.50);
+    let quiet_p999 = percentile(&quiet, 0.999);
+    let loading_p50 = percentile(&loading, 0.50);
+    let loading_p999 = percentile(&loading, 0.999);
+
+    println!(
+        "\nNFR-PERF-050, second clause: per-block audio-thread cost with and without a 50 MB \n\
+         load in flight on another core ({} / {} blocks measured, tail {TRAILING_BLOCKS_DISCARDED} \n\
+         blocks per repetition discarded so the incoming size fixture's own inference cost is not \n\
+         charged to the load).",
+        loading.len(),
+        quiet.len()
+    );
+    println!("  quiet  : p50 {quiet_p50:>9.2?}   p99.9 {quiet_p999:>9.2?}");
+    println!("  loading: p50 {loading_p50:>9.2?}   p99.9 {loading_p999:>9.2?}");
+
+    let ratio = loading_p999.as_secs_f64() / quiet_p999.as_secs_f64();
+    println!(
+        "  p99.9 ratio: {ratio:.2}x (bound {AUDIO_DELAY_FACTOR:.1}x -- a delay detector, not a \
+         performance measurement)"
+    );
+    assert!(
+        ratio <= AUDIO_DELAY_FACTOR,
+        "NFR-PERF-050: with a 50 MB load in flight the audio thread's p99.9 per-block time was \
+         {loading_p999:.2?} against a quiet baseline of {quiet_p999:.2?} ({ratio:.2}x, bound \
+         {AUDIO_DELAY_FACTOR:.1}x) -- the load delayed the audio thread. D-2.4: one reading on a \
+         machine that was not verified quiet is not evidence of a regression; re-run pinned \
+         (NAMIR_PIN_CORE) >= 5 times before believing this"
+    );
+}
+
+/// How long the quiet baseline arm runs for, in blocks — chosen to be the same order as a 50 MB
+/// load's own window so the two p99.9 figures are taken over comparable sample sizes.
+const QUIET_ARM_BLOCKS: usize = 300;
+
+/// Blocks run before either arm starts recording, so the initial model/IR handovers are finished
+/// and are not measured as though they were the arm's own.
+const SETTLE_BLOCKS: usize = 200;
+
 // trace-partial: NFR-PERF-050
-// uncovered: NFR-PERF-050 — the "shall never delay the audio thread regardless of duration"
-// uncovered: clause: nothing in this binary runs an audio thread, so no arm here measures it. Its
-// uncovered: only evidence is rt_stress.rs's axis A, an integration test rather than the Verify: B
-// uncovered: this requirement names, whose concurrent loads are Nano fixtures and so exercise no
-// uncovered: long duration. The sentence's other clause, "within 500 ms for files up to 50 MB",
-// uncovered: closed at M9b: the file arms below time LoadSource::File, so fs::metadata and
-// uncovered: fs::read are inside the asserted window; closes M8
+// uncovered: NFR-PERF-050 — the "regardless of duration" clause is asserted at M14 only over the
+// uncovered: window in which the load itself is in flight: the audio-thread arm below discards the
+// uncovered: blocks after Instance::load returns, because the incoming fixture is a 430-channel
+// uncovered: size model whose inference cost is not a load cost. So the offer-and-crossfade half of
+// uncovered: a 50 MB changeover is measured by nothing at that size — handover_crossfade.rs, which
+// uncovered: owns that half under FR-NAM-070, drives a standard model; closes M8
 fn main() {
     pin_to_measurement_core();
 
@@ -374,19 +648,25 @@ fn main() {
         5,
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
-
     println!(
         "\nThe 50 MB read, isolated: {:.2?} on the worst repetition, the difference between that \n\
          payload's file and bytes arms. A floor on what a cold-cache read would add, not an \n\
          estimate of it (D-2.5 condition 1).",
         oversized_file_max.saturating_sub(oversized_bytes_max)
     );
+
+    // The sentence's second clause. Runs last because it is the slowest arm and because a reader
+    // watching the output should see the first clause's rows before this one starts.
+    measure_the_audio_thread_clause(&oversized_path);
+
+    let _ = std::fs::remove_dir_all(&dir);
+
     println!(
         "\nPASS: every arm's slowest repetition stayed inside NFR-PERF-050's \
          {NFR_PERF_050_CEILING:?} ceiling, for files up to 50 MB read from a real path as well as \
-         for payloads already in memory. The sentence's second clause -- \"shall never delay the \
-         audio thread regardless of duration\" -- is not measured here; see this file's own \
-         `// uncovered:` field."
+         for payloads already in memory -- and a 50 MB load in flight on another core did not \
+         raise the audio thread's own p99.9 per-block time beyond {AUDIO_DELAY_FACTOR:.1}x its \
+         quiet baseline. What remains unmeasured at 50 MB scale is the offer-and-crossfade half; \
+         see this file's own `// uncovered:` field."
     );
 }

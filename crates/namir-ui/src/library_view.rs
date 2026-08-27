@@ -19,8 +19,13 @@
 //!    (see [`render`]) -- a filtered result of 10,000 entries costs the same handful of widgets
 //!    per frame as one of 10.
 //!
-//! [`tests::rendering_ten_thousand_entries_stays_well_under_the_100ms_frame_budget`] proves this
-//! against `namir-fixtures`' real 10,000-file corpus, not a guessed row count.
+//! FR-UI-060's `*Verify:*` code is `B`, so its traced artifact is `benches/library_frame.rs`
+//! (added M14): the whole FR-UI-020 screen rendered beside a real `namir_library::Scanner` pass
+//! over `namir-fixtures`' 10,000-file corpus, with the index identity changed on every frame so
+//! the re-filter path below runs inside every measured one, asserting the 100 ms ceiling against
+//! the slowest frame. [`tests::rendering_ten_thousand_entries_stays_well_under_the_100ms_frame_budget`]
+//! stays here as the `cargo test`-speed regression guard for the same properties, against the same
+//! real corpus and not a guessed row count.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -277,57 +282,88 @@ mod tests {
         assert_eq!(state.filtered_count(), 2);
     }
 
-    /// FR-UI-060, exercised against a real 10,000-file corpus (`namir_fixtures::library`, the
-    /// same generator `namir-library`'s own NFR-PERF-060 benchmark uses) rather than a guess at
-    /// what 10,000 rows looks like. Builds a real `namir_library::Index` from it, renders the
-    /// full library view (search box, virtualized list) headlessly via `egui::Context::run_ui`
-    /// -- the same entry point `egui-baseview` calls every real frame -- and asserts the frame
-    /// completed well under FR-UI-060's 100ms ceiling.
-    // trace-partial: FR-UI-060
-    // uncovered: FR-UI-060 — the requirement's stated condition, "while a library scan of 10 000
-    // uncovered: files is in progress", is absent from the measurement: the tagged test builds its
-    // uncovered: snapshot with scan: None so render's scan branch never executes, and holds the
-    // uncovered: index identity constant so ensure_filtered's re-filter path — the reason the
-    // uncovered: memoization exists — never runs inside the timed frame; closes M8
+    /// FR-UI-060's cheap regression guard, exercised against a real 10,000-file corpus
+    /// (`namir_fixtures::library`, the same generator `namir-library`'s own NFR-PERF-060 benchmark
+    /// uses) rather than a guess at what 10,000 rows looks like. Builds a real
+    /// `namir_library::Index` from it, renders the full library view (search box, scan line,
+    /// virtualized list) headlessly via `egui::Context::run_ui` — the same entry point
+    /// `egui-baseview` calls every real frame — and asserts the frame completed under
+    /// FR-UI-060's 100ms ceiling.
+    ///
+    /// **This is not FR-UI-060's traced artifact**, and carries no tag: the requirement's
+    /// `*Verify:*` code is `B`, and under D-23.1's second question a `B` is executed by a
+    /// benchmark asserting its threshold in-process. That is `benches/library_frame.rs`, which
+    /// also runs a real `namir_library::Scanner` beside the render loop — the "while a library
+    /// scan of 10 000 files is in progress" condition neither this test nor any `#[test]` in this
+    /// crate can create, since a scan is a thread and `cargo test` is not where a timing gate
+    /// belongs. What this test keeps is what a `#[test]` is good for: catching an accidental
+    /// per-frame `Index` clone or a de-virtualized list on every `cargo test --workspace`, long
+    /// before anyone runs a benchmark.
+    ///
+    /// Two things it does that its pre-M14 form did not, both cheap and both closing a gap the
+    /// benchmark's doc comment enumerates: it renders with a `scan: Some(..)` snapshot, so
+    /// `render`'s scan branch is exercised rather than skipped; and it measures a frame whose
+    /// index identity differs from the warm-up frame's, so `ensure_filtered`'s re-filter path runs
+    /// *inside* the timed frame instead of being short-circuited by the memoization.
     #[test]
     fn rendering_ten_thousand_entries_stays_well_under_the_100ms_frame_budget() {
         let corpus = namir_fixtures::library::generate_shared_corpus(20_260_807)
             .expect("generate the shared 10,000-file corpus");
         assert!(corpus.entries.len() >= 10_000);
 
-        let mut index = Index::empty();
-        for fixture in &corpus.entries {
-            let kind = match fixture.kind {
-                namir_fixtures::library::EntryKind::Nam => ItemKind::Nam,
-                namir_fixtures::library::EntryKind::Ir => ItemKind::Ir,
-            };
-            index.upsert(LibraryEntry {
-                path: fixture.path.clone(),
-                kind,
-                size: 0,
-                mtime: FileTime::now(),
-                hash: Some(fixture.content_hash),
-                metadata: ItemMetadata::None,
-                origin: Origin::Local,
-            });
-        }
-        assert_eq!(index.len(), corpus.entries.len());
-        let index = Arc::new(index);
+        let build = || {
+            let mut index = Index::empty();
+            for fixture in &corpus.entries {
+                let kind = match fixture.kind {
+                    namir_fixtures::library::EntryKind::Nam => ItemKind::Nam,
+                    namir_fixtures::library::EntryKind::Ir => ItemKind::Ir,
+                };
+                index.upsert(LibraryEntry {
+                    path: fixture.path.clone(),
+                    kind,
+                    size: 0,
+                    mtime: FileTime::now(),
+                    hash: Some(fixture.content_hash),
+                    metadata: ItemMetadata::None,
+                    origin: Origin::Local,
+                });
+            }
+            assert_eq!(index.len(), corpus.entries.len());
+            Arc::new(index)
+        };
+        // Two independent indices with identical contents: `Arc::ptr_eq` fails between them, so
+        // the measured frame below cannot reuse the warm-up frame's filtered result.
+        let warmup_index = build();
+        let measured_index = build();
+
+        let scan = Some(namir_library::ScanProgress {
+            dirs_pending: 7,
+            files_seen: 10_000,
+            files_examined: 4_321,
+            files_hashed: 120,
+        });
 
         let ctx = egui::Context::default();
         let mut state = LibraryViewState::default();
-        let snapshot = LibrarySnapshot {
-            index: Arc::clone(&index),
-            scan: None,
-        };
 
         // Warm-up frame: font/glyph layout caches settle here, not inside the measured frame --
         // otherwise this test would be measuring one-time font-atlas setup cost, not per-frame
         // list-rendering cost, which is what FR-UI-060 actually constrains.
-        render_one_frame(&ctx, &mut state, &snapshot);
+        render_one_frame(
+            &ctx,
+            &mut state,
+            &LibrarySnapshot {
+                index: warmup_index,
+                scan,
+            },
+        );
 
+        let measured = LibrarySnapshot {
+            index: measured_index,
+            scan,
+        };
         let start = Instant::now();
-        render_one_frame(&ctx, &mut state, &snapshot);
+        render_one_frame(&ctx, &mut state, &measured);
         let elapsed = start.elapsed();
 
         assert_eq!(
