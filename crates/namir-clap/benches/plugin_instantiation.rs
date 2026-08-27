@@ -53,12 +53,19 @@
 //!
 //! NFR-PERF-050 (`crates/namir-worker/benches/resource_load.rs`) is where the loading half lives.
 //!
-//! # The library index **is** inside the window, and this binary plants the one it measures
+//! # The library index is inside the window, and this binary plants the one it measures
 //!
-//! `SharedInner::new` calls `namir_worker::library::LibraryService::open_default`, which reads
-//! `<config_dir>/library-index.json` and parses it. That is genuinely part of what a host-driven
-//! instantiation costs — a user with a large library pays it on every instance they add — so
-//! excluding it would measure something no user ever experiences. It stays in.
+//! `SharedInner::new` calls `namir_worker::library::LibraryService::open_default`. Whatever that
+//! costs is genuinely part of what a host-driven instantiation costs — a user with a large library
+//! pays it on every instance they add — so excluding it would measure something no user ever
+//! experiences. It stays in.
+//!
+//! **What it costs changed at M14 and this section's heading used to insist on the old answer.**
+//! Until then `open_default` read and parsed the whole index before returning, which is where
+//! essentially all of the measured figure went (the table below, and §22 **R-18**). It no longer
+//! does; the window is unchanged and what falls inside it is not. See "M14: the index came off the
+//! path" below — the arms still plant an index, because the claim now under test is that planting
+//! one makes no difference.
 //!
 //! Left alone, though, it would make the figure a property of *this developer's machine state*:
 //! `open_default` resolves the **real** per-user configuration directory, so the number would
@@ -100,7 +107,12 @@
 //! — the heaviest configuration a host is realistically going to present. Both are asserted
 //! against the same 200 ms ceiling, since the requirement states one.
 //!
-//! # Measured at M9b on the §2 reference machine — and where the 200 ms actually goes
+//! # Measured at M9b on the §2 reference machine — and where the 200 ms actually went
+//!
+//! **Superseded by M14's section below, and kept unedited**, this project's convention being to
+//! leave a finding on the record rather than rewrite it: these figures are what the requirement
+//! measured while the index parse was still on this path, and they are the evidence R-18 was
+//! raised on. Read them as history; do not quote them as the current cost.
 //!
 //! Five runs of this binary, 20 repetitions per arm, pinned to core 4 on the reference machine of
 //! `docs/02-architecture.md` §2, **re-taken on an idle machine** after this milestone's build work
@@ -137,6 +149,44 @@
 //! 2. **The empty-index arm is the sensitive one.** It is the arm that would catch a real
 //!    instantiation regression, and it currently sits close to three orders of magnitude under the
 //!    ceiling. Whoever tightens this requirement's guard should tighten it there, not on the total.
+//!
+//! # M14: the index came off the path, and the table above is history
+//!
+//! The two consequences above were R-18's whole content, and M14 acted on the first of them:
+//! `namir_worker::library::LibraryService::open` no longer reads `library-index.json` at all. It
+//! registers the path and returns; a loader thread parses, and every service in the process naming
+//! the same file shares the one parsed index. `SharedInner::new` therefore does what it always
+//! claimed to — start a worker pool and take a handle on the library — without a 7.2 MB JSON parse
+//! inside `create_plugin`. The arms and their planted indexes are **unchanged**, deliberately: this
+//! binary still plants 10 000 entries and still measures with them present, because the assertion
+//! that means anything now is that they cost nothing.
+//!
+//! [`LIBRARY_INDEX_BUDGET`] is that assertion, and it is a **budget rather than a comparison
+//! against a prior figure** for a reason worth stating: nothing regressed here, and nothing will.
+//! The parse was on this path from M6 and its cost was constant, so there is no earlier number a
+//! regression test could have diffed against — the only test that can exist is one that says what
+//! the cost must *be*.
+//!
+//! **Measured after the change, on this session's sandbox, and INFORMATIONAL ONLY** — D-2.4 makes
+//! the certified figure a `docs/02-architecture.md` §2 reference-machine figure, and this machine
+//! is not that one and was not verified quiet. Five runs, 20 repetitions per arm, pinned to core 4:
+//!
+//! | arm | median across the 5 runs | worst `max` of the 5 |
+//! |---|---|---|
+//! | empty library index, 48 kHz / 512 | 60-69 µs | 287 µs |
+//! | 10 000-entry index, 48 kHz / 512 | 46-55 µs | 168 µs |
+//! | 10 000-entry index, 192 kHz / 4096 | 53-60 µs | 163 µs |
+//!
+//! The 10 000-entry arms are now **indistinguishable from the empty one** — if anything faster,
+//! which is noise at this scale and not a finding — against 181.2 ms and 187.5 ms before. The
+//! reference-machine figure is still owed and is a human's to take; until it is, the number of
+//! record for NFR-PERF-040 remains M9b's, with this file's own assertion as the guard.
+//!
+//! One artefact a reader will see and should not misread: the **10 000-entry arms' discarded
+//! warm-up now reads 24-31 ms** where the empty arm's is well under one. That is not instantiation
+//! cost. It is the first instantiation in the process racing the loader thread it just started, on
+//! a machine whose cores are shared with the parse; the measured repetitions that follow it are
+//! unaffected, which is exactly why the warm-up is discarded and printed rather than folded in.
 //!
 //! ## The first M9b set, disqualified and kept on the record
 //!
@@ -199,6 +249,25 @@ use namir_library::{FileTime, Index, IndexStore, ItemKind, ItemMetadata, Library
 /// six_stage_chain.rs`'s own `trace-partial: NFR-PERF-010` records against itself. D-2.6's
 /// *Consequence* clause names this the requirement's closing condition.
 const CEILING: Duration = Duration::from_millis(200);
+
+/// M14, §22 **R-18**: what an arm carrying a 10 000-entry library index may cost, now that opening
+/// the library does not read the index file.
+///
+/// **Why a second, much tighter number rather than a tightened [`CEILING`].** The ceiling is the
+/// requirement's and belongs to the requirement; this is the *fix*'s, and the two fail for
+/// different reasons and want different messages. R-18's finding was that NFR-PERF-040's margin
+/// was a property of the user's library size rather than of any code Namir owns — 187.5 ms of a
+/// 200 ms Must, of which 147 µs was the six-stage chain — so the guard that means anything is one
+/// the *library* contribution cannot pass, not one the total happens to.
+///
+/// **Why 25 ms.** The quantity being excluded is ~160 ms of `serde_json` on the reference machine
+/// and the quantity being permitted is the same chain construction the empty-index arm measures at
+/// well under a millisecond, so any figure between them separates the two. 25 ms is deliberately
+/// far above what instantiation costs and far below what one parse costs: it leaves room for a
+/// slow, contended or virtualised machine to build a chain without leaving room for a parse to
+/// hide, which is the only property the number has to have. It is not a performance target and
+/// nothing should be tuned towards it.
+const LIBRARY_INDEX_BUDGET: Duration = Duration::from_millis(25);
 
 /// Measured repetitions per arm, after a discarded warm-up. Comfortably over D-2.4's ">= 5
 /// repetitions, not one"; an instantiation is cheap enough that a wider sample costs nothing.
@@ -373,6 +442,7 @@ fn measure_in_sandbox() {
         &host_info,
         config(REFERENCE_RATE, REFERENCE_MAX_BLOCK),
         reps,
+        None,
     );
 
     // --- Arms 2 and 3: the realistic worst case, at this project's own stated library scale.
@@ -388,6 +458,7 @@ fn measure_in_sandbox() {
         &host_info,
         config(REFERENCE_RATE, REFERENCE_MAX_BLOCK),
         reps,
+        Some(LIBRARY_INDEX_BUDGET),
     );
     measure(
         "10 000-entry index, 192 kHz / 4096",
@@ -396,17 +467,21 @@ fn measure_in_sandbox() {
         &host_info,
         config(HEAVY_RATE, HEAVY_MAX_BLOCK),
         reps,
+        Some(LIBRARY_INDEX_BUDGET),
     );
 
     println!(
         "\nPASS: every arm's slowest instantiation stayed inside NFR-PERF-040's {CEILING:?}\n\
-         ceiling, excluding model loading (this binary owns no model or IR to load) and excluding\n\
-         the once-per-library clap_entry.init reported above."
+         ceiling, and every arm carrying a {INDEX_ENTRIES}-entry library index stayed inside the\n\
+         {LIBRARY_INDEX_BUDGET:?} budget R-18 is closed against -- excluding model loading (this\n\
+         binary owns no model or IR to load) and excluding the once-per-library clap_entry.init\n\
+         reported above."
     );
 }
 
 /// Runs `reps` measured instantiations of `configuration` after one discarded warm-up, reports the
-/// distribution, and asserts NFR-PERF-040's ceiling against the slowest of them.
+/// distribution, and asserts NFR-PERF-040's ceiling against the slowest of them — plus, for an arm
+/// that plants a library index, `index_budget` (see [`LIBRARY_INDEX_BUDGET`]).
 fn measure(
     label: &str,
     entry: &PluginEntry,
@@ -414,6 +489,7 @@ fn measure(
     host_info: &HostInfo,
     configuration: PluginAudioConfiguration,
     reps: usize,
+    index_budget: Option<Duration>,
 ) {
     // Discarded: the first instantiation in a process pays one-time costs no later one does --
     // `namir_platform::logging::init`'s `Once`, the allocator's first touch of every arena the
@@ -461,6 +537,25 @@ fn measure(
          (NAMIR_PIN_CORE) >= 5 times before believing this, and note that a certified figure is a \
          reference-machine (02-architecture.md section 2) figure only"
     );
+
+    // R-18's own assertion, and the reason it is a *budget* rather than a comparison against a
+    // recorded figure: nothing regresses here. The index parse was on this path from M6 and stayed
+    // constant, so there is no earlier number a regression test could diff against -- only a
+    // statement of what the cost must now be. An arm carrying a 10 000-entry index must be
+    // indistinguishable from one carrying none, and this fails long before the ceiling does.
+    if let Some(budget) = index_budget {
+        assert!(
+            max <= budget,
+            "R-18/NFR-PERF-040: {label} -- the slowest of {reps} instantiations took {max:.2?}, \
+             over the {budget:?} budget. This arm carries a {INDEX_ENTRIES}-entry library index \
+             and the empty-index arm above does not, so a figure at this scale means the index is \
+             back on the instantiation path: `LibraryService::open` is reading and parsing \
+             `library-index.json` before it returns, or a caller is forcing `ensure_loaded` on \
+             the instantiation path. Before M14 this arm measured 181-187 ms against a 200 ms \
+             Must, which put the breach at roughly 10 700 entries -- 700 above the scale \
+             FR-LIB-020 says Namir supports"
+        );
+    }
 }
 
 /// One create/init/activate/deactivate/destroy cycle, with the clock around the first three.

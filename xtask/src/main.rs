@@ -9,6 +9,7 @@ mod assets;
 mod attribution;
 mod bundle;
 mod cargo_meta;
+mod ci_commands;
 mod error_catalogue;
 mod feature_guard;
 mod identity;
@@ -19,13 +20,18 @@ mod network_free;
 mod params_lock;
 mod preset;
 // M13: FR-PKG-010's in-repo assertion over `.github/workflows/release.yml`
-// (`docs/03-implementation-roadmap.md` §15 item 10, resolved at M13's start). `#[cfg(test)]`
-// because it is exactly a test and nothing else: it adds no subcommand -- FRS §10 admits "an
-// annotated test **or** `xtask` subcommand" and a test is the cheaper of the two here -- so
-// compiling its checks into the shipped `xtask` binary would leave dead code behind a `-D warnings`
-// gate for no gain. `xtask traceability` scans files, not compiled items, so the annotation in it
+// (`docs/03-implementation-roadmap.md` §15 item 10, resolved at M13's start). It adds no
+// subcommand -- FRS §10 admits "an annotated test **or** `xtask` subcommand" and a test is the
+// cheaper of the two here. `xtask traceability` scans files, not compiled items, so its annotation
 // resolves either way.
-#[cfg(test)]
+//
+// **M14: `#[cfg(test)]` became `#[cfg_attr(not(test), allow(dead_code))]`,** because the reason for
+// the first no longer holds. This module owns the only block-style YAML parser in the tree, and
+// `ci_commands` -- a real subcommand -- now reads `ci.yml` through it rather than writing a second
+// one. So the module compiles unconditionally; everything in it *except* the parser is still
+// reached only from tests, and the `allow` is what keeps that honest fact from failing `-D
+// warnings` rather than a licence to leave dead code here.
+#[cfg_attr(not(test), allow(dead_code))]
 mod release_workflow;
 mod rt_logging;
 mod traceability;
@@ -445,6 +451,39 @@ fn run_identity(root: &Path, write: bool) -> bool {
     }
 }
 
+/// M14 Phase 5: NFR-BUILD-020's "exercised by CI so it cannot drift" half — the commands
+/// `README.md` documents against the commands `.github/workflows/ci.yml` runs.
+///
+/// A pure check with no `--write`: one side of the comparison is prose a human writes and the
+/// other is a workflow a human writes, so there is nothing here to regenerate — which is why this
+/// prints the same violations-list shape as `layering` rather than `identity`'s.
+fn run_ci_commands(root: &Path) -> bool {
+    match ci_commands::check(root) {
+        Ok(violations) if violations.is_empty() => {
+            match ci_commands::summary(root) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                }
+                Err(e) => println!("ci-commands: clean, but the summary could not be built: {e}"),
+            }
+            true
+        }
+        Ok(violations) => {
+            println!("ci-commands: {} violation(s) found:", violations.len());
+            for v in &violations {
+                println!("  - {v}");
+            }
+            false
+        }
+        Err(e) => {
+            println!("ci-commands: could not run check: {e}");
+            false
+        }
+    }
+}
+
 /// M13's packaging primitive (D-18.3): stage one platform's release artifacts in the form
 /// FR-PKG-020 requires, with FR-PKG-040's three documents beside them.
 ///
@@ -453,9 +492,17 @@ fn run_identity(root: &Path, write: bool) -> bool {
 /// layout against the required form for the platform it targets, and fails the build on any
 /// deviation" (FR-PKG-020's `Verify:` method) is true of `bundle` itself, not only of
 /// `bundle --check`.
+///
+/// M14 Phase 5 adds a fourth mode. `--inspect <dir>` points the identical check at a directory a
+/// *produced* distribution was unpacked into, so a CI lane can open its own ZIP, tarball or `.pkg`
+/// and assert FR-PKG-040's three documents survived the packaging step — which the staging-tree
+/// check, by construction, cannot.
 fn run_bundle(root: &Path, args: &bundle::BundleArgs) -> bool {
     let layout = bundle::plan(args.platform);
-    let staging_root = bundle::staging_root(root, args.platform);
+    let staging_root = args
+        .tree
+        .clone()
+        .unwrap_or_else(|| bundle::staging_root(root, args.platform));
 
     for line in bundle::describe(&layout) {
         println!("{line}");
@@ -476,9 +523,14 @@ fn run_bundle(root: &Path, args: &bundle::BundleArgs) -> bool {
 
     match bundle::check(&staging_root, &layout) {
         Ok(violations) if violations.is_empty() => {
+            let subject = if args.mode == bundle::Mode::Inspect {
+                "unpacked from a produced distribution, is"
+            } else {
+                "is"
+            };
             println!(
-                "bundle: {} is the form the {} plugin loader requires, and carries the attribution \
-                 file and both licence texts",
+                "bundle: {} {subject} the form the {} plugin loader requires, and carries the \
+                 attribution file and both licence texts",
                 staging_root.display(),
                 args.platform.name()
             );
@@ -990,7 +1042,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|ci-commands|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
     );
 }
 
@@ -1004,6 +1056,7 @@ fn main() {
         Some("feature-guard") => run_feature_guard(&root),
         Some("network-free") => run_network_free(&root),
         Some("error-catalogue") => run_error_catalogue(&root),
+        Some("ci-commands") => run_ci_commands(&root),
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
