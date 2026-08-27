@@ -718,12 +718,27 @@ pub enum Mode {
     /// Print the layout and exit. Reads and writes nothing, so it works for any `--target` on any
     /// host — the console form of [`plan`]'s purity.
     Plan,
+    /// Assert a tree that came **out of a produced distribution** — an unpacked ZIP, an unpacked
+    /// tarball, an expanded `.pkg` or a mounted `.dmg` — rather than the staging tree that went
+    /// into one.
+    ///
+    /// Mechanically this is [`Mode::Check`] against a caller-named directory instead of the one
+    /// [`staging_root`] derives, and it is a separate variant because the *claim* differs and a
+    /// reader of a CI log must be able to tell which was made. `--check` says "what we are about
+    /// to hand the packager is the right shape"; `--inspect` says "what came back out of it still
+    /// is", and only the second can catch a packaging step that drops a file. M14 Phase 5 added
+    /// it so that FR-PKG-040's "every distribution … shall contain" is asserted against something
+    /// a user could actually download.
+    Inspect,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BundleArgs {
     pub platform: Platform,
     pub mode: Mode,
+    /// The directory [`Mode::Inspect`] was pointed at. `None` in every other mode, where the tree
+    /// is [`staging_root`]'s and is derived rather than named.
+    pub tree: Option<PathBuf>,
 }
 
 /// Parses `bundle`'s own argument list (everything after the `bundle` token), strictly: see this
@@ -731,10 +746,32 @@ pub struct BundleArgs {
 pub fn parse_args(args: &[String]) -> Result<BundleArgs, String> {
     let mut platform = None;
     let mut mode = None;
+    let mut tree = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--inspect" => {
+                let Some(value) = iter.next() else {
+                    return Err(
+                        "bundle: `--inspect` needs the directory a produced distribution was \
+                         unpacked into"
+                            .to_string(),
+                    );
+                };
+                if tree.is_some() {
+                    return Err("bundle: `--inspect` given more than once".to_string());
+                }
+                if mode.is_some_and(|existing| existing != Mode::Inspect) {
+                    return Err(
+                        "bundle: `--inspect` selects a different behaviour from `--check`/`--plan`; \
+                         pass at most one"
+                            .to_string(),
+                    );
+                }
+                tree = Some(PathBuf::from(value));
+                mode = Some(Mode::Inspect);
+            }
             "--target" => {
                 let Some(value) = iter.next() else {
                     return Err(
@@ -755,8 +792,8 @@ pub fn parse_args(args: &[String]) -> Result<BundleArgs, String> {
                 match mode {
                     Some(existing) if existing != selected => {
                         return Err(
-                            "bundle: `--check` and `--plan` select different behaviours; pass at \
-                             most one"
+                            "bundle: `--check`, `--plan` and `--inspect` select different \
+                             behaviours; pass at most one"
                                 .to_string(),
                         );
                     }
@@ -765,8 +802,8 @@ pub fn parse_args(args: &[String]) -> Result<BundleArgs, String> {
             }
             other => {
                 return Err(format!(
-                    "bundle: unrecognised argument `{other}` (expected --check, --plan, or \
-                     --target <windows|macos|linux>)"
+                    "bundle: unrecognised argument `{other}` (expected --check, --plan, \
+                     --inspect <dir>, or --target <windows|macos|linux>)"
                 ));
             }
         }
@@ -778,6 +815,7 @@ pub fn parse_args(args: &[String]) -> Result<BundleArgs, String> {
             None => Platform::host()?,
         },
         mode: mode.unwrap_or(Mode::Materialise),
+        tree,
     })
 }
 
@@ -1018,14 +1056,11 @@ mod tests {
     /// since a presence check that passes on an empty tree asserts nothing.
     // trace-partial: FR-PKG-040
     // uncovered: FR-PKG-040 — the requirement quantifies over "every distribution, installer and
-    // uncovered: archive alike", and only macOS re-opens what it produced: make_installer.sh's
-    // uncovered: verify_outputs unpacks the produced .pkg, mounts the .dmg and extracts the .zip,
-    // uncovered: asserting the three files inside each (packaging/macos/make_installer.sh:717-769).
-    // uncovered: Windows and Linux assert the *staging tree* only — namir.iss reads it, the ZIP and
-    // uncovered: the .tar.gz are copies of it, and nothing opens the produced installer, ZIP or
-    // uncovered: tarball. This test spans neither, asserting a synthetic staging tree, and ci.yml
-    // uncovered: never runs xtask bundle at all, so every assertion against a real tree happens
-    // uncovered: only on a v* tag in release.yml; closes M8
+    // uncovered: archive alike", and this test spans none of them: its subject is a synthetic
+    // uncovered: staging tree, which is what goes *into* a packager rather than what comes out.
+    // uncovered: M14's bundle-and-inspect lane in ci.yml is what opens produced archives on all
+    // uncovered: three platforms — this site stays partial because the artifact annotated here is
+    // uncovered: this test, and it asserts nothing about any distribution; closes M8
     #[test]
     fn every_staged_tree_carries_the_attribution_file_and_both_licence_texts() {
         let (repo, build) = synthetic_inputs("licences");
@@ -1267,6 +1302,42 @@ mod tests {
         );
     }
 
+    /// What `--inspect` is pointed at in CI is not a staging tree: it is a directory an archive was
+    /// unpacked into, which carries whatever the packaging step added on the way — `install.sh` and
+    /// `INSTALL.md` on Linux, and the `__MACOSX` sidecar `ditto` can leave behind. Those must not
+    /// read as violations, or the lane would be red on every run for the wrong reason; and a
+    /// licence text the archive *lost* must still be reported by name, or the lane asserts nothing.
+    ///
+    /// This is the check M14's `bundle-and-inspect` job runs against every produced archive, driven
+    /// here against the tree shape that job hands it.
+    #[test]
+    fn an_unpacked_archive_may_carry_extra_files_but_not_lose_a_required_one() {
+        let (repo, build) = synthetic_inputs("unpacked");
+        let layout = plan(Platform::Linux);
+        let unpacked = repo.join("package/namir-0.0.0-linux-x86_64");
+        materialise(&repo, &build, &unpacked, &layout).unwrap();
+
+        std::fs::write(unpacked.join("install.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(unpacked.join("INSTALL.md"), "# Installing\n").unwrap();
+        std::fs::create_dir_all(unpacked.join("__MACOSX")).unwrap();
+        assert!(
+            check(&unpacked, &layout).unwrap().is_empty(),
+            "an archive's own additions are not deviations from the layout"
+        );
+
+        for document in LICENCE_DOCUMENTS {
+            std::fs::remove_file(unpacked.join(document)).unwrap();
+            let violations = check(&unpacked, &layout).unwrap();
+            assert!(
+                violations.iter().any(|v| v.contains(document)),
+                "an archive that lost {document} must be reported: {violations:#?}"
+            );
+            std::fs::write(unpacked.join(document), "restored").unwrap();
+        }
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
     #[test]
     fn a_hand_edited_generated_file_is_a_violation() {
         let (repo, build) = synthetic_inputs("hand-edited");
@@ -1337,6 +1408,7 @@ mod tests {
             BundleArgs {
                 platform: Platform::MacOs,
                 mode: Mode::Materialise,
+                tree: None,
             }
         );
         assert_eq!(
@@ -1344,9 +1416,28 @@ mod tests {
             BundleArgs {
                 platform: Platform::Linux,
                 mode: Mode::Check,
+                tree: None,
             }
         );
         assert_eq!(parse_args(&args(&["--plan"])).unwrap().mode, Mode::Plan);
+
+        // M14: `--inspect` takes the directory a produced distribution was unpacked into, and
+        // selects a mode of its own rather than riding on `--check`.
+        let inspect = parse_args(&args(&[
+            "--inspect",
+            "dist/unpacked",
+            "--target",
+            "windows",
+        ]))
+        .expect("--inspect <dir> parses");
+        assert_eq!(
+            inspect,
+            BundleArgs {
+                platform: Platform::Windows,
+                mode: Mode::Inspect,
+                tree: Some(PathBuf::from("dist/unpacked")),
+            }
+        );
 
         // A typo must not silently select the default behaviour.
         for bad in [
@@ -1357,6 +1448,10 @@ mod tests {
             vec!["--target", "freebsd"],
             vec!["--check", "--plan"],
             vec!["--target", "macos", "--target", "linux"],
+            vec!["--inspect"],
+            vec!["--inspect", "a", "--inspect", "b"],
+            vec!["--inspect", "a", "--check"],
+            vec!["--plan", "--inspect", "a"],
         ] {
             assert!(
                 parse_args(&args(&bad)).is_err(),
