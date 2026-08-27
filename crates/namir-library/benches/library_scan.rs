@@ -13,19 +13,54 @@
 //! implementation left to measure against. Recorded here rather than pretended around: what
 //! follows is the first real measurement of both costs, not a before/after comparison.
 //!
-//! # Four arms
+//! # Five arms
 //!
 //! | Arm | What runs | Purpose |
 //! |---|---|---|
 //! | A | Full scan, first touch of this run's own working copy | The cold number. Reported, not gated — see below for why "first touch" here is not literal cold-page-cache. |
-//! | B | Full scan again, same corpus, page cache now warm | The honest denominator for FR-LIB-030 — comparing A to C would measure cache-warming as much as incrementality. |
-//! | C | Incremental scan, index present, corpus unchanged | **NFR-PERF-060's own figure.** Gated at 2 s. |
+//! | B | Full scan again, same corpus, page cache now warm | The honest denominator for FR-LIB-030's "first start-up" — comparing A to E would measure cache-warming as much as incrementality. |
+//! | C | Incremental scan, index present **in memory**, corpus unchanged | **NFR-PERF-060's own figure.** Gated at 2 s. |
 //! | D | Incremental scan, 1% (100) of files modified | Correctness guard — B and C alone are passed trivially by an incremental scan that checks nothing and returns the stale index instantly. |
+//! | E | `IndexStore::open` off disk **then** an incremental scan | **FR-LIB-030's own figure** (added M14). Gated at `max(E) < min(B)`. |
 //!
 //! Assertions never compare two means: NFR-PERF-060 is `max` over 5 repetitions of arm C `<= 2.0
 //! s`, absolute, as the requirement literally states it; FR-LIB-030's "measurably faster" is
-//! `max(C) < min(B)` across the same repetitions — no overlap between the two distributions. If
-//! the ranges touch, the run is reported as **inconclusive**, not rounded to a pass.
+//! `max(E) < min(B)` across the same repetitions — no overlap between the two distributions. If
+//! the ranges touch, the run **fails**, rather than being rounded to a pass.
+//!
+//! # Why arm E exists, and why arm C is not FR-LIB-030's figure (added M14)
+//!
+//! FR-LIB-030 is "the library index shall be **persisted between sessions** and updated
+//! incrementally, so that startup does not require a full rescan", verified by "second start-up
+//! with an unchanged 10 000-file library shall be measurably faster than the first". Arm C never
+//! touches the disk: its prior index is one this process's own earlier scan left in the heap, so
+//! it measures incrementality with the persistence half assumed. Arm E runs the sequence a real
+//! second start-up runs — `IndexStore::open` off the index file, then `Scanner` against what came
+//! back — and times both halves together, because both are start-up cost. Arm B is the same
+//! sequence with no index file to find, which is what a *first* start-up is. Two consequences
+//! worth stating: `E - C` is what persistence itself costs (the JSON parse of a 10 000-entry
+//! index), and a regression that made the index file unreadable would show up here as arm E
+//! failing its reload assertion rather than as a silently-still-fast arm C.
+//!
+//! Until M14 this file's FR-LIB-030 comparison was printed as `CONCLUSIVE`/`INCONCLUSIVE` for a
+//! human to read and asserted by nothing, which under D-23.1's second question is not a
+//! `Verify: B` being executed. It is an assertion now.
+//!
+//! # First run of arm E, and the finding it produced (INFORMATIONAL — sandbox, not the reference
+//! machine)
+//!
+//! Five repetitions in this shared development sandbox, un-quiesced, on a Linux tmpfs-backed
+//! working directory: `min(B)` 120.4–132.4 ms, `max(C)` 29.4–36.4 ms, **`max(E)` 103.1–113.1 ms**.
+//! Every repetition passed, and none passed comfortably. The gap between arms C and E is the
+//! finding: **reloading the persisted index costs about 70 ms — roughly twice the incremental scan
+//! it enables.** `IndexStore` writes the whole index as one JSON document (`store.rs`'s `OnDisk`)
+//! and `serde_json` re-parses 10 000 entries on every start-up, so FR-LIB-030's own margin over a
+//! full rescan is roughly 15 %, not the ~4x that arm C alone would suggest. That margin is what
+//! this assertion now defends, and it would be the first thing to go if the index format or the
+//! entry count grew. Recorded here rather than left for the next reader to rediscover; per D-2.4
+//! none of these are certified figures, and the reference machine's own ratio may differ (its
+//! filesystem is NTFS, where the directory walk in arms B and E costs more and the JSON parse
+//! costs the same).
 //!
 //! # Why every file's mtime is backdated by an hour before any scan runs
 //!
@@ -56,7 +91,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use namir_core::ContentHash;
-use namir_library::{Index, Scanner, StdFs};
+use namir_library::{Index, IndexStore, Scanner, StdFs};
 
 const REPETITIONS: usize = 5;
 const MODIFIED_FRACTION_COUNT: usize = 100; // 1% of the 10,000-file corpus.
@@ -151,12 +186,6 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-// trace-partial: FR-LIB-030
-// uncovered: FR-LIB-030 — the Verify: B condition this requirement states, that a second start-up
-// uncovered: with an unchanged 10 000-file library is measurably faster than the first, is printed
-// uncovered: as CONCLUSIVE or INCONCLUSIVE and asserted by nothing; the persistence half is
-// uncovered: unmeasured too, arms C and D reusing an in-memory prior index rather than one written
-// uncovered: to disk and reloaded; closes M8
 fn main() {
     pin_to_measurement_core();
 
@@ -237,6 +266,68 @@ fn main() {
         );
     }
 
+    // ---- Arm E (added M14): the real second start-up, index round-tripped through disk. ----
+    //
+    // Arms C and D hand `incremental_scan` a prior `Index` that never left memory, which measures
+    // incrementality but not *persistence* -- and FR-LIB-030's sentence is "the library index
+    // shall be **persisted between sessions** and updated incrementally, so that startup does not
+    // require a full rescan", verified by "second start-up with an unchanged 10 000-file library".
+    // A second start-up begins with an `IndexStore::open` off a file, not with an index a previous
+    // scan happened to leave in this process's heap. So arm E reproduces the whole sequence a real
+    // second start-up runs, and times all of it:
+    //
+    //     IndexStore::open(index.json)  ->  Scanner::new(roots, &loaded)  ->  run_to_completion
+    //
+    // The first start-up it is compared against is arm B, which is the same sequence with no index
+    // file to find: `IndexStore::open` on a missing path returns an empty index, which is exactly
+    // what `full_scan` already hands `Scanner::new`. So `E vs B` is literally "second start-up vs
+    // first start-up", which is what the requirement's `*Verify:*` line asks to be compared.
+    //
+    // Ordered before arm D, deliberately: arm D leaves 100 files modified, and this arm's own
+    // condition is "an unchanged 10 000-file library". The `save_atomic` is outside the timed
+    // window -- writing the index is the *first* session's shutdown cost, not the second session's
+    // start-up cost.
+    let index_path = sibling_index_path(&work_dir);
+    let _ = std::fs::remove_file(&index_path);
+    let (store, empty, warnings) = IndexStore::open(index_path.clone());
+    assert!(
+        warnings.is_empty() && empty.is_empty(),
+        "the index file should not exist yet: {warnings:?}"
+    );
+    store
+        .save_atomic(&prior_index)
+        .expect("write the first session's index");
+
+    let mut e_durations = Vec::with_capacity(REPETITIONS);
+    for _ in 0..REPETITIONS {
+        let started = Instant::now();
+        let (_store, loaded, warnings) = IndexStore::open(index_path.clone());
+        let delta = Scanner::new(roots.clone(), &loaded).run_to_completion(&StdFs);
+        let elapsed = started.elapsed();
+        assert!(
+            warnings.is_empty(),
+            "arm E: the index written moments ago must reload cleanly, got {warnings:?}"
+        );
+        assert_eq!(
+            loaded.len(),
+            corpus.entries.len(),
+            "arm E: the reloaded index must hold the whole corpus, or the scan below is not \
+             incremental for the reason the requirement means"
+        );
+        assert!(
+            delta.upserts.is_empty(),
+            "arm E: an unchanged corpus must upsert nothing after a reload, got {} upserts",
+            delta.upserts.len()
+        );
+        e_durations.push(elapsed);
+    }
+    for (i, d) in e_durations.iter().enumerate() {
+        println!(
+            "E{i}  second start-up: load index + rescan : {:>9.1} ms",
+            ms(*d)
+        );
+    }
+
     // Arm D: incremental scan, 1% of files modified -- the correctness guard. Not repeated (its
     // point is correctness, not a percentile), and not gated on a timing SLA of its own, though
     // its measured time is printed for context.
@@ -287,23 +378,47 @@ fn main() {
         "NFR-PERF-060: arm C's max ({c_max:?}) exceeds the 2 s ceiling"
     );
 
-    // ---- FR-LIB-030: max(C) < min(B), no overlap between the distributions. ----
+    // ---- FR-LIB-030: max(E) < min(B), no overlap between the distributions. ----
+    //
+    // Asserted, not printed. Until M14 this comparison ended in a `CONCLUSIVE`/`INCONCLUSIVE`
+    // line for a human to read, which under D-23.1's second question is not a `Verify: B` being
+    // executed: a benchmark verifies a requirement by asserting its numeric condition in-process.
+    // The old wording is kept, in the panic message, for the run where it fails.
     let b_min = *b_durations.iter().min().unwrap();
-    if c_max < b_min {
-        println!(
-            "FR-LIB-030: CONCLUSIVE -- incremental (max {:.1} ms) is faster than a warm-cache \
-             full scan (min {:.1} ms), no overlap",
-            ms(c_max),
-            ms(b_min)
-        );
-    } else {
-        println!(
-            "FR-LIB-030: INCONCLUSIVE -- arm C's max ({:.1} ms) and arm B's min ({:.1} ms) \
-             overlap; do not treat this run as a pass",
-            ms(c_max),
-            ms(b_min)
-        );
-    }
+    let e_max = *e_durations.iter().max().unwrap();
+    println!(
+        "\nFR-LIB-030: max(E) = {:.1} ms against min(B) = {:.1} ms -- {}",
+        ms(e_max),
+        ms(b_min),
+        if e_max < b_min { "PASS" } else { "FAIL" }
+    );
+    // trace: FR-LIB-030
+    assert!(
+        e_max < b_min,
+        "FR-LIB-030: INCONCLUSIVE -- a second start-up (arm E, max {:.1} ms: IndexStore::open plus \
+         an incremental rescan) is not measurably faster than a first (arm B, min {:.1} ms), the \
+         two ranges overlapping. D-2.4: one reading on a machine that was not verified quiet is \
+         not evidence of a regression -- re-run pinned (NAMIR_PIN_CORE) >= 5 times before \
+         believing this, and note that a certified figure is a reference-machine \
+         (02-architecture.md section 2) figure only",
+        ms(e_max),
+        ms(b_min)
+    );
+    println!(
+        "  (arm C, max {:.1} ms, is the same incremental scan without the index reload -- the \
+         difference between C and E is what persistence itself costs.)",
+        ms(c_max)
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_file(&index_path);
+}
+
+/// Where arm E's persisted index lives: beside the working copy rather than inside it, so the
+/// index file is not itself a file the scanner walks (it would be ignored by extension, but a
+/// benchmark should not depend on that).
+fn sibling_index_path(work_dir: &Path) -> PathBuf {
+    let mut path = work_dir.as_os_str().to_owned();
+    path.push("-index.json");
+    PathBuf::from(path)
 }
