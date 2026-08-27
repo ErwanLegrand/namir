@@ -212,8 +212,11 @@ impl SharedInner {
     pub(crate) fn push_notice(&self, code: ErrorCode, detail: impl Into<String>) {
         let id = self.next_notice_id.fetch_add(1, Ordering::Relaxed);
         let detail = detail.into();
+        // Written before the deduplication and cap in `push_deduplicated` discard anything -- see
+        // `namir_ui::push_deduplicated`'s own doc comment, and `crate::worker_jobs::spawn_recall`,
+        // whose two deliberate triggers are what made deduplication necessary (issue #43).
         namir_platform::logging::record(code, &detail);
-        lock(&self.notices).push(UiNotice { id, code, detail });
+        namir_ui::push_deduplicated(&mut lock(&self.notices), UiNotice { id, code, detail });
     }
 
     pub(crate) fn dismiss_notice(&self, id: u64) {

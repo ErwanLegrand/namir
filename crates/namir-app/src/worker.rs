@@ -75,16 +75,23 @@ pub enum AppEvent {
         /// Why nothing was recalled, if the file could not be read or parsed at all.
         error: Option<String>,
     },
-    /// FR-IO-070: an audio stream failed (device lost, xrun reported by the backend, or another
-    /// backend error) — sent by [`crate::stream`]'s own error callback, not by this thread's own
-    /// loop, via the cloneable sender [`WorkerHandle::event_sender`] hands out. Carries an
-    /// already-formatted message (`crate::audio_io::StreamFailure`'s `Debug` rendering) since
-    /// D-16.2's audio-thread-side of this event has already happened by the time this arrives —
-    /// see `crate::stream`'s own module doc comment for the callback boundary this crosses.
+    /// FR-IO-070: an audio stream failed (device lost, or another backend error) — sent by
+    /// [`crate::stream`]'s own error callback, not by this thread's own loop, via the cloneable
+    /// sender [`WorkerHandle::event_sender`] hands out. D-16.2's audio-thread-side of this event
+    /// has already happened by the time this arrives — see `crate::stream`'s own module doc
+    /// comment for the callback boundary this crosses.
+    ///
+    /// **Carries the classification as well as a message since M14 (issue #44).** It used to carry
+    /// only `crate::audio_io::StreamFailure`'s **`Debug`** rendering, which had two consequences a
+    /// human found on 2026-08-27: `Other("OS Error ...")` reached the screen with the Rust variant
+    /// name in it, and [`crate::host`] had nothing left to choose a catalogue entry *from*, so it
+    /// chose from `direction` and called every stream error a device loss.
     StreamFailure {
         /// Which side (input/output) failed.
         direction: crate::stream::Direction,
-        /// A human-readable description.
+        /// How the backend classified it — what picks the catalogue entry.
+        failure: crate::audio_io::StreamFailure,
+        /// A human-readable description, naming the direction and the device.
         detail: String,
     },
 }
@@ -97,24 +104,30 @@ pub enum AppEvent {
 pub enum LoadOutcomeSummary {
     /// Loaded successfully.
     Loaded {
-        /// A non-fatal condition worth surfacing (D-9.7's IR truncation), already message-ready.
-        warning: Option<String>,
+        /// A non-fatal condition worth surfacing (D-9.7's IR truncation), with its own catalogue
+        /// entry -- never a rendered string (issue #39).
+        warning: Option<namir_worker::WorkerError>,
     },
-    /// Failed; carries the message-ready detail text.
-    Failed(String),
+    /// Failed; carries the failure with its own catalogue entry.
+    Failed(namir_worker::WorkerError),
     /// Not delivered to the audio thread in time.
     NotDelivered,
     /// Unloaded successfully.
     Unloaded,
 }
 
+/// **The `WorkerError`s travel whole (issue #39).** This impl used to call `to_string()` on both,
+/// storing a fully-rendered `{id}: {template} ({detail})` line where a bare detail belongs — the
+/// same defect `namir_worker::error`'s `From` impls had, one layer further up, and the reason
+/// step 1 of `docs/manual-tests/fr-ui-070-non-modal-error-notices.md` showed its notice twice in
+/// one line. Keeping the error whole also keeps its *specific* catalogue id (`nam.load.*`,
+/// `ir.load.*`), which `namir-worker` goes out of its way to preserve and this crate then threw
+/// away in favour of a generic `app.host.load_failed`.
 impl From<JobResult> for LoadOutcomeSummary {
     fn from(result: JobResult) -> Self {
         match result {
-            JobResult::Loaded { warning, .. } => Self::Loaded {
-                warning: warning.map(|w| w.to_string()),
-            },
-            JobResult::Failed(e) => Self::Failed(e.to_string()),
+            JobResult::Loaded { warning, .. } => Self::Loaded { warning },
+            JobResult::Failed(e) => Self::Failed(e),
             JobResult::NotDelivered(_) => Self::NotDelivered,
             JobResult::Unloaded { .. } => Self::Unloaded,
         }
@@ -130,10 +143,11 @@ pub struct ScanOutcomeSummary {
     pub upserted: usize,
     /// How many were removed.
     pub removed: usize,
-    /// Any non-fatal warnings, already formatted.
-    pub warnings: Vec<String>,
+    /// Any non-fatal warnings, each with its own catalogue entry (issue #39: these used to be
+    /// pre-rendered strings, which `crate::host` then re-wrapped in the same shape).
+    pub warnings: Vec<namir_worker::WorkerError>,
     /// Whether the scan's findings could not be persisted to disk.
-    pub save_error: Option<String>,
+    pub save_error: Option<namir_worker::WorkerError>,
 }
 
 impl From<ScanOutcome> for ScanOutcomeSummary {
@@ -142,8 +156,8 @@ impl From<ScanOutcome> for ScanOutcomeSummary {
             complete: outcome.complete,
             upserted: outcome.upserted,
             removed: outcome.removed,
-            warnings: outcome.warnings.iter().map(ToString::to_string).collect(),
-            save_error: outcome.save_error.map(|e| e.to_string()),
+            warnings: outcome.warnings,
+            save_error: outcome.save_error,
         }
     }
 }
@@ -282,9 +296,15 @@ fn run(ctx: WorkerContext, commands: mpsc::Receiver<AppCommand>, events: mpsc::S
                     let _ = events.send(AppEvent::LoadFinished {
                         target: Target::Nam,
                         source: path.display().to_string(),
-                        outcome: LoadOutcomeSummary::Failed(
-                            "file extension is neither .nam nor .wav".to_string(),
-                        ),
+                        // The one failure on this path with no more specific catalogue entry
+                        // behind it: nothing parsed, so no `nam.load.*`/`ir.load.*` id exists yet.
+                        // The path is deliberately *not* in the detail -- `crate::host` prepends
+                        // `source`, which is this same path, and naming it twice in one line is the
+                        // shape issue #39 exists to keep out of a notice.
+                        outcome: LoadOutcomeSummary::Failed(namir_worker::WorkerError::new(
+                            crate::host::local_error_codes::LOAD_FAILED,
+                            "the file extension is neither .nam nor .wav",
+                        )),
                     });
                     continue;
                 };

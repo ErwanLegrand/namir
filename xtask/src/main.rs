@@ -215,7 +215,7 @@ fn run_error_catalogue(root: &Path) -> bool {
     if violations.is_empty() {
         println!(
             "error-catalogue: clean (every ErrorCode under crates/ is a named const inside a \
-             catalogue)"
+             catalogue, with a remedy and no unsubstituted placeholder)"
         );
         true
     } else {
