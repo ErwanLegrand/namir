@@ -83,7 +83,7 @@ the automated route.
 The full test suite:
 
 ```bash
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 ```
 
 The rest of the local gate — CI runs all of these too, alongside platform-specific jobs of
@@ -92,7 +92,7 @@ its own — is:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 cargo run -p xtask -- layering       # crate dependency-graph and platform-cfg lint
 cargo run -p xtask -- rt-logging     # no audio-thread module names the logger
 cargo run -p xtask -- params-lock    # params.lock matches the parameter registry

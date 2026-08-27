@@ -76,7 +76,7 @@ up after the fact.
 # Full local gate (also what CI runs, on Windows/Linux/macOS; traceability's CI form differs, below)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --no-fail-fast   # --no-fail-fast: see below, it hides failures without it
 cargo run -p xtask -- layering       # D-5.1 dependency-graph + platform-cfg lint
 cargo run -p xtask -- rt-logging     # FR-ERR-030: no audio-thread module may name the logger
 cargo run -p xtask -- params-lock    # checks params.lock is in sync with namir-params::REGISTRY
@@ -110,6 +110,16 @@ cargo run -p xtask -- preset --verify <path>
 # Benchmarks (release only; see "Benchmark methodology" below before trusting a number)
 cargo build --release --bench <name> -p <crate>
 ```
+
+**`--no-fail-fast` is load-bearing, not noise.** Without it `cargo test` stops after the first
+test *target* that fails, so a red run names one cause and hides every later one — within a target
+libtest still reports all of its own failures, but the remaining targets never run at all. M14 lost
+three CI rounds to this: the A2 golden's cross-toolchain drift, a timing-coupled guard in
+`fault_injection`, and a Windows-only path-separator assumption in an `xtask` test were all present
+from the first red run, and each surfaced only once the previous was fixed. It does not weaken the
+gate — the command still exits non-zero on any failure. Demonstrated rather than assumed: planting
+one failure in `namir-dsp` and another in `namir-params` reports only the first by default, and both
+with the flag.
 
 **`xtask traceability` is two gates behind one exit status (D-18.5).** The **required** half is the
 generated-plan diff — `docs/03-test-plan.md` matching what the tool would write — **and** D-23.2's
