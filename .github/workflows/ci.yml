@@ -566,17 +566,14 @@ jobs:
       # its own header says so. This lane is where it stops being true, and the first run finding
       # something is the lane working: the alternative is finding it while cutting a release.
       #
-      # *Softened at integration, 2026-08-27, and the flip condition is written down.* Both macOS
-      # steps carry `continue-on-error: true` for their first runs, following the same
-      # visible-before-blocking shape D-18.5 uses for `traceability`'s uncovered half: a step
-      # nothing has ever executed can fail for a reason that is the runner's rather than this
-      # repository's, and a spurious red here blocks every pull request on a repo whose maintainer
-      # may not be at a keyboard. That risk is not symmetric with waiting one cycle to learn.
-      # **Remove both `continue-on-error` lines after one green run on a real macOS runner** -- that
-      # is a two-line deletion, deliberately, exactly as D-18.5's own flip is.
+      # *Softened at integration on 2026-08-27 and hardened again the same day.* Both macOS steps
+      # carried `continue-on-error: true` for their first runs, on the argument that a step nothing
+      # had ever executed can fail for the runner's reasons rather than this repository's. Run
+      # 33098357771 executed both on `macos-latest` and both passed -- the first time any line of
+      # `make_installer.sh` has run anywhere -- which is the flip condition that note named, so the
+      # two lines are gone and this lane blocks like every other.
       - name: Package with make_installer.sh, which opens what it produced (macOS)
         if: matrix.os == 'macos-latest'
-        continue-on-error: true
         run: bash packaging/macos/make_installer.sh --version 0.0.0-ci
 
       # The same `.zip`, re-opened by `xtask` rather than by the packaging script. Not redundant:
@@ -584,12 +581,8 @@ jobs:
       # scan `packaging/**`, as that function's own note to whoever closes the requirement says --
       # and `bundle::check` asserts more than the script's presence loop does, re-deriving the whole
       # macOS layout including both `Info.plist` files byte for byte.
-      # `continue-on-error` for the same reason as the step above, and it must be softened
-      # together with it: this step consumes that one's `.zip`, so leaving it blocking would turn
-      # the installer's first failure into a red job anyway and make the softening above cosmetic.
       - name: xtask bundle --inspect (what came out of the .zip, macOS)
         if: matrix.os == 'macos-latest'
-        continue-on-error: true
         run: |
           set -euo pipefail
           rm -rf target/packaging/macos/unpacked

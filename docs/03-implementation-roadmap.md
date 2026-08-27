@@ -6392,14 +6392,54 @@ properties), NFR-RT-040.
   its own first dismissability test measuring a hand-copied layout whose click hit nothing. Each was
   established by breaking the thing deliberately, which is the only way either was going to surface.
 
-#### One integrator override, recorded so it is not read as an oversight
+#### CI was red for this milestone's whole duration, and the local gate said green
 
-Both macOS packaging steps in `ci.yml`'s new `bundle-and-inspect` job carry `continue-on-error: true`
-for their first runs, **against the recommendation of the workstream that wrote them**. Its argument
-is sound about defects — "the first run finding something is the lane working; the alternative is
-finding it while cutting a release" — and is left in the file. The override is about *absence*: no
-line of `packaging/macos/make_installer.sh` has ever executed anywhere, no runner was available to
-try it, and a failure for the runner's reasons rather than this repository's would red-block every
-pull request. Those risks are not symmetric. This follows the visible-before-blocking shape D-18.5
-already uses. **The flip condition — one green run on a real macOS runner — is written at the step,
-and removing the two lines is the whole of it.**
+**Recorded first among the corrections because it is the one with a lesson.** Every workstream
+merge in this milestone was verified with the documented local gate — `fmt`, `clippy`, `cargo test
+--workspace`, and the ten `xtask` subcommands — and every one of them was reported green, honestly.
+`cargo test --workspace` was failing on **all three platforms on every CI run of this branch**, from
+2026-08-12 to 2026-08-27, and nobody looked until the owner asked. **The local gate is not the
+gate**, and this document's own §22 R-14 note about checks that are written and never run applies
+one level up: to the check that was run in the wrong place.
+
+Two causes, both of them a guard another workstream wrote catching something real.
+
+- **The A2 golden is not reproducible across toolchains, and D-19.1's premise is narrower than it
+  reads.** `the_a2_golden_models_match_their_generator` compared 205 986 bytes; **two differed**,
+  both occurrences of one value — `"head_scale": 0.15790403` on `rustc 1.94.1` against
+  `0.15790401` on CI's 1.98. Every one of the ~50 000 weights matched bit for bit, which is the
+  diagnosis: weights come straight from the seeded RNG and reproduce anywhere, while `head_scale`
+  is calibrated as `base * (target_rms / measured_rms)` with `measure_output_rms` running the
+  **whole inference** over a probe. One ULP anywhere in those thousands of `f32` operations lands
+  in that float. So a fixture is reproducible from `(shape, seed)` only up to floating-point
+  inference, which Rust does not promise across compiler releases. The guard now compares every
+  weight and the whole config byte-exactly and `head_scale` within 1e-6 relative — and *only*
+  where the differing value is the committed `head_scale`, so a drifting weight still fails. No
+  regeneration: one ULP of `head_scale` moves the render by ~−144 dB, below the −132.58 dB and
+  −126.46 dB parity margins those goldens already assert.
+- **A meaningfulness guard was coupled to unrelated wall-clock.** `fault_injection.rs`'s audio
+  probe ran `while !stop { …; sleep(block_period) }` and was stopped the instant the last fault was
+  injected, so its block count measured *how long fault injection took*. On this loaded sandbox the
+  faults are slow and the probe got past its floor; on CI they are fast and it got 45. The
+  threshold was never the bug. `finish` now waits for the floor before stopping, so the assertion
+  means what it was written to say — audio flowed across the fault window *and* long enough to be
+  evidence — and costs nothing when the faults already took longer.
+
+Both fixes were verified as detectors rather than assumed: the A2 guard accepts CI's exact value
+and still fails on a weight perturbed in its eighth significant digit, and the probe's wait was
+proved real by raising the floor to 400 blocks and watching the test still pass.
+
+#### One integrator override, made and then retired the same day
+
+Both macOS packaging steps in `ci.yml`'s new `bundle-and-inspect` job were given
+`continue-on-error: true` at integration, **against the recommendation of the workstream that wrote
+them**. That workstream's argument is sound about defects — "the first run finding something is the
+lane working; the alternative is finding it while cutting a release" — and is left in the file. The
+override was about *absence*: no line of `packaging/macos/make_installer.sh` had executed anywhere,
+no runner was available to try it, and a failure for the runner's reasons rather than this
+repository's would red-block every pull request.
+
+**The flip condition it named — one green run on a real macOS runner — was met by run
+33098357771 on the same day.** Both steps passed on `macos-latest`, the first execution of that
+script anywhere, and the two lines are gone. The lane blocks like every other, on evidence rather
+than on either party's prediction.

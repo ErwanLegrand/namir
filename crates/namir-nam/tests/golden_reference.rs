@@ -312,19 +312,109 @@ fn regenerate_the_a2_golden_models() {
 /// The two golden tests below would then compare Namir's output for one model against the
 /// reference's output for another, and fail with a number that looks like an inference bug. This
 /// test makes that failure name its real cause instead.
+///
+/// # Why this is not a byte comparison, and what is still exact
+///
+/// It was one until M14, and it failed on all three CI platforms while passing on the machine that
+/// wrote the goldens. **Two bytes differed out of 205 986**, in one value appearing twice —
+/// `config.head_scale` and the trailing weight that mirrors it:
+///
+/// ```text
+/// committed (rustc 1.94.1):  "head_scale": 0.15790403
+/// CI         (rustc 1.98):   "head_scale": 0.15790401
+/// ```
+///
+/// Every one of the ~50 000 weights matched bit for bit, and that is the diagnosis rather than a
+/// detail. Weights come straight from the seeded RNG, so they reproduce anywhere. `head_scale`
+/// does not: `namir-fixtures`' generator calibrates it as `base * (target_rms / measured_rms)`,
+/// and `measure_output_rms` runs the *whole* inference over a probe signal. One ULP of difference
+/// anywhere in those thousands of `f32` operations — FMA contraction, autovectorisation, a libm
+/// `tanh`/`exp` change between compiler releases — lands in this one float. **D-19.1's premise is
+/// that a fixture is reproducible from `(shape, seed)`; this value is reproducible only up to
+/// floating-point inference, which Rust does not promise across toolchains.**
+///
+/// So the comparison is byte-exact everywhere *except* the head_scale value, which is compared
+/// with a relative tolerance. This is deliberately not "ignore head_scale": a differing line is
+/// accepted only if its committed value **is** the committed `head_scale`, so a drifting weight
+/// still fails even though it is also a float.
+///
+/// **The committed `*_reference.wav` files stay valid, and that is arithmetic rather than
+/// optimism.** One ULP of `head_scale` scales the rendered output by ~6e-8, about −144 dB —
+/// below the −132.58 dB (Full) and −126.46 dB (Lite) margins the parity tests already assert. A
+/// drift large enough to matter to them is orders of magnitude outside this tolerance.
 #[test]
 fn the_a2_golden_models_match_their_generator() {
+    /// ~16 ULP at this magnitude: far wider than cross-toolchain inference noise, far tighter
+    /// than any real change to the generator could be.
+    const HEAD_SCALE_REL_TOL: f64 = 1e-6;
+
+    /// The `f32` literal on a line of this generator's pretty-printed JSON, if the line carries
+    /// exactly one. `None` for structural lines, which must then match byte for byte.
+    fn sole_float(line: &str) -> Option<f64> {
+        let body = line.rsplit(':').next()?.trim().trim_end_matches(',');
+        body.parse::<f64>().ok()
+    }
+
     for (shape, name) in A2_GOLDEN {
-        let expected = namir_fixtures::nam::generate_a2(shape, A2_GOLDEN_SEED)
+        let expected_bytes = namir_fixtures::nam::generate_a2(shape, A2_GOLDEN_SEED)
             .unwrap_or_else(|e| panic!("{name}: {e}"))
             .to_json_bytes();
-        let committed = std::fs::read(golden_path(&format!("{name}.nam"))).unwrap();
-        assert_eq!(
-            committed, expected,
+        let committed_bytes = std::fs::read(golden_path(&format!("{name}.nam"))).unwrap();
+
+        if committed_bytes == expected_bytes {
+            continue;
+        }
+
+        let committed = String::from_utf8(committed_bytes).expect("golden model is UTF-8 JSON");
+        let expected = String::from_utf8(expected_bytes).expect("generated model is UTF-8 JSON");
+
+        let drift_note = format!(
             "{name}.nam has drifted from generate_a2(.., {A2_GOLDEN_SEED}). Its committed \
              *_reference.wav was rendered from the old bytes and is now meaningless — re-run the \
-             whole recipe in this module's header, not just `regenerate_the_a2_golden_models`."
+             whole recipe in this module's header, not just `regenerate_the_a2_golden_models`. \
+             (If the only difference is `head_scale`, see this test's doc comment: that value is \
+             calibrated through a floating-point inference pass and drifts by ~1 ULP between \
+             toolchains, which is tolerated below rather than regenerated.)"
         );
+
+        let committed_lines: Vec<&str> = committed.lines().collect();
+        let expected_lines: Vec<&str> = expected.lines().collect();
+        assert_eq!(
+            committed_lines.len(),
+            expected_lines.len(),
+            "{drift_note} The two differ in line count, so this is a structural change, not \
+             floating-point drift."
+        );
+
+        // The committed `head_scale`, read from the line that names it. Any other line is allowed
+        // to differ only if it carries this same value -- which is exactly the trailing weight
+        // that mirrors it, and nothing else in the document.
+        let head_scale = committed_lines
+            .iter()
+            .find(|line| line.contains("\"head_scale\""))
+            .and_then(|line| sole_float(line))
+            .unwrap_or_else(|| panic!("{name}.nam carries no readable `head_scale` line"));
+
+        for (n, (got, want)) in committed_lines.iter().zip(&expected_lines).enumerate() {
+            if got == want {
+                continue;
+            }
+            let (Some(a), Some(b)) = (sole_float(got), sole_float(want)) else {
+                panic!("{drift_note}\n  line {n} committed: {got}\n  line {n} generated: {want}");
+            };
+            assert!(
+                (a - head_scale).abs() <= HEAD_SCALE_REL_TOL * head_scale.abs(),
+                "{drift_note}\n  line {n} differs and its committed value {a} is not the \
+                 committed head_scale {head_scale}, so this is a drifting *weight*, which no \
+                 tolerance here excuses."
+            );
+            assert!(
+                (a - b).abs() <= HEAD_SCALE_REL_TOL * a.abs().max(b.abs()),
+                "{drift_note}\n  head_scale moved from {a} to {b}, further than the {} relative \
+                 tolerance cross-toolchain inference noise can explain.",
+                HEAD_SCALE_REL_TOL
+            );
+        }
     }
 }
 
