@@ -447,14 +447,32 @@ fn fft_stage_process_sample(
     stage
         .r2c
         .process(&mut state.time_scratch, &mut state.freq_scratch)
-        .expect("r2c");
+        .expect("r2c: buffer lengths are this stage's own, fixed at construction");
     for (f, h) in state.freq_scratch.iter_mut().zip(stage.h_spectrum.iter()) {
         *f *= h;
     }
-    stage
+    // **`c2r` fails on a *value*, not only on a length — and this is the audio thread.**
+    // `realfft`'s inverse transform rejects a spectrum whose first and last bins carry a non-zero
+    // imaginary part, which is exactly what a single non-finite input sample produces: one NaN in
+    // `in_buf` makes every bin of `freq_scratch` NaN, `NaN != 0.0` holds, and the transform
+    // returns `Err`. This used to be `.expect("c2r")`, so a NaN reaching an IR-loaded chain
+    // panicked inside `Stage::process` — D-16.3's no-panic-on-the-RT-path rule, and FR-CHAIN-080's
+    // "replace the affected block with silence, set a fault indicator, and continue processing
+    // subsequent blocks", both broken by the same line. Found at M14 by FR-CHAIN-080's own
+    // `Verify:` method ("inject a NaN into each stage's state"), which nothing had ever run.
+    //
+    // Degrading to silence is the correct handling and not merely the convenient one: this
+    // trigger's overlap-add contribution is unrecoverable either way, and the caller does not lose
+    // the fault — `namir-engine`'s Ir stage blends its own captured dry signal back in, so the NaN
+    // still reaches `Chain::process`'s scan, which silences the block and increments the fault
+    // counter as the requirement says. What is removed here is only the crash.
+    if stage
         .c2r
         .process(&mut state.freq_scratch, &mut state.time_scratch)
-        .expect("c2r");
+        .is_err()
+    {
+        state.time_scratch.fill(0.0);
+    }
 
     let start_abs: i64 = t_abs as i64 + 1 - stage.size as i64 + stage.offset as i64;
     let valid_len = stage.size + stage.actual_len - 1;
@@ -843,6 +861,15 @@ pub fn direct_convolve(h: &[f32], x: &[f32]) -> Vec<f32> {
 /// short filter does not merely have a wide transition, it has its passband edge pulled in. At
 /// n = 256 the cutoff is 0.947 x Nyquist, which leaves 20 kHz flat to well within FR-NAM-060's
 /// 0.1 dB for every rate pair `resampler_frequency_response_meets_the_ir_quality_bar` measures.
+///
+/// *Added M14.* That statement now also has to hold below 40 kHz, where FR-IR-030 imports
+/// FR-NAM-060's *restated* bar (0.1 dB to 0.45 x the lower rate, 100 dB from 0.5 x the lower rate
+/// up) rather than its literal one — and it does, by the same arithmetic and with room to spare:
+/// 0.45 of the rate is 0.90 of the lower Nyquist, comfortably inside this filter's 0.947 cutoff,
+/// so the restated passband edge sits further from the transition than 20 kHz does at 44.1 kHz.
+/// Measured across eleven sub-40 kHz pairs down to FR-IR-010's 8 kHz floor, the worst figures are
+/// **0.000061 dB of ripple** and **-124.6 dB of stopband** — the first time anything in Namir had
+/// measured that region.
 const MIN_RESAMPLE_FFT_FRAMES: usize = 256;
 
 /// Resamples one mono signal from `from_hz` to `to_hz` with `rubato`'s `FftFixedInOut`, sized by
@@ -1357,6 +1384,53 @@ mod tests {
         assert!(err < -100.0, "error too high: {err} dB");
     }
 
+    /// **A non-finite input sample must not panic the convolver** (M14; D-16.3, and FR-CHAIN-080's
+    /// "continue processing subsequent blocks").
+    ///
+    /// One NaN in the stream makes every bin of that partition's spectrum NaN, and `realfft`'s
+    /// inverse transform *rejects* a spectrum whose first and last bins carry a non-zero imaginary
+    /// part — `NaN != 0.0`. Until M14 that `Err` was an `.expect("c2r")`, so a NaN reaching an
+    /// IR-loaded chain aborted the audio thread. Found by `namir-engine`'s FR-CHAIN-080 probe,
+    /// which was the first thing ever to inject one into a real stage's state.
+    ///
+    /// The block containing the NaN is not required to be clean — the caller's own fault handling
+    /// owns that (FR-CHAIN-080 replaces the whole block with silence). What is required is that
+    /// this returns at all, and keeps returning: the run continues to the end and produces finite,
+    /// non-silent output once the poisoned windows have cycled out of the partition buffers.
+    #[test]
+    fn a_non_finite_input_sample_does_not_panic_the_convolver() {
+        let h = decaying_noise(1_024, 9, 128.0);
+        let bytes = write_mono_wav(48_000, &h);
+        let engine_rate = SampleRate::new(48_000).unwrap();
+        let prepared = PreparedIr::from_wav_bytes(&bytes, engine_rate, 64).unwrap();
+
+        let mut x = white_noise(16_384, 13);
+        x[1_000] = f32::NAN;
+        x[1_001] = f32::INFINITY;
+
+        let mut y = vec![0f32; x.len()];
+        let mut state = prepared.new_state();
+        for chunk_start in (0..x.len()).step_by(64) {
+            let end = (chunk_start + 64).min(x.len());
+            let mut out_slice = &mut y[chunk_start..end];
+            prepared.process_block(
+                &mut state,
+                &x[chunk_start..end],
+                std::slice::from_mut(&mut out_slice),
+            );
+        }
+
+        let tail = &y[x.len() - 4_096..];
+        assert!(
+            tail.iter().all(|s| s.is_finite()),
+            "the convolver never recovered from a non-finite input sample"
+        );
+        assert!(
+            tail.iter().fold(0f32, |m, s| m.max(s.abs())) > 1e-4,
+            "the convolver went permanently silent after a non-finite input sample"
+        );
+    }
+
     #[test]
     fn stereo_wav_loads_as_two_independent_channels() {
         let left = delayed_delta(400, 10);
@@ -1509,10 +1583,18 @@ mod tests {
         assert_eq!(prepared.len_samples(), 500);
     }
 
-    /// The source/engine rate pairs the measurement below covers. An IR is a `.wav` file, so its
-    /// rate is whatever a user's file declares rather than anything Namir chooses — these are the
-    /// standard rates such a file realistically carries, against the standard session rates.
-    const MEASURED_IR_RATE_PAIRS: [(u32, u32); 9] = [
+    /// The source/engine rate pairs the measurement below covers.
+    ///
+    /// An IR is a `.wav` file, so its rate is whatever a user's file declares rather than anything
+    /// Namir chooses. FR-IR-010 admits "any sample rate from 8 kHz to 192 kHz" and M14's Phase 0
+    /// note bounds the *engine* to 44.1–192 kHz, so the domain of this requirement is that
+    /// rectangle, and this list spans it: every corner (8 kHz and 192 kHz sources against 44.1 kHz
+    /// and 192 kHz engine rates), the standard file rates against the standard session rates, and
+    /// — added M14 — the whole sub-40 kHz band, where the bar is FR-NAM-060's restated
+    /// proportional form and had never been measured at all.
+    const MEASURED_IR_RATE_PAIRS: &[(u32, u32)] = &[
+        // Standard file rates against standard session rates; all at or above 40 kHz, so all held
+        // to FR-NAM-060's literal figures. These nine are M9b's original set.
         (44_100, 48_000),
         (48_000, 44_100),
         (88_200, 48_000),
@@ -1522,17 +1604,32 @@ mod tests {
         (192_000, 48_000),
         (48_000, 96_000),
         (44_100, 96_000),
+        // The corners of the admitted rectangle, still at or above 40 kHz on the lower side.
+        (44_100, 192_000),
+        (192_000, 96_000),
+        (176_400, 48_000),
+        (48_000, 176_400),
+        // Below 40 kHz — FR-IR-030's own region, reached through FR-IR-010's 8 kHz floor and
+        // through nothing else in Namir. Held to the restated bar.
+        (8_000, 44_100),
+        (8_000, 48_000),
+        (8_000, 192_000),
+        (11_025, 44_100),
+        (16_000, 48_000),
+        (22_050, 44_100),
+        (22_050, 48_000),
+        (32_000, 44_100),
+        (32_000, 48_000),
+        (32_000, 96_000),
+        (39_000, 48_000),
     ];
 
-    // trace-partial: FR-IR-030
-    // uncovered: FR-IR-030 — measured across nine source/engine rate pairs drawn from the
-    // uncovered: standard rates (44.1/48/88.2/96/192 kHz sources against 44.1/48/96 kHz engine
-    // uncovered: rates), not every pair a `.wav` header and `SampleRate::new` between them admit:
-    // uncovered: both take any nonzero rate, and where the lower of the two falls below about
-    // uncovered: 40 kHz the imported FR-NAM-060 clause "up to 20 kHz or the Nyquist frequency,
-    // uncovered: whichever is lower" is unsatisfiable by construction, an antialiasing filter flat
-    // uncovered: to Nyquist not being able to be 100 dB down just above it, so that region needs
-    // uncovered: an FRS decision rather than a test; closes M8
+    /// FR-NAM-060's threshold between its literal figures and the proportional restatement M14's
+    /// Phase 0 note added: at or above 40 kHz the passband runs to 20 kHz and the stopband starts
+    /// at the lower Nyquist; below it, both are stated as fractions of the lower rate.
+    const RESTATED_BELOW_HZ: f64 = 40_000.0;
+
+    // trace: FR-IR-030
     #[test]
     fn resampler_frequency_response_meets_the_ir_quality_bar() {
         // The clause this requirement states in its own words, before the one it imports: a WAV
@@ -1550,23 +1647,80 @@ mod tests {
         // And the clause it imports from FR-NAM-060, measured on the resampler `from_wav_bytes`
         // just used. See `namir_fixtures::resample_response`'s module doc comment for the method
         // and `resample_mono`'s for what this measurement found the first time it was run.
-        for (source_hz, engine_hz) in MEASURED_IR_RATE_PAIRS {
-            let band_edge_hz = source_hz.min(engine_hz) as f64 / 2.0;
-            let response = measure(source_hz, engine_hz, band_edge_hz, |input| {
-                resample_mono(input, source_hz, engine_hz)
-            });
+        //
+        // Two calls per pair below 40 kHz, one above. The restated bar puts the passband edge
+        // (0.45 x the lower rate) and the stopband edge (0.5 x the lower rate) at *different*
+        // frequencies, with a transition band between them, while `measure` takes one band edge
+        // and treats everything above it as stopband. So the ripple figure is read from a run
+        // whose band edge is the passband edge, and the stopband figure from a run whose band
+        // edge is the stopband edge — the second being exactly the call the >= 40 kHz pairs make.
+        for &(source_hz, engine_hz) in MEASURED_IR_RATE_PAIRS {
+            let lower_hz = source_hz.min(engine_hz) as f64;
+            let restated = lower_hz < RESTATED_BELOW_HZ;
             let label = format!("{source_hz} Hz -> {engine_hz} Hz");
-            println!("FR-IR-030 {label}: {}", response.summary());
-            assert!(
-                response.ripple_db <= 0.1,
-                "FR-NAM-060 allows 0.1 dB of passband ripple; {label} measured {}",
-                response.summary()
+            let run = |input: &[f32]| resample_mono(input, source_hz, engine_hz);
+
+            // This requirement's own first clause, across the same domain rather than at the one
+            // pair above: a file at `source_hz` loads as taps at `engine_hz`. A tenth of a second
+            // is enough to see the ratio and keeps 24 loads cheap.
+            let source_len = source_hz as usize / 10;
+            let loaded = PreparedIr::from_wav_bytes(
+                &write_mono_wav(source_hz, &delta(source_len)),
+                SampleRate::new(engine_hz).unwrap(),
+                64,
+            )
+            .unwrap_or_else(|e| panic!("{label}: load failed: {e:?}"));
+            let expected_len =
+                (source_len as f64 * engine_hz as f64 / source_hz as f64).round() as usize;
+            assert_eq!(
+                loaded.len_samples(),
+                expected_len,
+                "{label}: loaded {} taps, expected {expected_len}",
+                loaded.len_samples()
             );
-            if let Some(stopband_db) = response.stopband_db {
+
+            // Stopband: from the lower Nyquist up, in both readings of the bar.
+            let stopband = measure(source_hz, engine_hz, lower_hz / 2.0, run);
+            // Passband: to 20 kHz or the lower Nyquist above 40 kHz (which is what passing the
+            // lower Nyquist as the band edge already gives), to 0.45 x the lower rate below it.
+            let passband = if restated {
+                measure(source_hz, engine_hz, 0.45 * lower_hz, run)
+            } else {
+                stopband
+            };
+
+            println!(
+                "FR-IR-030 {label} ({} bar): ripple {:.6} dB to {:.0} Hz, worst out-of-band {}",
+                if restated { "restated" } else { "literal" },
+                passband.ripple_db,
+                passband.passband_top_hz,
+                match (stopband.stopband_db, stopband.stopband_at_hz) {
+                    (Some(db), Some(hz)) => format!("{db:.1} dB @ {hz:.0} Hz"),
+                    _ => "n/a (no out-of-band region)".to_string(),
+                }
+            );
+
+            assert!(
+                passband.ripple_db <= 0.1,
+                "FR-NAM-060 allows 0.1 dB of passband ripple {}; {label} measured {}",
+                if restated {
+                    "to 0.45 x the lower rate"
+                } else {
+                    "to 20 kHz or the lower Nyquist"
+                },
+                passband.summary()
+            );
+            if let Some(stopband_db) = stopband.stopband_db {
                 assert!(
                     stopband_db <= -100.0,
-                    "FR-NAM-060 requires 100 dB of stopband attenuation; {label} measured {}",
-                    response.summary()
+                    "FR-NAM-060 requires 100 dB of stopband attenuation from {} upward; {label} \
+                     measured {}",
+                    if restated {
+                        "0.5 x the lower rate"
+                    } else {
+                        "the lower Nyquist"
+                    },
+                    stopband.summary()
                 );
             }
         }

@@ -52,11 +52,12 @@ pub mod stages;
 pub use descriptor::{ParamDescriptor, ParamKind, SmoothingCategory, StepIndex, Unit, ValueFormat};
 pub use error_codes::ManifestViolation;
 pub use id::ParamId;
-pub use manifest::{FORMAT_VERSION, check_manifest, render_manifest};
+pub use manifest::{FORMAT_VERSION, check_manifest, merge_manifest, render_manifest};
 
 /// The full set of parameters this build knows about (D-10.1). `params.lock` at the repository
-/// root is exactly [`render_manifest`]`(REGISTRY)`'s current output; regenerate it with
-/// `cargo test -p namir-params --lib -- --ignored generate_params_lock` after changing this list.
+/// root is exactly [`merge_manifest`]`(params.lock, REGISTRY)`'s current output — this list's
+/// `live` lines plus whatever tombstones the file already carries; regenerate it with
+/// `cargo run -p xtask -- params-lock --write` after changing this list.
 pub const REGISTRY: &[ParamDescriptor] = &[
     stages::trim::GAIN_DB,
     stages::trim::DC_BLOCKER_ENABLED,
@@ -98,11 +99,18 @@ pub const REGISTRY: &[ParamDescriptor] = &[
 mod tests {
     use super::*;
 
+    /// M14: goes through `merge_manifest` rather than `render_manifest`, so this path no longer
+    /// deletes a tombstone the file already carries (FR-PARAM-020, issue #31). Prefer `cargo run
+    /// -p xtask -- params-lock --write`, which additionally runs `check_manifest` before writing;
+    /// this generator is kept because AGENTS.md and this crate's own doc comments have pointed at
+    /// it since M1, and a regeneration command that silently drops tombstones is exactly the trap
+    /// being removed.
     #[test]
     #[ignore = "one-shot generator, not part of the regular suite"]
     fn generate_params_lock() {
-        let repo_root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../params.lock");
-        std::fs::write(repo_root, render_manifest(REGISTRY)).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../params.lock");
+        let old = std::fs::read_to_string(path).unwrap_or_default();
+        std::fs::write(path, merge_manifest(&old, REGISTRY)).unwrap();
     }
 
     #[test]
@@ -116,15 +124,35 @@ mod tests {
         }
     }
 
+    /// M14: compares against `merge_manifest(the file, REGISTRY)`, not `render_manifest(REGISTRY)`.
+    /// The old form was the third of the three live-only comparisons that made a committed
+    /// tombstone fail the gate permanently (FR-PARAM-020, issue #31); with no tombstone in the file
+    /// the two are byte-identical, so this assertion is unchanged in strength.
     #[test]
-    fn params_lock_matches_render_manifest_of_registry() {
-        let expected = render_manifest(REGISTRY);
-        let repo_root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../params.lock");
-        let actual = std::fs::read_to_string(repo_root)
-            .unwrap_or_else(|e| panic!("failed to read {repo_root}: {e}"));
+    fn params_lock_matches_the_merged_manifest_of_registry() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../params.lock");
+        let actual =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
         assert_eq!(
-            actual, expected,
-            "params.lock is stale -- regenerate it with render_manifest(REGISTRY)"
+            actual,
+            merge_manifest(&actual, REGISTRY),
+            "params.lock is stale -- regenerate it with `cargo run -p xtask -- params-lock --write`"
         );
+    }
+
+    /// The other half of the same property, and the one the assertion above cannot make: the
+    /// checked-in file must also *pass* `check_manifest`, which is what detects a reused tombstone
+    /// or a changed id. `merge_manifest` deliberately does not adjudicate those (see its doc
+    /// comment), so without this the merged comparison above would go green on a file the manifest
+    /// rules reject.
+    #[test]
+    fn params_lock_satisfies_check_manifest_against_the_registry() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../params.lock");
+        let actual =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        if let Err(violations) = check_manifest(&actual, REGISTRY) {
+            let rendered: Vec<String> = violations.iter().map(ToString::to_string).collect();
+            panic!("params.lock violates D-10.1:\n  {}", rendered.join("\n  "));
+        }
     }
 }

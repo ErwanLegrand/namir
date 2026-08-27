@@ -47,7 +47,7 @@
 // uncovered: required step passes --allow-uncovered and derives its exit status from plan freshness
 // uncovered: and §14's denominators alone, while the plain form runs continue-on-error, so an
 // uncovered: uncovered Must would leave CI green — none stands today, and nothing gates on that;
-// uncovered: closes M9b
+// uncovered: closes M8
 
 use std::collections::HashMap;
 
@@ -651,13 +651,146 @@ pub struct PartialHit {
 /// The outcome of checking every Must requirement against real manual-test filenames and real
 /// source-file hits. `source_hits`/`manual_hits` are `id -> [crate name]` / `id -> filename` for
 /// requirements that *are* covered, kept for `render_test_plan`; `partial_hits` is the same for
-/// requirements covered only in part (D-23.1); `missing` is every Must id this run found no
-/// coverage for at all.
+/// requirements covered only in part (D-23.1); `manual_unexecuted` is `id -> (filename, the
+/// document's own verdict)` for a `Verify: M` Must whose script exists but has not been run
+/// (issue #34); `missing` is every Must id this run found no coverage for at all, the
+/// `manual_unexecuted` ids included.
 pub struct Report {
     pub missing: Vec<Requirement>,
     pub manual_hits: HashMap<String, String>,
+    pub manual_unexecuted: HashMap<String, (String, String)>,
     pub source_hits: HashMap<String, Vec<String>>,
     pub partial_hits: HashMap<String, Vec<PartialHit>>,
+}
+
+/// What a manual-test document's own `**Result:` line says about whether its script was run
+/// (issue #34).
+///
+/// # Why the gate has to read this at all
+///
+/// Until M14, resolution for a `Verify: M` Must was "a document exists whose filename or
+/// declaration block names the id" and nothing else. Eleven of the twenty-six documents under
+/// `docs/manual-tests/` record `NOT EXECUTED` or a partial result, and six record no verdict this
+/// parser can find, and every one of them credited its requirement in full: the gate printed
+/// `clean -- all 130 Must requirements are covered` on evidence nobody had produced. That is the
+/// exact failure NFR-QUAL-010 exists to prevent, one level of indirection out, and roadmap §21
+/// Phase 3 requires it closed **before** D-18.5's zero-uncovered flip, or the flip inherits it.
+///
+/// # The classification, and why it is deliberately conservative
+///
+/// Only [`ManualVerdict::Pass`] credits the requirement. Everything else — including a verdict
+/// line this parser cannot make sense of, and a document with no verdict line at all — leaves the
+/// requirement **uncovered**. Never the other way round: a document whose result cannot be read is
+/// a document whose result is not known, and an unknown result must not be a pass at a 1.0 gate.
+///
+/// A line that opens `PASS` but goes on to say some part was not executed is **not** a pass here
+/// (`fr-ui-010-standalone-window-renders.md` is the live instance: "PASS for steps 1–2 (executed).
+/// Step 3 requires a human with a display — not executed this session"). The document's author
+/// wrote both halves; taking the headline word alone would discard the half that matters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManualVerdict {
+    /// The script was run and passed, with no clause reported unexecuted.
+    Pass,
+    /// A verdict was found and it is not a clean pass — `NOT EXECUTED`, `PARTIAL`, `FAIL`, or a
+    /// `PASS` qualified by an unexecuted step. Carries the verdict text as written.
+    NotAPass(String),
+    /// No line this parser recognises as a verdict. Carries a fixed explanation rather than a
+    /// quotation, there being nothing to quote.
+    Unreadable,
+}
+
+impl ManualVerdict {
+    /// The least favourable of two verdicts, for a document carrying more than one `**Result`
+    /// line.
+    ///
+    /// The order is `Pass` < `Unreadable` < `NotAPass`, and the middle term is the one worth
+    /// arguing. An unreadable line beats a pass because a line this parser cannot make sense of is
+    /// not evidence of anything, and crediting the document on a *different* line while silently
+    /// discarding this one is how a verdict goes unread. It loses to `NotAPass` because that
+    /// carries the author's own words, and reporting "its result is unknown" over a line that says
+    /// `FAIL` in as many words would be strictly less informative to whoever reads the gate.
+    fn worse_of(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NotAPass(text), _) | (_, Self::NotAPass(text)) => Self::NotAPass(text),
+            (Self::Unreadable, _) | (_, Self::Unreadable) => Self::Unreadable,
+            (Self::Pass, Self::Pass) => Self::Pass,
+        }
+    }
+}
+
+/// The opening of a manual-test document's verdict line. One spelling is used throughout
+/// `docs/manual-tests/`: a line beginning `**Result:` (occasionally `**Result` with the colon
+/// inside the bold run). Matched at the **start** of the trimmed line, like every other marker
+/// this module reads, so a mid-paragraph mention of a result does not become the verdict.
+const VERDICT_MARKER: &str = "**Result";
+
+/// Reads `content`'s verdict. See [`ManualVerdict`] for the classification and why an unreadable
+/// verdict is not a pass.
+///
+/// **The worst verdict wins, not the first** (M14). This read first-wins, on the stated grounds
+/// that "no document in the tree has two" -- which stopped being true when M9b's close-out gave
+/// `fr-io-070-device-removal.md` a `NOT EXECUTED` line for the requirement as a whole and a second
+/// line recording the one step a physical unplug did execute. First-wins happens to give the right
+/// answer on that document, because the conservative line comes first. It is fragile in exactly
+/// the wrong direction: a document opening `PASS` and qualifying itself further down would be
+/// credited on its first line and its qualification never read, which is the inversion issue #34
+/// exists to prevent, one layer in.
+///
+/// So every marked line is classified and the least favourable outcome is returned. That is not
+/// the whole-file matching M13 removed from [`declared_requirement_ids`]'s neighbouring arm: the
+/// lines read are still only those *beginning* with [`VERDICT_MARKER`], never prose that mentions
+/// a result in passing.
+pub fn manual_test_verdict(content: &str) -> ManualVerdict {
+    content
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with(VERDICT_MARKER))
+        .map(classify_verdict_line)
+        .reduce(ManualVerdict::worse_of)
+        .unwrap_or(ManualVerdict::Unreadable)
+}
+
+/// One `**Result` line's own verdict, with no view of the rest of the document.
+fn classify_verdict_line(line: &str) -> ManualVerdict {
+    let body = line
+        .trim_start_matches(VERDICT_MARKER)
+        .trim_start_matches(':')
+        .trim();
+
+    // Two different spans, deliberately.
+    //
+    // What is *quoted* is the bold run alone — everything up to the `**` that closes it — because
+    // that is the verdict the author set apart, and the prose that follows it on the same physical
+    // line is the start of a paragraph, not part of the verdict.
+    //
+    // What is *classified* is the whole line, because a qualifier can sit outside the bold run
+    // ("**Result: PASS.** Step 3 was not executed"), and reading only the emphasised half would
+    // discard exactly the clause that decides the question.
+    let quoted = body.split("**").next().unwrap_or(body).trim();
+    if quoted.is_empty() {
+        return ManualVerdict::Unreadable;
+    }
+
+    let upper = body.to_uppercase();
+    let qualified = upper.contains("NOT EXECUTED") || upper.contains("NOT RUN");
+    if upper.starts_with("PASS") && !qualified {
+        ManualVerdict::Pass
+    } else {
+        ManualVerdict::NotAPass(quoted.to_string())
+    }
+}
+
+/// The plan cell and the reason line for a `Verify: M` Must whose document does not record a pass.
+/// One function so the checked-in plan and the gate's printed reason cannot drift apart.
+fn manual_verdict_reason(verdict: &ManualVerdict) -> Option<String> {
+    match verdict {
+        ManualVerdict::Pass => None,
+        ManualVerdict::NotAPass(text) => Some(format!("records `{text}`")),
+        ManualVerdict::Unreadable => Some(format!(
+            "carries no line beginning `{VERDICT_MARKER}`, so its result is unknown -- which is \
+             not a pass"
+        )),
+    }
 }
 
 /// The opening of a manual-test document's requirement declaration. Two spellings exist in the
@@ -736,6 +869,7 @@ pub fn build_report(
 ) -> Report {
     let mut missing = Vec::new();
     let mut manual_hits = HashMap::new();
+    let mut manual_unexecuted: HashMap<String, (String, String)> = HashMap::new();
 
     // The `'M'` and `'P'` arms below resolve a requirement without consulting `partial_hits` at
     // all. That is correct -- neither code's evidence is a source annotation -- but it is only safe
@@ -751,9 +885,20 @@ pub fn build_report(
                 name.to_lowercase().starts_with(&prefix)
                     || declared_requirement_ids(content).contains(&req.id)
             }) {
-                Some((file, _)) => {
-                    manual_hits.insert(req.id.clone(), file.clone());
-                }
+                // Issue #34: the document existing is not the script having been run. A verdict
+                // that is not a clean pass leaves the requirement **uncovered**, and the document
+                // is still named -- in the plan and in the gate's own list -- so the reader is
+                // pointed at the evidence that does exist rather than told there is none.
+                Some((file, content)) => match manual_verdict_reason(&manual_test_verdict(content))
+                {
+                    None => {
+                        manual_hits.insert(req.id.clone(), file.clone());
+                    }
+                    Some(reason) => {
+                        manual_unexecuted.insert(req.id.clone(), (file.clone(), reason));
+                        missing.push(req.clone());
+                    }
+                },
                 None => missing.push(req.clone()),
             }
         } else if req.verify == 'P' {
@@ -772,6 +917,7 @@ pub fn build_report(
     Report {
         missing,
         manual_hits,
+        manual_unexecuted,
         source_hits: source_hits.clone(),
         partial_hits: partial_hits.clone(),
     }
@@ -826,7 +972,11 @@ pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String
          Machine-generated by `cargo run -p xtask -- traceability --write` (NFR-QUAL-010, FRS §10). \
          Do not hand-edit -- regenerate instead. Maps every Must-priority requirement to how it is \
          verified: a manual-test document (`Verify: M`) or the crate(s) whose test source carries a \
-         `trace:` annotation or matching test-function name for it (`Verify: U/I/G/B/S`). A row \
+         `trace:` annotation or matching test-function name for it (`Verify: U/I/G/B/S`). A \
+         `Verify: M` row resolves only when its document's own `**Result:` line records a clean \
+         pass -- a document recording `NOT EXECUTED`, a partial or a qualified pass, and a \
+         document carrying no verdict line at all, leave the requirement UNRESOLVED with the \
+         document still named (issue #34). A row \
          marked \"PARTIAL\" carries a `// trace-partial:` tag whose artifact covers only part of \
          the requirement: the text after it is that tag's mandatory `// uncovered:` line verbatim, \
          naming the unspanned member and the milestone that closes it (D-23.1). A partial counts \
@@ -834,7 +984,8 @@ pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String
          listed under \"UNRESOLVED\" has neither -- `cargo run -p xtask -- traceability` exits \
          non-zero while any remain. CI's **required** step passes `--allow-uncovered` and gates on \
          this file's freshness (and on §14's denominators) alone; the zero-uncovered half stays \
-         informational until it becomes required at M9b's close-out (D-18.5).\n\n\
+         informational until it becomes required at M14's close-out (D-18.5) -- M9b's own \
+         close-out moved it there, having closed out without reaching it.\n\n\
          | Requirement | Verify | Covered by |\n\
          |---|---|---|\n",
     );
@@ -850,11 +1001,19 @@ pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String
             // gap is the honest direction, and no such case exists in this tree today.
             render_partial(partials, report.source_hits.get(&req.id))
         } else if req.verify == 'M' {
-            report
-                .manual_hits
-                .get(&req.id)
-                .map(|f| format!("`docs/manual-tests/{f}`"))
-                .unwrap_or_else(|| "**UNRESOLVED**".to_string())
+            match (
+                report.manual_hits.get(&req.id),
+                report.manual_unexecuted.get(&req.id),
+            ) {
+                (Some(f), _) => format!("`docs/manual-tests/{f}`"),
+                // Issue #34: the document is named even though it does not resolve the
+                // requirement -- the reader needs to know a script exists and what it says about
+                // itself, which is strictly more than "**UNRESOLVED**" alone can tell them.
+                (None, Some((file, reason))) => {
+                    format!("**UNRESOLVED** — `docs/manual-tests/{file}` {reason}")
+                }
+                (None, None) => "**UNRESOLVED**".to_string(),
+            }
         } else if req.verify == 'P' {
             "process (review + commit order, not build-inspectable)".to_string()
         } else if let Some(crates) = report.source_hits.get(&req.id) {
@@ -1672,6 +1831,205 @@ mod tests {
         ));
     }
 
+    // --- Issue #34: a manual-test document's own verdict --------------------------------------
+    //
+    // Asserted against fixture documents rather than only against the live tree, so these tests
+    // keep saying what they say when a real document's verdict changes -- which is the whole point
+    // of the mechanism.
+
+    /// A minimal manual-test document with `verdict` as its `**Result:` line, in the shape the real
+    /// files under `docs/manual-tests/` have: a declaration block, a script, then the verdict last.
+    fn manual_doc(verdict: &str) -> String {
+        format!(
+            "# FR-CHAIN-010 — a manual script\n\n\
+             **Requirement (literal):** FR-CHAIN-010 — text.\n\n\
+             ## Script\n\n1. Do the thing.\n\n\
+             ## Outcome\n\n{verdict}\n"
+        )
+    }
+
+    #[test]
+    fn a_clean_pass_is_the_only_verdict_that_credits_a_requirement() {
+        assert_eq!(
+            manual_test_verdict(&manual_doc("**Result: PASS.**")),
+            ManualVerdict::Pass
+        );
+        // The real spellings the tree carries, verbatim from `docs/manual-tests/`.
+        assert_eq!(
+            manual_test_verdict(&manual_doc(
+                "**Result: PASS.** Real device enumeration, real sample-rate negotiation."
+            )),
+            ManualVerdict::Pass
+        );
+    }
+
+    #[test]
+    fn not_executed_leaves_the_requirement_uncovered() {
+        // `fr-ui-020-single-screen-elements.md`'s own verdict, and the defect this closes: before
+        // M14 this document credited FR-UI-020 in full and the gate printed `clean`.
+        let verdict = manual_test_verdict(&manual_doc(
+            "**Result: NOT EXECUTED.** FR-UI-020 has no observed evidence yet.",
+        ));
+        assert!(
+            matches!(verdict, ManualVerdict::NotAPass(ref text) if text.starts_with("NOT EXECUTED."))
+        );
+    }
+
+    #[test]
+    fn a_partial_verdict_is_not_a_pass_either() {
+        // `fr-io-050-latency-measurement.md`'s shape. A document whose author wrote PARTIAL is a
+        // document saying part of its own script did not run.
+        assert!(matches!(
+            manual_test_verdict(&manual_doc(
+                "**Result: PARTIAL.** The driver-reported half only."
+            )),
+            ManualVerdict::NotAPass(_)
+        ));
+    }
+
+    #[test]
+    fn a_pass_qualified_by_an_unexecuted_step_is_not_a_pass() {
+        // `fr-ui-010-standalone-window-renders.md`'s own verdict. Reading the headline word alone
+        // would discard the half of the sentence that matters, which is the direction of error
+        // this check exists to refuse.
+        assert!(matches!(
+            manual_test_verdict(&manual_doc(
+                "**Result: PASS for steps 1–2 (executed). Step 3 requires a human with a display \
+                 — not executed this session.**"
+            )),
+            ManualVerdict::NotAPass(_)
+        ));
+    }
+
+    #[test]
+    fn a_document_with_no_verdict_line_is_unreadable_never_a_pass() {
+        // Eight of the twenty-six live documents are in this state. Silence is not a pass.
+        assert_eq!(
+            manual_test_verdict("# A script with no outcome section\n\nSteps: 1, 2, 3.\n"),
+            ManualVerdict::Unreadable
+        );
+        // Nor is a marker with nothing after it.
+        assert_eq!(
+            manual_test_verdict("**Result:**\n"),
+            ManualVerdict::Unreadable
+        );
+        // A qualifier outside the bold run still decides the verdict, even though only the bold
+        // run is quoted back.
+        assert_eq!(
+            manual_test_verdict("**Result: PASS.** Step 3 was not executed this session.\n"),
+            ManualVerdict::NotAPass("PASS.".to_string())
+        );
+        // Nor a mid-paragraph mention: the marker must begin its line, like every other marker
+        // this module reads.
+        assert_eq!(
+            manual_test_verdict("The **Result: PASS.** claim below is prose, not a verdict.\n"),
+            ManualVerdict::Unreadable
+        );
+    }
+
+    /// **The failure first-wins would have allowed.** `fr-io-070-device-removal.md` gained a
+    /// second `**Result` line at M9b's close-out, and first-wins reads it correctly only because
+    /// its conservative line happens to come first. Reverse that order -- a document opening with
+    /// a pass and qualifying itself further down -- and first-wins credits the requirement while
+    /// never reading the line that disqualifies it.
+    #[test]
+    fn the_worst_verdict_in_a_document_wins_not_the_first_one() {
+        // The shape the live tree has: conservative line first. Unchanged by this rule.
+        assert_eq!(
+            manual_test_verdict(
+                "**Result: NOT EXECUTED against a real failable device.**\n\n                 **Result: step 2 EXECUTED and passing.**\n"
+            ),
+            ManualVerdict::NotAPass("NOT EXECUTED against a real failable device.".to_string())
+        );
+        // The shape that would have been credited: pass first, disqualification second.
+        assert_eq!(
+            manual_test_verdict(
+                "**Result: PASS, all six steps.**\n\n                 **Result: steps 7-9 NOT EXECUTED -- no second interface available.**\n"
+            ),
+            ManualVerdict::NotAPass(
+                "steps 7-9 NOT EXECUTED -- no second interface available.".to_string()
+            )
+        );
+        // An unreadable line beats a pass elsewhere: a line the parser cannot make sense of is not
+        // evidence, and crediting the document on a different one discards it in silence.
+        assert_eq!(
+            manual_test_verdict("**Result: PASS, all six steps.**\n\n**Result:**\n"),
+            ManualVerdict::Unreadable
+        );
+        // Two clean passes are still a pass -- the rule must not make multiplicity itself a fault.
+        assert_eq!(
+            manual_test_verdict(
+                "**Result: PASS in the standalone.**\n\n**Result: PASS in the plugin.**\n"
+            ),
+            ManualVerdict::Pass
+        );
+    }
+
+    #[test]
+    fn build_report_leaves_a_manual_must_uncovered_when_its_document_records_no_pass() {
+        let reqs = vec![Requirement {
+            id: "FR-CHAIN-010".into(),
+            verify: 'M',
+            section: "5.1".into(),
+        }];
+        let docs = vec![(
+            "fr-chain-010-signal-chain.md".to_string(),
+            manual_doc("**Result: NOT EXECUTED.**"),
+        )];
+        let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
+
+        assert_eq!(report.missing.len(), 1, "the script has not been run");
+        assert!(report.manual_hits.is_empty());
+        let (file, reason) = report.manual_unexecuted.get("FR-CHAIN-010").unwrap();
+        assert_eq!(file, "fr-chain-010-signal-chain.md");
+        assert!(reason.contains("NOT EXECUTED"), "{reason}");
+
+        // And the plan says so, naming the document rather than pretending none exists.
+        let plan = render_test_plan(&reqs, &report);
+        assert!(
+            plan.contains(
+                "| FR-CHAIN-010 | M | **UNRESOLVED** — `docs/manual-tests/\
+                 fr-chain-010-signal-chain.md` records `NOT EXECUTED.` |"
+            ),
+            "{plan}"
+        );
+    }
+
+    #[test]
+    fn the_same_document_recording_a_pass_resolves_the_requirement() {
+        // The control the test above needs: it must fail because of the verdict, not because the
+        // fixture is malformed in some other way.
+        let reqs = vec![Requirement {
+            id: "FR-CHAIN-010".into(),
+            verify: 'M',
+            section: "5.1".into(),
+        }];
+        let docs = vec![(
+            "fr-chain-010-signal-chain.md".to_string(),
+            manual_doc("**Result: PASS.**"),
+        )];
+        let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
+        assert!(report.missing.is_empty());
+        assert!(report.manual_unexecuted.is_empty());
+    }
+
+    #[test]
+    fn a_verdictless_document_leaves_its_requirement_uncovered_and_says_why() {
+        let reqs = vec![Requirement {
+            id: "FR-CHAIN-010".into(),
+            verify: 'M',
+            section: "5.1".into(),
+        }];
+        let docs = vec![(
+            "fr-chain-010-signal-chain.md".to_string(),
+            "# A script with no outcome section\n".to_string(),
+        )];
+        let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
+        assert_eq!(report.missing.len(), 1);
+        let (_, reason) = report.manual_unexecuted.get("FR-CHAIN-010").unwrap();
+        assert!(reason.contains("no line beginning"), "{reason}");
+    }
+
     #[test]
     fn build_report_flags_a_must_requirement_with_no_coverage() {
         let reqs = vec![Requirement {
@@ -1693,7 +2051,7 @@ mod tests {
         }];
         let docs = vec![(
             "fr-io-020-wasapi-exclusive-mode.md".to_string(),
-            "irrelevant content".to_string(),
+            "irrelevant content\n**Result: PASS.**\n".to_string(),
         )];
         let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
         assert!(report.missing.is_empty());
@@ -1715,7 +2073,8 @@ mod tests {
         }];
         let docs = vec![(
             "fr-io-010-device-enumeration.md".to_string(),
-            "**Requirement (literal):** FR-IO-010 ... FR-IO-040 ...".to_string(),
+            "**Requirement (literal):** FR-IO-010 ... FR-IO-040 ...\n\n**Result: PASS.**\n"
+                .to_string(),
         )];
         let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
         assert!(report.missing.is_empty());
@@ -1953,9 +2312,12 @@ mod tests {
                 }],
             );
         }
+        // Carries a passing verdict: this test is about which rows render `**PARTIAL**`, and a
+        // document with no `**Result:` line would additionally leave FR-IO-020 unresolved
+        // (issue #34), which is a different property, checked elsewhere.
         let docs = vec![(
             "fr-io-020-wasapi-exclusive-mode.md".to_string(),
-            String::new(),
+            "**Result: PASS.**\n".to_string(),
         )];
         let report = build_report(&reqs, &docs, &HashMap::new(), &partials);
 

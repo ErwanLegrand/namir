@@ -4,11 +4,54 @@
 //! on [`ThreadPool`], which is D-12.2's "cancellable worker job" made literally true by splitting
 //! it across the two crates the way `namir-library`'s own doc comment says it would — the
 //! *mechanism* lives there, the *job* (thread, cancellation flag, progress cadence) lives here.
+//!
+//! # M14: opening a library does not read the index file (§22 R-18, issue #22)
+//!
+//! [`LibraryService::open`] used to be `IndexStore::open` — a `read` plus a `serde_json` parse of
+//! the whole index — on the calling thread, before it returned. That put one JSON parse **on the
+//! plugin instantiation path, per instance, with no sharing between instances**, which is where
+//! NFR-PERF-040's margin went: 187.5 ms of a 200 ms Must at FR-LIB-020's stated 10 000-file scale,
+//! of which chain construction is 147 µs and essentially all the rest is that parse
+//! (`crates/namir-clap/benches/plugin_instantiation.rs`'s own measured table). Asserting on `max`,
+//! the breach arrived near 10 700 entries — so a user with a large library could fail a Must on a
+//! machine where nothing was wrong, and no regression test could ever catch it because nothing
+//! regresses: the cost is there today and stays constant.
+//!
+//! Two changes take it off that path, both inside this module so that neither product shell needs
+//! its own copy of anything (the duplication [`LibraryService::open_default`]'s doc comment
+//! records a real bug for):
+//!
+//! 1. **The load is deferred and happens off the caller's thread.** `open` registers the path and
+//!    returns; a short-lived loader thread does the read and parse and publishes the result. Until
+//!    it lands, [`LibraryService::snapshot`] returns an empty index rather than blocking — a
+//!    library that fills in a moment after the window appears, instead of a window that does not
+//!    appear until the library is read.
+//! 2. **One parsed index per path per process, shared by every service.** A second instance opening
+//!    the same index file gets the same live [`Index`] the first one has, so ten plugin instances
+//!    in a host cost one parse rather than ten. The shared slot is what a completing scan writes
+//!    into, so instances also stop disagreeing about what the library contains.
+//!
+//! **What every caller must know**, because it is a real change of contract and not an
+//! optimisation behind an unchanged interface:
+//!
+//! * `open`'s returned warning list is now always empty — the load has not happened yet when it
+//!   returns. A corrupt index still degrades to an empty one with a warning; that warning is
+//!   drained with [`LibraryService::take_load_warnings`] once the load has landed.
+//! * Anything that needs the index *now* — a scan, a count, a test — calls
+//!   [`LibraryService::ensure_loaded`] first, which blocks until it is there. [`Self::start_scan`]
+//!   does this **inside its pool job**, because a scan whose `prior` snapshot were the
+//!   not-yet-loaded empty index would conclude that every entry it does not re-find was removed,
+//!   which is the erase-the-index failure this module already has one scar from.
+//! * Freshness across processes is kept by a stat, not a parse: `open` compares the file's
+//!   modification time and length against the ones the cached parse was taken from, and reloads if
+//!   they differ. The standalone and the plugin running side by side therefore still see each
+//!   other's rescans, at the cost of one `metadata` call per open.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak};
+use std::time::{Duration, Instant, SystemTime};
 
 use namir_library::{Index, IndexStore, ScanProgress, Scanner, StdFs, Step};
 
@@ -73,33 +116,192 @@ pub struct ScanOutcome {
 /// wholesale by a completing scan (an `Arc` store, never a mutation in place), so a reader is
 /// never blocked by one and never observes a half-updated index.
 pub struct LibraryService {
-    store: IndexStore,
+    shared: Arc<SharedIndex>,
     roots: Vec<PathBuf>,
-    index: Arc<Mutex<Arc<Index>>>,
     /// Guards against two scans running against the same service at once — see
     /// [`Self::start_scan`]'s doc comment for why that case is refused rather than resolved.
     scanning: Arc<AtomicBool>,
 }
 
+/// What the file's contents were read from, cheap enough to take on every open: a parse is 161 ms
+/// at 10 000 entries and a `metadata` call is microseconds, so freshness costs a stat and only a
+/// genuine change costs a parse.
+///
+/// `None` when the file does not exist (the first-run case) or its metadata cannot be read, and two
+/// `None`s compare equal — an index that is absent now and was absent when the cached parse was
+/// taken has not changed.
+type Stamp = Option<(SystemTime, u64)>;
+
+/// One index file's parsed contents, shared by every [`LibraryService`] in this process that names
+/// the same path.
+///
+/// The `Mutex<Option<Loaded>>` is the load's own mutual exclusion: the loader thread holds it for
+/// the duration of the read and parse, so a second caller either finds the work done or waits for
+/// it, and nothing parses the same file twice concurrently. `index` is a separate lock because it
+/// is read every frame and must never be held behind a parse.
+struct SharedIndex {
+    path: PathBuf,
+    loaded: Mutex<Option<Loaded>>,
+    index: Mutex<Arc<Index>>,
+    warnings: Mutex<Vec<WorkerError>>,
+}
+
+struct Loaded {
+    store: IndexStore,
+    stamp: Stamp,
+}
+
+/// Every `SharedIndex` alive in this process, by index path.
+///
+/// `Weak`, so an entry dies with the last service holding it: a process that opens a throwaway
+/// index (every test in this module does) must not keep it parsed and cached forever, and a stale
+/// entry outliving its file is exactly the kind of hidden state that makes one test's result depend
+/// on another's.
+fn registry() -> &'static Mutex<HashMap<PathBuf, Weak<SharedIndex>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<SharedIndex>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn stamp_of(path: &Path) -> Stamp {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+impl SharedIndex {
+    /// The shared entry for `path`, created if this process has none.
+    fn for_path(path: PathBuf) -> Arc<SharedIndex> {
+        let mut registry = lock(registry());
+        if let Some(existing) = registry.get(&path).and_then(Weak::upgrade) {
+            return existing;
+        }
+        let shared = Arc::new(SharedIndex {
+            path: path.clone(),
+            loaded: Mutex::new(None),
+            index: Mutex::new(Arc::new(Index::empty())),
+            warnings: Mutex::new(Vec::new()),
+        });
+        registry.insert(path, Arc::downgrade(&shared));
+        // Entries whose service has been dropped are cleared here rather than by a background
+        // sweep: this map is only ever touched on an open, which is rare, and a `Weak` that cannot
+        // upgrade costs nothing to remove.
+        registry.retain(|_, weak| weak.strong_count() > 0);
+        shared
+    }
+
+    /// Reads and parses the index if this process has not already done so for the current contents
+    /// of the file, and returns the store either way. **Blocks**; never call it on an audio thread
+    /// or on a plugin's instantiation path.
+    fn ensure_loaded(&self) -> IndexStore {
+        let mut loaded = lock(&self.loaded);
+        let stamp = stamp_of(&self.path);
+        if let Some(current) = loaded.as_ref()
+            && current.stamp == stamp
+        {
+            return current.store.clone();
+        }
+        let (store, index, warnings) = IndexStore::open(self.path.clone());
+        *lock(&self.index) = Arc::new(index);
+        lock(&self.warnings).extend(warnings.into_iter().map(WorkerError::from));
+        *loaded = Some(Loaded {
+            store: store.clone(),
+            stamp,
+        });
+        store
+    }
+
+    /// Publishes a scan's result into the shared slot and records the stamp of the file it was just
+    /// saved to, so the next open does not re-parse a file this process wrote itself.
+    fn publish(&self, index: Index, saved: bool) {
+        *lock(&self.index) = Arc::new(index);
+        if saved && let Some(loaded) = lock(&self.loaded).as_mut() {
+            loaded.stamp = stamp_of(&self.path);
+        }
+    }
+}
+
+/// Starts the deferred load on a thread of its own, unless this process is already doing it or has
+/// already done it for the file as it stands.
+///
+/// One short-lived thread per *stale or first* open, not per open: the `try_lock` fails while a
+/// loader is running, and a fresh cached parse returns without spawning anything, so the ordinary
+/// case of a host adding a tenth plugin instance spawns nothing at all. A failed spawn is not an
+/// error — [`LibraryService::ensure_loaded`] will do the work on whatever thread next needs the
+/// index, which is the same fallback as a machine that refuses threads under NFR-PORT-030.
+fn schedule_load(shared: &Arc<SharedIndex>) {
+    let up_to_date = match shared.loaded.try_lock() {
+        Ok(guard) => guard
+            .as_ref()
+            .is_some_and(|loaded| loaded.stamp == stamp_of(&shared.path)),
+        Err(TryLockError::Poisoned(poisoned)) => poisoned
+            .into_inner()
+            .as_ref()
+            .is_some_and(|loaded| loaded.stamp == stamp_of(&shared.path)),
+        // Held: a loader is running. It is doing exactly what this function would ask for.
+        Err(TryLockError::WouldBlock) => true,
+    };
+    if up_to_date {
+        return;
+    }
+    let shared = Arc::clone(shared);
+    let _ = std::thread::Builder::new()
+        .name("namir-library-index".to_string())
+        .spawn(move || {
+            shared.ensure_loaded();
+        });
+}
+
 impl LibraryService {
-    /// Opens the index at `index_path` and configures `roots` as the directories a scan walks,
+    /// Registers the index at `index_path` and configures `roots` as the directories a scan walks,
     /// in the order a resolved reference tries them (`namir_library::resolver`'s own rule).
     ///
     /// Never fails (P8, mirroring `IndexStore::open`'s own guarantee): a missing index file is
     /// the ordinary first-run case and produces no warning at all; a present-but-corrupt or
-    /// wrong-version one degrades to an empty index plus a warning, returned here rather than
-    /// swallowed, so a caller can still tell the user their library needs a rescan.
+    /// wrong-version one degrades to an empty index plus a warning.
+    ///
+    /// **This does not read the index file** (M14, §22 R-18 — see this module's header). It costs
+    /// one `metadata` call and, when this process has not already parsed the file as it currently
+    /// stands, the spawn of a loader thread. The returned warning list is therefore **always
+    /// empty**: nothing has been read yet, so nothing can have been found wrong with it. Drain the
+    /// load's warnings with [`Self::take_load_warnings`] after the index has landed, and block for
+    /// it with [`Self::ensure_loaded`] where a caller genuinely cannot proceed without the index.
+    ///
+    /// The tuple return is kept rather than narrowed to `Self` so that both product shells and
+    /// every test keep compiling against one shape while the warning delivery point moves; a
+    /// caller that ignored the second element before is correct in continuing to.
     pub fn open(index_path: PathBuf, roots: Vec<PathBuf>) -> (LibraryService, Vec<WorkerError>) {
-        let (store, index, warnings) = IndexStore::open(index_path);
+        let shared = SharedIndex::for_path(index_path);
+        schedule_load(&shared);
         (
             LibraryService {
-                store,
+                shared,
                 roots,
-                index: Arc::new(Mutex::new(Arc::new(index))),
                 scanning: Arc::new(AtomicBool::new(false)),
             },
-            warnings.into_iter().map(WorkerError::from).collect(),
+            Vec::new(),
         )
+    }
+
+    /// Blocks until this process has the index file's contents, parsing it here if the loader
+    /// thread has not got to it (or could not be spawned).
+    ///
+    /// **Never call this on an audio thread or on a plugin's instantiation path** — parsing a
+    /// 10 000-entry index is ~160 ms on the reference machine, which is the whole of what M14 took
+    /// off that path. It is here for the callers that cannot proceed without the index: a scan
+    /// (which does it inside its own pool job), a shell that wants to report the entry count, and
+    /// tests.
+    pub fn ensure_loaded(&self) {
+        self.shared.ensure_loaded();
+    }
+
+    /// The warnings the deferred load produced — a corrupt or wrong-version index file — removing
+    /// them from this service so they are delivered once.
+    ///
+    /// Empty while the load has not landed; that is not the same as "the index is fine", so a
+    /// caller wanting a definite answer calls [`Self::ensure_loaded`] first. Shared across every
+    /// service naming the same path, like the index itself: the first caller to drain them is the
+    /// one that reports them.
+    pub fn take_load_warnings(&self) -> Vec<WorkerError> {
+        std::mem::take(&mut lock(&self.shared.warnings))
     }
 
     /// The library roots this service scans, in configured order.
@@ -144,8 +346,13 @@ impl LibraryService {
 
     /// A cheap, point-in-time view of the index — safe from any thread, at any time, including
     /// concurrently with a running scan (see this struct's own doc comment).
+    ///
+    /// **Never blocks, and is empty until the deferred load lands** (M14): a UI polling this every
+    /// frame gets an empty library for the moment the parse takes and then the real one, rather
+    /// than a frame that takes as long as the parse. A caller that needs the loaded index rather
+    /// than the current one calls [`Self::ensure_loaded`] first.
     pub fn snapshot(&self) -> Arc<Index> {
-        Arc::clone(&lock(&self.index))
+        Arc::clone(&lock(&self.shared.index))
     }
 
     /// Whether a scan started by this service is currently running.
@@ -189,12 +396,19 @@ impl LibraryService {
         };
 
         let roots = self.roots.clone();
-        let prior = self.snapshot();
-        let index_slot = Arc::clone(&self.index);
+        let shared = Arc::clone(&self.shared);
         let scanning = Arc::clone(&self.scanning);
-        let store = self.store.clone();
 
         pool.spawn(move || {
+            // **Inside the job, and the `prior` snapshot is taken after it** (M14). The load is
+            // deferred, so a `prior` read on the calling thread could be the empty
+            // not-yet-loaded index -- and a *complete* walk against an empty prior concludes that
+            // every entry it does not re-find was removed, which is the erase-the-shared-index
+            // failure `open_default`'s doc comment records. Blocking here costs a pool thread the
+            // parse, once per process, on a job that is about to read the whole library anyway.
+            let store = shared.ensure_loaded();
+            let prior = Arc::clone(&lock(&shared.index));
+
             let mut scanner = Scanner::new(roots, &prior);
             let mut last_progress = ScanProgress::default();
             let mut last_reported_at = Instant::now();
@@ -233,7 +447,10 @@ impl LibraryService {
             let mut new_index = (*prior).clone();
             new_index.apply(delta);
             let save_error = store.save_atomic(&new_index).err().map(WorkerError::from);
-            *lock(&index_slot) = Arc::new(new_index);
+            // Into the *shared* slot, so every service in this process naming this index file sees
+            // the scan's result -- and carrying the saved file's new stamp with it, so the next
+            // open does not re-parse a file this process just wrote.
+            shared.publish(new_index, save_error.is_none());
 
             // Cleared before on_complete, not after: a caller that starts a new scan from inside
             // its own on_complete callback must see is_scanning() == false by then.
@@ -271,6 +488,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Moves a file's modification time `seconds` into the past. `namir-library`'s incremental rule
+    /// treats a file whose mtime is within two seconds of the previous scan's completion as
+    /// suspect and rehashes it, so a test about the *unchanged* path has to leave that window.
+    fn age_mtime(path: &std::path::Path, seconds: u64) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let aged = std::time::SystemTime::now() - Duration::from_secs(seconds);
+        file.set_modified(aged).unwrap();
     }
 
     fn write_nam(dir: &std::path::Path, name: &str) {
@@ -425,6 +651,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **The load-then-read-`prior` ordering inside `start_scan`'s job, discriminated.** Its
+    /// neighbour above shares an already-loaded `SharedIndex` between two services, so the
+    /// deferred load has always finished before the scan job runs: that test passes with the two
+    /// lines transposed and verifies sharing, not sequencing.
+    ///
+    /// Three things are needed to reach the not-yet-loaded state deterministically, and a fourth
+    /// to make it observable.
+    ///
+    /// The first service is **dropped**, so its `Weak` registry entry dies and the next open
+    /// builds a `SharedIndex` that has parsed nothing. The test then takes `for_path`'s `Arc`
+    /// *before* opening the service and holds its `loaded` mutex -- exactly the condition
+    /// `schedule_load` reads as "a loader is already running" (`TryLockError::WouldBlock`) and
+    /// returns on, so no loader thread is spawned and the state cannot resolve behind the test's
+    /// back. Releasing the guard afterwards lets both orderings finish; only one read the index
+    /// first.
+    ///
+    /// The observable is `upserted`, and it needs the sleep. `removed` cannot serve: an empty
+    /// `prior` has no entries to conclude removals about, so it is `0` either way. `upserted`
+    /// distinguishes them only once the file is outside `namir_library`'s two-second mtime
+    /// settling window relative to the first scan's completion -- inside it the file is rehashed
+    /// unconditionally and upserted whatever `prior` said, which is correct behaviour and is why
+    /// the sleep is before the first scan rather than after it.
+    #[test]
+    fn a_scan_that_starts_before_the_deferred_load_still_sees_the_saved_index() {
+        let dir = temp_dir("scan_before_load");
+        let pool = ThreadPool::with_threads(1);
+        let index_path = dir.join("library-index.json");
+
+        // A first service scans and saves, then goes away entirely. The file is written well
+        // before that scan completes, so the settling window does not cover it next time.
+        {
+            let (first, _) = LibraryService::open_at(&dir);
+            write_nam(&dir.join("Library"), "a.nam");
+            std::thread::sleep(Duration::from_millis(2_100));
+            let (tx, rx) = mpsc::channel();
+            first
+                .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+                .unwrap();
+            let outcome = recv(&rx);
+            assert!(outcome.complete && outcome.save_error.is_none());
+            assert_eq!(outcome.upserted, 1, "the first scan discovers the file");
+        }
+
+        // Pin the fresh shared entry and hold its load, so `open_at` below spawns no loader.
+        let shared = SharedIndex::for_path(index_path);
+        let held: MutexGuard<'_, Option<Loaded>> = lock(&shared.loaded);
+        assert!(
+            held.is_none(),
+            "a dropped service must not leave a parse behind"
+        );
+
+        let (second, warnings) = LibraryService::open_at(&dir);
+        assert!(
+            warnings.is_empty(),
+            "open reads nothing, so it can warn about nothing"
+        );
+        assert_eq!(second.snapshot().len(), 0, "nothing is loaded yet");
+
+        let (tx, rx) = mpsc::channel();
+        second
+            .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+            .unwrap();
+
+        // The job is now blocked inside `ensure_loaded` on the guard this thread holds -- or, if
+        // the two lines were transposed, has already taken an empty `prior` and blocks after the
+        // fact.
+        drop(held);
+
+        let outcome = recv(&rx);
+        assert!(outcome.complete);
+        assert_eq!(
+            outcome.upserted, 0,
+            "the file is unchanged and already in the saved index, so a job that read the index \
+             before taking `prior` has nothing to upsert -- a non-zero count here means it took \
+             `prior` from the not-yet-loaded empty index"
+        );
+        assert_eq!(second.snapshot().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A second `start_scan` while one is already running is refused rather than started, and
     /// `is_scanning()` reflects the running job.
     #[test]
@@ -559,6 +866,164 @@ mod tests {
             namir_fixtures::library::TOTAL_COUNT,
             progress_calls.load(Ordering::SeqCst)
         );
+    }
+
+    // ---- M14 (§22 R-18): the index is off the instantiation path -------------------------------
+
+    /// The new contract in one test: `open` returns no warnings because it has read nothing, and a
+    /// corrupt index is still reported -- through [`LibraryService::take_load_warnings`], once the
+    /// load it belongs to has actually happened.
+    ///
+    /// The old contract returned that warning from `open` itself, which is exactly what made `open`
+    /// a parse.
+    #[test]
+    fn a_corrupt_index_is_reported_by_the_deferred_load_rather_than_by_open() {
+        let dir = temp_dir("corrupt_deferred");
+        let index_path = dir.join("library-index.json");
+        std::fs::write(&index_path, b"{ this is not a library index").unwrap();
+
+        let (service, warnings) = LibraryService::open(index_path, vec![dir.clone()]);
+        assert!(
+            warnings.is_empty(),
+            "open reads nothing, so it can report nothing: {warnings:#?}"
+        );
+
+        service.ensure_loaded();
+        let warnings = service.take_load_warnings();
+        assert!(
+            !warnings.is_empty(),
+            "a corrupt index must still degrade with a warning rather than silently"
+        );
+        assert!(
+            service.snapshot().is_empty(),
+            "a corrupt index degrades to an empty one, not to whatever parsed"
+        );
+        assert!(
+            service.take_load_warnings().is_empty(),
+            "draining removes them, so a shell polling every frame reports each once"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cross-instance sharing, which is the half of R-18's fix that makes a *host* with ten plugin
+    /// instances pay one parse rather than ten: a second service naming the same index file sees
+    /// the first one's index, and a scan run through either is visible through both.
+    ///
+    /// Deterministic rather than timing-dependent in both directions: the second `open` returns the
+    /// already-parsed shared entry synchronously (nothing is spawned when this process's parse is
+    /// current), and the scan's result is published into that same shared slot before its
+    /// `on_complete` callback fires.
+    #[test]
+    fn two_services_on_one_index_file_share_one_parsed_index() {
+        let dir = temp_dir("shared_parse");
+        let index_path = dir.join("library-index.json");
+        let pool = ThreadPool::with_threads(1);
+
+        let (first, _) = LibraryService::open(index_path.clone(), vec![dir.clone()]);
+        first.ensure_loaded();
+        write_nam(&dir, "a.nam");
+
+        let (tx, rx) = mpsc::channel();
+        first
+            .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+            .unwrap();
+        assert_eq!(recv(&rx).upserted, 1);
+
+        // Opened *after* the scan and never loaded by anything: its index is the one the first
+        // service's scan published, not a second parse and not an empty placeholder.
+        let (second, _) = LibraryService::open(index_path, vec![dir.clone()]);
+        assert_eq!(
+            second.snapshot().len(),
+            1,
+            "a second instance must see the index this process already has"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The failure the deferral could have introduced, guarded at the seam that prevents it: a scan
+    /// started before the load has landed must still take the *persisted* index as its `prior`.
+    ///
+    /// `start_scan`'s job blocks on `ensure_loaded` before reading `prior` precisely so that a
+    /// complete walk cannot conclude, from a not-yet-loaded empty index, that everything is gone --
+    /// the erase-the-shared-index failure `open_default`'s doc comment records from M6. The
+    /// discriminator is `upserted`: against the real prior the unchanged file is not re-upserted,
+    /// against an empty one it is.
+    #[test]
+    fn a_scan_started_before_the_load_lands_still_reads_the_persisted_index_as_its_prior() {
+        let dir = temp_dir("prior_after_load");
+        let index_path = dir.join("library-index.json");
+        let pool = ThreadPool::with_threads(1);
+        write_nam(&dir, "a.nam");
+        // Aged well outside `namir-library`'s mtime settling window, for the same reason that
+        // crate's own `an_unchanged_second_scan_upserts_nothing` ages its fixture: a file written
+        // moments before a scan completes is re-hashed by design, which would mask the property
+        // under test here.
+        age_mtime(&dir.join("a.nam"), 3600);
+
+        let (first, _) = LibraryService::open(index_path.clone(), vec![dir.clone()]);
+        let (tx, rx) = mpsc::channel();
+        first
+            .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+            .unwrap();
+        assert_eq!(recv(&rx).upserted, 1, "the first scan indexes the file");
+        // Dropped so the process no longer holds this path's parsed index: the next open is a
+        // genuine cold one, as a freshly-launched plugin instance would be.
+        drop(first);
+
+        let (second, _) = LibraryService::open(index_path, vec![dir.clone()]);
+        let (tx, rx) = mpsc::channel();
+        second
+            .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+            .unwrap();
+        let outcome = recv(&rx);
+        assert!(outcome.complete);
+        assert_eq!(
+            outcome.upserted, 0,
+            "an unchanged file must not be re-upserted -- the scan's prior was the empty \
+             not-yet-loaded index rather than the persisted one"
+        );
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(second.snapshot().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Another process's rescan is still picked up: the cache is keyed on the file's modification
+    /// time and length, so a changed file is re-parsed on the next open rather than served stale.
+    /// Written here by re-saving through a second store, which is what another process's scan does.
+    #[test]
+    fn an_index_file_changed_underneath_this_process_is_re_read_on_the_next_open() {
+        let dir = temp_dir("stale_cache");
+        let index_path = dir.join("library-index.json");
+        write_nam(&dir, "a.nam");
+
+        let (first, _) = LibraryService::open(index_path.clone(), vec![dir.clone()]);
+        first.ensure_loaded();
+        assert!(first.snapshot().is_empty(), "nothing has been scanned yet");
+        drop(first);
+
+        // Stand in for another process: index the file through a service of its own, save, drop.
+        {
+            let pool = ThreadPool::with_threads(1);
+            let (other, _) = LibraryService::open(index_path.clone(), vec![dir.clone()]);
+            let (tx, rx) = mpsc::channel();
+            other
+                .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+                .unwrap();
+            assert_eq!(recv(&rx).upserted, 1);
+        }
+
+        let (fresh, _) = LibraryService::open(index_path, vec![dir.clone()]);
+        fresh.ensure_loaded();
+        assert_eq!(
+            fresh.snapshot().len(),
+            1,
+            "an index written since the last parse must be re-read, not served from the cache"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A missing index file (the ordinary first-run case) opens cleanly with no warnings and an

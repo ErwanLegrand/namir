@@ -267,11 +267,204 @@ mod tests {
         buf[buf.len() - 1]
     }
 
-    // trace-partial: FR-GATE-010
-    // uncovered: FR-GATE-010 — of the five controls the "U per control" method names, Attack and
-    // uncovered: Release are exercised by no test: ATTACK_MS_ID is never written anywhere in the
-    // uncovered: workspace, and RELEASE_MS_ID only as a helper inside a test whose assertion is
-    // uncovered: about hold; closes M8
+    /// As [`process_constant_in_chunks`], but keeps every output sample — what an attack or
+    /// release measurement needs, since the quantity of interest is the *shape* of the gain
+    /// trajectory rather than where it settles.
+    fn process_constant_collecting(stage: &mut GateStage, total: usize, value: f32) -> Vec<f32> {
+        let mut buf = vec![value; total];
+        let mut out = Vec::with_capacity(total);
+        let mut offset = 0usize;
+        while offset < buf.len() {
+            let end = (offset + 64).min(buf.len());
+            let n = end - offset;
+            let mut channels: [&mut [f32]; 1] = [&mut buf[offset..end]];
+            let mut io = StageIo::new(&mut channels, n);
+            audio_section(|| stage.process(&mut io));
+            out.extend_from_slice(io.channel(0));
+            offset = end;
+        }
+        out
+    }
+
+    /// The applied gain, sample by sample, recovered from a constant-`value` run. Exact rather
+    /// than approximate: `GateStage::process` multiplies the input by the detector's gain and,
+    /// with the stage enabled by default, the bypass blend is settled at 1.0 throughout — so
+    /// `out / value` *is* the gate's gain (`namir_dsp::NoiseGate::step`'s own return).
+    fn gain_trajectory(out: &[f32], value: f32) -> Vec<f32> {
+        out.iter().map(|s| s / value).collect()
+    }
+
+    /// The length, in samples, of the monotonic ramp between "fully closed" and "fully open" in
+    /// `gains` — the quantity FR-GATE-010's Attack control names. `namir_dsp::NoiseGate` ramps its
+    /// gain by a fixed `1/attack_samples` per sample while `Opening` and clamps to exactly 1.0 on
+    /// the step that reaches it, so counting from the first nonzero gain to the first gain of 1.0
+    /// inclusive recovers `attack_samples` exactly, independent of how long the envelope detector
+    /// took to cross the threshold beforehand.
+    fn opening_ramp_samples(gains: &[f32]) -> usize {
+        let first = gains
+            .iter()
+            .position(|&g| g > 0.0)
+            .expect("the gate never started opening");
+        let full = gains
+            .iter()
+            .position(|&g| g >= 1.0)
+            .expect("the gate never reached fully open");
+        assert!(full >= first, "gain reached 1.0 before it left 0.0");
+        full - first + 1
+    }
+
+    /// [`opening_ramp_samples`]'s counterpart for the Release control: from the first gain below
+    /// 1.0 to the first gain of exactly 0.0, inclusive. Skips the leading fully-open region so a
+    /// nonzero hold period (which is a *different* control) cannot leak into the figure.
+    fn closing_ramp_samples(gains: &[f32]) -> usize {
+        let first = gains
+            .iter()
+            .position(|&g| g < 1.0)
+            .expect("the gate never started closing");
+        let closed = gains
+            .iter()
+            .position(|&g| g <= 0.0)
+            .expect("the gate never reached fully closed");
+        assert!(closed >= first, "gain reached 0.0 before it left 1.0");
+        closed - first + 1
+    }
+
+    /// `ms` at 48 kHz, rounded the way `namir_dsp::gate`'s own `ms_to_samples_min1` rounds it.
+    fn ms_to_samples(ms: f32) -> usize {
+        (ms as f64 / 1000.0 * 48_000.0).round().max(1.0) as usize
+    }
+
+    /// How far a measured attack/release ramp may sit from its tabulated length: one sample, or
+    /// 0.5% of the figure, whichever is larger.
+    ///
+    /// **The relative term is there for a measured, benign effect, recorded rather than papered
+    /// over.** `namir_dsp::NoiseGate` walks its gain by repeated `f32` addition of
+    /// `1/ramp_samples`, and near 1.0 the `f32` grid is coarser than that step is exact, so a long
+    /// ramp accumulates a systematic rounding bias: the 2000 ms release measures **95 904 samples
+    /// against a nominal 96 000**, a −0.1% error, while every ramp short enough for the bias not to
+    /// accumulate (both attack endpoints, the 1 ms and 100 ms releases) lands exactly. A tenth of a
+    /// percent on a two-second release is inaudible and FR-GATE-010 tabulates no accuracy figure,
+    /// so this is not booked as a defect — but the bound is written to admit exactly that effect
+    /// and no more, rather than being loosened until the test passes.
+    fn ramp_tolerance_samples(expected: usize) -> usize {
+        (expected / 200).max(1)
+    }
+
+    /// **FR-GATE-010's table, control by control.** The requirement is not only "these five
+    /// controls exist": it tabulates a range and a default for each, and nothing read either back.
+    /// `params.lock` cannot stand in — `render_manifest` emits key, id, kind tag and smoothing and
+    /// no bounds at all, so every number below could change with the manifest untouched.
+    ///
+    /// Read off the descriptors this stage actually seeds itself from (`GatePrep::prepare` calls
+    /// `continuous_default` on these same constants), so a descriptor edit that contradicted the
+    /// FRS table would fail here rather than silently reshape the shipped control.
+    #[test]
+    fn every_control_matches_the_range_and_default_the_requirement_tabulates() {
+        for (descriptor, min, max, default) in [
+            (THRESHOLD_DB, -100.0f32, 0.0f32, -70.0f32),
+            (ATTACK_MS, 0.1, 50.0, 1.0),
+            (HOLD_MS, 0.0, 500.0, 30.0),
+            (RELEASE_MS, 1.0, 2000.0, 100.0),
+        ] {
+            let ParamKind::Continuous {
+                min: got_min,
+                max: got_max,
+                default: got_default,
+            } = descriptor.kind
+            else {
+                panic!("{} must be Continuous", descriptor.key);
+            };
+            assert_eq!(got_min, min, "{}: minimum", descriptor.key);
+            assert_eq!(got_max, max, "{}: maximum", descriptor.key);
+            assert_eq!(got_default, default, "{}: default", descriptor.key);
+        }
+
+        let ParamKind::Stepped {
+            values,
+            default_index,
+        } = ENABLED.kind
+        else {
+            panic!("gate.enabled must be Stepped");
+        };
+        assert_eq!(values, &["Off", "On"], "gate.enabled: named values");
+        assert_eq!(default_index.0, 1, "gate.enabled: default is On");
+    }
+
+    /// **FR-GATE-010's Attack control, against a synthesised burst.** Three settings spanning the
+    /// tabulated 0.1–50 ms range, including its two endpoints and the 1 ms default: the gate is
+    /// driven from silence into a loud burst and the *duration of its opening ramp* is measured
+    /// (see [`opening_ramp_samples`] for why that is the attack time exactly, not an estimate of
+    /// it). `ATTACK_MS_ID` had never been written by anything in the workspace before this test.
+    #[test]
+    fn attack_sets_how_long_the_gate_takes_to_open() {
+        let loud = db_to_linear(-10.0);
+
+        for attack_ms in [0.1f32, 1.0, 50.0] {
+            let mut stage = stage(ChannelConfig::Mono);
+            stage.apply(ParamChange {
+                id: ATTACK_MS_ID,
+                value: attack_ms,
+            });
+
+            // Silence first, so the run starts from a genuinely closed gate and the burst's own
+            // leading edge is what opens it.
+            process_constant_in_chunks(&mut stage, 4_800, 0.0);
+            // Long enough for the slowest setting (50 ms = 2400 samples) plus the detector's own
+            // ~1 ms threshold crossing, several times over.
+            let out = process_constant_collecting(&mut stage, 24_000, loud);
+
+            let measured = opening_ramp_samples(&gain_trajectory(&out, loud));
+            let expected = ms_to_samples(attack_ms);
+            assert!(
+                measured.abs_diff(expected) <= ramp_tolerance_samples(expected),
+                "attack {attack_ms} ms: opened over {measured} samples, expected {expected}"
+            );
+        }
+    }
+
+    /// **FR-GATE-010's Release control**, the same shape as
+    /// [`attack_sets_how_long_the_gate_takes_to_open`]: three settings spanning the tabulated
+    /// 1–2000 ms range including both endpoints, measured as the duration of the closing ramp
+    /// after a burst ends. Hold is pinned to 0 ms so the figure measured is Release alone —
+    /// `hold_apply_actually_changes_detector_behaviour` below is what covers Hold, and it writes
+    /// `RELEASE_MS_ID` only as a helper, which is why Release itself was unexercised until here.
+    ///
+    /// The burst decays into a **−90 dBFS tone rather than true silence**: the gate treats the two
+    /// identically (both sit below the −70 dBFS threshold's −73 dBFS hysteresis close point), but
+    /// literal silence multiplied by any gain is still silence, so a silent tail carries no
+    /// trajectory to measure.
+    #[test]
+    fn release_sets_how_long_the_gate_takes_to_close() {
+        let loud = db_to_linear(-10.0);
+        let below_threshold = db_to_linear(-90.0);
+
+        for release_ms in [1.0f32, 100.0, 2000.0] {
+            let mut stage = stage(ChannelConfig::Mono);
+            stage.apply(ParamChange {
+                id: HOLD_MS_ID,
+                value: 0.0,
+            });
+            stage.apply(ParamChange {
+                id: RELEASE_MS_ID,
+                value: release_ms,
+            });
+
+            // Open fully first (100 ms at the 1 ms default attack is many times over).
+            process_constant_in_chunks(&mut stage, 4_800, loud);
+            // Sized for the slowest setting (2000 ms = 96 000 samples) plus the detector's own
+            // decay through the hysteresis gap.
+            let out = process_constant_collecting(&mut stage, 120_000, below_threshold);
+
+            let measured = closing_ramp_samples(&gain_trajectory(&out, below_threshold));
+            let expected = ms_to_samples(release_ms);
+            assert!(
+                measured.abs_diff(expected) <= ramp_tolerance_samples(expected),
+                "release {release_ms} ms: closed over {measured} samples, expected {expected}"
+            );
+        }
+    }
+
+    // trace: FR-GATE-010
     #[test]
     fn burst_opens_and_silence_closes_through_the_stage() {
         let mut stage = stage(ChannelConfig::Mono);
@@ -457,39 +650,61 @@ mod tests {
         assert!(max_delta > 0.0, "bypass crossfade never advanced");
     }
 
-    // trace-partial: FR-CHAIN-050
-    // uncovered: FR-CHAIN-050 — the mono-core-then-duplicate behaviour is shown for GateStage
-    // uncovered: only: NamStage has no multi-channel content assertion (every nam.rs test is
-    // uncovered: ChannelConfig::Mono bar one that asserts nothing about channel content), and
-    // uncovered: ChannelConfig::MonoToStereo appears in no gate.rs or nam.rs test at all;
-    // uncovered: closes M8
+    /// **FR-CHAIN-050's mono core, in both of this stage's multi-channel configurations.** Run for
+    /// `Stereo` and for `MonoToStereo`, which appeared in no test in this file until M14 — and with
+    /// a right channel that carries a *different* signal from the left, so "the two outputs agree"
+    /// is a statement about the channel-0-then-duplicate shuttle rather than an accident of both
+    /// channels having been fed the same thing.
+    // trace: FR-CHAIN-050
     #[test]
-    fn stereo_duplicates_the_mono_core_gate_result_onto_every_channel() {
-        let mut stage = stage(ChannelConfig::Stereo);
+    fn every_multi_channel_configuration_duplicates_the_mono_core_gate_result() {
         let loud = db_to_linear(-10.0);
+        // Loud enough to hold a gate of its own open, so a right channel that *did* reach the
+        // detector would be visible rather than merely gated away.
+        let other = db_to_linear(-4.0);
 
-        // Settle fully open on both channels (identical input, per FR-CHAIN-050's invariant).
-        for _ in 0..800 {
+        for channel_config in [ChannelConfig::Stereo, ChannelConfig::MonoToStereo] {
+            let mut stage = stage(channel_config);
+            assert_eq!(
+                channel_config.output_channels(),
+                2,
+                "{channel_config:?} is supposed to be a two-channel configuration"
+            );
+
+            // Settle fully open (1 s, many times the 1 ms default attack).
+            for _ in 0..800 {
+                let mut left = [loud; 64];
+                let mut right = [other; 64];
+                let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+                let mut io = StageIo::new(&mut channels, 64);
+                audio_section(|| stage.process(&mut io));
+            }
+
             let mut left = [loud; 64];
-            let mut right = [loud; 64];
+            let mut right = [other; 64];
             let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
             let mut io = StageIo::new(&mut channels, 64);
             audio_section(|| stage.process(&mut io));
-        }
 
-        let mut left = [loud; 64];
-        let mut right = [loud; 64];
-        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
-        let mut io = StageIo::new(&mut channels, 64);
-        audio_section(|| stage.process(&mut io));
-
-        let left_out = io.channel(0).to_vec();
-        let right_out = io.channel(1).to_vec();
-        for (l, r) in left_out.iter().zip(right_out.iter()) {
-            assert!((l - r).abs() < 1e-6, "channels diverged: {l} vs {r}");
+            let left_out = io.channel(0).to_vec();
+            let right_out = io.channel(1).to_vec();
+            for (l, r) in left_out.iter().zip(right_out.iter()) {
+                assert!(
+                    (l - r).abs() < 1e-6,
+                    "{channel_config:?}: channels diverged: {l} vs {r}"
+                );
+            }
+            // The duplicated result is channel 0's, not channel 1's — the core processed one
+            // channel and it was the one the routing nominates.
+            for &s in left_out.iter() {
+                assert!(
+                    (s - loud).abs() < 1e-4,
+                    "{channel_config:?}: expected channel 0's own signal on both outputs, got {s}"
+                );
+            }
+            // And it's a real passthrough, not both channels silently zeroed.
+            assert!(left_out.iter().any(|&s| s.abs() > 1e-3));
         }
-        // And it's a real passthrough, not both channels silently zeroed.
-        assert!(left_out.iter().any(|&s| s.abs() > 1e-3));
     }
 
     /// The path most likely to allocate if `dry`/`scratch` are undersized or absent: stereo, so

@@ -15,20 +15,24 @@ use namir_core::{ErrorCode, Severity};
 /// The diagnostic log opened and the session's first record was written (D-16.5). Carries the
 /// resolved verbosity level and the sink path, so a log a user sends in says which level produced
 /// it without anyone having to ask.
-pub const LOG_SESSION_STARTED: ErrorCode = ErrorCode {
-    id: "platform.log.session_started",
-    severity: Severity::Info,
-    message_template: "Diagnostic logging started at level {level}.",
-};
+pub const LOG_SESSION_STARTED: ErrorCode = ErrorCode::new(
+    "platform.log.session_started",
+    Severity::Info,
+    "Diagnostic logging started ({detail}).",
+    "Nothing to do; this record only marks where a session's log begins. Set NAMIR_LOG to `off`, \
+     `error`, `info` or `verbose` to change how much follows it.",
+);
 
 /// The log reached [`crate::logging::LOG_MAX_BYTES`] and the generations were rotated (D-16.5).
 /// Written as the first record of the *new* `namir.log`, so the seam between two generations is
 /// visible from either side.
-pub const LOG_ROTATED: ErrorCode = ErrorCode {
-    id: "platform.log.rotated",
-    severity: Severity::Info,
-    message_template: "The diagnostic log reached {bytes} bytes and was rotated.",
-};
+pub const LOG_ROTATED: ErrorCode = ErrorCode::new(
+    "platform.log.rotated",
+    Severity::Info,
+    "The diagnostic log reached its size limit and was rotated ({detail}).",
+    "Nothing to do; the previous generation is kept beside this file. Copy both if you are \
+     attaching a log to a bug report.",
+);
 
 /// `NAMIR_LOG` was set to something the level parser does not recognise (D-16.5). The level falls
 /// back exactly as if the variable were unset — never silently off — and this record names the
@@ -43,11 +47,13 @@ pub const LOG_ROTATED: ErrorCode = ErrorCode {
 /// spelling: [`Severity::Warning`], rendering `WARN`. Choosing `Info` instead would have printed
 /// `INFO platform.log.bad_level`, contradicting the decision's own quoted line for a record whose
 /// entire purpose is to be noticed.
-pub const LOG_BAD_LEVEL: ErrorCode = ErrorCode {
-    id: "platform.log.bad_level",
-    severity: Severity::Warning,
-    message_template: "NAMIR_LOG was set to {value}, which is not a known verbosity level.",
-};
+pub const LOG_BAD_LEVEL: ErrorCode = ErrorCode::new(
+    "platform.log.bad_level",
+    Severity::Warning,
+    "NAMIR_LOG was set to a value that is not a known verbosity level ({detail}).",
+    "Set NAMIR_LOG to one of `off`, `error`, `info` or `verbose`, or unset it. Logging is running \
+     at its normal level in the meantime, not switched off.",
+);
 
 #[cfg(test)]
 mod tests {

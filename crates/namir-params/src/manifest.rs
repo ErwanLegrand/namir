@@ -19,9 +19,23 @@
 //! `tombstoned` in the same change, rather than deleted. [`check_manifest`] is what enforces that
 //! going forward: a key that is `live` in `old` and absent from `new` is a build failure unless
 //! `old` already marked it `tombstoned` (see that function's doc comment for the full rule set).
-//! Wiring an automated regeneration tool that merges old tombstones with a new render is left to
-//! the CI tooling milestone (`03-implementation-roadmap.md` §5's own note); today, with
-//! [`crate::REGISTRY`] empty, there is no tombstone history to preserve yet.
+//!
+//! # The regeneration tool, added M14
+//!
+//! The paragraph that stood here said wiring "an automated regeneration tool that merges old
+//! tombstones with a new render" was left to the CI tooling milestone, and that with
+//! [`crate::REGISTRY`] empty there was no tombstone history to preserve yet. `REGISTRY` stopped
+//! being empty at M2 and the tool was never wired, which left the tombstone mechanism **inoperable
+//! rather than merely unbuilt** (FR-PARAM-020, issue #31): every regeneration path in the tree —
+//! `xtask params-lock --write`, `generate_params_lock`, and the byte-equality check both are read
+//! against — compared or wrote [`render_manifest`]'s *live-only* output, so a committed tombstone
+//! line failed the gate permanently and `--write` deleted it. A retirement mechanism that cannot
+//! survive its own regeneration command is not a mechanism, and 1.0 is the version D-10.1's
+//! stability promise is measured from.
+//!
+//! [`merge_manifest`] is that tool. It is what every regeneration and comparison path now goes
+//! through; [`render_manifest`] is kept as the live-only primitive it always was, and is called
+//! only by [`merge_manifest`] and by tests of it.
 
 use std::collections::BTreeMap;
 
@@ -37,9 +51,10 @@ pub const FORMAT_VERSION: u32 = 1;
 
 const HEADER: &str = "\
 # namir-params manifest (params.lock) -- machine-generated, do not hand-edit except to flip a
-# retired parameter's line from \"live\" to \"tombstoned\" (D-10.1). Regenerate the \"live\" lines
-# with `cargo test -p namir-params --lib -- --ignored generate_params_lock`, which calls
-# render_manifest(REGISTRY) (see crates/namir-params/src/manifest.rs) and writes this file.
+# retired parameter's line from \"live\" to \"tombstoned\" (D-10.1). Regenerate with
+# `cargo run -p xtask -- params-lock --write`, which calls merge_manifest(this file, REGISTRY)
+# (see crates/namir-params/src/manifest.rs): the \"live\" lines are re-rendered from REGISTRY and
+# every \"tombstoned\" line already here is carried through unchanged.
 #
 # Columns: key id kind live|tombstoned. One line per parameter, sorted by key. Tombstoned lines
 # are retained forever -- a parameter is retired here, never deleted (FR-PARAM-020).
@@ -69,6 +84,59 @@ pub fn render_manifest(descriptors: &[ParamDescriptor]) -> String {
             d.id.0,
             kind_tag(&d.kind)
         ));
+    }
+    out
+}
+
+/// The manifest text a fresh `params.lock` should have, given the one checked in today: every
+/// `live` line [`render_manifest`] derives from `new`, plus every `tombstoned` line `old` already
+/// carried, merged into one key-sorted list.
+///
+/// This is the function that makes D-10.1's tombstone a real mechanism rather than a documented
+/// intention (see the module doc's *The regeneration tool* section). Three properties are
+/// load-bearing:
+///
+/// - **It is a no-op when `old` carries no tombstone.** The output is then byte-identical to
+///   `render_manifest(new)`, which is what lets it replace that call everywhere without touching
+///   the checked-in `params.lock`.
+/// - **A tombstoned key that has come back live is not duplicated.** Its `live` line wins in the
+///   rendered text — but that state is exactly [`check_manifest`]'s `TOMBSTONE_REUSED`, which every
+///   caller of this function is required to run first, so the merge never has to adjudicate it.
+///   Silently emitting both lines would produce a file whose own re-parse disagrees with itself.
+/// - **A malformed `old` line is dropped, not propagated.** `old` is hand-edited by definition (a
+///   tombstone is a hand-flip of `live` to `tombstoned`), so a typo is the expected failure. It is
+///   [`check_manifest`]'s `MALFORMED_LINE` that reports it with the offending text; carrying the
+///   bad line forward here would make `--write` cement a typo into the checked-in file.
+pub fn merge_manifest(old: &str, new: &[ParamDescriptor]) -> String {
+    let (old_entries, _) = parse_manifest(old);
+
+    let live_keys: BTreeMap<&str, ()> = new.iter().map(|d| (d.key, ())).collect();
+    let mut lines: Vec<(&str, String)> = new
+        .iter()
+        .map(|d| {
+            (
+                d.key,
+                format!("{} {} {} live", d.key, d.id.0, kind_tag(&d.kind)),
+            )
+        })
+        .collect();
+    for (key, entry) in &old_entries {
+        if entry.tombstoned && !live_keys.contains_key(key.as_str()) {
+            lines.push((
+                key.as_str(),
+                format!("{} {} {} tombstoned", key, entry.id, entry.kind),
+            ));
+        }
+    }
+    // Same stable sort by key `render_manifest` uses, so a tombstone lands where its key belongs
+    // rather than at the end -- the file stays diffable and never spuriously reorders.
+    lines.sort_by_key(|(key, _)| *key);
+
+    let mut out = String::from(HEADER);
+    out.push_str(&format!("format_version {FORMAT_VERSION}\n"));
+    for (_, line) in lines {
+        out.push_str(&line);
+        out.push('\n');
     }
     out
 }
@@ -401,6 +469,108 @@ mod tests {
     fn adding_a_brand_new_key_is_fine() {
         let old = render_manifest(&[TRIM]);
         assert!(check_manifest(&old, &[TRIM, GATE_THRESHOLD]).is_ok());
+    }
+
+    // --- merge_manifest (M14, FR-PARAM-020 / issue #31) ----------------------------------------
+
+    /// `old` with `key` retired: its line hand-flipped from `live` to `tombstoned`, which is the
+    /// only hand edit D-10.1 permits to this file.
+    fn with_tombstone(old: &str, key: &str) -> String {
+        let flipped: Vec<String> = old
+            .lines()
+            .map(|line| {
+                if line.starts_with(&format!("{key} ")) {
+                    line.replace(" live", " tombstoned")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect();
+        format!("{}\n", flipped.join("\n"))
+    }
+
+    #[test]
+    fn merging_into_a_manifest_with_no_tombstone_reproduces_render_manifest_byte_for_byte() {
+        // What lets `merge_manifest` replace `render_manifest` at every regeneration and
+        // comparison site without moving a byte of the checked-in params.lock.
+        let old = render_manifest(&[TRIM, GATE_THRESHOLD]);
+        assert_eq!(
+            merge_manifest(&old, &[TRIM, GATE_THRESHOLD]),
+            render_manifest(&[TRIM, GATE_THRESHOLD])
+        );
+        // And from nothing at all -- the first-generation case.
+        assert_eq!(
+            merge_manifest("", &[TRIM, GATE_THRESHOLD]),
+            render_manifest(&[TRIM, GATE_THRESHOLD])
+        );
+    }
+
+    #[test]
+    fn a_tombstoned_line_survives_regeneration() {
+        // The defect issue #31 names, in one assertion: retire GATE_THRESHOLD, drop its descriptor
+        // from the live set (which is what retiring it means), and regenerate. Under
+        // `render_manifest` the line vanished and the id became reusable; under `merge_manifest`
+        // it is still there, verbatim.
+        let old = with_tombstone(&render_manifest(&[TRIM, GATE_THRESHOLD]), "gate.threshold");
+        let merged = merge_manifest(&old, &[TRIM, CHANNEL_MODE]);
+
+        let tombstone = format!(
+            "gate.threshold {} continuous tombstoned",
+            GATE_THRESHOLD.id.0
+        );
+        assert!(merged.contains(&tombstone), "{merged}");
+        assert!(merged.contains(&format!("trim.gain_db {} continuous live", TRIM.id.0)));
+        assert!(merged.contains(&format!(
+            "out.channel_mode {} stepped live",
+            CHANNEL_MODE.id.0
+        )));
+
+        // Idempotent: regenerating twice is a fixed point, so a `--write` in a pull request that
+        // changed nothing produces no diff.
+        assert_eq!(merge_manifest(&merged, &[TRIM, CHANNEL_MODE]), merged);
+        // And the result is a manifest the checker accepts.
+        assert!(check_manifest(&merged, &[TRIM, CHANNEL_MODE]).is_ok());
+    }
+
+    #[test]
+    fn a_tombstone_is_placed_at_its_key_position_not_appended() {
+        // Diffability (D-10.1's "never spuriously reordered"): a retired `gate.threshold` must stay
+        // between `out.channel_mode`'s predecessors and `trim.gain_db`, exactly where its key
+        // sorts, rather than being tacked onto the end.
+        let old = with_tombstone(&render_manifest(&[TRIM, GATE_THRESHOLD]), "gate.threshold");
+        let merged = merge_manifest(&old, &[TRIM, CHANNEL_MODE]);
+        let gate = merged.find("gate.threshold").unwrap();
+        let out = merged.find("out.channel_mode").unwrap();
+        let trim = merged.find("trim.gain_db").unwrap();
+        assert!(gate < out && out < trim, "{merged}");
+    }
+
+    #[test]
+    fn a_key_that_is_both_tombstoned_and_live_renders_exactly_one_line() {
+        // The state `check_manifest` reports as TOMBSTONE_REUSED. The merge must not emit two
+        // lines for one key -- a file whose own re-parse disagrees with itself would be worse than
+        // the violation it is hiding, and the violation is reported by the checker every caller
+        // runs first.
+        let old = with_tombstone(&render_manifest(&[TRIM]), "trim.gain_db");
+        let merged = merge_manifest(&old, &[TRIM]);
+        assert_eq!(merged.matches("trim.gain_db ").count(), 1, "{merged}");
+        assert!(merged.contains(&format!("trim.gain_db {} continuous live", TRIM.id.0)));
+        // ...and the state itself is still a violation, reported against the file that carries it.
+        // `merged` no longer does -- which is exactly why the merge may not be trusted to
+        // adjudicate this and every caller runs the checker against the *checked-in* text first.
+        assert!(check_manifest(&old, &[TRIM]).is_err());
+    }
+
+    #[test]
+    fn a_malformed_old_line_is_dropped_rather_than_carried_forward() {
+        // `old` is hand-edited by definition, so a typo is the expected failure mode. It is
+        // `check_manifest`'s MALFORMED_LINE that reports it; `--write` must not cement it in.
+        let old = format!(
+            "{}oops this is not a manifest line\n",
+            render_manifest(&[TRIM])
+        );
+        let merged = merge_manifest(&old, &[TRIM]);
+        assert!(!merged.contains("oops"), "{merged}");
     }
 
     #[test]

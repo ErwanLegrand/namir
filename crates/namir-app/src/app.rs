@@ -324,7 +324,16 @@ pub fn run() {
     let library_dir = config_dir
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
-    let (library, library_warnings) = namir_worker::library::LibraryService::open_at(&library_dir);
+    let (library, _) = namir_worker::library::LibraryService::open_at(&library_dir);
+    // M14 (§22 R-18): `open_at` no longer reads the index file, and **the standalone asks for it
+    // anyway, here, deliberately.** The deferral exists for the *plugin*, where a host instantiates
+    // one instance per track and NFR-PERF-040's 200 ms is a per-instance budget the index parse was
+    // eating whole. This process launches once, has a user waiting in front of one window, and
+    // measures itself as "start-up to audible **with a warm library index**" (NFR-PERF-030) — a
+    // launch that reported an empty library and filled it in later would not be that measurement,
+    // and `startup_probe::audible` below would report an index of zero entries.
+    library.ensure_loaded();
+    let library_warnings = library.take_load_warnings();
     let library_roots = library.roots().to_vec();
     let library = Arc::new(library);
     // NFR-PERF-030's "with a warm library index": captured here, where it is true, so the startup
@@ -397,6 +406,11 @@ pub fn run() {
     };
 
     let xruns_for_failure = Arc::clone(&xruns);
+    // The two device names the failure callback needs, captured before `stream_setup` is consumed.
+    // Issue #44's smallest half: the app knew which device and which direction had failed and
+    // dropped both, so the notice a human read on 2026-08-27 named neither.
+    let failed_input_name = input.device.name.clone();
+    let failed_output_name = output.device.name.clone();
     let running = stream::open(
         stream_setup,
         engine,
@@ -404,9 +418,16 @@ pub fn run() {
         move |direction, failure| match failure {
             crate::audio_io::StreamFailure::Xrun => xruns_for_failure.record(),
             other => {
+                let (side, device) = match direction {
+                    crate::stream::Direction::Input => ("input", &failed_input_name),
+                    crate::stream::Direction::Output => ("output", &failed_output_name),
+                };
                 let _ = stream_event_sender.send(AppEvent::StreamFailure {
                     direction,
-                    detail: format!("{other:?}"),
+                    // `{other}`, not `{other:?}` -- `StreamFailure`'s `Display` was added at M14
+                    // precisely so no `Debug` rendering reaches a user-facing string.
+                    detail: format!("{side} device \"{device}\": {other}"),
+                    failure: other,
                 });
             }
         },
@@ -532,10 +553,13 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     // No device was opened at all on this path, so there is no share mode to indicate -- `None`
     // rather than a truthful-looking "Shared", which would claim a device this window does not have.
     let mut host = AppHost::new(instance, worker, telemetry, library, state, None);
+    // `NO_AUDIO_DEVICE`, not `NO_SUPPORTED_CONFIG` (issue #40): FR-IO-040's entry says none of the
+    // rates *a device* reports could be negotiated, and on this path there is no device to be the
+    // subject of that sentence. The same judgement two lines up passes `None` for the share-mode
+    // indicator rather than a truthful-looking "Shared".
     host.report(
-        crate::error_codes::NO_SUPPORTED_CONFIG,
-        "no audio device could be opened; parameters can still be edited but nothing will be \
-         processed",
+        crate::error_codes::NO_AUDIO_DEVICE,
+        "no audio device was found or could be opened",
     );
     namir_ui::open_blocking("Namir", host);
 }

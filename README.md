@@ -63,17 +63,27 @@ picked; there is no device-selection screen yet. For a release build, use
 
 The same workspace build also produces the CLAP plugin as a shared library from the `namir-clap`
 crate — `namir_clap.dll` on Windows, `libnamir_clap.so` on Linux, `libnamir_clap.dylib` on macOS
-(`cargo build --release -p namir-clap`). **Installing it is not automated.** On Windows and Linux
-the plugin file is that shared library renamed to `Namir.clap` and copied into the host's CLAP
-search path; on macOS a `.clap` is a bundle directory rather than a renamed dylib and has to be
-assembled by hand for now. `docs/user-guide.md` gives the per-platform paths and the layout.
+(`cargo build --release -p namir-clap`). On Windows and Linux the plugin file is that shared
+library renamed to `Namir.clap`; on macOS a `.clap` is a bundle directory rather than a renamed
+dylib. Producing the right form for the platform you are on, with the licence texts and the
+attribution file beside it, is one command against a release build:
+
+```bash
+cargo build --release --workspace
+cargo run -p xtask -- bundle
+```
+
+That stages `target/bundle/<platform>/` and then asserts what it staged. **Copying it into a
+host's CLAP search path is still manual** — `docs/user-guide.md` gives the per-platform install
+paths, and the installers and archives the release workflow builds from this same staging tree are
+the automated route.
 
 ## Testing
 
 The full test suite:
 
 ```bash
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 ```
 
 The rest of the local gate — CI runs all of these too, alongside platform-specific jobs of
@@ -82,11 +92,13 @@ its own — is:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 cargo run -p xtask -- layering       # crate dependency-graph and platform-cfg lint
+cargo run -p xtask -- rt-logging     # no audio-thread module names the logger
 cargo run -p xtask -- params-lock    # params.lock matches the parameter registry
 cargo run -p xtask -- attribution    # THIRD-PARTY-NOTICES.md is current
 cargo run -p xtask -- identity       # brand mark, README and TRADEMARK.md are current
+cargo run -p xtask -- ci-commands    # this file's commands are the ones CI runs
 cargo run -p xtask -- traceability   # requirement coverage and generated test-plan diff
 cargo deny check                     # licence, advisory and dependency-ban audit
 ```

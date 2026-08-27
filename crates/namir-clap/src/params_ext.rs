@@ -194,12 +194,13 @@ impl<'a> PluginAudioProcessorParams for NamirAudioProcessor<'a> {
 mod tests {
     use super::*;
 
-    // trace-partial: FR-CLAP-060
-    // uncovered: FR-CLAP-060 — both "sample-accurate" and "click-free" are unspanned, the tagged
-    // uncovered: test asserting only that the bypass descriptor carries the IS_BYPASS flag and
-    // uncovered: processing no audio; sample-accuracy is contradicted by apply_automation, which is
-    // uncovered: called once before the block and applies every ParamValue event immediately
-    // uncovered: without reading the event header's sample offset; closes M8
+    /// **FR-CLAP-060's tag moved out of this file at M14**, to
+    /// `tests/clap_host_automation.rs`. What this test asserts — that the bypass descriptor
+    /// carries CLAP's `IS_BYPASS` flag — is a real and necessary part of "host-driven bypass",
+    /// since a host that cannot recognise the parameter never sends the automation at all; it is
+    /// not, on its own, evidence about either "sample-accurate" or "click-free", which is what the
+    /// old tag's own `uncovered:` field said. Those are now driven through the real vtable with
+    /// real event offsets, and the tag lives beside them.
     #[test]
     fn global_bypass_param_info_carries_the_is_bypass_flag() {
         let info = param_info(&GLOBAL_BYPASS);

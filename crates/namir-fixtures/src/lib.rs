@@ -16,12 +16,16 @@
 //! Prior art: `spikes/s1-nam-inference` (constrained-init WaveNet generation) and
 //! `spikes/s2-ir-convolution` (the `fixtures` module this crate's `ir` module ports).
 //!
-// trace-partial: NFR-LIC-050
-// uncovered: NFR-LIC-050 — the manifest the method names does not exist, and the traced artifact
-// uncovered: is a runtime generator whose output is never committed: the fifteen assets tracked
-// uncovered: under crates/*/fuzz/corpus, including a .wav impulse response and a .nam model, are
-// uncovered: recorded nowhere and no check would catch a captured asset added beside them;
-// uncovered: closes M8
+// The manifest the method names is `assets.lock` beside this crate's `Cargo.toml`, added M14 and
+// gated by `cargo run -p xtask -- assets`: every checked-in file under `crates/` that is not source
+// or build configuration, with its size, its BLAKE3 and a declared provenance. This crate stays the
+// *generator* D-19.1 mandates; the manifest is the record NFR-LIC-050 asks for on top of it.
+//
+// The gap was larger than the field that recorded it said: it named fifteen assets under
+// `crates/*/fuzz/corpus`, and the real count is 33 -- the fuzz corpora plus `namir-nam`'s five
+// golden `.nam`/`.wav` files, `namir-state`'s five `.namirpreset` corpus documents,
+// `namir-clap`'s golden input vector and preset, and `namir-ui`'s brand-mark blob.
+// trace: NFR-LIC-050
 
 pub mod ir;
 pub mod library;

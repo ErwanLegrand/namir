@@ -2086,13 +2086,10 @@ mod tests {
         assert_eq!(err.code.id, error_codes::INVALID_SAMPLE_RATE.id);
     }
 
-    // trace-partial: FR-NAM-110
-    // uncovered: FR-NAM-110 — the method's "cross-correlate an impulse through the stage" is
-    // uncovered: performed by nothing: both tagged tests read an accessor whose body is the
-    // uncovered: literal 0 and assert it equals 0, so they would pass unchanged if inference did
-    // uncovered: introduce delay, and the one path that reports a nonzero figure — NamStage's
-    // uncovered: resampler latency — is asserted only as > 0 and is documented as not
-    // uncovered: sample-exact; closes M8
+    /// A test of the accessor, not of the claim it makes: it would pass unchanged if inference
+    /// introduced delay. Kept as the cheap unit-level guard it always was, but FR-NAM-110's tag
+    /// moved to `tests/latency.rs` at M14, which drives a real impulse through a loaded model and
+    /// cross-correlates it — the requirement's own stated method, which this test does not perform.
     #[test]
     fn latency_samples_is_zero() {
         let prepared = PreparedWaveNet::from_file(&minimal_valid_file()).unwrap();

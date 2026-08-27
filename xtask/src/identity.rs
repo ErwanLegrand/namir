@@ -179,6 +179,33 @@ const README_REQUIRED: [&str; 12] = [
     "TRADEMARK.md",
 ];
 
+/// NFR-LIC-010's "licence files present" check (M14): the two files the dual licence is offered
+/// under, each with a substring that identifies which licence it actually contains and the
+/// copyright holder the requirement names.
+///
+/// # Why substrings rather than existence alone
+///
+/// The requirement is "Namir shall be published under `MIT OR Apache-2.0`, at the recipient's
+/// option, with the copyright held by Erwan Patrick Legrand", and *presence of a file called
+/// `LICENSE-MIT`* is not that. An empty file, a truncated one, or one carrying the wrong licence
+/// text would satisfy an existence test while leaving the recipient without the option the
+/// requirement grants them. Two needles per file — the licence's own title line, and the copyright
+/// line naming the holder — cost nothing and assert what is actually promised.
+///
+/// `LICENSE-APACHE` carries the Apache-2.0 text verbatim, whose appendix is the place the holder is
+/// named, so its holder needle is the same string in a different position; both files are checked
+/// the same way rather than one being special-cased.
+///
+/// This closes the half of the method the FRS's `*Consequence (added M14)*` note books rather than
+/// accepts. The SPDX-header half stays open and is NFR-LIC-060's (a Should's) work — see that note.
+const LICENCE_FILES: [(&str, [&str; 2]); 2] = [
+    ("LICENSE-MIT", ["MIT License", "Erwan Patrick Legrand"]),
+    (
+        "LICENSE-APACHE",
+        ["Apache License", "Erwan Patrick Legrand"],
+    ),
+];
+
 /// Substrings `TRADEMARK.md` must contain.
 ///
 /// NFR-LIC-070 names an enumerated two-member set — the name "Namir" *and* the logo — and asks
@@ -593,6 +620,9 @@ pub fn check(repo_root: &Path) -> Result<Vec<String>, String> {
         "TRADEMARK.md",
         &TRADEMARK_REQUIRED,
     ));
+    for (label, required) in LICENCE_FILES {
+        violations.extend(check_document(repo_root, label, &required));
+    }
     Ok(violations)
 }
 
@@ -693,6 +723,60 @@ mod tests {
             downsample_alpha(&[10, 20], 2, 1, 4, 1),
             vec![10, 10, 20, 20]
         );
+    }
+
+    // --- NFR-LIC-010: licence files present (M14) ---------------------------------------------
+
+    /// The real repository root, which is what `xtask identity` runs against.
+    fn real_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask's manifest dir always has a parent")
+            .to_path_buf()
+    }
+
+    /// NFR-LIC-010's "licence files present" clause, against the real tree. Deleting `LICENSE-MIT`
+    /// or `LICENSE-APACHE` -- or emptying one, or replacing its text with the other licence's --
+    /// went unnoticed by every gate in this repository until M14.
+    // trace-partial: NFR-LIC-010
+    // uncovered: NFR-LIC-010 — the method's SPDX-header check has no artifact: only two tracked
+    // uncovered: files under crates/ carry a header, and making the check meaningful means putting
+    // uncovered: one on every file, which is NFR-LIC-060's (a Should's) work — accepted on that
+    // uncovered: basis by the requirement's own Consequence note (FRS, 2026-08-12); closes M8
+    #[test]
+    fn both_licence_files_are_present_and_carry_their_own_text() {
+        let root = real_root();
+        for (label, required) in LICENCE_FILES {
+            let violations = check_document(&root, label, &required);
+            assert!(violations.is_empty(), "{violations:#?}");
+        }
+    }
+
+    #[test]
+    fn a_deleted_or_emptied_licence_file_is_a_violation() {
+        // The negative control, in both shapes: absent, and present but not carrying the licence
+        // it is named for. An existence-only check would pass the second.
+        let dir = std::env::temp_dir().join(format!("xtask-lic-010-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (label, required) = LICENCE_FILES[0];
+        assert_eq!(check_document(&dir, label, &required).len(), 1);
+
+        std::fs::write(dir.join(label), "").unwrap();
+        assert_eq!(check_document(&dir, label, &required).len(), 2);
+
+        // The Apache text under the MIT filename: present, non-empty, and still wrong.
+        std::fs::write(
+            dir.join(label),
+            "Apache License\n\nCopyright (c) 2026 Erwan Patrick Legrand\n",
+        )
+        .unwrap();
+        let violations = check_document(&dir, label, &required);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].contains("MIT License"), "{violations:#?}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

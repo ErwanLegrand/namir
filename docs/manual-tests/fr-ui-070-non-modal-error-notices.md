@@ -388,3 +388,57 @@ needs an internal fault or a misbehaving host).
 audio clause are met and observed. The requirement's second sentence is not met: no notice in the
 catalogue tells the user what they can do, and two notices name neither the file nor the device.
 Steps 4, 8 and 14 carry the detail; the remaining twelve steps pass.
+
+---
+
+## What changed in code after this run — M14 W10, 2026-08-27
+
+**Appended, not edited. The `Result:` line above stands, and this section does not move it.**
+FR-UI-070's `Verify:` is `M`; `xtask traceability` reads that line and reports this requirement
+`**UNRESOLVED**` while it says `FAIL`. Nothing below is evidence that the requirement is met — only
+a human re-executing the fifteen steps on a machine with a display, a real interface and an
+instrument can produce that, and this section exists so that whoever does knows what to expect to
+have changed and what to look at hardest.
+
+**The seven findings, and what was done about each.**
+
+1. **Placeholders (#15).** `namir_core::ErrorCode::render` substitutes; every template in the tree
+   now carries at most one placeholder, spelled `{detail}`, and `xtask error-catalogue` refuses any
+   other. **Re-read every notice in steps 4, 8, 11 and 12 for a surviving brace anyway** — the
+   check reads source text and cannot see a string built any other way.
+2. **The code and message rendered twice (#39).** `namir-worker`'s two `From` impls and
+   `namir-app`'s `LoadOutcomeSummary` now carry the inner error whole instead of its rendered
+   `Display`. Step 1's notice should read its id and sentence **once**. As a side effect the
+   specific `nam.load.*`/`ir.load.*`/`library.scan.*` id now reaches the screen where a generic
+   `app.host.*` one used to: **step 1's expected id is no longer `app.host.load_failed`** but
+   whatever the parser reported, and the script's step 1 criterion is stale in that respect.
+3. **Three contradicted codes (#40).** The save path reports `library.index.save_failed` (step 7,
+   was `library.index.corrupt`); "no device at all" reports `app.audio_io.no_device` (step 13, was
+   `app.audio_io.no_supported_config`); an unclassified stream failure reports
+   `app.audio_io.stream_failed`. **Steps 7 and 13's expected ids in the script above are stale.**
+4. **Undismissable notices in the plugin (#42).** The row is laid out right-to-left, so `Dismiss`
+   is placed against the right edge before the text is measured, and the text wraps beneath it.
+   Asserted in-process at the editor's real 960x640. **Step 14 is the step worth the most attention
+   on a re-run**, and the induction that matters is a *long* notice, not merely three notices.
+5. **Duplicate notices (#43).** Both shells push through `namir_ui::push_deduplicated`; two
+   notices with the same id and detail are one. Steps 8 and 15 are the inductions.
+6. **Notices never expiring.** The list is capped at 16, oldest dropped. **No timed expiry was
+   added** — the argument is in `push_deduplicated`'s doc comment. A notice still stays until it is
+   dismissed or pushed off by sixteen newer ones.
+7. **A `Debug` rendering on screen (#44), and the classification behind it.** `StreamFailure` has a
+   `Display`; the callback uses it and names the direction and the device. **The larger half: the
+   unplug this run induced arrived as `StreamFailure::Other`, not `DeviceLost`** — `to_stream_failure`
+   now reads the message for the WASAPI device-invalidated codes, and the catalogue entry is chosen
+   from the classification instead of from the stream's direction. Step 8 should now name the
+   direction and the device; if the unplug is reported as `app.audio_io.stream_failed` rather than
+   `app.audio_io.device_lost`, the marker list in `crates/namir-app/src/audio_io.rs` did not
+   recognise that machine's error and **that is the finding**, not a regression in the display.
+
+**Outside FR-UI-070's own clauses.** The corrupt `audio-settings.json` of step 9 is now renamed to
+`audio-settings.json.corrupt` at load, before the shutdown save can overwrite it (#45), and the
+notice names where it went. **Step 9's re-run should check the file is actually there afterwards.**
+
+**Unchanged, and still true.** No device-selection surface exists in either shell, so every remedy
+that concerns a device tells the user to edit `audio-settings.json` and restart. That is what the
+program can currently do, stated plainly rather than pointing at a control that does not exist;
+FR-IO-070's third clause and roadmap §15 item 16 still own it.

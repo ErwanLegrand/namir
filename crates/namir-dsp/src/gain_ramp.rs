@@ -75,6 +75,7 @@ impl GainRamp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artefact;
     use crate::rt_harness::audio_section;
 
     fn sr(hz: u32) -> SampleRate {
@@ -94,13 +95,7 @@ mod tests {
         );
     }
 
-    // trace-partial: FR-PARAM-040
-    // uncovered: FR-PARAM-040 — the method's second half, "measure the artefact's spectral
-    // uncovered: energy", is executed nowhere, and the frequency-affecting-parameter clause is
-    // uncovered: unspanned: the EQ's frequencies and Q interpolate through Biquad::set_coeffs
-    // uncovered: rather than GainRamp, and the only coefficient-ramp test asserts a relative
-    // uncovered: comparison (ramped < jumped) rather than the 20 ms-linear-ramp bound this
-    // uncovered: requirement names; closes M8
+    // trace: FR-PARAM-040
     #[test]
     fn full_range_jump_is_no_worse_than_a_20ms_linear_ramp() {
         let sample_rate = 48_000u32;
@@ -131,6 +126,60 @@ mod tests {
         assert!(
             max_delta <= ideal_max_delta * 1.01,
             "max_delta={max_delta} exceeds the 20 ms linear ramp bound {ideal_max_delta}"
+        );
+    }
+
+    /// FR-PARAM-040's second measurement, "measure the artefact's spectral energy", against the
+    /// reference the requirement itself names. The max-sample-to-sample-delta test above is the
+    /// first measurement; between them they execute the method as written.
+    ///
+    /// The comparison is deliberately three-way. A bound the shipped smoother clears is worth
+    /// nothing unless the instrument would have caught it failing, so the unsmoothed step is
+    /// measured too and asserted to be visibly worse.
+    // trace: FR-PARAM-040
+    #[test]
+    fn a_full_range_gain_jump_splatters_no_more_than_a_20ms_linear_ramp() {
+        let sample_rate_hz = 48_000.0;
+        let tone = artefact::tone();
+        let jump = artefact::WINDOW / 4;
+
+        // The two steady states the transition runs between.
+        let quiet: Vec<f32> = tone.iter().map(|s| s * db_to_linear(-60.0)).collect();
+        let loud = tone.clone();
+
+        // (a) The shipped smoother, settled at -60 dB and retargeted to 0 dB at `jump`.
+        let mut ramp = GainRamp::new(sr(48_000), RECOMMENDED_TIME_CONSTANT_MS);
+        ramp.set_target_db(-60.0);
+        let mut settle = vec![1.0f32; 48_000];
+        ramp.process(&mut settle);
+        let mut smoothed = tone.clone();
+        ramp.process(&mut smoothed[..jump]);
+        ramp.set_target_db(0.0);
+        ramp.process(&mut smoothed[jump..]);
+
+        // (b) FR-PARAM-040's reference: a 20 ms linear transition between the same two states.
+        let reference = artefact::linear_20ms_crossfade(&quiet, &loud, jump, sample_rate_hz);
+
+        // (c) The control: no smoothing at all.
+        let stepped: Vec<f32> = quiet[..jump].iter().chain(&loud[jump..]).copied().collect();
+
+        let smoothed_db = artefact::artefact_energy_db(&smoothed);
+        let reference_db = artefact::artefact_energy_db(&reference);
+        let stepped_db = artefact::artefact_energy_db(&stepped);
+        println!(
+            "FR-PARAM-040 gain: smoothed {smoothed_db:.1} dB, 20 ms linear reference \
+             {reference_db:.1} dB, unsmoothed step {stepped_db:.1} dB"
+        );
+
+        assert!(
+            smoothed_db <= reference_db,
+            "the smoother splatters {smoothed_db:.1} dB against the 20 ms linear ramp's \
+             {reference_db:.1} dB"
+        );
+        assert!(
+            stepped_db > reference_db + 10.0,
+            "an unsmoothed step measured {stepped_db:.1} dB, barely above the reference's \
+             {reference_db:.1} dB — the instrument is not discriminating"
         );
     }
 

@@ -17,18 +17,31 @@
 use std::path::PathBuf;
 
 use egui_baseview::{EguiWindow, EguiWindowSettings};
-use namir_core::{ErrorCode, Severity};
 use namir_library::{FileTime, Index, ItemKind, ItemMetadata, LibraryEntry, Origin};
 use namir_ui::{LibrarySnapshot, MeterReading, UiHost, UiIntent, UiNotice, UiSnapshot, ViewState};
 
 /// Frames to render before the window closes itself.
 const FRAMES_BEFORE_CLOSE: u64 = 90;
 
-const SAMPLE_NOTICE: ErrorCode = ErrorCode {
-    id: "ui.manual_smoke.example_notice",
-    severity: Severity::Warning,
-    message_template: "This is a sample FR-UI-070 notice, for visual inspection only.",
-};
+/// This example's own catalogue: the one notice it paints, so a reader can see what an FR-UI-070
+/// notice looks like on screen.
+///
+/// A module, rather than the bare `const` that stood here until M14, because FR-ERR-020 says every
+/// error code is a catalogue entry and `xtask error-catalogue` now enforces that shape — a
+/// construction outside a catalogue module is a code no enumeration of any catalogue would list,
+/// which is exactly the second conjunct of that requirement's method. This one is not a product
+/// error path at all; declaring it here is what says so.
+mod error_codes {
+    use namir_core::{ErrorCode, Severity};
+
+    pub const SAMPLE_NOTICE: ErrorCode = ErrorCode::new(
+        "ui.manual_smoke.example_notice",
+        Severity::Warning,
+        "This is a sample FR-UI-070 notice, for visual inspection only ({detail}).",
+        "Nothing to do -- this entry exists so a reader can see what a notice and its remedy look \
+         like on screen, including how a long one wraps against the Dismiss button.",
+    );
+}
 
 /// A host that hands back a fixed, representative snapshot -- enough on-screen content (a couple
 /// of library entries, a notice, non-silent meters) to actually eyeball FR-UI-020's layout, rather
@@ -77,11 +90,23 @@ impl UiHost for SmokeHost {
                 scan: None,
             },
             unsaved_changes: true,
-            notices: vec![UiNotice {
-                id: 1,
-                code: SAMPLE_NOTICE,
-                detail: "example.nam".to_string(),
-            }],
+            // A short notice and a deliberately long one: FR-UI-070's step 14 (issue #42) turned
+            // on a row that did not wrap, so the example that exists to be looked at must show a
+            // row long enough to wrap.
+            notices: vec![
+                UiNotice {
+                    id: 1,
+                    code: error_codes::SAMPLE_NOTICE,
+                    detail: "example.nam".to_string(),
+                },
+                UiNotice {
+                    id: 2,
+                    code: error_codes::SAMPLE_NOTICE,
+                    detail: "C:/Users/somebody/Documents/Namir/Library/marshall/\
+                             a-very-long-model-name-of-the-kind-a-capture-session-produces.nam"
+                        .to_string(),
+                },
+            ],
             ..UiSnapshot::default()
         }
     }

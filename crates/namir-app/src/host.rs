@@ -47,48 +47,96 @@ use crate::worker::{AppCommand, AppEvent, LoadOutcomeSummary, WorkerHandle};
 
 /// This crate's own catalogue entries for the notices [`AppHost`] itself synthesises (as opposed
 /// to ones that already carry a `namir_core::ErrorCode`, like a load failure).
-mod local_error_codes {
+pub(crate) mod local_error_codes {
     use namir_core::{ErrorCode, Severity};
 
-    pub const LOAD_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.load_failed",
-        severity: Severity::Error,
-        message_template: "Could not load {source}: {reason}.",
-    };
-    pub const LOAD_NOT_DELIVERED: ErrorCode = ErrorCode {
-        id: "app.host.load_not_delivered",
-        severity: Severity::Error,
-        message_template: "{source} was prepared but could not be handed to the audio engine in \
-                            time.",
-    };
-    pub const SCAN_SAVE_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.scan_save_failed",
-        severity: Severity::Warning,
-        message_template: "The library scan finished but its results could not be saved: {reason}.",
-    };
-    pub const STATE_SAVE_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.state_save_failed",
-        severity: Severity::Error,
-        message_template: "Could not save {path}: {reason}.",
-    };
-    pub const STATE_LOAD_FAILED: ErrorCode = ErrorCode {
-        id: "app.host.state_load_failed",
-        severity: Severity::Error,
-        message_template: "Could not load {path}: {reason}.",
-    };
-    pub const REFERENCE_MISSING: ErrorCode = ErrorCode {
-        id: "app.host.reference_missing",
-        severity: Severity::Warning,
-        message_template: "{name} could not be found and was left unloaded.",
-    };
+    use crate::audio_io::StreamFailure;
 
-    /// FR-IO-070: which catalogue entry a [`crate::stream::Direction`]-tagged stream failure maps
-    /// to. Both directions use `crate::error_codes::DEVICE_LOST` today (the input/output
-    /// distinction is carried in the notice's `detail` text instead) since this crate's own
-    /// catalogue does not yet distinguish "input device lost" from "output device lost" as
-    /// separate ids — nothing in FR-IO-070 requires it to.
-    pub fn stream_failure_code(_direction: crate::stream::Direction) -> ErrorCode {
-        crate::error_codes::DEVICE_LOST
+    pub const LOAD_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.load_failed",
+        Severity::Error,
+        "The file could not be loaded ({detail}).",
+        "The detail names the specific reason. Pick another file in the library, or fix this one \
+         and load it again -- audio keeps running on whatever was loaded before.",
+    );
+    pub const LOAD_NOT_DELIVERED: ErrorCode = ErrorCode::new(
+        "app.host.load_not_delivered",
+        Severity::Error,
+        "The file was prepared but could not be handed to the audio engine in time ({detail}).",
+        "Load it again. Nothing was lost and whatever was loaded before is still playing.",
+    );
+    pub const SCAN_SAVE_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.scan_save_failed",
+        Severity::Warning,
+        "The library scan finished but its results could not be saved ({detail}).",
+        "The library list on screen is current; only the index file on disk is stale. Check \
+         Namir's configuration directory is writable, then rescan.",
+    );
+    pub const STATE_SAVE_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.state_save_failed",
+        Severity::Error,
+        "The preset could not be saved ({detail}).",
+        "Save it somewhere you can write to. Your settings are unchanged and still on screen, so \
+         nothing is lost by trying again.",
+    );
+    pub const STATE_LOAD_FAILED: ErrorCode = ErrorCode::new(
+        "app.host.state_load_failed",
+        Severity::Error,
+        "The preset could not be loaded ({detail}).",
+        "Choose another preset file. The current settings were left untouched, so nothing was \
+         half-applied.",
+    );
+    pub const REFERENCE_MISSING: ErrorCode = ErrorCode::new(
+        "app.host.reference_missing",
+        Severity::Warning,
+        "A file this preset refers to could not be found and was left unloaded ({detail}).",
+        "Put the file back where it was, or load a replacement from the library and save the \
+         preset again. A library rescan also helps -- Namir can find a moved file by its content \
+         hash once the library has seen it.",
+    );
+    // **Retired at M14 and kept as a tombstone, not deleted.** `app.host.scan_warning` was the id
+    // `AppHost::handle` built inline for each warning a finished library scan reports -- a real,
+    // user-visible error path whose code belonged to no catalogue, which is what M14's first pass
+    // moved here. This pass removed its last use: every scan warning already arrives as a
+    // `namir_worker::WorkerError` carrying its own `library.scan.*` entry, and wrapping that in a
+    // generic `{detail}` template was one of the layers issue #39 found re-rendering the same
+    // text. Recorded here rather than dropped so the id is not silently reassigned to something
+    // else later; `namir-params`' tombstones are the same discipline for parameter identifiers.
+    // A plain comment, not a doc comment: a `///` block with no item under it would attach itself
+    // to whatever comes next, which is the function below.
+    //
+    // Retired id: `app.host.scan_warning`.
+
+    /// FR-IO-070: which catalogue entry a stream failure maps to.
+    ///
+    /// **It takes the classification, not the direction (issue #44).** Until M14 it took a
+    /// [`crate::stream::Direction`] and ignored it, returning `DEVICE_LOST` unconditionally — so
+    /// *every* stream error was reported to the user as an unplugged device, whatever the backend
+    /// actually said. The 2026-08-27 manual run is why that is more than a tidiness point: the
+    /// physical unplug it induced arrived as [`StreamFailure::Other`] carrying an unmapped OS
+    /// error rather than as `DeviceLost`, and Namir named it correctly *by luck*, because the one
+    /// answer it could give happened to be the right one. `crate::audio_io` now recovers the
+    /// device-loss cases that reach `Other`; anything still unclassified is reported as
+    /// [`crate::error_codes::STREAM_FAILED`], which does not claim a device went away.
+    ///
+    /// The input/output distinction stays in the notice's `detail`, as before — nothing in
+    /// FR-IO-070 asks for separate ids per direction, and issue #43's duplicate-notice fix
+    /// depends on the two directions' details differing, which they now do.
+    pub fn stream_failure_code(failure: &StreamFailure) -> ErrorCode {
+        match failure {
+            StreamFailure::DeviceLost => crate::error_codes::DEVICE_LOST,
+            // Not reported as a notice today (`crate::app`'s callback counts xruns instead), but
+            // matched rather than folded into the catch-all so adding that report later cannot
+            // silently pick up the wrong entry.
+            StreamFailure::Xrun => crate::error_codes::STREAM_FAILED,
+            StreamFailure::Other(message) => {
+                if crate::audio_io::classifies_as_device_loss(message) {
+                    crate::error_codes::DEVICE_LOST
+                } else {
+                    crate::error_codes::STREAM_FAILED
+                }
+            }
+        }
     }
 }
 
@@ -208,8 +256,11 @@ impl AppHost {
     fn push_notice(&mut self, code: ErrorCode, detail: impl Into<String>) {
         let id = self.next_notice_id.fetch_add(1, Ordering::Relaxed);
         let detail = detail.into();
+        // The log record is written unconditionally, *before* the deduplication and the cap below
+        // discard anything: a notice the user never sees must still be reconstructible from
+        // namir.log, which is what makes both of those safe to do at all.
         namir_platform::logging::record(code, &detail);
-        self.notices.push(UiNotice { id, code, detail });
+        namir_ui::push_deduplicated(&mut self.notices, UiNotice { id, code, detail });
     }
 
     /// Public wrapper over [`Self::push_notice`] for [`crate::app`]'s own startup-time warnings
@@ -230,18 +281,14 @@ impl AppHost {
             AppEvent::ScanProgress(progress) => self.scan_progress = Some(progress),
             AppEvent::ScanFinished(outcome) => {
                 self.scan_progress = None;
+                // Each warning's *own* `library.scan.*` entry, not this crate's generic
+                // `app.host.scan_warning` wrapped around a pre-rendered string (issue #39). That
+                // generic entry has no remaining caller and is tombstoned above.
                 for warning in outcome.warnings {
-                    self.push_notice(
-                        namir_core::ErrorCode {
-                            id: "app.host.scan_warning",
-                            severity: namir_core::Severity::Warning,
-                            message_template: "{detail}",
-                        },
-                        warning,
-                    );
+                    self.push_notice(warning.code, warning.detail);
                 }
-                if let Some(reason) = outcome.save_error {
-                    self.push_notice(local_error_codes::SCAN_SAVE_FAILED, reason);
+                if let Some(error) = outcome.save_error {
+                    self.push_notice(local_error_codes::SCAN_SAVE_FAILED, error.detail);
                 }
             }
             AppEvent::StateSaved { path, error } => {
@@ -271,8 +318,14 @@ impl AppHost {
                 }
                 self.last_saved = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
             }
-            AppEvent::StreamFailure { direction, detail } => {
-                let code = local_error_codes::stream_failure_code(direction);
+            AppEvent::StreamFailure {
+                direction: _,
+                failure,
+                detail,
+            } => {
+                // The *classification* picks the entry (issue #44); the direction is carried in
+                // `detail`, which `crate::app`'s callback builds naming both it and the device.
+                let code = local_error_codes::stream_failure_code(&failure);
                 self.push_notice(code, detail);
             }
         }
@@ -291,19 +344,31 @@ impl AppHost {
                     Target::Nam => self.loaded_model_name = name,
                     Target::Ir => self.loaded_ir_name = name,
                 }
-                if let Some(detail) = warning {
-                    self.push_notice(namir_worker::error_codes::IR_TRUNCATED, detail);
+                if let Some(warning) = warning {
+                    // The warning's own entry -- `IR_TRUNCATED` was hard-coded here, which was
+                    // right only because it is the one warning a load can currently produce.
+                    self.push_notice(warning.code, warning.detail);
                 }
             }
             LoadOutcomeSummary::Unloaded => match target {
                 Target::Nam => self.loaded_model_name = None,
                 Target::Ir => self.loaded_ir_name = None,
             },
-            LoadOutcomeSummary::Failed(reason) => {
-                self.push_notice(
-                    local_error_codes::LOAD_FAILED,
-                    format!("{source}: {reason}"),
-                );
+            LoadOutcomeSummary::Failed(error) => {
+                // The specific `nam.load.*`/`ir.load.*`/`worker.*` entry the failure already
+                // carries, with the file name prepended to its detail -- `app.host.load_failed`
+                // would say "the file could not be loaded" and drop the reason (issue #39).
+                //
+                // Prepended only when the detail does not already name the file: `namir-worker`'s
+                // own I/O errors are built as `"<path>: <reason>"`, while a parser's are just the
+                // reason, and printing the path twice in one line is the same defect at a smaller
+                // scale.
+                let detail = if error.detail.contains(&source) {
+                    error.detail
+                } else {
+                    format!("{source}: {}", error.detail)
+                };
+                self.push_notice(error.code, detail);
             }
             LoadOutcomeSummary::NotDelivered => {
                 self.push_notice(local_error_codes::LOAD_NOT_DELIVERED, source);
