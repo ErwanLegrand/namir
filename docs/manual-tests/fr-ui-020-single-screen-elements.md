@@ -146,23 +146,87 @@ accordion or window switch used to reveal it.
 
 ## Executed run
 
-**Not executed.** No step of this script has been run, in either product configuration. It was
-written in M9b as the traced artifact FR-UI-020 had none of — the requirement read `**UNRESOLVED**`
-in `docs/03-test-plan.md` until this file existed — and running it needs a person at a display with
-a real audio interface and an instrument, which this session had neither of.
+**Executed 2026-08-27 on SALON**, a 1440p display at 100 % scale, against a real audio interface
+with an instrument playing. Both product configurations were exercised: the standalone
+(`cargo run -p namir-app --release`) for steps 1-11, and the CLAP plugin in **Reaper** for step 12.
+Library fixtures came from `cargo run -p namir-fixtures --example seed-library` at the default
+seed. **All twelve steps pass.**
 
-No screenshot has been taken, no element has been observed on screen, and no pass/fail verdict has
-been recorded for any of the twelve steps. The headless tests named above are real and do pass, but
-they observe a widget tree, not a presented screen, which is the entire distinction this document
-exists to keep honest.
+| Step | Element | Verdict |
+|---|---|---|
+| 1 | Input meter | PASS |
+| 2 | Trim (`Input Trim`, `DC Blocker`) | PASS |
+| 3 | Input meter responds to trim | PASS — meter reads post-trim |
+| 4 | Gate controls (five) | PASS |
+| 5 | Loaded model's name | PASS |
+| 6 | Loaded IR's name | PASS |
+| 7 | EQ controls (twelve) | PASS |
+| 8 | Output meter, `Output Level`, `Output Ceiling` | PASS |
+| 9 | Global bypass | PASS — audibly bypasses the chain |
+| 10 | All at once, one screenshot | PASS when the window is enlarged |
+| 11 | Without navigation | PASS — see the adjudication below |
+| 12 | The plugin shell (Reaper) | PASS — with the fixed-editor consequence below |
 
-Two constraints for whoever runs it, so the result is worth recording:
+**Step 11's adjudication, recorded explicitly because the script refused to pre-decide it:
+scrolling the central column is *not* navigation.** The runner's call, and the reasoning is that
+FR-UI-080 asks the interface to be usable "on a window as small as 800x600 logical pixels" — a size
+smaller than the one at which the elements were observed not to fit. A document that contemplates
+an 800x600 window while requiring these elements "on one screen" cannot mean every element is
+simultaneously visible at every size; it means one screen as opposed to tabs, pages or modes. No
+tab bar, menu bar, page selector, drawer or second window exists anywhere in either shell, which is
+what step 11 actually checks.
 
-- **State the window size and display scale** used for step 10 and step 11. "Everything fits" at
-  2560x1440 and at 100 % scale is a different finding from the same claim at 1280x720 or at 200 %
-  (FR-UI-080's own territory, checked separately).
-- **Record the verdict per step, not one verdict for the document.** The requirement is an
-  enumerated list; a single "PASS" would lose which of the eight listed items was actually looked
-  at.
+**Where the fold falls at the default size, since the answer is specific and worth keeping.** At
+`namir_ui::app::default_window_size`'s 960x640 opening size the last element visible without
+scrolling is `EQ Enabled`. The remaining eleven EQ controls, the output meter, `Output Level`,
+`Output Ceiling` and `Global Bypass` are all below it. Enlarging the standalone window brings every
+listed element into view simultaneously, which is what step 10 passes on.
 
-**Result: NOT EXECUTED.** FR-UI-020 has no observed evidence yet in either product configuration.
+**Step 12, and the one place the two shells genuinely differ.** Every element from steps 1, 2, 4,
+5, 6, 7, 8, 9 and 11 is present in Reaper's embedded editor, as expected — both shells route
+through the one `namir_ui::render`. But **the editor does not resize with the host window**, so
+step 10's "all at once" arrangement is unreachable there: below `EQ Enabled` every element is
+reachable only by scrolling, permanently. That is by decision, not by defect —
+`crates/namir-clap/src/gui.rs:87` fixes `GUI_WIDTH`/`GUI_HEIGHT` at 960x640 and `can_resize()`
+returns `false` (`:196`), because FR-CLAP-110 (host-driven resize) is a **Should** that was scoped
+out. **What is worth recording is the interaction, which is written down nowhere:** a Should's
+absence makes a Must's "one screen" clause satisfiable in the plugin shell *only* under the
+scrolling adjudication above. Had that adjudication gone the other way, FR-UI-020 would fail in the
+plugin and could not be made to pass without either shrinking the layout or implementing
+FR-CLAP-110. Neither D-13.x, `gui.rs`'s own comment, nor FR-CLAP-110's text notes the link.
+
+### Two findings this run produced that no step asked for
+
+- **FR-IN-020's peak-hold is not displayed, and step 1's dBFS text is unreadable as a result.** The
+  reading changes far too fast to read: `namir_ui::meter::render` formats the instantaneous
+  `reading.peak_db` every frame with no ballistics, and `MeterReading`
+  (`crates/namir-ui/src/host.rs:30`) carries only `peak_db` and `rms_db`. The peak-hold exists
+  everywhere except that last hop — `namir_dsp::Meter` latches it, and `TrimStage`/`OutStage`
+  publish it as `telemetry.trim.peak_hold_db` and `telemetry.out.ch<n>.peak_hold_db` — so the value
+  a display could use is computed, published, and then dropped. This is an independent observation
+  of the gap FR-IN-020's own `trace-partial:` already records
+  (`crates/namir-dsp/src/meter.rs:160`, and `docs/03-test-plan.md`'s FR-IN-020 row), now seen on
+  screen rather than argued from the source. FR-IN-020's `Verify:` is "U for the measurement; M for
+  the display"; the display half remains unbuilt, and it closes at M8.
+- **Notices never expire, and in the plugin that compounds the fixed editor.** A notice occupies
+  the top panel until the user clicks `Dismiss`: `push_notice` appends to an unbounded `Vec` in
+  both shells (`crates/namir-app/src/host.rs:208`, `crates/namir-clap/src/shared.rs:212`) and
+  dismissal is the only removal path (`:456` / `:220`). There is no expiry, no severity-based
+  timeout and no cap on how many can accumulate. No requirement asks for auto-dismissal, so this is
+  a design gap rather than a violation — but the standalone escapes it only by being resizable, and
+  the plugin cannot: every undismissed notice permanently takes vertical space from a screen that
+  already cannot show every element at once. Two independent claims on one fixed budget.
+
+### What this run did not produce
+
+- **No screenshot was captured** for step 10. The step's evidence is the runner's observation that
+  every element was simultaneously visible in an enlarged window, not an image on the record.
+- **Step 3's before/after dBFS readings were not transcribed** — the step passed on the direction
+  of the change, and the flicker described above is why the numbers were not readable. Which side
+  of trim the meter reads is settled (post-trim); by how much is not on the record.
+- **The enlarged window's exact size is not recorded**, only that it was enlarged from 960x640 on a
+  1440p display until every element fitted.
+
+**Result: PASS, 2026-08-27, both product configurations**, under the explicit adjudication that
+scrolling within the single screen is not navigation. FR-UI-020's element list is present, labelled
+and reachable without tabs, menus or modes in the standalone and in Reaper alike.
