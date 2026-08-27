@@ -1282,8 +1282,13 @@ mod tests {
         .unwrap();
         let violations = scan_repo_for_platform_cfg(&dir);
         assert_eq!(violations.len(), 1, "{violations:#?}");
+        // Separators normalised before matching: a violation renders a real `Path`, so this reads
+        // `tests\\probe.rs:1` on Windows and failed there while passing on the other two runners
+        // (M14). The lint was never at fault -- only this assertion's hard-coded `/`.
         assert!(
-            violations[0].contains("tests/probe.rs:1"),
+            violations[0]
+                .replace('\\', "/")
+                .contains("tests/probe.rs:1"),
             "{violations:#?}"
         );
 
