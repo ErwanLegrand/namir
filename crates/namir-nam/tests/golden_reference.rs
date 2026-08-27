@@ -320,8 +320,8 @@ fn regenerate_the_a2_golden_models() {
 /// `config.head_scale` and the trailing weight that mirrors it:
 ///
 /// ```text
-/// committed (rustc 1.94.1):  "head_scale": 0.15790403
-/// CI         (rustc 1.98):   "head_scale": 0.15790401
+/// this sandbox (1.94.1 and 1.98 alike):  "head_scale": 0.15790403
+/// every CI runner (ubuntu, macOS, Windows):  "head_scale": 0.15790401
 /// ```
 ///
 /// Every one of the ~50 000 weights matched bit for bit, and that is the diagnosis rather than a
@@ -329,9 +329,20 @@ fn regenerate_the_a2_golden_models() {
 /// does not: `namir-fixtures`' generator calibrates it as `base * (target_rms / measured_rms)`,
 /// and `measure_output_rms` runs the *whole* inference over a probe signal. One ULP of difference
 /// anywhere in those thousands of `f32` operations — FMA contraction, autovectorisation, a libm
-/// `tanh`/`exp` change between compiler releases — lands in this one float. **D-19.1's premise is
-/// that a fixture is reproducible from `(shape, seed)`; this value is reproducible only up to
-/// floating-point inference, which Rust does not promise across toolchains.**
+/// `tanh`/`exp` difference — lands in this one float. **D-19.1's premise is that a fixture is
+/// reproducible from `(shape, seed)`; this value is reproducible only up to floating-point
+/// inference, which nothing promises across execution environments.**
+///
+/// **The variable is the environment, not the compiler version, and the first reading of this said
+/// otherwise.** M14 recorded the split as 1.94.1-against-1.98 because those were the two versions
+/// to hand. Installing `cargo-llvm-cov` later in the same milestone made the sandbox upgrade to
+/// 1.98 — CI's exact compiler — and `generate_a2` there still regenerates this file **byte for
+/// byte**, `0.15790403` and all. Meanwhile all three CI runners agree with each other on
+/// `0.15790401` across **two architectures** (x86-64 Linux and Windows, arm64 macOS), which also
+/// rules out a target-feature explanation resting on one instruction set. What actually differs
+/// has not been isolated; what is established is that a compiler-version story does not fit the
+/// evidence, and that this value varies by machine — a stronger reason not to byte-compare it than
+/// the version story ever was.
 ///
 /// So the comparison is byte-exact everywhere *except* the head_scale value, which is compared
 /// with a relative tolerance. This is deliberately not "ignore head_scale": a differing line is
@@ -344,7 +355,7 @@ fn regenerate_the_a2_golden_models() {
 /// drift large enough to matter to them is orders of magnitude outside this tolerance.
 #[test]
 fn the_a2_golden_models_match_their_generator() {
-    /// ~16 ULP at this magnitude: far wider than cross-toolchain inference noise, far tighter
+    /// ~16 ULP at this magnitude: far wider than cross-environment inference noise, far tighter
     /// than any real change to the generator could be.
     const HEAD_SCALE_REL_TOL: f64 = 1e-6;
 
@@ -411,7 +422,7 @@ fn the_a2_golden_models_match_their_generator() {
             assert!(
                 (a - b).abs() <= HEAD_SCALE_REL_TOL * a.abs().max(b.abs()),
                 "{drift_note}\n  head_scale moved from {a} to {b}, further than the {} relative \
-                 tolerance cross-toolchain inference noise can explain.",
+                 tolerance cross-environment inference noise can explain.",
                 HEAD_SCALE_REL_TOL
             );
         }

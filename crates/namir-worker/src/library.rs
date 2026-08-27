@@ -676,12 +676,23 @@ mod tests {
     #[test]
     fn a_scan_that_starts_before_the_deferred_load_still_sees_the_saved_index() {
         let dir = temp_dir("scan_before_load");
-        let pool = ThreadPool::with_threads(1);
         let index_path = dir.join("library-index.json");
 
         // A first service scans and saves, then goes away entirely. The file is written well
         // before that scan completes, so the settling window does not cover it next time.
+        //
+        // **The first phase gets a pool of its own, and dropping it is load-bearing.**
+        // `start_scan` hands its job an `Arc::clone` of the `SharedIndex`, and the outcome
+        // callback fires *inside* that closure -- so `recv` returning does not mean the job has
+        // been dropped, and the pool thread can still hold the `Arc` seconds later. Dropping
+        // `first` then leaves the registry's `Weak` upgradable, `for_path` below returns the
+        // already-loaded entry instead of a fresh one, and the `held.is_none()` assertion fires.
+        // That is not hypothetical: it passed here and in the pull-request runs and failed on
+        // trunk under `cargo llvm-cov`, whose instrumentation shifts the timing (M14).
+        // `ThreadPool`'s `Drop` calls `shutdown`, which joins every thread, so the scope end is
+        // the barrier -- deterministic, rather than a sleep long enough to usually work.
         {
+            let pool = ThreadPool::with_threads(1);
             let (first, _) = LibraryService::open_at(&dir);
             write_nam(&dir.join("Library"), "a.nam");
             std::thread::sleep(Duration::from_millis(2_100));
@@ -709,6 +720,7 @@ mod tests {
         );
         assert_eq!(second.snapshot().len(), 0, "nothing is loaded yet");
 
+        let pool = ThreadPool::with_threads(1);
         let (tx, rx) = mpsc::channel();
         second
             .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
