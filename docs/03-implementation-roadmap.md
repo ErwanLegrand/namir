@@ -6356,9 +6356,15 @@ properties), NFR-RT-040.
   other than a pass — `NOT EXECUTED`, `PARTIAL`, `FAIL`, a `PASS` qualified by an unexecuted step, or
   no readable verdict at all. M9b's close-out asked that a `FAIL` be treated as uncovered; the fix
   had already landed when that was written.
-- **No clippy result on this branch was produced on CI's compiler.** This sandbox is `rustc 1.94.1`;
-  `trunk`'s `4b0d49a` fixes lints new in 1.98. Every gate below is green here and none of it is
-  evidence about 1.98.
+- **Two gates in the documented set never ran on this branch, and neither is claimed green.**
+  *Clippy* ran, but on `rustc 1.94.1`; `trunk`'s `4b0d49a` fixes lints new in **1.98**, so CI
+  compiles with something this sandbox cannot reproduce and no local run is evidence about it.
+  *`cargo deny check`* could not run at all — `cargo-deny` is not installed here. What is checked
+  instead, and is the reason this is a note rather than a risk: the licence and advisory surface is
+  **unchanged** from `trunk`. `Cargo.lock` gains no dependency on this branch, `deny.toml`'s diff is
+  its `# trace-partial:` annotation text with no `allow` or `deny` entry touched, and the manifest
+  changes are `[[bench]]` declarations. `trunk` passes the gate; this branch does not move what the
+  gate reads. CI runs both properly on the merge.
 - **FR-UI-070 is fixable but not fixed in the ledger's eyes.** All eight defects behind it are
   closed. Its cell moves when a human re-runs the fifteen steps, and not before.
 
