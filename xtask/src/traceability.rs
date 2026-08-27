@@ -47,7 +47,7 @@
 // uncovered: required step passes --allow-uncovered and derives its exit status from plan freshness
 // uncovered: and §14's denominators alone, while the plain form runs continue-on-error, so an
 // uncovered: uncovered Must would leave CI green — none stands today, and nothing gates on that;
-// uncovered: closes M9b
+// uncovered: closes M8
 
 use std::collections::HashMap;
 
@@ -699,27 +699,59 @@ pub enum ManualVerdict {
     Unreadable,
 }
 
+impl ManualVerdict {
+    /// The least favourable of two verdicts, for a document carrying more than one `**Result`
+    /// line.
+    ///
+    /// The order is `Pass` < `Unreadable` < `NotAPass`, and the middle term is the one worth
+    /// arguing. An unreadable line beats a pass because a line this parser cannot make sense of is
+    /// not evidence of anything, and crediting the document on a *different* line while silently
+    /// discarding this one is how a verdict goes unread. It loses to `NotAPass` because that
+    /// carries the author's own words, and reporting "its result is unknown" over a line that says
+    /// `FAIL` in as many words would be strictly less informative to whoever reads the gate.
+    fn worse_of(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NotAPass(text), _) | (_, Self::NotAPass(text)) => Self::NotAPass(text),
+            (Self::Unreadable, _) | (_, Self::Unreadable) => Self::Unreadable,
+            (Self::Pass, Self::Pass) => Self::Pass,
+        }
+    }
+}
+
 /// The opening of a manual-test document's verdict line. One spelling is used throughout
 /// `docs/manual-tests/`: a line beginning `**Result:` (occasionally `**Result` with the colon
 /// inside the bold run). Matched at the **start** of the trimmed line, like every other marker
 /// this module reads, so a mid-paragraph mention of a result does not become the verdict.
 const VERDICT_MARKER: &str = "**Result";
 
-/// Reads `content`'s verdict line. See [`ManualVerdict`] for the classification and why an
-/// unreadable verdict is not a pass.
+/// Reads `content`'s verdict. See [`ManualVerdict`] for the classification and why an unreadable
+/// verdict is not a pass.
 ///
-/// The first verdict line wins. No document in the tree has two, and accumulating them would
-/// re-create the whole-file matching that M13 removed from [`declared_requirement_ids`]'s
-/// neighbouring arm for exactly this class of reason.
+/// **The worst verdict wins, not the first** (M14). This read first-wins, on the stated grounds
+/// that "no document in the tree has two" -- which stopped being true when M9b's close-out gave
+/// `fr-io-070-device-removal.md` a `NOT EXECUTED` line for the requirement as a whole and a second
+/// line recording the one step a physical unplug did execute. First-wins happens to give the right
+/// answer on that document, because the conservative line comes first. It is fragile in exactly
+/// the wrong direction: a document opening `PASS` and qualifying itself further down would be
+/// credited on its first line and its qualification never read, which is the inversion issue #34
+/// exists to prevent, one layer in.
+///
+/// So every marked line is classified and the least favourable outcome is returned. That is not
+/// the whole-file matching M13 removed from [`declared_requirement_ids`]'s neighbouring arm: the
+/// lines read are still only those *beginning* with [`VERDICT_MARKER`], never prose that mentions
+/// a result in passing.
 pub fn manual_test_verdict(content: &str) -> ManualVerdict {
-    let Some(line) = content
+    content
         .lines()
         .map(str::trim_start)
-        .find(|line| line.starts_with(VERDICT_MARKER))
-    else {
-        return ManualVerdict::Unreadable;
-    };
+        .filter(|line| line.starts_with(VERDICT_MARKER))
+        .map(classify_verdict_line)
+        .reduce(ManualVerdict::worse_of)
+        .unwrap_or(ManualVerdict::Unreadable)
+}
 
+/// One `**Result` line's own verdict, with no view of the rest of the document.
+fn classify_verdict_line(line: &str) -> ManualVerdict {
     let body = line
         .trim_start_matches(VERDICT_MARKER)
         .trim_start_matches(':')
@@ -952,7 +984,8 @@ pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String
          listed under \"UNRESOLVED\" has neither -- `cargo run -p xtask -- traceability` exits \
          non-zero while any remain. CI's **required** step passes `--allow-uncovered` and gates on \
          this file's freshness (and on §14's denominators) alone; the zero-uncovered half stays \
-         informational until it becomes required at M9b's close-out (D-18.5).\n\n\
+         informational until it becomes required at M14's close-out (D-18.5) -- M9b's own \
+         close-out moved it there, having closed out without reaching it.\n\n\
          | Requirement | Verify | Covered by |\n\
          |---|---|---|\n",
     );
@@ -1891,6 +1924,44 @@ mod tests {
         assert_eq!(
             manual_test_verdict("The **Result: PASS.** claim below is prose, not a verdict.\n"),
             ManualVerdict::Unreadable
+        );
+    }
+
+    /// **The failure first-wins would have allowed.** `fr-io-070-device-removal.md` gained a
+    /// second `**Result` line at M9b's close-out, and first-wins reads it correctly only because
+    /// its conservative line happens to come first. Reverse that order -- a document opening with
+    /// a pass and qualifying itself further down -- and first-wins credits the requirement while
+    /// never reading the line that disqualifies it.
+    #[test]
+    fn the_worst_verdict_in_a_document_wins_not_the_first_one() {
+        // The shape the live tree has: conservative line first. Unchanged by this rule.
+        assert_eq!(
+            manual_test_verdict(
+                "**Result: NOT EXECUTED against a real failable device.**\n\n                 **Result: step 2 EXECUTED and passing.**\n"
+            ),
+            ManualVerdict::NotAPass("NOT EXECUTED against a real failable device.".to_string())
+        );
+        // The shape that would have been credited: pass first, disqualification second.
+        assert_eq!(
+            manual_test_verdict(
+                "**Result: PASS, all six steps.**\n\n                 **Result: steps 7-9 NOT EXECUTED -- no second interface available.**\n"
+            ),
+            ManualVerdict::NotAPass(
+                "steps 7-9 NOT EXECUTED -- no second interface available.".to_string()
+            )
+        );
+        // An unreadable line beats a pass elsewhere: a line the parser cannot make sense of is not
+        // evidence, and crediting the document on a different one discards it in silence.
+        assert_eq!(
+            manual_test_verdict("**Result: PASS, all six steps.**\n\n**Result:**\n"),
+            ManualVerdict::Unreadable
+        );
+        // Two clean passes are still a pass -- the rule must not make multiplicity itself a fault.
+        assert_eq!(
+            manual_test_verdict(
+                "**Result: PASS in the standalone.**\n\n**Result: PASS in the plugin.**\n"
+            ),
+            ManualVerdict::Pass
         );
     }
 

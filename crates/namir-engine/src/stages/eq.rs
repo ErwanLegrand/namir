@@ -1258,7 +1258,7 @@ mod tests {
     // uncovered: eq.low_pass_freq_hz 2.3x. Whether that meets an audible standard is a judgement
     // uncovered: this test cannot make and lengthening D-9.9's coefficient ramp does not settle
     // uncovered: (see this test's own doc comment for the 20 ms re-measurement, which improves
-    // uncovered: three rows and worsens two); closes M14
+    // uncovered: three rows and worsens two); closes M8
     #[test]
     fn changing_any_eq_parameter_is_click_free() {
         struct Row {

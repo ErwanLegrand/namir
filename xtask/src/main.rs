@@ -861,7 +861,8 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
             println!(
                 "traceability: uncovered Musts are informational under --allow-uncovered -- exit \
                  status reflects the generated-plan diff and \u{a7}14's denominators only. This \
-                 half becomes required at M9b's close-out (D-18.5)."
+                 half becomes required at M14's close-out (D-18.5) -- M9b's own close-out moved \
+                 it there, having closed out without reaching it."
             );
         }
         false
@@ -1342,10 +1343,12 @@ mod tests {
     /// renamed out from under the list fails here as well as in CI.
     // trace-partial: FR-ERR-030
     // uncovered: FR-ERR-030 — the S half's logging limb only. The allocation limb is D-7.5's
-    // uncovered: assert_no_alloc harness rather than this check; the "diagnostics ... communicated
-    // uncovered: to a non-real-time thread without blocking" clause is spanned by nothing; and the
-    // uncovered: `plus I` half of the Verify line has no integration test driving a real audio
-    // uncovered: callback and asserting no record was emitted; closes M8
+    // uncovered: assert_no_alloc harness rather than this check, and since M14 that harness does
+    // uncovered: reach namir-app's own audio callbacks, where it found two real allocations; the
+    // uncovered: "diagnostics ... communicated to a non-real-time thread without blocking" clause
+    // uncovered: is spanned by nothing; and the `plus I` half of the Verify line has no
+    // uncovered: integration test driving a real audio callback with the process-global logger
+    // uncovered: installed and asserting no record was emitted; closes M8
     #[test]
     fn the_real_tree_names_no_logger_in_any_audio_thread_module() {
         assert!(run_rt_logging(&repo_root()));
