@@ -684,17 +684,23 @@ pub struct Report {
 /// a document whose result is not known, and an unknown result must not be a pass at a 1.0 gate.
 ///
 /// A line that opens `PASS` but goes on to say some part was not executed is **not** a pass here
-/// (`fr-ui-010-standalone-window-renders.md` is the live instance: "PASS for steps 1–2 (executed).
-/// Step 3 requires a human with a display — not executed this session"). The document's author
-/// wrote both halves; taking the headline word alone would discard the half that matters.
+/// (`fr-ui-010-standalone-window-renders.md` was the live instance until M15: "PASS for steps 1–2
+/// (executed). Step 3 requires a human with a display — not executed this session"). The
+/// document's author wrote both halves; taking the headline word alone would discard the half that matters. As
+/// of M15 that shape is a **hard error** rather than a silent downgrade — see
+/// [`parse_manual_verdict`] — because the verdict token is what the gate reads and a token
+/// contradicted by its own sentence is a malformed verdict, not a verdict to interpret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManualVerdict {
     /// The script was run and passed, with no clause reported unexecuted.
     Pass,
-    /// A verdict was found and it is not a clean pass — `NOT EXECUTED`, `PARTIAL`, `FAIL`, or a
-    /// `PASS` qualified by an unexecuted step. Carries the verdict text as written.
+    /// A verdict was found and it is not a clean pass — `NOT EXECUTED`, `PARTIAL` or `FAIL`.
+    /// Carries the verdict text as written.
     NotAPass(String),
-    /// No line this parser recognises as a verdict. Carries a fixed explanation rather than a
+    /// The document's verdict could not be read at all: no verdict line, or one this parser
+    /// refuses. Produced only by [`manual_test_verdict`]'s lenient wrapper — a real run never
+    /// reaches it, because [`check_manual_verdict`] aborts first — and it exists so that even a
+    /// bypassed validation cannot end in a *credit*. Carries a fixed explanation rather than a
     /// quotation, there being nothing to quote.
     Unreadable,
 }
@@ -740,22 +746,117 @@ const VERDICT_MARKER: &str = "**Result";
 /// the whole-file matching M13 removed from [`declared_requirement_ids`]'s neighbouring arm: the
 /// lines read are still only those *beginning* with [`VERDICT_MARKER`], never prose that mentions
 /// a result in passing.
+///
+/// **The lenient wrapper.** This never fails: a verdict [`parse_manual_verdict`] refuses becomes
+/// [`ManualVerdict::Unreadable`], which credits nothing. The strict form is what the gate calls
+/// (through [`check_manual_verdict`]), one file at a time, upstream of every exit-status term; this
+/// one exists so that [`build_report`] -- which has no file name to name in an error and is called
+/// directly by tests with arbitrary text -- still cannot turn a malformed verdict into a credit.
 pub fn manual_test_verdict(content: &str) -> ManualVerdict {
-    content
-        .lines()
-        .map(str::trim_start)
-        .filter(|line| line.starts_with(VERDICT_MARKER))
-        .map(classify_verdict_line)
-        .reduce(ManualVerdict::worse_of)
-        .unwrap_or(ManualVerdict::Unreadable)
+    parse_manual_verdict(content).unwrap_or(ManualVerdict::Unreadable)
+}
+
+/// The four verdict tokens a manual-test document's verdict line may open with (M15, issue #34).
+///
+/// Upper case, exactly as written here. The convention is documented for its authors in
+/// `docs/manual-tests/README.md` and in `docs/02-architecture.md` D-18.6's
+/// *Consequence (added M15, 2026-08-28)* note; this array is the only definition the tool reads.
+pub const VERDICT_TOKENS: [&str; 4] = ["PASS", "FAIL", "PARTIAL", "NOT EXECUTED"];
+
+/// Files under `docs/manual-tests/` that are not manual-test scripts and so carry no verdict.
+/// Exactly one today: the README that documents the convention itself. Matched by exact file name,
+/// so the exemption cannot be widened by a naming accident.
+const VERDICT_EXEMPT_FILES: [&str; 1] = ["README.md"];
+
+/// The gate's own entry point: `Ok(())` if `file_name`'s document carries a well-formed verdict,
+/// `Err(<why>)` if it does not (issue #34, M15).
+///
+/// **Refusing is chosen over inferring**, and for the same reason [`scan_annotations`] refuses a
+/// malformed annotation rather than dropping it: a document whose verdict cannot be read is a bad
+/// *input*, not a coverage gap, so it must abort the run rather than move a coverage count that
+/// `--allow-uncovered` can then relax. Silently treating it as uncovered would be softer than the
+/// tree deserves in one direction and unexplained in the other -- the author would learn that their
+/// requirement had gone red, but not that the cause was a missing four-word line.
+///
+/// Every file the loader reads is checked, not only the ones a `Verify: M` Must resolves to. Two
+/// reasons. A document written for a `Verify: I`/`G`/`B`/`S` requirement is D-18.6 supplementary
+/// evidence whose own executed-ness is exactly as easy to misread as a traced one's -- five of the
+/// eight documents that carried no verdict line at all when this check was written were of that
+/// kind, and four of those five are Musts. And the set is not static: a `Verify:` code can change,
+/// at which point a document that never had to state a verdict would start crediting a Must.
+pub fn check_manual_verdict(file_name: &str, content: &str) -> Result<(), String> {
+    if VERDICT_EXEMPT_FILES.contains(&file_name) {
+        return Ok(());
+    }
+    parse_manual_verdict(content).map(|_| ())
+}
+
+/// Reads `content`'s verdict strictly: the worst of its verdict lines, or an error naming what is
+/// wrong with the document.
+///
+/// The three refusals, each of them a document that cannot be believed rather than a document
+/// recording bad news:
+///
+/// 1. **No verdict line at all.** Eight of the twenty-six live documents were in this state when
+///    this was written, several of them recording "not executed" in prose their own heading made
+///    perfectly clear to a human and invisible to the gate.
+/// 2. **A verdict line opening with something other than a [`VERDICT_TOKENS`] token.** The token is
+///    the machine-readable half of the convention; without it the gate would be back to reading
+///    English, which is how `**Result: step 2 EXECUTED ... and it fails its naming clause**` came
+///    to exist and would have to be adjudicated.
+/// 3. **A `PASS` token contradicted by its own sentence** (`NOT EXECUTED`/`NOT RUN` later on the
+///    same line). The pre-M15 parser downgraded this to `NotAPass` silently, which was right about
+///    the outcome and wrong about the cause: the author owes the document a `PARTIAL`, and being
+///    told so is how the next reader of that line learns which half won.
+pub fn parse_manual_verdict(content: &str) -> Result<ManualVerdict, String> {
+    let mut verdict: Option<ManualVerdict> = None;
+    for line in content.lines().map(str::trim_start) {
+        if !line.starts_with(VERDICT_MARKER) {
+            continue;
+        }
+        let one = classify_verdict_line(line)?;
+        verdict = Some(match verdict {
+            None => one,
+            Some(seen) => seen.worse_of(one),
+        });
+    }
+    verdict.ok_or_else(|| {
+        format!(
+            "carries no verdict line -- a manual-test document must have a line beginning \
+             `{VERDICT_MARKER}:` whose first words are one of {}, so the gate reads what the run \
+             recorded rather than that the file exists (issue #34). See \
+             docs/manual-tests/README.md",
+            joined_tokens()
+        )
+    })
+}
+
+/// `PASS, FAIL, PARTIAL or NOT EXECUTED`, for the error messages.
+fn joined_tokens() -> String {
+    let (last, rest) = VERDICT_TOKENS.split_last().expect("tokens are non-empty");
+    format!("{} or {last}", rest.join(", "))
 }
 
 /// One `**Result` line's own verdict, with no view of the rest of the document.
-fn classify_verdict_line(line: &str) -> ManualVerdict {
+fn classify_verdict_line(line: &str) -> Result<ManualVerdict, String> {
+    // Both real spellings reduce to the same body: `**Result: PASS.** ...` and `**Result:** PASS.`
+    // The stripped set is the punctuation the marker can be dressed in, never a word.
     let body = line
         .trim_start_matches(VERDICT_MARKER)
-        .trim_start_matches(':')
-        .trim();
+        .trim_start_matches(|c: char| c == ':' || c == '*' || c.is_whitespace());
+
+    let Some(token) = VERDICT_TOKENS
+        .iter()
+        .find(|token| opens_with_token(body, token))
+    else {
+        return Err(format!(
+            "verdict line `{}` does not open with a verdict token -- write one of {} (upper case) \
+             immediately after `{VERDICT_MARKER}:`, then say the rest in prose. See \
+             docs/manual-tests/README.md",
+            truncate_for_message(line),
+            joined_tokens()
+        ));
+    };
 
     // Two different spans, deliberately.
     //
@@ -763,21 +864,43 @@ fn classify_verdict_line(line: &str) -> ManualVerdict {
     // that is the verdict the author set apart, and the prose that follows it on the same physical
     // line is the start of a paragraph, not part of the verdict.
     //
-    // What is *classified* is the whole line, because a qualifier can sit outside the bold run
-    // ("**Result: PASS.** Step 3 was not executed"), and reading only the emphasised half would
-    // discard exactly the clause that decides the question.
+    // What is *checked* for a self-contradiction is the whole line, because a qualifier can sit
+    // outside the bold run ("**Result: PASS.** Step 3 was not executed"), and reading only the
+    // emphasised half would discard exactly the clause that decides the question.
     let quoted = body.split("**").next().unwrap_or(body).trim();
-    if quoted.is_empty() {
-        return ManualVerdict::Unreadable;
+    if *token != "PASS" {
+        return Ok(ManualVerdict::NotAPass(quoted.to_string()));
     }
 
     let upper = body.to_uppercase();
-    let qualified = upper.contains("NOT EXECUTED") || upper.contains("NOT RUN");
-    if upper.starts_with("PASS") && !qualified {
-        ManualVerdict::Pass
-    } else {
-        ManualVerdict::NotAPass(quoted.to_string())
+    if upper.contains("NOT EXECUTED") || upper.contains("NOT RUN") {
+        return Err(format!(
+            "verdict line `{}` opens `PASS` and then records something not executed -- the token \
+             is what the gate reads, so a verdict that contradicts itself is refused rather than \
+             quietly downgraded. Write `PARTIAL` and keep the sentence. See \
+             docs/manual-tests/README.md",
+            truncate_for_message(line)
+        ));
     }
+    Ok(ManualVerdict::Pass)
+}
+
+/// Whether `body` opens with `token` as a whole word: the token must be followed by the end of the
+/// line or by something that is not a letter or digit, so `PARTIALLY` is not `PARTIAL` and
+/// `PASSABLE` is not `PASS`.
+fn opens_with_token(body: &str, token: &str) -> bool {
+    body.strip_prefix(token)
+        .is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+}
+
+/// A verdict line, cut to something an error message can carry on one screen.
+fn truncate_for_message(line: &str) -> String {
+    const LIMIT: usize = 72;
+    if line.chars().count() <= LIMIT {
+        return line.to_string();
+    }
+    let head: String = line.chars().take(LIMIT).collect();
+    format!("{head}...")
 }
 
 /// The plan cell and the reason line for a `Verify: M` Must whose document does not record a pass.
@@ -786,9 +909,12 @@ fn manual_verdict_reason(verdict: &ManualVerdict) -> Option<String> {
     match verdict {
         ManualVerdict::Pass => None,
         ManualVerdict::NotAPass(text) => Some(format!("records `{text}`")),
+        // Unreachable in a real run: `check_manual_verdict` aborts the whole gate on a document
+        // this state comes from. Kept because a `build_report` call that skipped that check must
+        // still not credit the requirement.
         ManualVerdict::Unreadable => Some(format!(
-            "carries no line beginning `{VERDICT_MARKER}`, so its result is unknown -- which is \
-             not a pass"
+            "carries no readable line beginning `{VERDICT_MARKER}`, so its result is unknown -- \
+             which is not a pass"
         )),
     }
 }
@@ -1888,42 +2014,80 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_qualified_by_an_unexecuted_step_is_not_a_pass() {
-        // `fr-ui-010-standalone-window-renders.md`'s own verdict. Reading the headline word alone
-        // would discard the half of the sentence that matters, which is the direction of error
-        // this check exists to refuse.
-        assert!(matches!(
-            manual_test_verdict(&manual_doc(
-                "**Result: PASS for steps 1–2 (executed). Step 3 requires a human with a display \
-                 — not executed this session.**"
-            )),
-            ManualVerdict::NotAPass(_)
-        ));
+    fn a_pass_qualified_by_an_unexecuted_step_is_refused_outright() {
+        // `fr-ui-010-standalone-window-renders.md`'s own verdict until M15, when the token
+        // convention made this shape a hard error and the document was corrected to `PARTIAL`.
+        // Reading the headline word alone would discard the half of the sentence that matters;
+        // downgrading it silently, as the pre-M15 parser did, gets the outcome right and tells the
+        // author nothing about which half won.
+        let doc = manual_doc(
+            "**Result: PASS for steps 1–2 (executed). Step 3 requires a human with a display \
+             — not executed this session.**",
+        );
+        let err = parse_manual_verdict(&doc).expect_err("a self-contradicting PASS is refused");
+        assert!(err.contains("contradicts itself"), "{err}");
+        // And the lenient wrapper still cannot turn it into a credit.
+        assert_eq!(manual_test_verdict(&doc), ManualVerdict::Unreadable);
     }
 
     #[test]
-    fn a_document_with_no_verdict_line_is_unreadable_never_a_pass() {
-        // Eight of the twenty-six live documents are in this state. Silence is not a pass.
+    fn a_document_with_no_verdict_line_is_refused_never_a_pass() {
+        // Eight of the twenty-six live documents were in this state when the check was written.
+        // Silence is not a pass -- and since M15 it is not a quiet gap either.
+        for content in [
+            // No outcome section at all.
+            "# A script with no outcome section\n\nSteps: 1, 2, 3.\n",
+            // A mid-paragraph mention: the marker must begin its line, like every other marker
+            // this module reads.
+            "The **Result: PASS.** claim below is prose, not a verdict.\n",
+        ] {
+            let err = parse_manual_verdict(content).expect_err("no verdict line");
+            assert!(err.contains("carries no verdict line"), "{err}");
+            assert_eq!(manual_test_verdict(content), ManualVerdict::Unreadable);
+        }
+    }
+
+    #[test]
+    fn a_verdict_line_without_one_of_the_four_tokens_is_refused() {
+        // `fr-io-070-device-removal.md`'s second verdict line until M15: a real, carefully-written
+        // sentence that no parser should have to adjudicate. The token is the machine-readable
+        // half of the convention, and its absence is a malformed input.
+        for line in [
+            "**Result: step 2 EXECUTED 2026-08-27, and it fails its naming clause.**",
+            // A marker with nothing after it.
+            "**Result:**",
+            // Lower case is not the token: the convention says upper case, so that a document
+            // saying `pass` in passing cannot become a verdict.
+            "**Result: pass, all six steps.**",
+            // A longer word that merely starts with a token is not that token.
+            "**Result: PASSABLE, with reservations.**",
+        ] {
+            let doc = manual_doc(line);
+            let err = parse_manual_verdict(&doc).expect_err("no verdict token");
+            assert!(err.contains("does not open with a verdict token"), "{err}");
+            assert_eq!(manual_test_verdict(&doc), ManualVerdict::Unreadable);
+        }
+        // The other real spelling, with the colon inside the bold run, is accepted.
         assert_eq!(
-            manual_test_verdict("# A script with no outcome section\n\nSteps: 1, 2, 3.\n"),
-            ManualVerdict::Unreadable
+            manual_test_verdict(&manual_doc("**Result:** PASS, all six steps.")),
+            ManualVerdict::Pass
         );
-        // Nor is a marker with nothing after it.
-        assert_eq!(
-            manual_test_verdict("**Result:**\n"),
-            ManualVerdict::Unreadable
-        );
-        // A qualifier outside the bold run still decides the verdict, even though only the bold
-        // run is quoted back.
-        assert_eq!(
-            manual_test_verdict("**Result: PASS.** Step 3 was not executed this session.\n"),
-            ManualVerdict::NotAPass("PASS.".to_string())
-        );
-        // Nor a mid-paragraph mention: the marker must begin its line, like every other marker
-        // this module reads.
-        assert_eq!(
-            manual_test_verdict("The **Result: PASS.** claim below is prose, not a verdict.\n"),
-            ManualVerdict::Unreadable
+    }
+
+    #[test]
+    fn the_readme_is_the_one_file_exempt_from_carrying_a_verdict() {
+        // It documents the convention rather than recording a run; every other file in the
+        // directory is checked, whatever `Verify:` code its requirement carries, because a
+        // supplementary document's executed-ness is exactly as easy to misread as a traced one's.
+        let convention = "# Manual-test documents\n\nWrite `**Result: PASS.**` when it passes.\n";
+        assert!(check_manual_verdict("README.md", convention).is_ok());
+        assert!(check_manual_verdict("fr-chain-010-signal-chain.md", convention).is_err());
+        assert!(
+            check_manual_verdict(
+                "fr-chain-010-signal-chain.md",
+                &manual_doc("**Result: PASS.**")
+            )
+            .is_ok()
         );
     }
 
@@ -1937,21 +2101,20 @@ mod tests {
         // The shape the live tree has: conservative line first. Unchanged by this rule.
         assert_eq!(
             manual_test_verdict(
-                "**Result: NOT EXECUTED against a real failable device.**\n\n                 **Result: step 2 EXECUTED and passing.**\n"
+                "**Result: NOT EXECUTED against a real failable device.**\n\n                 **Result: PARTIAL.** Step 2 executed and passing.\n"
             ),
             ManualVerdict::NotAPass("NOT EXECUTED against a real failable device.".to_string())
         );
         // The shape that would have been credited: pass first, disqualification second.
         assert_eq!(
             manual_test_verdict(
-                "**Result: PASS, all six steps.**\n\n                 **Result: steps 7-9 NOT EXECUTED -- no second interface available.**\n"
+                "**Result: PASS, all six steps.**\n\n                 **Result: NOT EXECUTED** -- steps 7-9, no second interface available.\n"
             ),
-            ManualVerdict::NotAPass(
-                "steps 7-9 NOT EXECUTED -- no second interface available.".to_string()
-            )
+            ManualVerdict::NotAPass("NOT EXECUTED".to_string())
         );
-        // An unreadable line beats a pass elsewhere: a line the parser cannot make sense of is not
-        // evidence, and crediting the document on a different one discards it in silence.
+        // A refused line anywhere in the document beats a pass elsewhere: since M15 the whole
+        // document is refused rather than credited on its other line, and the lenient wrapper's
+        // fallback is `Unreadable`, never a credit.
         assert_eq!(
             manual_test_verdict("**Result: PASS, all six steps.**\n\n**Result:**\n"),
             ManualVerdict::Unreadable
@@ -2024,10 +2187,13 @@ mod tests {
             "fr-chain-010-signal-chain.md".to_string(),
             "# A script with no outcome section\n".to_string(),
         )];
+        // The defensive path, and the reason `ManualVerdict::Unreadable` still exists after M15:
+        // a real run cannot get here (`check_manual_verdict` aborts on this document first), and a
+        // `build_report` call that skipped that check must still fall to uncovered, never a credit.
         let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
         assert_eq!(report.missing.len(), 1);
         let (_, reason) = report.manual_unexecuted.get("FR-CHAIN-010").unwrap();
-        assert!(reason.contains("no line beginning"), "{reason}");
+        assert!(reason.contains("no readable line beginning"), "{reason}");
     }
 
     #[test]

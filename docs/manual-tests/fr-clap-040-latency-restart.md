@@ -65,7 +65,8 @@ this process.
 
 ## Executed run (this session)
 
-**Not executed.** This agent session has no way to load a real DAW project, set a session sample
+**Result: NOT EXECUTED.** This agent session has no way to load a real DAW project, set a
+session sample
 rate deliberately mismatched from a model's declared rate, or observe a host's PDC indicator — see
 `docs/manual-tests/fr-ui-010-standalone-window-renders.md`'s identical limitation note. What *is*
 verified automatically: `clap-validator`'s full suite (32 passed, 0 failed, 0 warnings) confirms

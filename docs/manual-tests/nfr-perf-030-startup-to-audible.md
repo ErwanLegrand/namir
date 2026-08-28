@@ -52,7 +52,8 @@ connected and monitoring audible, and with a guitar or DI source plugged into th
 
 ## Executed run (this session, 2026-08-11)
 
-**Partially executed. The by-ear step was not executed and cannot be by an agent session.**
+**Result: PARTIAL.** Partially executed: the by-ear step was not executed and cannot be by an
+agent session.
 
 Executed, on the §2 reference machine (AMD Ryzen 9 5950X, 63.9 GB, Windows 11 build 26200), with a
 PreSonus AudioBox 22VSL as both input and output device:

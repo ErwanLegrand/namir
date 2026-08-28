@@ -656,6 +656,20 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
     // "stale" false-positive this session found the hard way.
     manual_test_docs.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Issue #34: a manual-test document's verdict is read, and a document that does not carry a
+    // readable one aborts the run here -- upstream of the `--write` branch, of `--allow-uncovered`
+    // and of every exit-status term, for exactly the reasons the malformed-annotation refusal below
+    // gives. A document whose result cannot be read is a bad input, not a coverage gap: left as a
+    // gap it would be relaxable by a flag, and left as a credit it would be the defect this check
+    // exists to remove -- `xtask traceability` printed `clean -- all 130 Must requirements are
+    // covered` while six of those Musts' scripts recorded NOT EXECUTED, PARTIAL or FAIL.
+    for (name, content) in &manual_test_docs {
+        if let Err(e) = traceability::check_manual_verdict(name, content) {
+            println!("traceability: docs/manual-tests/{name} {e}");
+            return TraceabilityRun::failed();
+        }
+    }
+
     // (crate_root, crate_name-per-first-path-component) -- xtask has no further nesting, so its
     // own directory name is used directly rather than derived per file.
     let mut files_with_crate: Vec<(PathBuf, String)> = Vec::new();
@@ -1901,6 +1915,75 @@ mod tests {
 
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn a_manual_document_with_no_readable_verdict_is_refused_end_to_end() {
+        // Issue #34, end to end. The document exists and is named for its requirement, which is
+        // all the pre-M15 gate ever asked of it -- so without this check the run goes green with
+        // FR-CHAIN-010 resolved by a file nobody has run. It is refused rather than counted as a
+        // gap because it is a malformed input: `--write` must not write a plan built from a
+        // verdict the tool could not read, and `--allow-uncovered` must not relax it.
+        for (name, body) in [
+            ("verdict-missing", "# FR-CHAIN-010\n\nRun it and see.\n"),
+            (
+                "verdict-tokenless",
+                "**Result: ran it, seemed fine.** No token here.\n",
+            ),
+            (
+                "verdict-self-contradicting",
+                "**Result: PASS.** Step 3 was not executed this session.\n",
+            ),
+        ] {
+            let dir = synthetic_root(name, 1);
+            std::fs::write(
+                dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
+                body,
+            )
+            .unwrap();
+
+            let run = traceability_outcome(&dir, true, true);
+            assert!(!run.ok, "{name}");
+            assert!(
+                !dir.join("docs/03-test-plan.md").exists(),
+                "{name}: a plan must never be written from a verdict the tool refused"
+            );
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn a_manual_document_recording_no_pass_leaves_its_must_uncovered_end_to_end() {
+        // The other half of issue #34, and the one that moves a number: a verdict the tool *can*
+        // read, saying the script did not pass. That is a coverage gap, not a malformed input --
+        // so the required half of the gate still holds (the plan regenerates, §14 agrees) and
+        // it is `--allow-uncovered` alone that decides the exit status.
+        let dir = synthetic_root("verdict-not-executed", 1);
+        std::fs::write(
+            dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
+            "**Result: NOT EXECUTED.** Needs a display and a human.\n",
+        )
+        .unwrap();
+
+        assert!(
+            !traceability_outcome(&dir, true, false).ok,
+            "an unexecuted script is not coverage"
+        );
+        assert!(
+            traceability_outcome(&dir, true, true).ok,
+            "and it is a coverage gap, which is exactly what --allow-uncovered relaxes"
+        );
+        let plan = std::fs::read_to_string(dir.join("docs/03-test-plan.md")).unwrap();
+        assert!(
+            plan.contains(
+                "**UNRESOLVED** — `docs/manual-tests/fr-chain-010-signal-chain.md` \
+                 records `NOT EXECUTED.`"
+            ),
+            "the plan names the document and what it records:\n{plan}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

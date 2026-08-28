@@ -70,7 +70,8 @@ actually asks to be measured.
 
 ## Executed run (this session)
 
-**Not executed** (real-host memory measurement). This agent session has no host to load multiple
+**Result: NOT EXECUTED** (real-host memory measurement). This agent session has no host to
+load multiple
 plugin instances into and no way to observe a host process's memory footprint — see
 `docs/manual-tests/fr-ui-010-standalone-window-renders.md`'s identical limitation note. What *is*
 verified automatically and stands as strong indirect evidence: every unit-level sharing test named
