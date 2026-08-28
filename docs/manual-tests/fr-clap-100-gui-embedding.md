@@ -56,7 +56,8 @@ without an actual host process and a screen.
 
 ## Executed run (this session)
 
-**Not executed** (steps 2–3, requiring a visible window and mouse/keyboard interaction). This
+**Result: PARTIAL.** Steps 2–3 not executed (they require a visible window and mouse/keyboard
+interaction); step 1 was executed later and is recorded in its own section below. This
 agent session has no way to interact with a real window — see
 `docs/manual-tests/fr-ui-010-standalone-window-renders.md`'s identical limitation note, which
 `spikes/s4-clack-clap`'s own S-4 record already established the same embedding mechanism works for

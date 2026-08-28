@@ -228,6 +228,11 @@ executed**.
 
 ## Status after M13
 
+**Result: PARTIAL.** The brand-mark clause is closed and observed; the executable-icon clause is
+built but has never been seen on an executable, and the window-icon clause is unknown. Steps 1-4
+were not executed in the build environment and steps 5-7 have not been run at all — the three
+paragraphs below say which is which.
+
 **Brand-mark clause: closed** (M12, observed).
 
 **Executable-icon clause: the artifact is built, generated, gated and validated as a Windows icon;

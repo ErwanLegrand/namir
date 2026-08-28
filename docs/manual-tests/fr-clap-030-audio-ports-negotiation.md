@@ -48,7 +48,8 @@ or expects the plugin to, is host UI/routing behaviour no headless validator exe
 
 ## Executed run (this session)
 
-**Automated half executed, real-host half not executed.** `clap-validator validate` (both
+**Result: PARTIAL.** Automated half executed, real-host half not executed.
+`clap-validator validate` (both
 `--in-process` and out-of-process/default modes) ran against the built `namir_clap.dll` in this
 session's own environment: **44 tests run, 32 passed, 0 failed, 0 warnings, 12 skipped, exit code
 0**, including every `process-audio-*` and `layout-audio-ports-*` test group. This agent session

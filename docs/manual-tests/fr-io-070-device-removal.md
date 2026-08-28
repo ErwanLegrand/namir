@@ -127,8 +127,8 @@ device" — is **unbuilt**, which this file already recorded as a known gap; wha
 person has now watched it not happen on real hardware. FR-UI-010's "differing only in the presence
 of the audio-device panel" presumes a panel that does not exist either.
 
-**Result: step 2 EXECUTED 2026-08-27, and it fails its naming clause while passing the
-crash/hang/clean-stop clauses. Steps 1 and 3 remain NOT EXECUTED**, step 1 for want of a failable
+**Result: PARTIAL.** Step 2 executed 2026-08-27, and it fails its naming clause while passing the
+crash/hang/clean-stop clauses. **Steps 1 and 3 remain NOT EXECUTED**, step 1 for want of a failable
 device (R-5's residual risk, unchanged) and step 3 because the capability it exercises is unbuilt.
 FR-IO-070 as a whole is therefore **not met**: the requirement's "allow the user to select another
 device" clause has no implementation, and its "report the condition" clause reports a condition

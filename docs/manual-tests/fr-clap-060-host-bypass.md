@@ -60,7 +60,8 @@ human ear", which is what FR-CLAP-060 actually asks to be verified.
 
 ## Executed run (this session)
 
-**Not executed** (requires a real host and audible confirmation). This agent session has no way to
+**Result: NOT EXECUTED** (requires a real host and audible confirmation). This agent session
+has no way to
 play audio through a host or listen for a click — see
 `docs/manual-tests/fr-ui-010-standalone-window-renders.md`'s identical limitation note. What *is*
 verified this session: the `IS_BYPASS` flag is present and correctly shaped (unit test, passing),

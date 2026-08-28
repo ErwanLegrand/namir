@@ -61,5 +61,6 @@ nothing overlapping) still needs a human to actually look at the screen once. Le
 honestly-unexecuted part of this script, per this project's manual-test convention of recording
 what was and wasn't actually run rather than asserting a result nobody observed.
 
-**Result: PASS for steps 1–2 (executed). Step 3 requires a human with a display — not executed this
-session.**
+**Result: PARTIAL.** PASS for steps 1–2 (executed). Step 3 requires a human with a display —
+not executed this session. (Verdict token corrected to `PARTIAL` at M15: the sentence was always
+this one, and `PASS` was never what it recorded — see `docs/manual-tests/README.md`.)
