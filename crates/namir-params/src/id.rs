@@ -36,7 +36,10 @@ impl ParamId {
     }
 }
 
-const fn fnv1a_32(bytes: &[u8]) -> u32 {
+/// FNV-1a, 32-bit, over `bytes`. `pub(crate)` so [`crate::manifest`] can fingerprint a stepped
+/// parameter's value labels with the same hash this crate already commits to for keys; nothing
+/// outside this crate may depend on the algorithm.
+pub(crate) const fn fnv1a_32(bytes: &[u8]) -> u32 {
     let mut hash = FNV_OFFSET_BASIS;
     let mut i = 0;
     while i < bytes.len() {
