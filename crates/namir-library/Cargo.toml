@@ -26,9 +26,14 @@ serde_json = "1"
 #    already in the tree via namir-state, rather than adding a second binary format to fuzz.
 #  - no search-index crate (fst, tantivy): a linear scan over a precomputed lowercase blob is
 #    sub-millisecond at 10,000 records and adds nothing a real search library would improve on.
-#  - no directory-walking crate (walkdir): std::fs::read_dir plus DirEntry::file_type() (which
-#    does not follow symlinks, so loops are impossible by construction) is sufficient and keeps
-#    the caller-pumped step machine's control flow local (see scan.rs).
+#    (Issue #72: the blob really is precomputed now -- index.rs folds it at upsert time. It was
+#    not when this line was written, and search.rs allocated and case-folded per entry per call.)
+#  - no directory-walking crate (walkdir): std::fs::read_dir plus DirEntry::file_type() is
+#    sufficient and keeps the caller-pumped step machine's control flow local (see scan.rs).
+#    This line used to add "which does not follow symlinks, so loops are impossible by
+#    construction"; issue #73 traded that free property for a real one, since it also meant a
+#    symlinked library folder -- an ordinary setup -- was silently never scanned. scan.rs now
+#    follows directory symlinks and carries an explicit visited-canonical-directory set.
 #  - no namir-params, no namir-engine, no namir-worker: D-5.1's layering table permits none of
 #    them for this crate (`xtask layering`'s LAYERING_TABLE already carries this row).
 

@@ -77,6 +77,14 @@ impl FileTime {
     pub fn as_nanos_since_epoch(self) -> i128 {
         self.0
     }
+
+    /// [`Self::as_nanos_since_epoch`]'s inverse — a timestamp stated directly, which is how a
+    /// test states one that must sit a known distance from another (D-12.1's settling window is
+    /// measured in nanoseconds, and waiting real seconds to construct one is neither fast nor
+    /// deterministic).
+    pub fn from_nanos_since_epoch(nanos: i128) -> Self {
+        FileTime(nanos)
+    }
 }
 
 /// FR-NAM-080's display metadata, plus the two fields a library search benefits from that a

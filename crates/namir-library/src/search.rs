@@ -35,7 +35,12 @@ impl Query {
 /// The lowercase text one entry is searched against: its file stem, plus every metadata field
 /// FR-LIB-040 names (name, author, gear/tone type, description for a model; nothing extra for an
 /// IR, whose header fields aren't free text).
-fn searchable_text(entry: &LibraryEntry) -> String {
+///
+/// Issue #72: called **once per entry per upsert**, by `index.rs`, and stored beside the entry —
+/// not once per entry per `filter` call, which is what made "a linear scan over a precomputed
+/// lowercase blob" (`Cargo.toml`'s reason for depending on no search-index crate) untrue. The
+/// text it produces is unchanged; only when it runs is.
+pub(crate) fn searchable_text(entry: &LibraryEntry) -> String {
     let mut blob = String::new();
     if let Some(stem) = entry.path.file_stem().and_then(|s| s.to_str()) {
         blob.push_str(stem);
@@ -58,13 +63,20 @@ fn searchable_text(entry: &LibraryEntry) -> String {
 
 /// Every entry in `index` matching `query` — an entry matches if every one of `query`'s terms is
 /// a substring of its [`searchable_text`]. An empty query matches everything.
+///
+/// Allocates nothing per entry and case-folds nothing per call: the folded text is the one the
+/// index already holds (issue #72).
 pub fn filter<'a>(index: &'a Index, query: &'a Query) -> impl Iterator<Item = &'a LibraryEntry> {
-    index.iter().filter(move |entry| {
-        query.is_empty() || {
-            let blob = searchable_text(entry);
-            query.terms.iter().all(|term| blob.contains(term.as_str()))
-        }
-    })
+    index
+        .iter_searchable()
+        .filter(move |(_, folded)| {
+            query.is_empty()
+                || query
+                    .terms
+                    .iter()
+                    .all(|term| folded.contains(term.as_str()))
+        })
+        .map(|(entry, _)| entry)
 }
 
 /// FR-LIB-060: the entry immediately after `current` in `ordered` (a caller-supplied ordering —
