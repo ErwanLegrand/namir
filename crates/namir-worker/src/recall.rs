@@ -38,11 +38,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use namir_engine::{Command, ParamChange, ParamId};
 use namir_state::{Candidate, FileRef, FileResolver, MissingFile, State};
 
 use crate::cache::ResourceCache;
+use crate::submit::DEFAULT_DEADLINE;
 use crate::{Instance, JobOutcome, LoadSource, Target};
 
 /// One resource slot's outcome within a [`RecallOutcome`].
@@ -72,11 +74,12 @@ pub struct RecallOutcome {
     pub nam: ResourceRecall,
     /// What happened to the Ir stage.
     pub ir: ResourceRecall,
-    /// How many parameter/global commands did not reach the audio thread within
-    /// `CommandSubmitter::submit`'s deadline. Ordinarily `0` — a nonzero count means the ring was
-    /// backed up for the whole submit deadline, itself worth surfacing even though this method
-    /// has no further retry to offer: D-7.2 hands the command back to the caller that submitted
-    /// it, and that caller is this method, mid-recall, with nowhere better to put it.
+    /// How many parameter/global commands did not reach the audio thread within the parameter
+    /// pass's shared deadline (issue #108: one `CommandSubmitter::submit` deadline for the whole
+    /// pass, not one per parameter). Ordinarily `0` — a nonzero count means the ring was backed up
+    /// for that whole deadline, itself worth surfacing even though this method has no further
+    /// retry to offer: D-7.2 hands the command back to the caller that submitted it, and that
+    /// caller is this method, mid-recall, with nowhere better to put it.
     pub commands_not_delivered: usize,
 }
 
@@ -104,9 +107,17 @@ fn locate(reference: &FileRef, resolver: &dyn FileResolver) -> Result<Vec<u8>, M
             Candidate::ContentHash(hash) => resolver.resolve_by_hash(hash),
         };
         let Some(path) = path else { continue };
-        let Ok(bytes) = std::fs::read(&path) else {
-            // Existed per the resolver but couldn't be read (permissions, vanished between the
-            // resolver's own exists() check and this read) -- falls through, same as a miss.
+        // Issue #107: **the path is untrusted** -- it came out of a `.namirpreset`'s
+        // `FileRef.absolute`, which is why `namir-state` has a fuzz target at all -- so this read
+        // is bounded exactly as every other read in the workspace is, through
+        // [`crate::read_file_bounded`]. A preset naming a multi-gigabyte file, a directory, or a
+        // device is a *miss*, not an allocation: over-limit, not-a-regular-file and plain
+        // unreadable all fall through to the next candidate, since none of them can be the file
+        // whose content hash this reference records.
+        let Ok(bytes) = crate::read_file_bounded(&path) else {
+            // Unreadable (permissions, vanished between the resolver's own exists() check and this
+            // read), not a regular file, or over NFR-SEC-020's ceiling -- falls through, same as a
+            // miss.
             continue;
         };
         if namir_core::ContentHash::of(&bytes) == reference.hash {
@@ -142,12 +153,30 @@ impl Instance {
         // D-10.4: `global.bypass`/`global.output_ceiling_db` are ordinary `REGISTRY` entries now,
         // so `state.params.iter()` below already carries them -- there is no longer a dedicated
         // `Command::SetGlobalBypass`/`SetOutputCeilingDb` to submit separately first.
+        //
+        // Issue #108: **one deadline for the whole pass, not one per parameter.** `submit`'s
+        // deadline is what stops a host that deactivated a plugin from wedging a pool thread
+        // (`submit.rs`'s own rationale), and calling it once per `REGISTRY` entry multiplied that
+        // bound by the registry's size -- roughly a minute for one recall, and with D-7.1's
+        // two-thread pool, two such recalls wedge the entire worker. So the pass carries a single
+        // budget: whatever is left of it bounds the next parameter's wait, and once it is spent
+        // the remaining parameters take one non-blocking attempt each. They are still *attempted*,
+        // and every miss is still counted -- a spent budget means the ring has not moved for two
+        // seconds, so a parameter that lands after it does so because the audio thread came back,
+        // not because this loop waited again.
+        let budget_ends = Instant::now() + DEFAULT_DEADLINE;
         for (descriptor, value) in state.params.iter() {
-            let change = ParamChange {
+            let command = Command::Param(ParamChange {
                 id: ParamId(descriptor.id.0),
                 value,
+            });
+            let remaining = budget_ends.saturating_duration_since(Instant::now());
+            let submitted = if remaining.is_zero() {
+                self.submitter.try_submit(command)
+            } else {
+                self.submitter.submit_with_deadline(command, remaining)
             };
-            if self.submitter.submit(Command::Param(change)).is_err() {
+            if submitted.is_err() {
                 commands_not_delivered += 1;
             }
         }
@@ -392,6 +421,163 @@ mod tests {
             }
             other => panic!("expected Missing, got {other:?}"),
         }
+    }
+
+    /// **Issue #108.** The parameter pass calls the *blocking* `submit`, once per `REGISTRY`
+    /// entry. Each call bounds itself at [`crate::submit::DEFAULT_DEADLINE`] — but the bound was
+    /// per call, so against a ring nothing drains, one recall paid it thirty-odd times over and
+    /// held a pool thread for a minute. With D-7.1's two-thread pool, two such recalls wedge the
+    /// whole worker; the deadline exists precisely so that cannot happen.
+    ///
+    /// The ring here is deliberately filled and never drained — the "host deactivated the plugin"
+    /// condition `submit.rs`'s own rationale is written against. Every parameter therefore fails,
+    /// which is what makes the count assertion below exact: nothing is dropped silently, all of
+    /// them are reported.
+    ///
+    /// The bound asserted is *one* deadline for the whole parameter pass, plus the two resource
+    /// submits that follow it — those go through [`Instance::unload`] and keep their own deadline,
+    /// which is R4's rule and is a constant two, not a multiple of the registry's size.
+    #[test]
+    fn a_recall_against_a_backed_up_ring_pays_the_parameter_deadline_once() {
+        let c = ctx();
+        // The engine is kept alive on purpose: a dropped consumer is an *abandoned* ring, which is
+        // reported at once and would hide the very wait this test measures.
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+        let resolver = FakeResolver::default();
+
+        // Fill the command ring (default capacity 256) with nothing draining it.
+        for i in 0..300u32 {
+            let _ = instance.try_submit_param(namir_engine::ParamChange {
+                id: namir_engine::ParamId(i),
+                value: 0.0,
+            });
+        }
+
+        let state = namir_state::State::defaults();
+        let params = state.params.iter().count();
+        assert!(
+            params > 4,
+            "this test needs a registry big enough for the multiplication to show, got {params}"
+        );
+
+        let started = std::time::Instant::now();
+        let outcome = instance.recall(&cache, &state, &resolver);
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            outcome.commands_not_delivered, params,
+            "every parameter missed a ring nothing drains, and each miss must still be counted"
+        );
+        assert!(
+            elapsed < 4 * crate::submit::DEFAULT_DEADLINE,
+            "a recall against a backed-up ring took {elapsed:?} for {params} parameters -- the \
+             submit deadline is being paid per parameter rather than once for the pass"
+        );
+    }
+
+    /// **Issue #107.** A preset is untrusted input, so the candidate path it names is too: before
+    /// the fix `locate` ran a bare `std::fs::read` on it, and a reference naming a multi-gigabyte
+    /// file made a worker thread allocate the whole thing before the hash even failed to match.
+    ///
+    /// **The oversized file is sparse** — `File::set_len` sets the size without writing the bytes,
+    /// the same device `lib.rs`'s `a_file_over_the_ceiling_is_refused_before_its_bytes_are_read`
+    /// uses, and for the same reason: the bytes never have to exist for the refusal to be the real
+    /// one. Which is also what makes the timing assertion below meaningful rather than a
+    /// benchmark. The pre-fix path really did read the whole 2 GB of zeros here, taking seconds
+    /// and the memory to match; the fixed path rejects it on its length and never opens it, in
+    /// microseconds. The outcome alone cannot tell the two apart — an oversized file whose hash
+    /// cannot match is `Missing` either way — so the assertion that distinguishes them is that the
+    /// miss was reached without reading the file.
+    #[test]
+    fn an_oversized_candidate_is_a_miss_without_reading_the_file() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+        let dir =
+            std::env::temp_dir().join(format!("namir-worker-issue-107-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hostile.nam");
+        let oversized = namir_core::MAX_FILE_BYTES as u64 * 8;
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(oversized).unwrap();
+        drop(file);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            oversized,
+            "the scratch filesystem did not honour the requested length, so this test would \
+             otherwise pass for the wrong reason"
+        );
+
+        let mut resolver = FakeResolver::default();
+        resolver
+            .by_absolute
+            .insert(path.to_string_lossy().into_owned(), path.clone());
+
+        let mut state = namir_state::State::defaults();
+        state.nam = Some(a_reference(
+            "hostile.nam",
+            ContentHash::of(b"whatever the preset claims"),
+            path,
+        ));
+
+        let started = std::time::Instant::now();
+        let outcome = instance.recall(&cache, &state, &resolver);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(outcome.nam, ResourceRecall::Missing { .. }),
+            "an over-ceiling candidate must be a miss, got {:?}",
+            outcome.nam
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "the recall took {elapsed:?} -- an over-ceiling candidate is being read into memory \
+             rather than refused on its length"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #107's other half: a candidate that is not a regular file is refused before it is
+    /// opened. A directory is the case a test can create on every platform this project targets;
+    /// the case that motivates the check is a FIFO, whose `File::open` blocks until a writer
+    /// appears and which no byte bound can rescue.
+    #[test]
+    fn a_candidate_that_is_not_a_regular_file_is_a_miss() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let cache = ResourceCache::new();
+        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+
+        let dir =
+            std::env::temp_dir().join(format!("namir-worker-issue-107-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut resolver = FakeResolver::default();
+        resolver
+            .by_absolute
+            .insert(dir.to_string_lossy().into_owned(), dir.clone());
+
+        let mut state = namir_state::State::defaults();
+        state.nam = Some(a_reference(
+            "a-directory.nam",
+            ContentHash::of(b"not what lives there"),
+            dir.clone(),
+        ));
+
+        let outcome = instance.recall(&cache, &state, &resolver);
+        assert!(
+            matches!(outcome.nam, ResourceRecall::Missing { .. }),
+            "a directory candidate must be a miss, got {:?}",
+            outcome.nam
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// P7's "identity is the content hash, paths are hints", exercised through a real recall: a

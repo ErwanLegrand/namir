@@ -27,7 +27,7 @@
 //! sub-block granularity is what a retry needs, and sleeping rather than spinning avoids burning a
 //! core the audio thread may want.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use namir_engine::{Command, RingProducer};
@@ -45,7 +45,11 @@ pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(2);
 /// Why a submission did not land. **Carries the command back** in every case — nothing is dropped
 /// inside `submit`.
 pub enum SubmitError {
-    /// The ring was not drained within the deadline.
+    /// The command did not land within the attempt's deadline. For [`CommandSubmitter::submit`]
+    /// that means the audio thread did not drain the ring in time; for
+    /// [`CommandSubmitter::try_submit`], whose deadline is zero, it also covers a producer another
+    /// submitter held at that instant (issue #106). Both are "not now, try again", which is why
+    /// they share one variant.
     Timeout(Command),
     /// The audio side is gone (its consumer was dropped), so nothing will ever drain.
     Abandoned(Command),
@@ -78,8 +82,26 @@ impl CommandSubmitter {
     /// One attempt, never blocks. **This is what the UI thread uses** — D-15.3 says the UI never
     /// blocks on the worker, and a parameter change that misses one block is not worth stalling a
     /// frame for.
+    ///
+    /// # Why the mutex is *tried*, not taken (issue #106)
+    ///
+    /// There are two ways this can fail to land, and only one of them is the ring. The other is
+    /// [`Self::submit_with_deadline`], which holds this same mutex across its entire wait: a
+    /// worker mid-`Instance::load` against a host that has deactivated the plugin holds it for
+    /// [`DEFAULT_DEADLINE`]. A plain `lock()` here would therefore park the GUI thread for up to
+    /// two seconds inside a call documented never to block — the exact D-15.3 / FR-UI-060
+    /// violation `namir-clap`'s `audio.rs` reasons about for the audio thread, arriving on the
+    /// thread that draws frames.
+    ///
+    /// So contention is treated as the momentary miss it is: the command comes back as
+    /// [`SubmitError::Timeout`], the same outcome and the same caller response (retry on a later
+    /// frame) as a ring that happened to be full. Nothing is dropped, and the promise the callers
+    /// in `namir-clap/src/ui_host.rs` and `namir-app/src/host.rs` cite is one this method keeps
+    /// against a contended producer as well as a full ring.
     pub fn try_submit(&self, command: Command) -> Result<(), SubmitError> {
-        let mut producer = self.lock();
+        let Some(mut producer) = self.try_lock() else {
+            return Err(SubmitError::Timeout(command));
+        };
         if producer.is_abandoned() {
             return Err(SubmitError::Abandoned(command));
         }
@@ -98,7 +120,8 @@ impl CommandSubmitter {
     /// instant. Two worker threads submitting to a full ring therefore form a bounded convoy: one
     /// sleeps against the ring, the other against the mutex. That is acceptable because submitters
     /// are per-instance (unrelated instances never contend), the wait is deadline-bounded, and it
-    /// sleeps rather than spins.
+    /// sleeps rather than spins. [`Self::try_submit`] is deliberately **not** part of that convoy
+    /// — see its own doc comment for why the caller it serves may not join one.
     ///
     /// **The one hard rule for callers: never hold the resource cache's lock across this call.**
     /// A full ring on one instance would otherwise stall every other instance's cache lookup, which
@@ -145,6 +168,17 @@ impl CommandSubmitter {
     /// cannot leave it half-pushed — `try_push` either moves the value in or hands it back.
     fn lock(&self) -> MutexGuard<'_, RingProducer<Command>> {
         self.producer.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// [`Self::lock`]'s non-blocking form, for [`Self::try_submit`]. A poisoned-but-free mutex is
+    /// recovered exactly as `lock` recovers it, for the same reason; `WouldBlock` — another
+    /// submitter holding it — is the only case that yields `None`.
+    fn try_lock(&self) -> Option<MutexGuard<'_, RingProducer<Command>>> {
+        match self.producer.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 }
 
@@ -210,6 +244,57 @@ mod tests {
             _ => panic!("a never-drained ring must time out rather than block forever"),
         }
         assert!(started.elapsed() >= Duration::from_millis(50));
+    }
+
+    /// **Issue #106.** `try_submit`'s "one attempt, never blocks" is a promise made to the *GUI*
+    /// thread (D-15.3, FR-UI-060), and a full ring is only one of the two ways it can fail to
+    /// land: the other is a worker thread already inside [`CommandSubmitter::submit`], holding the
+    /// producer mutex across its whole deadline. Before the fix this call waited on that mutex for
+    /// up to `DEFAULT_DEADLINE`, so the one caller forbidden to block was the one that blocked
+    /// longest.
+    #[test]
+    fn try_submit_does_not_wait_for_a_worker_already_inside_the_deadline() {
+        let (tx, rx) = ring::<Command>(1);
+        let submitter = std::sync::Arc::new(CommandSubmitter::new(tx));
+        submitter.try_submit(param(1)).expect("first fits"); // the ring is now full
+
+        let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker = {
+            let submitter = std::sync::Arc::clone(&submitter);
+            let entered = std::sync::Arc::clone(&entered);
+            std::thread::spawn(move || {
+                entered.store(true, std::sync::atomic::Ordering::Release);
+                // Deliberately the full default deadline: the pre-fix failure is that the call
+                // below waits out *this* thread's deadline, so a short one would hide it.
+                submitter.submit_with_deadline(param(2), DEFAULT_DEADLINE)
+            })
+        };
+        while !entered.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        // The flag is set just before the lock is taken, so settle briefly to make the contended
+        // case the one actually measured. Overshooting only costs a false pass, never a false
+        // failure.
+        std::thread::sleep(Duration::from_millis(100));
+
+        let started = Instant::now();
+        let result = submitter.try_submit(param(3));
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "try_submit waited {elapsed:?} on a contended producer -- it is documented never to \
+             block, and the UI thread calls it"
+        );
+        assert!(
+            matches!(result, Err(SubmitError::Timeout(_))),
+            "a contended producer must hand the command back rather than dropping it"
+        );
+
+        // Release the worker rather than waiting out its deadline: an abandoned ring is reported
+        // at once, so this costs one retry interval instead of two seconds.
+        drop(rx);
+        let _ = worker.join().unwrap();
     }
 
     /// If the audio side is gone entirely, say so distinctly rather than waiting out the deadline.
