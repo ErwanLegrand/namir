@@ -378,14 +378,16 @@ mod tests {
         }
     }
 
-    /// NFR-RT-010, proved rather than asserted: neither converter allocates once built, in either
-    /// format, including on a callback several times the pre-sized scratch length (the path that
-    /// would have to grow a buffer if the chunking were wrong).
+    /// NFR-RT-010 for the conversion arithmetic itself: neither converter allocates once built, in
+    /// either format, including on a callback several times the pre-sized scratch length (the path
+    /// that would have to grow a buffer if the chunking were wrong).
     ///
-    /// The closures the converters hold are the RT-safe shape [`crate::stream`] actually installs —
-    /// they write into or read from the buffer they are handed and nothing else. A closure that
-    /// allocated would make this test fail for its own reason, which is the point: the harness
-    /// covers the whole callback body, not only the arithmetic.
+    /// **The closures held here are stand-ins, not the ones [`crate::stream`] installs** — they
+    /// write into or read from the buffer they are handed and nothing else, so what this test
+    /// isolates is the converter's own chunking and arithmetic. (This doc comment used to claim
+    /// they *were* the shape `crate::stream` installs, which was never something this test checked:
+    /// issue #89.) The real pair is driven, converters and all, by
+    /// [`the_real_stream_callbacks_run_allocation_free_inside_both_converters`] below.
     #[test]
     fn neither_converter_allocates_once_the_stream_is_built() {
         let mut phase = 0.0f32;
@@ -431,6 +433,76 @@ mod tests {
         assert_eq!(
             seen.load(std::sync::atomic::Ordering::Relaxed),
             in_i32.len() + in_i24.len()
+        );
+    }
+
+    /// **The callbacks a real `cpal` stream actually invokes, run through the real converters,
+    /// under D-7.5's allocation harness.** Issue #89: `audio_section` had exactly one caller in
+    /// this crate, and the closures it wrapped were the stand-ins above; M14 put
+    /// [`crate::stream`]'s own callbacks under the harness *bare*, and this closes the last gap
+    /// between the two — the integer-format path, where the callback the device calls is a
+    /// converter wrapping the very closure `crate::stream::open` built.
+    ///
+    /// Composed exactly as `crate::audio_io::cpal_impl::build_converting_input`/
+    /// `build_converting_output` compose it: the callback [`crate::stream::open`] handed the
+    /// backend, moved into [`InputConverter`]/[`OutputConverter`] with the same
+    /// `cpal_impl::scratch_samples` length a real open would pre-size (a whole 512-frame default
+    /// block, deliberately larger than the engine's own `max_block_size`, so both chunking loops —
+    /// the converter's and the stream callback's — run more than once per callback).
+    ///
+    /// The first callback of each direction is driven *outside* the harness: `build_output`'s first
+    /// invocation elevates the thread's priority once (D-13.2), which a real stream also pays once.
+    #[test]
+    fn the_real_stream_callbacks_run_allocation_free_inside_both_converters() {
+        const MAX_BLOCK: usize = 64;
+        let backend = crate::stream::FakeBackend::new();
+        let xruns = std::sync::Arc::new(crate::xrun::XrunCounter::new());
+        let _streams = crate::stream::open(
+            crate::stream::fake_duplex_setup(&backend, MAX_BLOCK),
+            crate::stream::default_test_engine(MAX_BLOCK),
+            std::sync::Arc::clone(&xruns),
+            |_, _| {},
+        )
+        .unwrap();
+
+        let input_cb = backend.input_data.lock().unwrap().take().unwrap();
+        let output_cb = backend.output_data.lock().unwrap().take().unwrap();
+
+        // One mono capture channel, two playback channels -- `fake_duplex_setup`'s own params,
+        // with `buffer_frames: None`, which is what makes `block_frames` answer its default.
+        let input_scratch = crate::audio_io::block_frames(None);
+        let output_scratch = crate::audio_io::block_frames(None) * 2;
+        let mut input = InputConverter::new(input_cb, input_scratch);
+        let mut output = OutputConverter::new(output_cb, output_scratch);
+
+        // Device buffers longer than the scratch, so the converters chunk too. Both lengths stay a
+        // whole number of frames (the output side is even), which is the invariant chunking has to
+        // preserve for the interleave phase to survive a chunk boundary.
+        let in_i32 = [123_456_789i32; 1400];
+        let in_i24 = [I24::new(1_234_567).unwrap(); 1400];
+        let mut out_i32 = [0i32; 2800];
+        let mut out_i24 = [I24::new(0).unwrap(); 2800];
+
+        // Warm-up, un-asserted: see this test's own doc comment.
+        input.drain(&in_i32);
+        output.fill(&mut out_i32);
+
+        let mut saw_output = false;
+        for _ in 0..8 {
+            audio_section(|| input.drain(&in_i32));
+            audio_section(|| output.fill(&mut out_i32));
+            saw_output |= out_i32.iter().any(|c| *c != 0);
+            audio_section(|| input.drain(&in_i24));
+            audio_section(|| output.fill(&mut out_i24));
+            saw_output |= out_i24.iter().any(|c| c.inner() != 0);
+        }
+
+        // The run has to have produced real audio somewhere, or every assertion above would have
+        // held over callbacks that returned early -- the same guard `crate::stream`'s own harness
+        // test uses, and for the same reason.
+        assert!(
+            saw_output,
+            "every output callback produced silence -- nothing above was actually exercised"
         );
     }
 }
