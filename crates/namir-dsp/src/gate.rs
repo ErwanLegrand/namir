@@ -53,14 +53,54 @@ pub enum GateStatus {
     Closing,
 }
 
-/// A short, fixed envelope-detector time constant, independent of the attack/release *gain*
-/// ramp times, so threshold/hysteresis comparisons are stable rather than jittering on raw
-/// sample values. Not a user-facing control.
-const DETECTOR_TIME_CONSTANT_MS: f64 = 1.0;
+/// The envelope detector's look-back window, in milliseconds. Not a user-facing control.
+///
+/// # Why a windowed peak and not a one-pole (issue #123)
+///
+/// The detector's job is to report *the level of the note*, so that FR-GATE-010's threshold means
+/// what its dBFS unit says and FR-GATE-020's hysteresis gap is compared against something that
+/// does not itself move by more than the gap. A symmetric one-pole on `|x|` — what this was until
+/// M14 — does neither. At a 1 ms time constant its output on an 82.41 Hz carrier (a standard-tuned
+/// guitar's low E) swings **9.5 dB peak to peak**, three times the shipped 3 dB hysteresis, so the
+/// ripple alone re-crossed the band: a decaying low E produced **62** close events at `hold_ms = 0`
+/// where FR-GATE-020 demands one. It also settled on mean-`|x|` rather than peak, which made the
+/// threshold frequency-dependent — a −70 dBFS threshold first opened at −69.1 dBFS peak for 82.41
+/// Hz but −66.5 dBFS for 1 kHz.
+///
+/// This is instead a sliding-window maximum of `|x|`: instantaneous attack (a transient is never
+/// missed) and a release that is not a time constant at all but the age of the window. Two
+/// properties follow, and they are the two the one-pole lacked.
+///
+/// *Calibration.* The reading is the true peak amplitude of the carrier, so a threshold in dBFS is
+/// peak-referenced at every frequency, as FR-GATE-010's unit implies.
+///
+/// *Ripple.* For a sine whose rectified half-period is `T` and a retained window of `W`, the
+/// window always contains the peak when `W >= T`, so the reading is exactly flat. Below that it
+/// dips, to a worst case of `-20*log10(sin(pi*W/(2*T)))` dB — 0 dB down to 66.7 Hz on the figures
+/// below, 1.7 dB at a four-string bass's 41.2 Hz low E, and still under the 3 dB default
+/// hysteresis for anything above about **33 Hz**. That is the whole audible fundamental range of
+/// both instruments this product names.
+///
+/// The window is also how long the gate takes to notice true silence, which is why it is short
+/// rather than arbitrarily long: 8 ms here, of which at least
+/// `DETECTOR_WINDOW_MS * (DETECTOR_BLOCKS - 1) / DETECTOR_BLOCKS` = 7.5 ms is retained at any
+/// instant (see `DETECTOR_BLOCKS`). Attack, hold and release remain the user's own controls and
+/// are unaffected; this constant only sets when the *detector* concedes that the note has stopped.
+const DETECTOR_WINDOW_MS: f64 = 8.0;
 
-fn one_pole_coeff(time_constant_ms: f64, sample_rate_hz: f64) -> f32 {
-    let tau_samples = (time_constant_ms / 1000.0) * sample_rate_hz;
-    (1.0 - (-1.0 / tau_samples).exp()) as f32
+/// The window is carried as this many rolling sub-block maxima rather than a per-sample ring
+/// buffer: the maximum of a fixed, small array is O(1) per sample with no allocation and no
+/// data-dependent loop, which a monotonic-deque sliding maximum would not be. The cost is that
+/// the retained look-back is not exactly `DETECTOR_WINDOW_MS` but varies over
+/// `[(K-1)/K, 1] * DETECTOR_WINDOW_MS` as the current sub-block fills; the ripple figures in
+/// `DETECTOR_WINDOW_MS`'s doc are quoted against the retained minimum, the worst case.
+const DETECTOR_BLOCKS: usize = 16;
+
+/// Samples per detector sub-block, floored at 1 so a pathologically low sample rate cannot
+/// produce a zero-length block (which would advance the window every sample and retain nothing).
+fn detector_block_len(sample_rate_hz: f64) -> u32 {
+    let window_samples = DETECTOR_WINDOW_MS / 1000.0 * sample_rate_hz;
+    (window_samples / DETECTOR_BLOCKS as f64).round().max(1.0) as u32
 }
 
 /// Rounds `ms` of `sample_rate_hz` to whole samples, floored at 1 — for attack/release times,
@@ -87,9 +127,18 @@ pub struct NoiseGate {
     status: GateStatus,
     /// Current linear gain applied to the signal; 1.0 = fully open, 0.0 = fully closed.
     gain: f32,
-    /// Fast peak-follower envelope, see `DETECTOR_TIME_CONSTANT_MS`.
+    /// The detector's reading: the largest `|x|` anywhere in the retained window, i.e. the peak
+    /// amplitude of the note. See `DETECTOR_WINDOW_MS` for why this is a windowed maximum and not
+    /// a one-pole follower.
     envelope: f32,
-    detector_coeff: f32,
+    /// The window itself, as `DETECTOR_BLOCKS` rolling sub-block maxima; `envelope` is their
+    /// maximum. `block_index` is the sub-block currently being filled.
+    window_blocks: [f32; DETECTOR_BLOCKS],
+    block_index: usize,
+    /// Samples left before `block_index` advances and the oldest sub-block is discarded.
+    block_remaining: u32,
+    /// Samples per sub-block, fixed at construction with the sample rate.
+    block_len: u32,
     /// Per-sample gain increment while `Opening` (`1 / attack_samples`).
     attack_step: f32,
     /// Per-sample gain decrement while `Closing` (`1 / release_samples`).
@@ -103,14 +152,17 @@ pub struct NoiseGate {
 impl NoiseGate {
     /// Builds a closed gate at `GateParams::default()`, fixed to `sample_rate` for its lifetime.
     pub fn new(sample_rate: SampleRate) -> Self {
-        let detector_coeff = one_pole_coeff(DETECTOR_TIME_CONSTANT_MS, sample_rate.hz_f64());
+        let block_len = detector_block_len(sample_rate.hz_f64());
         let mut gate = Self {
             sample_rate,
             params: GateParams::default(),
             status: GateStatus::Closed,
             gain: 0.0,
             envelope: 0.0,
-            detector_coeff,
+            window_blocks: [0.0; DETECTOR_BLOCKS],
+            block_index: 0,
+            block_remaining: block_len,
+            block_len,
             attack_step: 1.0,
             release_step: 1.0,
             hold_samples: 0,
@@ -132,10 +184,33 @@ impl NoiseGate {
         self.params = params;
     }
 
+    /// Advances the sliding-window peak detector by one sample and returns its reading. Runs on
+    /// the audio thread: fixed-size state, no allocation, and the only loop is the fold over
+    /// `DETECTOR_BLOCKS` (a compile-time constant) once every `block_len` samples.
+    fn detect(&mut self, input_abs: f32) -> f32 {
+        if self.block_remaining == 0 {
+            self.block_index = (self.block_index + 1) % DETECTOR_BLOCKS;
+            self.window_blocks[self.block_index] = 0.0;
+            self.block_remaining = self.block_len;
+            // The oldest sub-block has just been discarded, so the running maximum has to be
+            // rebuilt from what is left rather than merely relaxed.
+            self.envelope = self.window_blocks.iter().copied().fold(0.0f32, f32::max);
+        }
+        self.block_remaining -= 1;
+
+        let block = &mut self.window_blocks[self.block_index];
+        if input_abs > *block {
+            *block = input_abs;
+        }
+        if input_abs > self.envelope {
+            self.envelope = input_abs;
+        }
+        self.envelope
+    }
+
     /// Advances the state machine by one sample and returns the gain to apply to it.
     fn step(&mut self, input_abs: f32) -> f32 {
-        self.envelope += self.detector_coeff * (input_abs - self.envelope);
-        let env_db = linear_to_db(self.envelope);
+        let env_db = linear_to_db(self.detect(input_abs));
         let open = env_db >= self.params.threshold_db;
         let close = env_db < self.params.threshold_db - self.params.hysteresis_db;
 
@@ -146,11 +221,20 @@ impl NoiseGate {
                 }
             }
             GateStatus::Opening => {
-                self.gain += self.attack_step;
-                if self.gain >= 1.0 {
-                    self.gain = 1.0;
-                    self.status = GateStatus::Open;
-                    self.hold_remaining = None;
+                if close {
+                    // The signal fell back through the hysteresis band mid-attack: turn around
+                    // from wherever the gain currently is, mirroring the `Closing -> Opening`
+                    // resumption below. Without this the attack ramp ran to completion no matter
+                    // what the detector did afterwards, so a single isolated sample opened the
+                    // gate fully and held it open for attack + hold + release (issue #124).
+                    self.status = GateStatus::Closing;
+                } else {
+                    self.gain += self.attack_step;
+                    if self.gain >= 1.0 {
+                        self.gain = 1.0;
+                        self.status = GateStatus::Open;
+                        self.hold_remaining = None;
+                    }
                 }
             }
             GateStatus::Open => match self.hold_remaining {
@@ -215,6 +299,9 @@ impl NoiseGate {
         self.status = GateStatus::Closed;
         self.gain = 0.0;
         self.envelope = 0.0;
+        self.window_blocks = [0.0; DETECTOR_BLOCKS];
+        self.block_index = 0;
+        self.block_remaining = self.block_len;
         self.hold_remaining = None;
     }
 }
@@ -263,45 +350,77 @@ mod tests {
 
     /// E2, the low-E fundamental of a standard-tuned guitar: the lowest note the instrument
     /// ahead of this gate actually produces, and the hardest case for the detector, whose
-    /// rectified ripple grows as the carrier frequency falls towards its own time constant.
+    /// window has to span the rectified half-period of the carrier to read its peak.
     const LOW_E_HZ: f64 = 82.41;
 
     /// FR-GATE-010's hold range (0..500 ms): both ends, the default, and the values between where
-    /// hold and hysteresis trade off. The test below filters this list rather than spanning it,
-    /// and the two settings the filter drops are the subject of its `// uncovered:` field.
+    /// hold and hysteresis trade off. Every entry is asserted; the range is spanned, not filtered.
     const FRS_HOLD_MS: [f32; 8] = [0.0, 1.0, 5.0, 10.0, 30.0, 100.0, 250.0, 500.0];
 
-    /// Counts transitions into `Closing` — FR-GATE-020's "close event" — while a low-E note
-    /// decaying from -10 dBFS to about -97 dBFS over 5 s passes down through the gate's
-    /// threshold (-70 dBFS) and its hysteresis band.
+    /// The amplitude wobble applied to the hovering phase of [`hovering_then_decaying_low_e`], in
+    /// dB either side of the threshold, and its rate. 2 dB peak to peak is narrower than the 3 dB
+    /// default hysteresis and wider than a 0 or 1 dB gap, which is exactly what makes the gap the
+    /// variable under test rather than a passenger.
+    const WOBBLE_DB: f32 = 1.0;
+    const WOBBLE_HZ: f64 = 8.0;
+
+    /// FR-GATE-020's own two scenarios, back to back, as one stimulus: a low-E note that first
+    /// **hovers at the threshold** (the requirement's sentence: "to prevent chatter on a signal
+    /// hovering at the threshold") and then **decays through it** (its `Verify:` method: "a signal
+    /// decaying through the threshold shall produce exactly one close event").
     ///
-    /// The carrier is the whole point. A bare decaying envelope, which is what this test used
-    /// before, is monotonic at the detector's output, so it crosses the close threshold once
-    /// whatever the parameters are: it reports one close event with the hysteresis removed
-    /// entirely, and so cannot falsify the requirement it was annotated for (issue #125). A real
-    /// note is a carrier, the detector sees its rectified ripple, and the ripple is what
-    /// hysteresis exists to bridge.
-    fn close_events_on_a_decaying_low_e(hold_ms: f32, hysteresis_db: f32) -> u32 {
-        let sample_rate = 48_000u32;
+    /// Phase 1, 2 s: the carrier's peak amplitude sits at `threshold_db` with a ±`WOBBLE_DB`
+    /// modulation at `WOBBLE_HZ` — a note held at the edge of the gate's threshold, which is the
+    /// only place chatter can happen at all.
+    /// Phase 2, 3 s: exponential decay from the threshold to about 30 dB below it, well clear of
+    /// even the widest hysteresis gap swept below.
+    ///
+    /// **Both the carrier and the wobble are load-bearing.** A bare decaying envelope, which is
+    /// what this test used before issue #125, is monotonic at any detector's output, so it crosses
+    /// the close threshold once whatever the parameters are and cannot falsify the requirement. A
+    /// bare *carrier* under a bare decay is monotonic too now that the detector reads its peak
+    /// (issue #123) — it was only the old one-pole detector's own 9.5 dB of rectified ripple that
+    /// made that stimulus chatter, i.e. the test would have been measuring a detector defect, not
+    /// hysteresis. Real program material hovering at a gate threshold is not monotonic: it wobbles,
+    /// and the wobble is what hysteresis exists to bridge.
+    fn hovering_then_decaying_low_e(
+        threshold_db: f32,
+        samples: usize,
+        sample_rate: u32,
+    ) -> impl Iterator<Item = f32> {
+        let hover_samples = sample_rate as usize * 2;
+        let decay_tau = sample_rate as f64 * 0.8; // ~32 dB over the 3 s decay phase.
+        let radians_per_sample = 2.0 * std::f64::consts::PI * LOW_E_HZ / sample_rate as f64;
+        let wobble_per_sample = 2.0 * std::f64::consts::PI * WOBBLE_HZ / sample_rate as f64;
+        (0..samples).map(move |n| {
+            let wobble_db = WOBBLE_DB * (wobble_per_sample * n as f64).sin() as f32;
+            let decay_db = if n < hover_samples {
+                0.0
+            } else {
+                -8.685_889 * ((n - hover_samples) as f64 / decay_tau) as f32
+            };
+            let amplitude = namir_core::db_to_linear(threshold_db + wobble_db + decay_db);
+            amplitude * (radians_per_sample * n as f64).sin() as f32
+        })
+    }
+
+    /// Counts transitions into `Closing` — FR-GATE-020's "close event" — over
+    /// [`hovering_then_decaying_low_e`].
+    fn close_events(sample_rate: u32, hold_ms: f32, hysteresis_db: f32) -> u32 {
         let mut gate = NoiseGate::new(sr(sample_rate));
-        gate.set_params(GateParams {
+        let params = GateParams {
             hold_ms,
             hysteresis_db,
             ..GateParams::default()
-        });
-
-        // Starts comfortably above the open threshold and, over the 5 s window, decays to well
-        // below the close threshold (threshold - hysteresis) — so the note actually crosses the
-        // hysteresis band once, rather than asymptoting to a level still above it.
-        let start_linear = namir_core::db_to_linear(-10.0);
-        let tau = (sample_rate as f64) * 0.5; // slow decay relative to detector/attack times.
-        let radians_per_sample = 2.0 * std::f64::consts::PI * LOW_E_HZ / sample_rate as f64;
+        };
+        gate.set_params(params);
 
         let mut closing_transitions = 0u32;
         let mut prev_status = gate.status();
-        for n in 0..sample_rate as usize * 5 {
-            let envelope = start_linear * (-(n as f64) / tau).exp() as f32;
-            let mut sample = [envelope * (radians_per_sample * n as f64).sin() as f32];
+        for x in
+            hovering_then_decaying_low_e(params.threshold_db, sample_rate as usize * 5, sample_rate)
+        {
+            let mut sample = [x];
             gate.process(&mut sample);
             if gate.status() == GateStatus::Closing && prev_status != GateStatus::Closing {
                 closing_transitions += 1;
@@ -311,53 +430,75 @@ mod tests {
         closing_transitions
     }
 
-    // trace-partial: FR-GATE-020
-    // uncovered: FR-GATE-020 — the method ("exactly one close event") is asserted over
-    // uncovered: FR-GATE-010's hold range from 5 ms up. At 0 and 1 ms the same decaying low-E
-    // uncovered: note produces 62 and 61 close events with the shipped 3 dB gap: the 1 ms
-    // uncovered: detector ripples about 9 dB peak-to-peak on an 82 Hz carrier and the gap is
-    // uncovered: narrower than the ripple. That is a gate defect rather than a test gap — 12 dB
-    // uncovered: of hysteresis, or a detector whose release is slow relative to the lowest
-    // uncovered: program frequency, produces exactly one at every hold — so the two settings are
-    // uncovered: left unasserted rather than pinned to today's numbers; closes M8
+    /// The carrier's peak amplitude, in dBFS, at the sample where `gate` first leaves `Closed`
+    /// (the open level) and where it first enters `Closing` afterwards (the close level).
+    ///
+    /// Driven by a slow symmetric ramp — 25 dB up over 2 s, then 25 dB back down — so that the
+    /// level *is* the instantaneous amplitude to within the detector's own window (8 ms at
+    /// 12.5 dB/s is 0.1 dB) and neither figure is an artefact of how fast the ramp moved.
+    fn open_and_close_levels_dbfs(gate: &mut NoiseGate, freq_hz: f64) -> (f32, f32) {
+        let sample_rate = 48_000u32;
+        let leg = sample_rate as usize * 2;
+        let radians_per_sample = 2.0 * std::f64::consts::PI * freq_hz / sample_rate as f64;
+        let (mut open_at, mut close_at) = (None, None);
+        for n in 0..leg * 2 {
+            let db = if n < leg {
+                -85.0 + 25.0 * (n as f32 / leg as f32)
+            } else {
+                -60.0 - 25.0 * ((n - leg) as f32 / leg as f32)
+            };
+            let mut sample =
+                [namir_core::db_to_linear(db) * (radians_per_sample * n as f64).sin() as f32];
+            gate.process(&mut sample);
+            if open_at.is_none() && gate.status() != GateStatus::Closed {
+                open_at = Some(db);
+            }
+            if open_at.is_some() && close_at.is_none() && gate.status() == GateStatus::Closing {
+                close_at = Some(db);
+            }
+        }
+        (
+            open_at.expect("the gate never opened"),
+            close_at.expect("the gate never closed"),
+        )
+    }
+
+    // trace: FR-GATE-020
     #[test]
-    fn hysteresis_prevents_chatter_on_a_decaying_low_e_note() {
-        // (a) The requirement's own method, over the hold settings it holds for. 5 ms is the
-        //     shortest one, and at 5 ms it is hysteresis and not hold that carries it — see (b).
-        for hold_ms in FRS_HOLD_MS.into_iter().filter(|&ms| ms >= 5.0) {
-            let events = close_events_on_a_decaying_low_e(hold_ms, 3.0);
-            assert_eq!(
-                events, 1,
-                "hold {hold_ms} ms: expected exactly one transition into Closing, got {events}"
-            );
+    fn hysteresis_prevents_chatter_on_a_low_e_note_hovering_at_the_threshold() {
+        // (a) The requirement's own `Verify:` method — "exactly one close event" — over the whole
+        //     of FR-GATE-010's hold range including its 0 ms end, at the shipped 3 dB gap. Run at
+        //     three sample rates as well: the requirement does not quantify over them, but the
+        //     detector's window is now the mechanism that carries it and `detector_block_len`
+        //     rounds that window to whole samples per rate.
+        for sample_rate in [44_100u32, 48_000, 96_000] {
+            for hold_ms in FRS_HOLD_MS {
+                let events = close_events(sample_rate, hold_ms, 3.0);
+                assert_eq!(
+                    events, 1,
+                    "{sample_rate} Hz, hold {hold_ms} ms: expected exactly one transition into \
+                     Closing, got {events}"
+                );
+            }
         }
 
-        // (b) The falsifier for (a)'s shortest hold: with the hysteresis gap removed and nothing
-        //     else changed, the same stimulus chatters. Without this the assertion above would
-        //     rest on hold — every value from 10 ms up reports one close event at 0 dB of
-        //     hysteresis, because a hold longer than the ripple period absorbs the ripple by
-        //     itself, which is the second half of what made the old test unfalsifiable.
-        let without_hysteresis = close_events_on_a_decaying_low_e(5.0, 0.0);
+        // (b) The falsifier. With the hysteresis gap removed and nothing else changed, the same
+        //     stimulus chatters — so (a) at its 0 ms hold is resting on hysteresis and on nothing
+        //     else. (At the long end of the hold range hold would carry it too; that is what (a)'s
+        //     0 and 1 ms entries are for.)
+        let without_hysteresis = close_events(48_000, 0.0, 0.0);
         assert!(
             without_hysteresis > 1,
-            "hold 5 ms with no hysteresis should chatter, got {without_hysteresis} close events \
+            "hold 0 ms with no hysteresis should chatter, got {without_hysteresis} close events \
              — the assertion above is then resting on hold, not on hysteresis"
         );
 
-        // (c) At the bottom of FR-GATE-010's hold range hysteresis is the only mechanism left, so
-        //     this is where the requirement's own sentence — "the level at which the gate closes
-        //     shall be measurably below the level at which it opens" — is what is measured.
-        //     Widening the gap must reduce the chatter monotonically, and a gap wider than the
-        //     detector's ripple must remove it entirely.
+        // (c) Widening the gap must reduce the chatter monotonically, and any gap wider than the
+        //     wobble the note is hovering with must remove it entirely.
         let sweep: Vec<(f32, u32)> = [0.0f32, 1.0, 3.0, 6.0, 12.0, 24.0]
             .into_iter()
-            .map(|db| (db, close_events_on_a_decaying_low_e(0.0, db)))
+            .map(|db| (db, close_events(48_000, 0.0, db)))
             .collect();
-        assert!(
-            sweep[0].1 > 1,
-            "hold 0 ms with no hysteresis should chatter, got {} close events",
-            sweep[0].1
-        );
         for pair in sweep.windows(2) {
             let ((narrow_db, narrow), (wide_db, wide)) = (pair[0], pair[1]);
             assert!(
@@ -366,12 +507,177 @@ mod tests {
                  count from {narrow} to {wide}"
             );
         }
-        let (widest_db, widest) = *sweep.last().unwrap();
-        assert_eq!(
-            widest, 1,
-            "hold 0 ms at {widest_db} dB of hysteresis — wider than the detector's ripple on this \
-             carrier — should close exactly once, got {widest}"
+        for &(db, events) in sweep.iter().filter(|(db, _)| *db >= 2.0 * WOBBLE_DB) {
+            assert_eq!(
+                events,
+                1,
+                "hold 0 ms at {db} dB of hysteresis — wider than the note's {} dB of wobble — \
+                 should close exactly once, got {events}",
+                2.0 * WOBBLE_DB
+            );
+        }
+
+        // (d) The requirement's normative sentence, measured directly rather than inferred from a
+        //     chatter count: "the level at which the gate closes shall be measurably below the
+        //     level at which it opens". The gap is `hysteresis_db` by construction, so this also
+        //     pins that the parameter is what sets it.
+        for hysteresis_db in [3.0f32, 6.0, 12.0] {
+            let mut gate = NoiseGate::new(sr(48_000));
+            gate.set_params(GateParams {
+                hold_ms: 0.0,
+                hysteresis_db,
+                ..GateParams::default()
+            });
+            let (open_db, close_db) = open_and_close_levels_dbfs(&mut gate, LOW_E_HZ);
+            assert!(
+                close_db < open_db,
+                "close level {close_db:.2} dBFS is not below the open level {open_db:.2} dBFS"
+            );
+            let measured_gap = open_db - close_db;
+            assert!(
+                (measured_gap - hysteresis_db).abs() < 0.5,
+                "hysteresis_db = {hysteresis_db}: opened at {open_db:.2} dBFS and closed at \
+                 {close_db:.2} dBFS, a gap of {measured_gap:.2} dB"
+            );
+        }
+    }
+
+    /// **Issue #123's second symptom.** FR-GATE-010 specifies Threshold in dBFS, a peak-referenced
+    /// unit, so the level at which a given threshold opens the gate must not depend on the
+    /// frequency of the note. The one-pole detector this replaced settled on mean-`|x|`, so a −70
+    /// dBFS threshold first opened at −69.1 dBFS peak for a low E but −66.5 dBFS for 1 kHz — a
+    /// 2.6 dB spread across the instrument's range.
+    #[test]
+    fn the_threshold_is_peak_referenced_at_every_program_frequency() {
+        let mut levels = Vec::new();
+        for freq_hz in [LOW_E_HZ, 110.0, 196.0, 440.0, 1000.0, 5000.0] {
+            let mut gate = NoiseGate::new(sr(48_000));
+            let (open_db, _) = open_and_close_levels_dbfs(&mut gate, freq_hz);
+            assert!(
+                (open_db - GateParams::default().threshold_db).abs() < 0.5,
+                "{freq_hz} Hz: a -70 dBFS threshold first opened at {open_db:.2} dBFS peak"
+            );
+            levels.push(open_db);
+        }
+        let spread = levels.iter().cloned().fold(f32::MIN, f32::max)
+            - levels.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            spread < 0.5,
+            "the open level varies by {spread:.2} dB across the instrument's range: {levels:?}"
         );
+    }
+
+    /// **Issue #123's first symptom, at the detector rather than through the state machine.** The
+    /// reading on a steady carrier must be flat: any ripple is a level the hysteresis gap has to
+    /// bridge before it can do the job FR-GATE-020 asks of it. The one-pole this replaced rippled
+    /// 9.5 dB peak to peak on a low E, three times the default gap.
+    ///
+    /// The bass frequencies are below what `DETECTOR_WINDOW_MS`'s retained window spans, so they
+    /// are asserted against that constant's own worst-case formula rather than at zero.
+    #[test]
+    fn the_detector_reads_a_steady_carrier_flat_across_the_instrument_range() {
+        let sample_rate = 48_000u32;
+        // The window's retained minimum — see `DETECTOR_BLOCKS`.
+        let retained_s =
+            DETECTOR_WINDOW_MS / 1000.0 * (DETECTOR_BLOCKS - 1) as f64 / DETECTOR_BLOCKS as f64;
+
+        for freq_hz in [30.87f64, 41.2, LOW_E_HZ, 110.0, 440.0, 1000.0] {
+            let mut gate = NoiseGate::new(sr(sample_rate));
+            let amplitude = namir_core::db_to_linear(-20.0);
+            let radians_per_sample = 2.0 * std::f64::consts::PI * freq_hz / sample_rate as f64;
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for n in 0..sample_rate as usize {
+                gate.step((amplitude * (radians_per_sample * n as f64).sin() as f32).abs());
+                // Skip the first half second, while the window is still filling.
+                if n > sample_rate as usize / 2 {
+                    let reading = linear_to_db(gate.envelope);
+                    lo = lo.min(reading);
+                    hi = hi.max(reading);
+                }
+            }
+
+            let half_period_s = 0.5 / freq_hz;
+            let predicted = if retained_s >= half_period_s {
+                0.0
+            } else {
+                let ratio = std::f64::consts::PI * retained_s / (2.0 * half_period_s);
+                -20.0 * ratio.sin().log10()
+            };
+            let ripple = (hi - lo) as f64;
+            assert!(
+                ripple <= predicted + 0.2,
+                "{freq_hz} Hz: detector ripples {ripple:.2} dB peak to peak, above the \
+                 {predicted:.2} dB DETECTOR_WINDOW_MS predicts"
+            );
+            // Every frequency at or above a four-string bass's low E must stay inside the default
+            // hysteresis gap, or FR-GATE-020 cannot hold there.
+            if freq_hz >= 41.2 {
+                assert!(
+                    ripple < GateParams::default().hysteresis_db as f64,
+                    "{freq_hz} Hz: detector ripples {ripple:.2} dB, at or beyond the default \
+                     {} dB hysteresis gap",
+                    GateParams::default().hysteresis_db
+                );
+            }
+        }
+    }
+
+    /// **Issue #124.** A single sample into otherwise silent input reads well above the threshold
+    /// at the detector — a peak detector's whole point is that it does — and `Opening` used to ramp
+    /// unconditionally to unity once entered, ignoring the detector for the rest of the attack. At
+    /// the 50 ms maximum attack the gate reached a gain of exactly **1.000** and passed signal for
+    /// **180 ms** (attack + hold + release) off one sample. It now turns the ramp around when the
+    /// detector's reading falls back through the hysteresis band, so the gain only ever gets as far
+    /// as the signal justified: `DETECTOR_WINDOW_MS / attack_ms`, measuring 0.155 at 50 ms.
+    ///
+    /// Attacks are swept from where that bound bites. Below about 8 ms the ramp finishes inside the
+    /// detector's own window, so the gate does open — correctly: a −36 dBFS sample is 34 dB above
+    /// the −70 dBFS threshold, a transient a 1 ms attack exists to catch, and how long it then
+    /// stays open is Hold and Release, which are the user's own controls and not this defect.
+    #[test]
+    fn an_isolated_sample_does_not_run_the_attack_ramp_to_unity() {
+        for attack_ms in [10.0f32, 25.0, 50.0] {
+            let mut gate = NoiseGate::new(sr(48_000));
+            gate.set_params(GateParams {
+                attack_ms,
+                ..GateParams::default()
+            });
+
+            let mut probe = vec![0.0f32; 48_000];
+            probe[10] = namir_core::db_to_linear(-36.0);
+
+            let mut max_gain = 0.0f32;
+            let mut passing = 0usize;
+            for x in &probe {
+                let gain = gate.step(x.abs());
+                max_gain = max_gain.max(gain);
+                if gain > 0.0 {
+                    passing += 1;
+                }
+            }
+
+            let bound = (DETECTOR_WINDOW_MS as f32 / attack_ms) * 1.05;
+            assert!(
+                max_gain <= bound,
+                "attack {attack_ms} ms: one isolated sample took the gate to a gain of \
+                 {max_gain:.4}, past the {bound:.4} its own detector window justifies"
+            );
+            assert!(
+                max_gain < 1.0,
+                "attack {attack_ms} ms: one isolated sample opened the gate fully"
+            );
+            assert_eq!(
+                gate.status(),
+                GateStatus::Closed,
+                "attack {attack_ms} ms: gate did not return to Closed"
+            );
+            // 180 ms is what the unconditional ramp cost at 50 ms of attack.
+            let open_ms = passing as f64 / 48.0;
+            assert!(
+                open_ms < 90.0,
+                "attack {attack_ms} ms: the gate passed signal for {open_ms:.1} ms off one sample"
+            );
+        }
     }
 
     /// Drives `input` through `gate` in `block`-sample calls and returns the gain that was
