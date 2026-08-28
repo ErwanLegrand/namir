@@ -134,23 +134,39 @@ impl std::fmt::Display for RelPath {
     }
 }
 
-/// NFR-SEC-020's bound on an [`EmbeddedRef`]'s decoded byte size. In practice this is already
-/// implied by [`crate::MAX_DOCUMENT_BYTES`] — the base64 text an embedded resource's bytes are
-/// stored as is itself part of the same document, so it can never exceed roughly
-/// `MAX_DOCUMENT_BYTES` to begin with, and base64 decoding allocates in proportion to the input
-/// actually present (not a separately-declared length field the way a WAV header's `data` chunk
-/// length is — there is no forgeable "claims more than it delivers" vector here the way
-/// `namir_ir::wav`'s module doc warns about for WAV). This constant is kept anyway, set to
-/// exactly [`crate::MAX_DOCUMENT_BYTES`], as the single place that bound is *stated* for this
-/// specific case rather than left to be re-derived from a different module's constant — the
-/// NFR's own wording asks for a *documented* bound, not merely an accidentally-true one.
+/// NFR-SEC-020's bound on an [`EmbeddedRef`]'s **encoded** byte size — §7.2 of
+/// `docs/04-state-and-preset-format.md`'s rule, verbatim: "the encoded text is subject to the
+/// same 256 MiB ceiling as the whole document, checked against the encoded string's own length,
+/// before any base64 decoding happens". `EmbeddedRef::from_value` enforces exactly that.
+/// (This doc comment said "decoded" until issue #115; the code has always checked the encoded
+/// length, which is the one §7.2 specifies and the one that bounds the allocation.)
+///
+/// **Reachability, stated rather than implied.** Set to exactly [`crate::MAX_DOCUMENT_BYTES`],
+/// this check cannot currently fire on anything [`crate::Document::parse`] produced: a `data`
+/// string longer than the ceiling cannot fit inside a document that is itself under the ceiling,
+/// and `from_value` is reachable no other way. It is kept for two reasons that are not
+/// "belt-and-braces for its own sake". §7.2 states the rule as a requirement on *a conforming
+/// reader*, whose own document ceiling a third party is free to set higher than this build's;
+/// and the redundancy here is an artefact of the two constants being equal today, not a
+/// structural guarantee — raise `MAX_DOCUMENT_BYTES` and this becomes the only thing standing
+/// between a hostile `data` string and a decode allocation proportional to it. Base64 decoding
+/// does at least allocate in proportion to the input actually present, not to a
+/// separately-declared length field the way a WAV header's `data` chunk length does, so there is
+/// no forgeable "claims more than it delivers" vector here of the kind `namir_ir::wav`'s module
+/// doc warns about.
+///
+/// **This bounds the read side only.** The write side is [`crate::Document::try_to_pretty_bytes`]
+/// / [`crate::State::try_write`], which check the produced document against
+/// [`crate::MAX_DOCUMENT_BYTES`]: base64 costs 4/3, and `namir_core::MAX_FILE_BYTES` admits a
+/// source file whose encoded form alone overflows a document, so embedding one used to yield
+/// bytes only the *next* load would reject (issue #115).
 pub const MAX_EMBEDDED_BYTES: usize = crate::document::MAX_DOCUMENT_BYTES;
 
 /// FR-STATE-080's optional embedded copy of a model or IR's raw bytes, carried directly in the
 /// state document. A `format_version` bump was the alternative to reserving this from the start
 /// — see `docs/02-architecture.md`'s M5 note on D-11.1 — so the shape exists from this crate's
 /// first version rather than being retrofitted.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedRef {
     /// The embedded resource's media type (`"application/vnd.namir.nam+json"` for a model,
     /// `"audio/wav"` for an IR) — informational, not consulted by this crate; a caller decides
@@ -200,9 +216,9 @@ impl EmbeddedRef {
                 "embedded.data must be a string",
             )
         })?;
-        // NFR-SEC-020: reject on the *encoded* length before decoding -- see MAX_EMBEDDED_BYTES's
-        // doc comment for why this is already implied by the whole-document ceiling, and kept
-        // explicit anyway.
+        // NFR-SEC-020 / docs/04 section 7.2: reject on the *encoded* length before decoding -- see
+        // MAX_EMBEDDED_BYTES's doc comment for why this cannot fire through `Document::parse`
+        // while the two ceilings are equal, and is kept anyway.
         if data_text.len() > MAX_EMBEDDED_BYTES {
             return Err(StateError::new(
                 error_codes::DOCUMENT_TOO_LARGE,

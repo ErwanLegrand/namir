@@ -111,12 +111,51 @@ impl Document {
     /// no-trailing-newline diff under most editors/VCS configurations — FR-STATE-040's
     /// diffability, extended past "the JSON is sorted" to "the file itself behaves like a normal
     /// text file").
+    ///
+    /// **Unchecked against [`MAX_DOCUMENT_BYTES`]** — a document carrying a large enough
+    /// FR-STATE-080 embedded copy serialises to bytes [`Self::parse`] would then refuse with
+    /// `DOCUMENT_TOO_LARGE`. Use [`Self::try_to_pretty_bytes`] (or
+    /// [`State::try_write`](crate::State::try_write)) anywhere the bytes are destined for a file
+    /// or a host's state blob, i.e. anywhere they will be read back; this infallible form is for
+    /// a caller that has already established the document is small (a test, a freshly-defaulted
+    /// state) and does not want a `Result` it cannot act on.
     pub fn to_pretty_bytes(&self) -> Vec<u8> {
         let mut bytes = serde_json::to_vec_pretty(&Value::Object(self.root.clone())).expect(
             "a Document's root is always a valid serde_json::Map and cannot fail to serialise",
         );
         bytes.push(b'\n');
         bytes
+    }
+
+    /// As [`Self::to_pretty_bytes`], but refuses to hand back bytes [`Self::parse`] would reject:
+    /// over [`MAX_DOCUMENT_BYTES`] is `error_codes::DOCUMENT_TOO_LARGE`, the same code the read
+    /// side uses for the same condition.
+    ///
+    /// This is the write half of NFR-SEC-020's ceiling, which the read half alone cannot keep:
+    /// nothing else in this crate bounds how many bytes an [`EmbeddedRef`](crate::EmbeddedRef)
+    /// contributes, so without this a save could produce a document that only fails on the *next*
+    /// load — the point at which the user's own settings are already the thing being lost, and
+    /// the least useful moment to discover it.
+    pub fn try_to_pretty_bytes(&self) -> Result<Vec<u8>, StateError> {
+        self.to_pretty_bytes_within(MAX_DOCUMENT_BYTES)
+    }
+
+    /// [`Self::try_to_pretty_bytes`] with the ceiling as a parameter — the seam its tests drive,
+    /// so the enforcement is checked at a byte count a test can build in microseconds rather than
+    /// only at the real 256 MiB figure. The public method is this one at [`MAX_DOCUMENT_BYTES`].
+    pub(crate) fn to_pretty_bytes_within(&self, limit: usize) -> Result<Vec<u8>, StateError> {
+        let bytes = self.to_pretty_bytes();
+        if bytes.len() > limit {
+            return Err(StateError::new(
+                error_codes::DOCUMENT_TOO_LARGE,
+                format!(
+                    "{} bytes written, limit {} MB",
+                    bytes.len(),
+                    limit / (1024 * 1024)
+                ),
+            ));
+        }
+        Ok(bytes)
     }
 
     /// A named top-level section as an object, if present and shaped as one. `None` covers both
@@ -149,6 +188,22 @@ impl Document {
         let mut merged = self.section(key).cloned().unwrap_or_default();
         merged.extend(additions);
         self.set_section(key, merged);
+    }
+
+    /// Deletes one key from a named section, leaving every other key in that section — and the
+    /// section itself, even if this empties it — alone. A no-op if either the section or the key
+    /// is absent, or if the section isn't an object.
+    ///
+    /// [`Self::merge_section`] can only ever *add* a key, which makes it unable to express "this
+    /// slot is now empty" for a section whose keys are themselves the state (`references`, whose
+    /// two keys are optional by §7 of `docs/04-state-and-preset-format.md`: "absent means nothing
+    /// of that kind is loaded"). This is the counterpart that can. It is deliberately per-key
+    /// rather than per-section, so D-11.2's promise still holds around it: an unrecognised key
+    /// sitting alongside `nam`/`ir` inside `references` survives a save that clears one of them.
+    pub(crate) fn remove_from_section(&mut self, key: &str, field: &str) {
+        if let Some(Value::Object(section)) = self.root.get_mut(key) {
+            section.remove(field);
+        }
     }
 }
 
@@ -305,6 +360,60 @@ mod tests {
         let merged = doc.section("parameters").unwrap();
         assert_eq!(merged.get("kept"), Some(&Value::from("stays")));
         assert_eq!(merged.get("overwritten"), Some(&Value::from("new")));
+    }
+
+    #[test]
+    fn remove_from_section_deletes_only_the_named_key() {
+        let mut doc = Document::empty();
+        let mut references = Map::new();
+        references.insert("nam".to_string(), Value::from("the model"));
+        references.insert("ir".to_string(), Value::from("the cab"));
+        doc.set_section("references", references);
+
+        doc.remove_from_section("references", "nam");
+
+        let section = doc.section("references").unwrap();
+        assert!(!section.contains_key("nam"));
+        assert_eq!(section.get("ir"), Some(&Value::from("the cab")));
+    }
+
+    #[test]
+    fn remove_from_section_is_a_no_op_for_an_absent_section_or_key() {
+        let mut doc = Document::empty();
+        doc.remove_from_section("references", "nam"); // no such section
+        assert!(doc.section("references").is_none());
+
+        doc.set_section("references", Map::new());
+        doc.remove_from_section("references", "nam"); // no such key
+        assert_eq!(doc.section("references"), Some(&Map::new()));
+    }
+
+    /// Issue #115's write half: the byte ceiling NFR-SEC-020 states is enforced on the way *out*
+    /// too, not only on the way in — otherwise a save can produce a document whose only failure
+    /// mode is the next load. Driven through the limit-taking seam so the property is checked at
+    /// a size a test can build instantly; `try_to_pretty_bytes` is this same code path at
+    /// `MAX_DOCUMENT_BYTES`.
+    #[test]
+    fn to_pretty_bytes_within_refuses_a_document_over_the_limit() {
+        let mut doc = Document::empty();
+        let mut params = Map::new();
+        params.insert("trim.gain_db".to_string(), Value::from(1.0));
+        doc.set_section("parameters", params);
+
+        let unlimited = doc.to_pretty_bytes();
+        assert!(doc.to_pretty_bytes_within(unlimited.len()).is_ok());
+
+        let err = doc.to_pretty_bytes_within(unlimited.len() - 1).unwrap_err();
+        assert_eq!(err.code.id, error_codes::DOCUMENT_TOO_LARGE.id);
+    }
+
+    /// The ceiling the public method actually applies is the one `parse` enforces, so a document
+    /// that survives `try_to_pretty_bytes` is by construction one `parse` accepts.
+    #[test]
+    fn try_to_pretty_bytes_returns_the_same_bytes_for_a_document_within_the_ceiling() {
+        let doc = Document::empty();
+        assert_eq!(doc.try_to_pretty_bytes().unwrap(), doc.to_pretty_bytes());
+        assert!(Document::parse(&doc.try_to_pretty_bytes().unwrap()).is_ok());
     }
 
     // -----------------------------------------------------------------------------------
