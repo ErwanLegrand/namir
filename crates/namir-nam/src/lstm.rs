@@ -69,7 +69,7 @@ use namir_core::SampleRate;
 
 use crate::error_codes::{self, NamLoadError};
 use crate::file::{LstmConfigJson, LstmFile, NamMetadata};
-use crate::shared::{WeightReader, check_max, check_min1};
+use crate::shared::{WeightReader, check_finite, check_max, check_min1};
 
 /// FRS §2's definitions: model sample rate is "typically 48 kHz" — the fallback when a `.nam`
 /// file omits `sample_rate` entirely, same default `wavenet.rs` uses.
@@ -335,6 +335,11 @@ impl PreparedLstm {
         check_min1(in_channels, "config.in_channels")?;
         check_min1(out_channels, "config.out_channels")?;
         check_max(nam.weights.len(), MAX_LSTM_TOTAL_WEIGHTS, "weights.len()")?;
+        // Issue #49: after the ceiling above (so this walk is bounded), before any of these
+        // floats can become part of a `PreparedLstm` the audio thread will run. LSTM has no
+        // `head_scale` counterpart to WaveNet's — every float this architecture reads is in
+        // `weights` — so this one call is the whole check here. See `shared::check_finite`.
+        check_finite(&nam.weights, "weights")?;
 
         if input_size != 1 || in_channels != 1 || out_channels != 1 {
             return Err(NamLoadError {

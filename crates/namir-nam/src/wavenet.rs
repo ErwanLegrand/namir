@@ -58,7 +58,7 @@ use wide::f32x8;
 
 use crate::error_codes::{self, NamLoadError};
 use crate::file::{self, LayerArrayConfig, NamFile, NamMetadata};
-use crate::shared::{WeightReader, check_max, check_min1};
+use crate::shared::{WeightReader, check_finite, check_finite_scalar, check_max, check_min1};
 
 /// A flat, row-major multi-channel signal buffer: `data[channel * n + t]`. Ported verbatim from
 /// the spike: one allocation per tensor rather than one per channel keeps `WaveNetState`'s scratch
@@ -355,12 +355,70 @@ impl TryFrom<&str> for Activation {
     }
 }
 
+/// Issue #49's activation-parameter half: an activation's own float parameters are weights by
+/// another name — they multiply the signal on the audio thread exactly as a `weights[]` entry
+/// does, and reach `Activation` through the same `serde_json` float parsing that turns an
+/// out-of-`f32`-range `1e40` into `f32::INFINITY` without error. Checked on the *resolved*
+/// activation rather than on `ActivationParams`' raw `Option`s, so every variant's defaults and
+/// the bare-name form are covered by construction and no future variant can be added without
+/// passing through here.
+fn check_activation_parameters_finite(
+    activation: &Activation,
+    array_index: usize,
+    layer_index: usize,
+) -> Result<(), NamLoadError> {
+    let at = format!("layer array {array_index} layer {layer_index}: activation");
+    match activation {
+        Activation::Tanh
+        | Activation::ReLU
+        | Activation::Sigmoid
+        | Activation::Identity
+        | Activation::SiLU
+        | Activation::Hardswish
+        | Activation::Softsign => Ok(()),
+        Activation::LeakyReLU { negative_slope } => {
+            check_finite_scalar(*negative_slope, &format!("{at} negative_slope"))
+        }
+        Activation::LeakyHardtanh {
+            min_val,
+            max_val,
+            min_slope,
+            max_slope,
+        } => {
+            check_finite_scalar(*min_val, &format!("{at} min_val"))?;
+            check_finite_scalar(*max_val, &format!("{at} max_val"))?;
+            check_finite_scalar(*min_slope, &format!("{at} min_slope"))?;
+            check_finite_scalar(*max_slope, &format!("{at} max_slope"))
+        }
+        Activation::PReLU(PReluSlopes::Scalar(slope)) => {
+            check_finite_scalar(*slope, &format!("{at} negative_slope"))
+        }
+        Activation::PReLU(PReluSlopes::PerChannel(slopes)) => {
+            check_finite(slopes, &format!("{at} negative_slopes"))
+        }
+    }
+}
+
 /// Resolves one `.nam` layer's `activation` entry (bare name, or an object naming `type` plus
 /// parameters — [`file::ActivationEntry`]) to this file's `Activation`. `bottleneck` is the
 /// layer's internal width, needed only to validate a per-channel `PReLU`'s `negative_slopes`
 /// length; `array_index`/`layer_index` are for error messages only (a per-layer `activation`
 /// array resolves one entry per layer, so a bad entry needs to name which layer it was).
 fn resolve_activation_entry(
+    entry: &file::ActivationEntry,
+    bottleneck: usize,
+    array_index: usize,
+    layer_index: usize,
+) -> Result<Activation, NamLoadError> {
+    let activation = resolve_activation_kind(entry, bottleneck, array_index, layer_index)?;
+    check_activation_parameters_finite(&activation, array_index, layer_index)?;
+    Ok(activation)
+}
+
+/// [`resolve_activation_entry`]'s name-and-parameter mapping, split out so that function is
+/// exactly "resolve, then validate" — see [`check_activation_parameters_finite`] for the
+/// validation half.
+fn resolve_activation_kind(
     entry: &file::ActivationEntry,
     bottleneck: usize,
     array_index: usize,
@@ -1356,7 +1414,8 @@ impl PreparedWaveNet {
     /// 5. `sample_rate` is nonzero if present (`INVALID_SAMPLE_RATE`), else defaults to 48 kHz.
     /// 6. `config.layers` is non-empty (`EMPTY_LAYER_ARRAYS`).
     /// 7. `config.layers.len()` and `weights.len()` are within their NFR-SEC-020 ceilings
-    ///    (`DIMENSION_LIMIT_EXCEEDED`).
+    ///    (`DIMENSION_LIMIT_EXCEEDED`), and every float in `weights` is finite
+    ///    (`NON_FINITE_VALUE`, issue #49 — checked after the ceiling so the walk is bounded).
     /// 8. Every layer array is resolved via `resolve_layer_array` (M10, FR-NAM-140/D-9.12): any
     ///    permanently out-of-scope feature the array uses is rejected by name
     ///    (`UNSUPPORTED_CONFIGURATION`), a self-contradictory shape (both-or-neither of an A1/A2
@@ -1368,6 +1427,16 @@ impl PreparedWaveNet {
     ///    checked against their ceilings, at least 1, and `condition_size == 1`
     ///    (`DIMENSION_LIMIT_EXCEEDED` / `UNSUPPORTED_CONDITION_SIZE`), including the per-layer and
     ///    per-head NFR-SEC-020 product checks `validate_layer_array_dims` performs.
+    ///
+    /// 8b. The model's own boundary widths: `layers[0].input_size == 1`
+    ///    (`INCONSISTENT_CONFIGURATION` — it disagrees with `config.in_channels`, pinned to 1 by
+    ///    step 4; issue #47) and the *last* array's head width, A1's `head_size` or A2's
+    ///    `head.out_channels` (`UNSUPPORTED_CONFIGURATION` — that field *is* the model's output
+    ///    channel count, and Namir plays mono; issue #46). Neither was constrained by anything
+    ///    before — step 10's chaining check only relates *adjacent* arrays, so the stack's two
+    ///    ends were free — and each one let a loadable file panic inside `process_block`, on the
+    ///    audio thread. See the checks' own comment for both index expressions and for why the
+    ///    two codes differ.
     ///
     /// Step 8 all happens *before* step 9 reads a single weight or performs a single
     /// dimension-derived multiplication or allocation. This ordering is load-bearing, not
@@ -1400,6 +1469,8 @@ impl PreparedWaveNet {
     /// 11. The trailing `head_scale` float is resolved exactly as the spike's confirmed reading
     ///     of `WaveNet::set_weights_`: if one float remains after step 9, it is authoritative; if
     ///     none remain, `config.head_scale` is used; anything else is `WEIGHT_COUNT_MISMATCH`.
+    ///     Whichever of the two is resolved must itself be finite (`NON_FINITE_VALUE`) — step 7
+    ///     covers the trailing-float form, but nothing else ever looks at `config.head_scale`.
     pub fn from_file(nam: &NamFile) -> Result<Self, NamLoadError> {
         if nam.architecture != "WaveNet" {
             return Err(NamLoadError {
@@ -1454,6 +1525,11 @@ impl PreparedWaveNet {
             "config.layers.len()",
         )?;
         check_max(nam.weights.len(), MAX_TOTAL_WEIGHTS, "weights.len()")?;
+        // Issue #49: after the ceiling above (so this walk is bounded), before any of these
+        // floats can become part of a `PreparedWaveNet` the audio thread will run. See
+        // `shared::check_finite` for why an infinite weight is a load-time rejection and not
+        // something the RT path can be asked to cope with.
+        check_finite(&nam.weights, "weights")?;
 
         let mut resolved_arrays = Vec::with_capacity(nam.config.layers.len());
         for (i, cfg) in nam.config.layers.iter().enumerate() {
@@ -1462,6 +1538,61 @@ impl PreparedWaveNet {
             resolved_arrays.push(resolved);
         }
 
+        // The model's own two boundary widths, as opposed to the widths *between* adjacent arrays
+        // (step 10, below). Step 10 relates array `i` to array `i + 1`, so the two ends of the
+        // stack — what feeds array 0, and what array `n-1` emits — were constrained by nothing at
+        // all, and each let a file load and then misbehave inside `process_block`, on the audio
+        // thread. Neither is defensible there (no allocation, no way to report anything), so both
+        // are load-time rejections. They get *different* codes because they are different
+        // failures, which the reference implementation's own reading of these two fields settles
+        // (`NAM/wavenet/model.cpp`, read directly for this fix, as `lstm.rs`'s module doc comment
+        // records doing for LSTM):
+        //
+        //  * `layers[0].input_size` is the width feeding the first array's rechannel
+        //    (`nam::wavenet::detail::LayerArray`'s `_rechannel(params.input_size,
+        //    params.channels, false)`), while the signal fed to it is the model's own input,
+        //    which is `config.in_channels` wide
+        //    (`WaveNet::_set_condition_array`, sized by `config.value("in_channels", 1)`). The
+        //    reference never checks the two agree; here `in_channels` has already been pinned to 1
+        //    above, so `input_size != 1` is a file contradicting its own declared input width —
+        //    `INCONSISTENT_CONFIGURATION`, not "unsupported": a genuine multi-input model declares
+        //    `in_channels` too, and is rejected above, by name, as the unsupported feature it is.
+        //    Namir feeds `Conv1x1::apply_into` the width-1 condition signal regardless, and that
+        //    function indexes `input[ic * n..(ic + 1) * n]` for `ic in 0..in_ch`, so this file read
+        //    straight off the end of it (issue #47: `range end index 16 out of range for slice of
+        //    length 8`).
+        //  * The last array's head width *is* the model's output channel count — the reference
+        //    derives `NumOutputChannels()` from exactly this field (`wave_net_output_channels`:
+        //    `layer_array_params.back().head_size`, absent a post-stack head, which Namir rejects
+        //    already) and then writes that many output buffers. So a value above 1 is a real,
+        //    reference-supported multi-output model, and rejecting it is a scope limit, not a
+        //    repair: `UNSUPPORTED_CONFIGURATION`, the same code and the same mono-only reason as
+        //    `config.in_channels != 1` above. Namir's chain carries one signal and has nowhere to
+        //    put a second; `process_block` instead wrote `out[..head_size * n]` into a buffer every
+        //    caller sizes to `input.len()` (issue #46: `range end index 32 out of range for slice
+        //    of length 8`).
+        let first_input_size = nam.config.layers[0].input_size;
+        if first_input_size != 1 {
+            return Err(NamLoadError {
+                code: error_codes::INCONSISTENT_CONFIGURATION,
+                detail: format!(
+                    "layer array 0: input_size ({first_input_size}) does not match the model's \
+                     input width of 1 channel (config.in_channels, absent or 1)"
+                ),
+            });
+        }
+        let last_index = resolved_arrays.len() - 1;
+        let last_head_width = resolved_arrays[last_index].head_out_channels;
+        if last_head_width != 1 {
+            return Err(NamLoadError {
+                code: error_codes::UNSUPPORTED_CONFIGURATION,
+                detail: format!(
+                    "layer array {last_index} (the last) declares a head width of \
+                     {last_head_width} (head_size, or head.out_channels), so this model has \
+                     {last_head_width} output channels; Namir supports 1"
+                ),
+            });
+        }
         let mut r = WeightReader::new(&nam.weights);
         let mut arrays = Vec::with_capacity(nam.config.layers.len());
         for (cfg, resolved) in nam.config.layers.iter().zip(&resolved_arrays) {
@@ -1582,6 +1713,14 @@ impl PreparedWaveNet {
                 ),
             });
         };
+
+        // Issue #49, the other half: the trailing-float form is already covered by the
+        // `check_finite` on `weights` above, but `config.head_scale` — the fallback when no
+        // trailing float is present — has never been through any check at all. Only the value
+        // actually resolved is checked, so a file carrying an unused, non-finite
+        // `config.head_scale` alongside a good trailing float is not rejected for a field its
+        // own reference implementation would have overwritten.
+        check_finite_scalar(head_scale, "head_scale")?;
 
         Ok(Self {
             arrays,
@@ -2147,6 +2286,253 @@ mod tests {
         rt_harness::audio_section(|| {
             prepared.process_block(&mut state, &input, &mut output);
         });
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Issues #46/#47/#49: the three ways a loadable file used to reach `process_block` and then
+    // misbehave there — twice by panicking (on the audio thread, which in `namir-clap` is the
+    // host's), once by emitting a non-finite block. All three are load-time rejections now; the
+    // audio thread is not where any of them could have been handled.
+    // -----------------------------------------------------------------------------------------
+
+    /// Builds a one-layer-array file around `cfg`, with the exact A1 weight count `cfg` implies
+    /// plus the trailing `head_scale` float — the same shape `minimal_valid_file` produces, for a
+    /// caller that has already mutated the layer array.
+    fn file_around(cfg: LayerArrayConfig) -> NamFile {
+        let n = weight_count_for(&cfg);
+        let mut weights = vec![0.01f32; n];
+        weights.push(0.5); // trailing head_scale
+        NamFile {
+            version: None,
+            architecture: "WaveNet".to_string(),
+            config: WaveNetConfig {
+                layers: vec![cfg],
+                head_scale: 0.5,
+                head: None,
+                in_channels: None,
+                condition_dsp: None,
+            },
+            weights,
+            sample_rate: Some(48_000),
+            metadata: NamMetadata::default(),
+        }
+    }
+
+    /// Issue #46. The last array's head output *is* the model's output, and `process_block` writes
+    /// `out[..head_size * n]` into a buffer sized `input.len()`. `MAX_HEAD_SIZE` bounded this
+    /// field and the chaining check below constrained `head_size[i]` only against
+    /// `bottleneck[i+1]`, so the *last* array's was free: this file loaded, and then
+    /// `process_block` panicked with `range end index 32 out of range for slice of length 8`.
+    #[test]
+    fn rejects_a_final_layer_array_head_size_other_than_one() {
+        let mut cfg = minimal_layer_array();
+        cfg.head_size = Some(4);
+        let err = expect_err(PreparedWaveNet::from_file(&file_around(cfg)));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(err.detail.contains("head"), "detail: {:?}", err.detail);
+    }
+
+    /// Issue #46's A2 spelling: the same width, declared as the nested head's `out_channels`
+    /// rather than A1's legacy `head_size`. The check is on the *resolved* width precisely so one
+    /// check covers both spellings — a check written against `cfg.head_size` would have left this
+    /// file loading and panicking exactly as before.
+    #[test]
+    fn rejects_a_final_a2_head_out_channels_other_than_one() {
+        let mut cfg = a2_minimal_layer_array();
+        cfg.head = Some(file::LayerArrayHeadConfig {
+            out_channels: 3,
+            kernel_size: 3,
+            head_dilation: Some(2),
+            bias: true,
+        });
+        let n = a2_weight_count_for(&cfg);
+        let mut weights = vec![0.01f32; n];
+        weights.push(0.5);
+        let file = NamFile {
+            version: None,
+            architecture: "WaveNet".to_string(),
+            config: WaveNetConfig {
+                layers: vec![cfg],
+                head_scale: 0.5,
+                head: None,
+                in_channels: None,
+                condition_dsp: None,
+            },
+            weights,
+            sample_rate: Some(48_000),
+            metadata: NamMetadata::default(),
+        };
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(err.detail.contains("head"), "detail: {:?}", err.detail);
+    }
+
+    /// The other side of issue #46's check, and the reason it is scoped to the *last* array: a
+    /// non-final array's head width is the next array's head-accumulator width, so anything above
+    /// 1 is ordinary there (every real two-array export has one). Rejecting `head_size != 1`
+    /// outright would have refused every model this crate is for.
+    #[test]
+    fn a_non_final_layer_array_head_size_above_one_still_loads() {
+        let mut cfg0 = minimal_layer_array(); // channels 2, head_size 1
+        cfg0.head_size = Some(2); // == cfg1.bottleneck (its `channels`, A1 having no bottleneck)
+        let mut cfg1 = minimal_layer_array();
+        cfg1.input_size = cfg0.channels; // the trunk signal chains here
+        cfg1.channels = 2;
+
+        let mut weights = vec![0.01f32; weight_count_for(&cfg0) + weight_count_for(&cfg1)];
+        weights.push(0.5);
+        let file = NamFile {
+            version: None,
+            architecture: "WaveNet".to_string(),
+            config: WaveNetConfig {
+                layers: vec![cfg0, cfg1],
+                head_scale: 0.5,
+                head: None,
+                in_channels: None,
+                condition_dsp: None,
+            },
+            weights,
+            sample_rate: Some(48_000),
+            metadata: NamMetadata::default(),
+        };
+        let prepared =
+            PreparedWaveNet::from_file(&file).expect("a two-array model must still load");
+        let mut state = prepared.new_state(8);
+        let out = prepared.process(&mut state, &[0.1f32; 8]);
+        assert_eq!(out.len(), 8, "the model's own output is still mono");
+    }
+
+    /// Issue #47. `process_block` feeds the first array's rechannel the width-1 condition signal,
+    /// while `Conv1x1::apply_into` indexes `input[ic * n..(ic + 1) * n]` for `ic in 0..in_ch`,
+    /// where `in_ch` is this field: the file loaded, and then `process_block` panicked with
+    /// `range end index 16 out of range for slice of length 8`.
+    ///
+    /// `INCONSISTENT_CONFIGURATION`, not `UNSUPPORTED_CONFIGURATION`: this file declares (by
+    /// omitting `in_channels`) a one-channel input and then a first layer array expecting two —
+    /// see `from_file`'s own comment at the check, and the next test for the file that *is* an
+    /// unsupported multi-input model rather than a self-contradictory one.
+    #[test]
+    fn rejects_a_first_layer_array_input_size_other_than_one() {
+        let mut cfg = minimal_layer_array();
+        cfg.input_size = 2;
+        let err = expect_err(PreparedWaveNet::from_file(&file_around(cfg)));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert!(
+            err.detail.contains("input_size"),
+            "detail: {:?}",
+            err.detail
+        );
+    }
+
+    /// The distinction the previous test's code choice rests on: a *consistent* multi-input model
+    /// — `in_channels` and `layers[0].input_size` both 2 — is a real shape this build does not
+    /// implement, and is rejected as that, by name, before the consistency check is ever reached.
+    /// The two files get different codes and different messages because they are different
+    /// problems.
+    #[test]
+    fn a_consistent_multi_input_model_is_unsupported_rather_than_inconsistent() {
+        let mut cfg = minimal_layer_array();
+        cfg.input_size = 2;
+        let mut file = file_around(cfg);
+        file.config.in_channels = Some(2);
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(
+            err.detail.contains("in_channels"),
+            "detail: {:?}",
+            err.detail
+        );
+    }
+
+    /// Issue #49. `serde_json` deserializes `1e40` — in `f64` range, out of `f32` range — into
+    /// `f32::INFINITY` with no error, and nothing checked. The model loaded and `process` returned
+    /// `[NaN, 0.005060297, 0.005065496, 0.005070695]` for this fixture (the issue's own fixture
+    /// reported `[inf, inf, inf, inf]`; which of the two a given file produces depends only on
+    /// which weight is infinite). Downstream, FR-CHAIN-080/090 mutes such a block, so the user's
+    /// symptom was silence and a fault counter with nothing naming the cause.
+    #[test]
+    fn rejects_a_non_finite_weight() {
+        let mut file = minimal_valid_file();
+        // A Rust `f32` literal cannot express this (rustc's `overflowing_literals` lint refuses
+        // `1e40f32` outright), so the value is produced the same way a real file's is: by
+        // deserializing JSON text.
+        file.weights[6] = serde_json::from_str::<f32>("1e40").unwrap();
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::NON_FINITE_VALUE.id);
+        assert!(
+            err.detail.contains("weights[6]"),
+            "detail: {:?}",
+            err.detail
+        );
+    }
+
+    /// NaN as well as infinity — `is_finite()` covers both, and a file can carry a NaN weight the
+    /// same way (JSON has no NaN literal, but `1e40 - 1e40` style arithmetic in an exporter
+    /// produces one, and a corrupted file can carry any bit pattern).
+    #[test]
+    fn rejects_a_nan_weight() {
+        let mut file = minimal_valid_file();
+        file.weights[3] = f32::NAN;
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::NON_FINITE_VALUE.id);
+    }
+
+    /// Issue #49's `head_scale` half, in the one form the `weights` check above does not already
+    /// cover: `config.head_scale` is used only when no trailing float remains, so this file has
+    /// its trailing float removed.
+    #[test]
+    fn rejects_a_non_finite_config_head_scale_when_it_is_the_one_in_use() {
+        let mut file = minimal_valid_file();
+        file.weights.pop(); // no trailing float => config.head_scale is authoritative
+        file.config.head_scale = serde_json::from_str::<f32>("-1e40").unwrap();
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::NON_FINITE_VALUE.id);
+        assert!(
+            err.detail.contains("head_scale"),
+            "detail: {:?}",
+            err.detail
+        );
+    }
+
+    /// The deliberate limit of the previous test: only the head_scale actually *resolved* is
+    /// checked. With a trailing float present, `config.head_scale` is dead data — the reference
+    /// implementation overwrites it unread — so a file is not rejected over a field neither
+    /// implementation ever uses.
+    #[test]
+    fn an_unused_non_finite_config_head_scale_is_not_a_rejection() {
+        let mut file = minimal_valid_file(); // keeps its trailing head_scale float
+        file.config.head_scale = serde_json::from_str::<f32>("1e40").unwrap();
+        let prepared = PreparedWaveNet::from_file(&file)
+            .expect("the trailing float is authoritative; config.head_scale is unread");
+        let mut state = prepared.new_state(4);
+        let out = prepared.process(&mut state, &[0.1, 0.2, 0.3, 0.4]);
+        assert!(out.iter().all(|v| v.is_finite()), "output: {out:?}");
+    }
+
+    /// Issue #49 extended to the one other float family a `.nam` file can carry: an activation's
+    /// own parameters. They multiply the signal on the audio thread exactly as a weight does, and
+    /// arrive through the same `serde_json` float parsing, so an infinite `negative_slope` would
+    /// have produced the same non-finite output a bad weight does.
+    #[test]
+    fn rejects_a_non_finite_activation_parameter() {
+        let mut file = a2_minimal_valid_file();
+        file.config.layers[0].activation =
+            file::ActivationSpec::One(file::ActivationEntry::Params(file::ActivationParams {
+                kind: "LeakyReLU".to_string(),
+                negative_slope: Some(serde_json::from_str::<f32>("1e40").unwrap()),
+                negative_slopes: None,
+                min_val: None,
+                max_val: None,
+                min_slope: None,
+                max_slope: None,
+            }));
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::NON_FINITE_VALUE.id);
+        assert!(
+            err.detail.contains("negative_slope"),
+            "detail: {:?}",
+            err.detail
+        );
     }
 
     // -----------------------------------------------------------------------------------------
