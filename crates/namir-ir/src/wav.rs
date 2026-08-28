@@ -4,10 +4,12 @@
 //! [`IrLoadError`](crate::error_codes::IrLoadError), never a panic.
 //!
 //! Supports exactly FR-IR-010's matrix: mono or stereo, 16-bit int / 24-bit int / 32-bit int /
-//! 32-bit float, `8_000..=192_000` Hz. Every sample is converted to `f32` in (approximately)
-//! `[-1.0, 1.0]` — see [`decode`]'s doc comment for the exact conversion and the empirical tests
-//! that prove it, per this crate's build instructions: hound's exact integer sample range per bit
-//! depth is not assumed from memory, it is read from hound 3.5.1's own source
+//! 32-bit float, `8_000..=192_000` Hz — and, in the float case only, requires every sample to be
+//! a finite number (`error_codes::NON_FINITE_SAMPLE`; see that entry for why a NaN or infinite tap
+//! is refused here rather than handled downstream). Every sample is converted to `f32` in
+//! (approximately) `[-1.0, 1.0]` — see [`decode`]'s doc comment for the exact conversion and the
+//! empirical tests that prove it, per this crate's build instructions: hound's exact integer
+//! sample range per bit depth is not assumed from memory, it is read from hound 3.5.1's own source
 //! (`hound::Sample::read` impls for `i32`/`f32` in its `lib.rs`) and then proven by round-tripping
 //! known values through `hound::WavWriter` in this module's tests.
 //!
@@ -55,10 +57,11 @@ pub(crate) struct DecodedWav {
 }
 
 /// The header validation `decode` and `probe` both need, factored out so the two never drift:
-/// a header that `probe_wav` accepts must be one `decode` would go on to accept too (modulo
-/// `EMPTY_IR`, which needs the declared-frame check `probe_wav` also performs — see both
-/// callers). Returns the parsed `hound::WavReader` so `decode` can go on to read samples from it
-/// without re-parsing the header a second time.
+/// a header that `probe_wav` accepts must be one `decode` would go on to accept too (modulo the
+/// two judgments that are not about the header at all: `EMPTY_IR`, which needs the declared-frame
+/// check `probe_wav` also performs, and `NON_FINITE_SAMPLE`, which needs the sample data only
+/// `decode` reads — see both callers). Returns the parsed `hound::WavReader` so `decode` can go on
+/// to read samples from it without re-parsing the header a second time.
 fn open_and_validate_header(bytes: &[u8]) -> Result<hound::WavReader<Cursor<&[u8]>>, IrLoadError> {
     let reader = hound::WavReader::new(Cursor::new(bytes)).map_err(|e| IrLoadError {
         code: error_codes::MALFORMED_WAV,
@@ -159,6 +162,22 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedWav, IrLoadError> {
                     code: error_codes::MALFORMED_WAV,
                     detail: e.to_string(),
                 })?;
+                // The one *value* check in this module, and the reason it is here rather than
+                // anywhere downstream: see `error_codes::NON_FINITE_SAMPLE`. A non-finite tap
+                // either panics `rubato` on the resampling path or poisons an FFT partition's
+                // whole `h` spectrum for the life of the load, and neither is recoverable once the
+                // taps exist. Load time is where refusing costs one `is_finite` per sample on a
+                // worker thread; the audio thread is where it would cost one per sample per block,
+                // forever, to salvage nothing. Integer files skip the check because they cannot
+                // fail it (`i32 as f32 / 2^(bits-1)` is finite for every `i32`).
+                if !s.is_finite() {
+                    return Err(IrLoadError {
+                        code: error_codes::NON_FINITE_SAMPLE,
+                        detail: format!(
+                            "sample {i} of {total_samples} is {s}, not a finite number"
+                        ),
+                    });
+                }
                 channel_data[i % channels].push(s);
             }
         }
@@ -218,12 +237,19 @@ pub struct WavInfo {
 ///
 /// Applies the same FR-IR-010 format/channel/rate validation `decode` does, and a file it rejects
 /// fails with the identical catalogued [`IrLoadError`] `decode` would give the same bytes — with
-/// one deliberate exception: a zero-frame file probes successfully (it is a legitimate, if
-/// useless, library entry to display) but `decode` still refuses to load it
-/// (`error_codes::EMPTY_IR`), because "usable as a convolution kernel" is a stronger, load-time
-/// judgment this shallower header check does not make. So "probes successfully" means "a library
-/// entry worth indexing", not "guaranteed loadable" — a caller that wants the stronger guarantee
-/// still has to call `decode`/`PreparedIr::from_wav_bytes`.
+/// two deliberate exceptions, both of them "usable as a convolution kernel" judgments this
+/// shallower header check does not make:
+///
+/// - a zero-frame file probes successfully (it is a legitimate, if useless, library entry to
+///   display) but `decode` refuses to load it (`error_codes::EMPTY_IR`);
+/// - a float file carrying a NaN or infinite sample probes successfully — the header says nothing
+///   about it and `probe_wav` reads no sample data — but `decode` refuses to load it
+///   (`error_codes::NON_FINITE_SAMPLE`).
+///
+/// So "probes successfully" means "a library entry worth indexing", not "guaranteed loadable" — a
+/// caller that wants the stronger guarantee still has to call
+/// `decode`/`PreparedIr::from_wav_bytes`. `probe_wav`'s own accepted set is unchanged by the
+/// second exception: it never read samples and still does not.
 pub fn probe_wav(bytes: &[u8]) -> Result<WavInfo, IrLoadError> {
     let reader = open_and_validate_header(bytes)?;
     let spec = reader.spec();
@@ -484,6 +510,77 @@ mod tests {
         let bytes = write_int_wav(48_000, 1, 16, &[]);
         let err = decode(&bytes).unwrap_err();
         assert_eq!(err.code.id, error_codes::EMPTY_IR.id);
+    }
+
+    /// Issue #52: a 32-bit float WAV carrying a NaN tap. Before this check `decode` pushed the
+    /// sample raw, and the file loaded "successfully"; what happened next depended only on whether
+    /// the file's rate matched the engine's — `rubato` panicked inside the dependency on the
+    /// resampling path, and the convolver produced non-finite output forever on the matched-rate
+    /// path. See `error_codes::NON_FINITE_SAMPLE`, and `convolver.rs`'s
+    /// `a_float_wav_with_a_non_finite_tap_is_refused_before_it_reaches_the_convolver` for the
+    /// end-to-end half.
+    #[test]
+    fn rejects_a_float_wav_containing_a_nan_sample() {
+        let bytes = write_float_wav(48_000, 1, &[0.5, f32::NAN, 0.25]);
+        let err = decode(&bytes).unwrap_err();
+        assert_eq!(err.code.id, error_codes::NON_FINITE_SAMPLE.id);
+        assert!(
+            err.detail.contains("sample 1"),
+            "detail should name the offending sample index: {}",
+            err.detail
+        );
+    }
+
+    #[test]
+    fn rejects_a_float_wav_containing_an_infinite_sample() {
+        for value in [f32::INFINITY, f32::NEG_INFINITY] {
+            let bytes = write_float_wav(48_000, 1, &[0.5, 0.25, value]);
+            let err = decode(&bytes).unwrap_err();
+            assert_eq!(err.code.id, error_codes::NON_FINITE_SAMPLE.id);
+        }
+    }
+
+    /// The rejection is per *sample*, not per channel: a stereo file whose only bad sample is in
+    /// the right channel is refused just as a mono one is (the right channel's taps are convolved
+    /// independently, FR-CHAIN-060, so a poisoned one is exactly as unusable).
+    #[test]
+    fn rejects_a_float_wav_whose_only_non_finite_sample_is_in_the_second_channel() {
+        // Interleaved L,R: the NaN is the right channel's second frame.
+        let bytes = write_float_wav(44_100, 2, &[0.5, 0.5, 0.25, f32::NAN]);
+        let err = decode(&bytes).unwrap_err();
+        assert_eq!(err.code.id, error_codes::NON_FINITE_SAMPLE.id);
+    }
+
+    /// The check is confined to the float branch because the integer branch cannot fail it:
+    /// `i32 as f32 / 2f32.powi(bits - 1)` is finite for every `i32` at every supported depth,
+    /// extremes included. Asserted rather than reasoned about, since it is what licenses the
+    /// integer path to skip the test.
+    #[test]
+    fn integer_files_cannot_produce_a_non_finite_sample() {
+        for bits in [16u16, 24, 32] {
+            let full = 1i64 << (bits - 1);
+            let values = [(full - 1) as i32, (-full) as i32, 0];
+            let bytes = write_int_wav(48_000, 1, bits, &values);
+            let decoded = decode(&bytes).unwrap();
+            assert!(
+                decoded.channel_data[0].iter().all(|s| s.is_finite()),
+                "{bits}-bit integer decode produced a non-finite sample"
+            );
+        }
+    }
+
+    /// `probe_wav` is unchanged by the finiteness check — it reads no sample data, so it still
+    /// accepts a file `decode` now refuses. Same shape as the `EMPTY_IR` divergence above and
+    /// documented alongside it: "probes successfully" means "worth indexing", not "loadable".
+    #[test]
+    fn probe_wav_accepts_a_non_finite_file_decode_would_reject() {
+        let bytes = write_float_wav(48_000, 1, &[0.5, f32::NAN]);
+        let info = probe_wav(&bytes).unwrap();
+        assert_eq!(info.sample_format, SampleFormat::Float);
+        assert_eq!(
+            decode(&bytes).unwrap_err().code.id,
+            error_codes::NON_FINITE_SAMPLE.id
+        );
     }
 
     // trace: FR-IR-010

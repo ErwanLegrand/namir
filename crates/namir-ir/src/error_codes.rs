@@ -51,6 +51,29 @@ pub const EMPTY_IR: ErrorCode = ErrorCode::new(
      the library.",
 );
 
+/// A 32-bit float WAV carries a sample that is not a finite number — a NaN or an infinity.
+///
+/// Unlike every other entry here this one is about a *value*, not a shape: the file parses, its
+/// header is in FR-IR-010's matrix, and only the sample data is unusable. It exists because a
+/// non-finite tap has no safe downstream behaviour. It poisons the whole FFT partition it lands in
+/// (one NaN makes every bin of that partition's `h` spectrum NaN), so the convolver's output is
+/// non-finite for the life of the load, not for one block; and on the resampled path (any file
+/// whose rate differs from the engine's, FR-IR-030) `rubato`'s own inverse transform rejects the
+/// resulting spectrum and **panics inside the dependency**, on the worker thread, before this
+/// crate ever sees the taps. There is no point downstream of `wav::decode` at which either
+/// outcome can be turned back into a working IR, so the file is refused here.
+///
+/// Only the float branch can produce this: an integer sample is `i32 as f32 / 2f32.powi(bits-1)`,
+/// finite for every `i32` at every supported depth.
+pub const NON_FINITE_SAMPLE: ErrorCode = ErrorCode::new(
+    "ir.load.non_finite_sample",
+    Severity::Error,
+    "This impulse response file contains a sample that is not a finite number ({detail}).",
+    "The file's audio data is damaged -- a NaN or infinite sample usually means a failed export. \
+     Export the impulse response again from your audio editor, or choose a different one in the \
+     library.",
+);
+
 /// Carries a `namir_core::ErrorCode` (D-16.1) plus a `detail` string naming the specific reason.
 /// This crate only ever sees bytes, not a file path, so `detail` carries whatever numbers/names
 /// are relevant to the failure; a caller that knows the file path prepends it when presenting
@@ -79,6 +102,7 @@ const ALL: &[ErrorCode] = &[
     UNSUPPORTED_FORMAT,
     INVALID_SAMPLE_RATE,
     EMPTY_IR,
+    NON_FINITE_SAMPLE,
 ];
 
 #[cfg(test)]

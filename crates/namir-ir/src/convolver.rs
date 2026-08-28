@@ -222,7 +222,8 @@ pub struct StageSpec {
 ///
 /// `growth_factor == 1` degenerates to uniform partitioned convolution (every FFT partition is
 /// `block_size`), useful as a schedule to compare against. `max_partition == block_size` also
-/// degenerates to uniform, regardless of `growth_factor`.
+/// degenerates to uniform, regardless of `growth_factor` — and so does a `max_partition` *below*
+/// `block_size`, which is floored to it (see the note at the assert below, and issue #53).
 ///
 /// **Causality**, ported from the spike's derivation: a size-`P` FFT partition at IR offset
 /// `off` can only be computed once `P` samples of input feeding it have arrived, and its output
@@ -250,7 +251,20 @@ pub fn build_schedule(
     growth_factor: usize,
     max_partition: usize,
 ) -> Vec<StageSpec> {
-    assert!(block_size > 0 && growth_factor >= 1 && max_partition >= block_size);
+    assert!(block_size > 0 && growth_factor >= 1);
+    // **`max_partition` is floored at `block_size` rather than asserted above it** (issue #53).
+    // D-9.6's `max_partition` is a ceiling on how large a partition may *grow*, and this schedule's
+    // partitions start at `block_size`; a `max_partition` below that asks for a ceiling under the
+    // floor. The loop below already answers that coherently — `size < max_partition` is false from
+    // the first iteration, so `size` never grows and every partition stays `block_size`, a valid
+    // uniform schedule — and the assert refused it anyway. What that cost was not hypothetical:
+    // `PreparedIr::from_wav_bytes` passes the host's block size straight through, so every host
+    // presenting more than `DEFAULT_MAX_PARTITION` (8192) frames at once — an ordinary offline
+    // render or bounce at 16384 — panicked on IR load, against a precondition `from_wav_bytes`
+    // documented nowhere. Flooring makes the degenerate case explicit instead of fatal; a caller
+    // asking for a genuinely smaller ceiling than the block size is asking for the uniform
+    // schedule and now gets it.
+    let max_partition = max_partition.max(block_size);
     let head = block_size.min(ir_len);
     let per_level = growth_factor.max(1);
 
@@ -703,6 +717,16 @@ impl PreparedIr {
     /// FR-NAM-060 — see `resample_mono`'s doc comment), truncates at D-9.7's 10-second-at-engine-
     /// rate ceiling, and builds the D-9.4 schedule with R-8's staggering baked in, using this
     /// crate's [`DEFAULT_GROWTH_FACTOR`] / [`DEFAULT_MAX_PARTITION`].
+    ///
+    /// `block_size` is the host's, and there is no upper bound on it: a `block_size` above
+    /// [`DEFAULT_MAX_PARTITION`] — an offline render or bounce presenting 16384 frames at once —
+    /// yields a uniform schedule rather than an error, and used to panic (issue #53; see
+    /// [`build_schedule`]'s note). The only precondition is `block_size > 0`.
+    ///
+    /// Every failure is a catalogued [`IrLoadError`], never a panic. That includes the file's
+    /// *values*, not only its shape: a 32-bit float WAV carrying a NaN or infinite sample is
+    /// refused here (`ir.load.non_finite_sample`), because there is no later point at which such
+    /// a tap can be made safe — see `wav.rs`'s check and issue #52.
     pub fn from_wav_bytes(
         bytes: &[u8],
         engine_rate: SampleRate,
@@ -1003,6 +1027,68 @@ mod tests {
             }
         }
         assert!(covered.iter().all(|&c| c), "some tap never covered");
+    }
+
+    /// Issue #53: `build_schedule` asserted `max_partition >= block_size`, so a host block larger
+    /// than `DEFAULT_MAX_PARTITION` — 16384 frames, an ordinary offline render — aborted the
+    /// process on IR load. The degenerate schedule it refused is a perfectly good one: `size`
+    /// never grows past `block_size`, so every partition is `block_size` and the result is
+    /// uniform partitioned convolution. Asserted here as the three properties any schedule must
+    /// have (uniform size, causal, and covering every tap past the head exactly once), not as a
+    /// literal partition list.
+    #[test]
+    fn schedule_is_uniform_and_causal_when_block_size_exceeds_max_partition() {
+        let ir_len = 100_003; // deliberately not a multiple of the block size
+        let block_size = 16_384;
+        let stages = build_schedule(
+            ir_len,
+            block_size,
+            DEFAULT_GROWTH_FACTOR,
+            DEFAULT_MAX_PARTITION,
+        );
+        assert!(!stages.is_empty());
+
+        let mut covered = vec![false; ir_len];
+        for c in covered.iter_mut().take(block_size.min(ir_len)) {
+            *c = true;
+        }
+        for s in &stages {
+            assert_eq!(
+                s.size, block_size,
+                "every partition should be the block size"
+            );
+            assert!(s.offset >= s.size, "offset {} < size {}", s.offset, s.size);
+            assert_eq!(
+                s.stagger, 0,
+                "a one-phase size level has nothing to stagger"
+            );
+            for (i, c) in covered
+                .iter_mut()
+                .enumerate()
+                .skip(s.offset)
+                .take(s.actual_len)
+            {
+                assert!(!*c, "tap {i} covered twice");
+                *c = true;
+            }
+        }
+        assert!(covered.iter().all(|&c| c), "some tap never covered");
+    }
+
+    /// The same flooring seen from the other side: an explicitly *smaller* `max_partition` than
+    /// the block size is a request for the uniform schedule, and gives the same answer as asking
+    /// for it the two documented ways (`max_partition == block_size`, or `growth_factor == 1`).
+    #[test]
+    fn a_max_partition_below_the_block_size_gives_the_uniform_schedule() {
+        let floored = build_schedule(10_000, 512, 2, 64);
+        let equal = build_schedule(10_000, 512, 2, 512);
+        assert_eq!(floored.len(), equal.len());
+        for (a, b) in floored.iter().zip(equal.iter()) {
+            assert_eq!(
+                (a.offset, a.size, a.actual_len, a.stagger),
+                (b.offset, b.size, b.actual_len, b.stagger)
+            );
+        }
     }
 
     #[test]
@@ -1429,6 +1515,70 @@ mod tests {
             tail.iter().fold(0f32, |m, s| m.max(s.abs())) > 1e-4,
             "the convolver went permanently silent after a non-finite input sample"
         );
+    }
+
+    /// Issue #52, the end-to-end half (`wav.rs`'s tests own the decode half). A float WAV with a
+    /// NaN or infinite tap is an ordinary artefact of a bad export, and before the load-time
+    /// rejection it reached the convolver two different ways with two different bad endings:
+    ///
+    /// - **rate-matched**: the file loaded, `PreparedIr` built an all-NaN `h` spectrum for the
+    ///   poisoned partition and an all-NaN head, and every output sample was non-finite from the
+    ///   first block on — for the life of the load, since the poison is in the *IR*, not in the
+    ///   signal. `namir-engine`'s FR-CHAIN-080 scan would then silence the chain and raise a
+    ///   fault on every block, permanently, from a file that reported a successful load.
+    /// - **resampled** (any file whose rate differs from the engine's, FR-IR-030): worse and
+    ///   sooner — `rubato`'s own inverse transform rejects the NaN spectrum and `unwrap`s it
+    ///   inside the dependency, so the load itself panicked, on the worker thread, before this
+    ///   crate saw a single tap.
+    ///
+    /// Both are closed by the same check, and it is at load time on purpose: the audio thread
+    /// cannot fix a poisoned IR, only pay per sample to rediscover it (D-16.3, NFR-RT-010).
+    #[test]
+    fn a_float_wav_with_a_non_finite_tap_is_refused_before_it_reaches_the_convolver() {
+        let engine_rate = SampleRate::new(48_000).unwrap();
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut h = decaying_noise(1_024, 9, 128.0);
+            h[10] = bad;
+            // Both file rates: 48 kHz takes the rate-matched branch, 44.1 kHz the resampling one.
+            for file_rate in [48_000u32, 44_100] {
+                let bytes = write_mono_wav(file_rate, &h);
+                let Err(err) = PreparedIr::from_wav_bytes(&bytes, engine_rate, 64) else {
+                    panic!("a non-finite tap must be refused at load, at either rate");
+                };
+                assert_eq!(err.code.id, "ir.load.non_finite_sample");
+            }
+        }
+    }
+
+    /// Issue #53, end to end: `PreparedIr::from_wav_bytes` passes the host's block size straight
+    /// into `build_schedule`, so a host presenting more frames than `DEFAULT_MAX_PARTITION`
+    /// panicked on IR load. It must load — and convolve correctly, against D-9.5's permanent
+    /// direct-convolution reference, since a uniform schedule is a different code path through
+    /// the same machinery and "does not panic" is the weaker half of what is wanted here.
+    #[test]
+    fn loads_and_convolves_correctly_at_a_block_size_above_max_partition() {
+        let block_size = 16_384;
+        let h = decaying_noise(40_000, 7, 4_096.0);
+        let bytes = write_mono_wav(48_000, &h);
+        let engine_rate = SampleRate::new(48_000).unwrap();
+        let prepared = PreparedIr::from_wav_bytes(&bytes, engine_rate, block_size)
+            .expect("a block size above DEFAULT_MAX_PARTITION must load, not panic");
+
+        let mut state = prepared.new_state();
+        let x = white_noise(3 * block_size, 21);
+        let mut y = vec![0f32; x.len()];
+        for chunk_start in (0..x.len()).step_by(block_size) {
+            let end = (chunk_start + block_size).min(x.len());
+            let mut out_slice = &mut y[chunk_start..end];
+            prepared.process_block(
+                &mut state,
+                &x[chunk_start..end],
+                std::slice::from_mut(&mut out_slice),
+            );
+        }
+        let direct = direct_convolve(&h, &x);
+        let err = rms_error_db(&direct, &y).unwrap();
+        assert!(err < -100.0, "error too high: {err} dB");
     }
 
     #[test]
