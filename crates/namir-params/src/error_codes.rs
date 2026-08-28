@@ -60,6 +60,19 @@ pub const DUPLICATE_KEY: ErrorCode = ErrorCode::new(
     "Remove the duplicate descriptor from the registry; a key names one parameter.",
 );
 
+/// The same key appears on more than one line of the old manifest *text* — distinct from
+/// [`DUPLICATE_KEY`], which is about the in-source descriptor set. The two lines used to overwrite
+/// each other silently, last-line-wins (issue #118), and the line that loses can be the tombstone:
+/// retiring a parameter by *adding* a `tombstoned` line rather than flipping the existing one is
+/// the natural misreading of this file's header, and sorted output puts the two lines adjacent.
+pub const DUPLICATE_LINE: ErrorCode = ErrorCode::new(
+    "params.manifest.duplicate_line",
+    Severity::Error,
+    "A key is declared on more than one line of the manifest file: {detail}.",
+    "Delete the extra line, keeping one line per key. A parameter is retired by editing its \
+     existing line's \"live\" to \"tombstoned\", never by adding a second line for the same key.",
+);
+
 /// A key was live in the old manifest and is absent from the new descriptor set without ever
 /// being tombstoned — a silent drop, which FR-PARAM-020 forbids ("never reassigned" presumes the
 /// old identifier is still accounted for, not simply gone).
@@ -137,6 +150,7 @@ const ALL: &[ErrorCode] = &[
     KIND_CHANGED,
     DUPLICATE_ID,
     DUPLICATE_KEY,
+    DUPLICATE_LINE,
     DROPPED,
     MALFORMED_LINE,
     FORMAT_VERSION_UNSUPPORTED,

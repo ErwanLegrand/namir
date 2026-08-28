@@ -67,7 +67,7 @@ use std::collections::BTreeMap;
 
 use crate::descriptor::{ParamDescriptor, ParamKind};
 use crate::error_codes::{
-    DROPPED, DUPLICATE_ID, DUPLICATE_KEY, FORMAT_VERSION_UNSUPPORTED, ID_CHANGED,
+    DROPPED, DUPLICATE_ID, DUPLICATE_KEY, DUPLICATE_LINE, FORMAT_VERSION_UNSUPPORTED, ID_CHANGED,
     INVALID_DESCRIPTOR, KIND_CHANGED, MALFORMED_LINE, ManifestViolation, TOMBSTONE_REUSED,
 };
 
@@ -227,6 +227,9 @@ pub fn merge_manifest(old: &str, new: &[ParamDescriptor]) -> String {
     out
 }
 
+/// One parsed data line. Keyed by key in [`ParsedManifest::entries`], one entry per key: a key
+/// written on two lines is a `DUPLICATE_LINE` violation, and the entry kept is the tombstoned one
+/// (see [`parse_manifest`]).
 struct OldEntry {
     id: u32,
     kind: String,
@@ -318,15 +321,33 @@ fn parse_manifest(text: &str) -> ParsedManifest {
 
         match parsed {
             Some((key, id, kind, tombstoned, shape)) => {
-                entries.insert(
-                    key.to_string(),
-                    OldEntry {
-                        id,
-                        kind: kind.to_string(),
-                        tombstoned,
-                        shape,
-                    },
-                );
+                let entry = OldEntry {
+                    id,
+                    kind: kind.to_string(),
+                    tombstoned,
+                    shape,
+                };
+                match entries.entry(key.to_string()) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(entry);
+                    }
+                    // Issue #118: this used to be a plain `insert`, so a second line for a key
+                    // overwrote the first, last-line-wins, in silence. Two things happen instead.
+                    std::collections::btree_map::Entry::Occupied(mut slot) => {
+                        violations.push(ManifestViolation {
+                            code: DUPLICATE_LINE,
+                            detail: format!("key '{key}'"),
+                        });
+                        // And, for the paths that read the entries anyway -- `merge_manifest`
+                        // takes no notice of violations -- the *tombstone* is the line that wins,
+                        // whichever order the two were written in. A tombstone is the record
+                        // D-10.1 keeps forever; a live line for a key that also has one is the
+                        // half a regeneration can safely re-derive from `REGISTRY`.
+                        if entry.tombstoned && !slot.get().tombstoned {
+                            slot.insert(entry);
+                        }
+                    }
+                }
             }
             None => violations.push(ManifestViolation {
                 code: MALFORMED_LINE,
@@ -350,6 +371,9 @@ fn parse_manifest(text: &str) -> ParsedManifest {
 /// - a key that stayed live across `old` and `new` but changed kind shape (continuous/stepped) in
 ///   place, instead of being tombstoned and replaced under a new key;
 /// - duplicate ids or duplicate keys within `new` itself;
+/// - the same key on more than one line of `old` — a `DUPLICATE_LINE`, distinct from the above:
+///   the lines used to overwrite each other silently, and the loser can be the tombstone (issue
+///   #118);
 /// - a key that was `live` in `old` and is simply absent from `new` without a tombstone;
 /// - a descriptor in `new` that contradicts itself — a default outside its own range, a stepped
 ///   default index past the end of its values ([`ParamDescriptor::validate`], issue #119);
@@ -650,6 +674,79 @@ mod tests {
         let violations = result.expect_err("duplicate id must be rejected");
         assert!(violations.iter().any(|v| v.code.id == DUPLICATE_ID.id));
         assert!(!violations.iter().any(|v| v.code.id == DUPLICATE_KEY.id));
+    }
+
+    /// `old` with a second line for `key`, in the given state, inserted *before* the one already
+    /// there — the shape issue #118 describes: a retirement done by adding a `tombstoned` line
+    /// rather than flipping the existing one, which sorted output leaves adjacent to it.
+    fn with_a_second_line_for(old: &str, key: &str, state: &str) -> String {
+        let mut out = String::new();
+        for line in old.lines() {
+            if line.starts_with(&format!("{key} ")) {
+                let duplicate = line.replace(" live ", &format!(" {state} "));
+                out.push_str(&duplicate);
+                out.push('\n');
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Issue #118: two lines sharing a key used to overwrite each other in the parser's map,
+    /// last-line-wins, with nothing raised. The tombstone — the one record D-10.1 says is
+    /// "retained forever" — is the half that loses, and `check_manifest` then sees a plain live
+    /// key and reports nothing at all.
+    #[test]
+    fn a_key_declared_on_two_lines_of_the_old_manifest_is_rejected() {
+        let old = render_manifest(&[TRIM]);
+        let duplicated = with_a_second_line_for(&old, "trim.gain_db", "tombstoned");
+        let result = check_manifest(&duplicated, &[TRIM]);
+        let violations = result.expect_err("a key on two lines must be rejected");
+        assert!(
+            violations.iter().any(|v| v.code.id == DUPLICATE_LINE.id),
+            "{violations:?}"
+        );
+    }
+
+    /// The same defect with both lines in the same state — no tombstone involved, just a key
+    /// written twice. Still a file whose own re-parse discards one of its lines.
+    #[test]
+    fn a_key_declared_twice_as_live_is_also_rejected() {
+        let old = render_manifest(&[TRIM, GATE_THRESHOLD]);
+        let duplicated = with_a_second_line_for(&old, "gate.threshold", "live");
+        let result = check_manifest(&duplicated, &[TRIM, GATE_THRESHOLD]);
+        let violations = result.expect_err("a key on two lines must be rejected");
+        assert!(
+            violations.iter().any(|v| v.code.id == DUPLICATE_LINE.id),
+            "{violations:?}"
+        );
+    }
+
+    /// The consequence the violation exists to prevent, pinned separately: whichever line wins the
+    /// parse, the tombstone survives a regeneration. Last-line-wins used to drop it here, which is
+    /// how a retired identifier gets quietly handed back to a new parameter.
+    #[test]
+    fn a_duplicated_key_keeps_its_tombstone_through_a_regeneration() {
+        let old = render_manifest(&[TRIM, GATE_THRESHOLD]);
+        let duplicated = with_a_second_line_for(&old, "gate.threshold", "tombstoned");
+        let regenerated = merge_manifest(&duplicated, &[TRIM]);
+        assert!(
+            regenerated
+                .lines()
+                .any(|line| line.starts_with("gate.threshold ") && line.contains(" tombstoned ")),
+            "the tombstone must survive the merge:\n{regenerated}"
+        );
+        // And exactly once -- a file whose own re-parse disagrees with itself is what the
+        // violation is for.
+        assert_eq!(
+            regenerated
+                .lines()
+                .filter(|line| line.starts_with("gate.threshold "))
+                .count(),
+            1,
+            "{regenerated}"
+        );
     }
 
     #[test]
