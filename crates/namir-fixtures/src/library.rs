@@ -633,18 +633,61 @@ mod tests {
     /// differences, so tests share one cache entry instead of each cold-building their own.
     const TEST_SEED: u64 = 12_345;
 
+    /// Determinism, checked against two *independent* builds — deliberately not two
+    /// [`generate_shared_corpus`] calls. That version of this test (through M14) called the
+    /// public entry point twice and compared the results, which cannot fail: the second call is a
+    /// cache hit that re-reads the first call's own `_manifest.json`, so both sides of every
+    /// assertion came from one build and genuine non-determinism anywhere in `derive_seed`,
+    /// `ir_variant_bytes` or `nam_variant_bytes` would have shipped silently. This builds twice
+    /// into two distinct roots via `build_corpus_into` (bypassing the cache entirely), then
+    /// compares the manifests byte-for-byte *and* every generated file's bytes on disk.
+    ///
+    /// It uses its own seed rather than `TEST_SEED` so it never publishes into, reads from, or
+    /// races the shared cache entry the rest of this module's tests share.
     #[test]
     fn generating_twice_with_the_same_seed_is_byte_identical() {
-        let a = generate_shared_corpus(TEST_SEED).expect("first generation");
-        let b = generate_shared_corpus(TEST_SEED).expect("second generation (cache hit)");
+        const DETERMINISM_SEED: u64 = 24_680;
+        let key = cache_key(DETERMINISM_SEED);
+        let base = workspace_target_dir()
+            .join("namir-fixtures-determinism-test")
+            .join("generating_twice_with_the_same_seed_is_byte_identical");
+        let _ = fs::remove_dir_all(&base);
 
-        assert_eq!(a.root, b.root);
-        assert_eq!(a.entries.len(), b.entries.len());
-        for (ea, eb) in a.entries.iter().zip(b.entries.iter()) {
-            assert_eq!(ea.path, eb.path);
-            assert_eq!(ea.kind, eb.kind);
-            assert_eq!(ea.content_hash, eb.content_hash);
+        let roots = ["build_a", "build_b"].map(|name| base.join(name));
+        for root in &roots {
+            fs::create_dir_all(root).expect("create an independent build root");
+            build_corpus_into(root, DETERMINISM_SEED, &key).expect("independent build");
         }
+        let (a, b) = (&roots[0], &roots[1]);
+
+        let manifest_a = fs::read(a.join(MANIFEST_FILE_NAME)).expect("build a's manifest");
+        let manifest_b = fs::read(b.join(MANIFEST_FILE_NAME)).expect("build b's manifest");
+        assert_eq!(
+            manifest_a, manifest_b,
+            "two independent builds of seed {DETERMINISM_SEED} disagree on their manifests"
+        );
+
+        // The manifest agreeing is necessary but not sufficient: it records hashes this generator
+        // computed itself, so the files on disk are compared directly as well.
+        let manifest: Manifest = serde_json::from_slice(&manifest_a).expect("manifest parses back");
+        assert_eq!(manifest.entries.len(), TOTAL_COUNT);
+        for entry in &manifest.entries {
+            let bytes_a = fs::read(a.join(&entry.rel_path)).expect("build a's file");
+            let bytes_b = fs::read(b.join(&entry.rel_path)).expect("build b's file");
+            assert_eq!(
+                bytes_a, bytes_b,
+                "{} differs between two independent builds of the same seed",
+                entry.rel_path
+            );
+            assert_eq!(
+                ContentHash::of(&bytes_a).to_string(),
+                entry.hash,
+                "{}'s manifest hash does not match its bytes on disk",
+                entry.rel_path
+            );
+        }
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     /// Regression test for the CI-only failure this crate's own dev sandbox could never
@@ -732,10 +775,30 @@ mod tests {
         }
     }
 
+    /// Uniqueness, checked by re-hashing the bytes on disk rather than by trusting the manifest.
+    /// The manifest's hashes are this generator's own claims about files it wrote; hashing what
+    /// is actually there is what makes this a check on the *corpus* instead of a check on the
+    /// manifest's internal consistency (through M14 it was the latter).
     #[test]
     fn every_content_hash_in_the_shared_corpus_is_unique() {
         let corpus = generate_shared_corpus(TEST_SEED).expect("generate");
-        let unique: HashSet<_> = corpus.entries.iter().map(|e| e.content_hash).collect();
+        let mut unique: HashSet<ContentHash> = HashSet::with_capacity(corpus.entries.len());
+        for entry in &corpus.entries {
+            let bytes = fs::read(&entry.path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", entry.path.display()));
+            let hash = ContentHash::of(&bytes);
+            assert_eq!(
+                hash,
+                entry.content_hash,
+                "{}: the manifest's hash does not match the file's actual bytes",
+                entry.path.display()
+            );
+            assert!(
+                unique.insert(hash),
+                "{} shares a content hash with an earlier file",
+                entry.path.display()
+            );
+        }
         assert_eq!(
             unique.len(),
             corpus.entries.len(),

@@ -22,14 +22,37 @@ pub enum Mutation {
     /// Parses as JSON and corrupts one random numeric leaf (negate, zero, or scale it by a huge
     /// factor). Falls back to a byte flip if the buffer doesn't parse as JSON or has no numbers.
     CorruptNumber,
+    /// Parses as JSON and replaces one random object field's *value* with `null`, leaving the key
+    /// present. Falls back to a byte flip if the buffer doesn't parse as a JSON object.
+    ///
+    /// This is the shape of the real post-M6 `.nam` parser bug (a metadata field exported as
+    /// JSON `null` rather than omitted): [`Mutation::DropField`] removes the key entirely, which
+    /// a `#[serde(default)]`/`Option` field absorbs, and [`Mutation::CorruptNumber`] only ever
+    /// rewrites a number as another number — neither can ever produce `"name": null`, so before
+    /// this variant existed no generated fixture and no seeded fuzz corpus entry reached that
+    /// region at all.
+    NullField,
+    /// Parses as JSON and replaces one random object field's *value* with a value of a different
+    /// JSON type (a string where a number was, a number where a string was, a scalar where a
+    /// container was). Falls back to a byte flip if the buffer doesn't parse as a JSON object.
+    ///
+    /// The type-confusion sibling of [`Mutation::NullField`]: a deserializer that is careful
+    /// about missing fields and out-of-range numbers can still be careless about a field whose
+    /// type is simply wrong.
+    RetypeField,
 }
 
-/// All four kinds, in a stable order — useful for building a corpus that covers each once.
-pub const ALL: [Mutation; 4] = [
+/// All six kinds, in a stable order — useful for building a corpus that covers each once. The
+/// order is append-only on purpose: [`seeded_corpus`] derives each variant's seed from its index
+/// here, so inserting a kind anywhere but the end would silently change every later variant's
+/// bytes (and therefore every checked-in fuzz corpus file generated from it).
+pub const ALL: [Mutation; 6] = [
     Mutation::ByteFlip,
     Mutation::Truncate,
     Mutation::DropField,
     Mutation::CorruptNumber,
+    Mutation::NullField,
+    Mutation::RetypeField,
 ];
 
 /// Applies `mutation` to `data` with a seeded RNG; same `(data, mutation, seed)` always produces
@@ -41,6 +64,8 @@ pub fn mutate(data: &[u8], mutation: Mutation, seed: u64) -> Vec<u8> {
         Mutation::Truncate => truncate(data, &mut rng),
         Mutation::DropField => drop_field(data, &mut rng),
         Mutation::CorruptNumber => corrupt_number(data, &mut rng),
+        Mutation::NullField => null_field(data, &mut rng),
+        Mutation::RetypeField => retype_field(data, &mut rng),
     }
 }
 
@@ -157,6 +182,85 @@ fn corrupt_number(data: &[u8], rng: &mut impl Rng) -> Vec<u8> {
     serde_json::to_vec(&value).unwrap_or_else(|_| data.to_vec())
 }
 
+/// The object that owns `container_ptr`, as a mutable map — the shared half of `drop_field`,
+/// `null_field` and `retype_field`'s "reach into the tree and edit one field" step. An empty
+/// pointer addresses the document root.
+fn object_mut<'a>(
+    value: &'a mut Value,
+    container_ptr: &str,
+) -> Option<&'a mut serde_json::Map<String, Value>> {
+    let container = if container_ptr.is_empty() {
+        Some(value)
+    } else {
+        value.pointer_mut(container_ptr)
+    };
+    match container {
+        Some(Value::Object(map)) => Some(map),
+        _ => None,
+    }
+}
+
+/// The current value of `container_ptr`'s `key` field, addressed the same way
+/// [`collect_object_keys`] built the pointer.
+fn child<'a>(value: &'a Value, container_ptr: &str, key: &str) -> Option<&'a Value> {
+    value.pointer(&format!("{container_ptr}/{key}"))
+}
+
+/// Replaces one random object field's value with `null`, keeping the key. See
+/// [`Mutation::NullField`] for why this is a distinct kind rather than a case of `DropField`.
+fn null_field(data: &[u8], rng: &mut impl Rng) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(data) else {
+        return byte_flip(data, rng);
+    };
+    let mut keys = Vec::new();
+    collect_object_keys(&value, "", &mut keys);
+    // Writing `null` over a field that is already `null` would be a no-op "mutation" that emits
+    // the input unchanged — never a useful corpus entry.
+    keys.retain(|(container, key)| !matches!(child(&value, container, key), Some(Value::Null)));
+    if keys.is_empty() {
+        return byte_flip(data, rng);
+    }
+    let (container_ptr, key) = keys[rng.gen_range(0..keys.len())].clone();
+    if let Some(map) = object_mut(&mut value, &container_ptr) {
+        map.insert(key, Value::Null);
+    }
+    serde_json::to_vec(&value).unwrap_or_else(|_| data.to_vec())
+}
+
+/// The wrong-typed replacement for `value`: a string where a number was, a number where a string
+/// was, a scalar where a container was. Deterministic given the field that was picked — the RNG's
+/// only job in [`retype_field`] is choosing *which* field to hit.
+fn retyped(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::Bool(true),
+        Value::Bool(_) => Value::String("true".to_string()),
+        Value::Number(n) => Value::String(n.to_string()),
+        Value::String(_) => Value::Number(0.into()),
+        Value::Array(_) | Value::Object(_) => Value::Number(0.into()),
+    }
+}
+
+/// Replaces one random object field's value with a value of a different JSON type, keeping the
+/// key. See [`Mutation::RetypeField`].
+fn retype_field(data: &[u8], rng: &mut impl Rng) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(data) else {
+        return byte_flip(data, rng);
+    };
+    let mut keys = Vec::new();
+    collect_object_keys(&value, "", &mut keys);
+    if keys.is_empty() {
+        return byte_flip(data, rng);
+    }
+    let (container_ptr, key) = keys[rng.gen_range(0..keys.len())].clone();
+    let Some(replacement) = child(&value, &container_ptr, &key).map(retyped) else {
+        return byte_flip(data, rng);
+    };
+    if let Some(map) = object_mut(&mut value, &container_ptr) {
+        map.insert(key, replacement);
+    }
+    serde_json::to_vec(&value).unwrap_or_else(|_| data.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,7 +353,12 @@ mod tests {
     #[test]
     fn non_json_input_falls_back_to_byte_flip_for_structural_mutations() {
         let data = b"not json at all".to_vec();
-        for m in [Mutation::DropField, Mutation::CorruptNumber] {
+        for m in [
+            Mutation::DropField,
+            Mutation::CorruptNumber,
+            Mutation::NullField,
+            Mutation::RetypeField,
+        ] {
             let mutated = mutate(&data, m, 1);
             assert_eq!(mutated.len(), data.len());
             assert_ne!(mutated, data);
@@ -271,5 +380,114 @@ mod tests {
         let data = sample_nam_json();
         let corpus = seeded_corpus(&data, 5);
         assert_eq!(corpus.len(), ALL.len());
+    }
+
+    /// Every `(container, key)` pair in `value` whose value is JSON `null`, as a set of
+    /// `"/container/key"` pointers — the shape the real post-M6 parser bug had.
+    fn null_valued_pointers(value: &Value) -> Vec<String> {
+        let mut keys = Vec::new();
+        collect_object_keys(value, "", &mut keys);
+        keys.into_iter()
+            .filter(|(c, k)| matches!(child(value, c, k), Some(Value::Null)))
+            .map(|(c, k)| format!("{c}/{k}"))
+            .collect()
+    }
+
+    #[test]
+    fn null_field_writes_json_null_into_a_slot_that_held_a_string() {
+        // `architecture` is the sample document's only string field, so "some seed nulls a
+        // string" is checkable exactly rather than statistically.
+        let data = sample_nam_json();
+        let hit = (0..50u64).any(|seed| {
+            let mutated = mutate(&data, Mutation::NullField, seed);
+            let after: Value = serde_json::from_slice(&mutated).expect("still valid JSON");
+            after.pointer("/architecture") == Some(&Value::Null)
+        });
+        assert!(
+            hit,
+            "expected at least one seed (of 50) to null the `architecture` string"
+        );
+    }
+
+    #[test]
+    fn null_field_keeps_the_key_and_never_merely_re_nulls_an_existing_null() {
+        let data = sample_nam_json();
+        let original: Value = serde_json::from_slice(&data).unwrap();
+        assert!(
+            null_valued_pointers(&original).is_empty(),
+            "the sample document is expected to start with no nulls at all"
+        );
+        for seed in 0..25u64 {
+            let mutated = mutate(&data, Mutation::NullField, seed);
+            let after: Value = serde_json::from_slice(&mutated).expect("still valid JSON");
+            assert_ne!(original, after, "seed {seed}: NullField was a no-op");
+            assert_eq!(
+                null_valued_pointers(&after).len(),
+                1,
+                "seed {seed}: expected exactly one field to become null"
+            );
+        }
+    }
+
+    #[test]
+    fn retype_field_replaces_one_value_with_a_different_json_type() {
+        let data = sample_nam_json();
+        let original: Value = serde_json::from_slice(&data).unwrap();
+        let mut seen_number_as_string = false;
+        let mut seen_string_as_number = false;
+        for seed in 0..50u64 {
+            let mutated = mutate(&data, Mutation::RetypeField, seed);
+            let after: Value = serde_json::from_slice(&mutated).expect("still valid JSON");
+            assert_ne!(original, after, "seed {seed}: RetypeField was a no-op");
+            if after.pointer("/sample_rate").is_some_and(Value::is_string) {
+                seen_number_as_string = true;
+            }
+            if after.pointer("/architecture").is_some_and(Value::is_number) {
+                seen_string_as_number = true;
+            }
+        }
+        assert!(
+            seen_number_as_string,
+            "expected some seed to put a string where `sample_rate`'s number was"
+        );
+        assert!(
+            seen_string_as_number,
+            "expected some seed to put a number where `architecture`'s string was"
+        );
+    }
+
+    /// The regression this whole pair of mutation kinds exists for: a corpus seeded from a *real*
+    /// generated `.nam` fixture must be able to produce the shape of the real post-M6 parser bug
+    /// — a metadata field present but set to JSON `null` rather than omitted. Before `NullField`
+    /// existed this was unreachable: `DropField` removes the key and `CorruptNumber` only ever
+    /// rewrites a number as another number, so no seed of any count could have passed this.
+    #[test]
+    fn a_seeded_corpus_of_a_generated_fixture_reaches_a_null_metadata_field() {
+        let model = crate::nam::generate(crate::nam::WaveNetShape::Nano, 1)
+            .expect("nano fixture should generate");
+        let bytes = model.to_json_bytes();
+
+        let metadata_fields = [
+            "name",
+            "modeled_by",
+            "gear_type",
+            "tone_type",
+            "description",
+        ];
+        let hit = (0..60u64).any(|seed| {
+            seeded_corpus(&bytes, seed).iter().any(|variant| {
+                let Ok(after) = serde_json::from_slice::<Value>(variant) else {
+                    return false;
+                };
+                metadata_fields
+                    .iter()
+                    .any(|f| after.pointer(&format!("/metadata/{f}")) == Some(&Value::Null))
+            })
+        });
+        assert!(
+            hit,
+            "no seed produced a `\"metadata.<field>\": null` document — the exact shape of the \
+             real post-M6 parser bug"
+        );
     }
 }
