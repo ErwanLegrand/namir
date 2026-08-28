@@ -760,3 +760,72 @@ fn nfr_perf_020_measured_group_delay_never_exceeds_the_reported_latency() {
          direction"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Issue #58 — bypass latency compensation against a latency that changes at runtime.
+// ---------------------------------------------------------------------------------------------
+
+/// **Issue #58, at the configuration that actually produces it.** `chain.rs`'s own
+/// `bypass_compensation_follows_a_latency_change_made_after_prepare` pins the mechanism with a
+/// fake stage; this drives the real one. `build_default_chain` calls `prepare_crosscutting` once,
+/// with nothing loaded, so the chain reports zero latency at that moment — and installing a NAM
+/// model whose declared rate differs from the engine's engages `stages/nam.rs`'s `SlotResampler`
+/// and makes it 640, which is precisely the runtime latency change FR-CLAP-040 names ("including
+/// as a result of a model change under FR-NAM-050").
+///
+/// The compensation used to be frozen at that prepare-time zero, so from the model change onward
+/// the chain told the host it added 640 samples while its own bypass path added none: bypassed
+/// audio misaligned against the rest of the session by exactly the resampler's delay.
+///
+/// **No tag.** FR-CHAIN-030's own null test is in `chain.rs` and this does not replace it;
+/// FR-CLAP-040 is a statement about the *plugin* notifying the host, which lives in `namir-clap`
+/// and which nothing here executes.
+///
+/// The signal runs continuously across the bypass switch, and the comparison starts at the switch
+/// itself rather than after a settling window — with the delay line fed on both paths (issue #59)
+/// the very first bypassed sample is already correctly aligned, and a test that skipped past the
+/// transition would not notice if it were not.
+#[test]
+fn bypass_compensation_tracks_the_latency_a_resampled_model_adds_at_runtime() {
+    const FRAMES: usize = 16_384;
+    /// Past the 20 ms handover crossfade (960 samples) and the 15 ms bypass blend many times
+    /// over, so `NamStage::latency_samples()` has settled on the installed slot before the switch.
+    const BYPASS_AT_BLOCK: usize = 128;
+
+    let ctx = probe::ctx(ChannelConfig::Mono);
+    let signal = probe::sine(FRAMES, 220.0, SR, 0.25);
+    let input = probe::duplicated(&signal, 1);
+
+    let mut chain = build_default_chain(&ctx).unwrap();
+    probe::set_param(&mut chain, gate::THRESHOLD_DB.id, -70.0);
+    // A model declaring 44.1 kHz in a 48 kHz engine: the chain's only source of latency.
+    probe::load_nam(
+        &mut chain,
+        probe::nam_model(WaveNetShape::Nano, 43, 44_100),
+        &ctx,
+    );
+
+    let out = probe::run_with(&mut chain, &input, BLOCK, |i, chain| {
+        if i == BYPASS_AT_BLOCK {
+            probe::set_param(chain, namir_params::global::GLOBAL_BYPASS.id, 1.0);
+        }
+    });
+
+    let reported = chain.latency_samples() as usize;
+    assert!(
+        reported > 0,
+        "a model at a different declared rate must engage the resampler and report its latency"
+    );
+
+    let switch = BYPASS_AT_BLOCK * BLOCK;
+    let null_floor = db_to_linear(-120.0);
+    let peak_residual = (switch..FRAMES)
+        .map(|n| (out[0][n] - signal[n - reported]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        peak_residual <= null_floor,
+        "bypassed output minus input delayed by the {reported} samples the chain reports peaked \
+         at {peak_residual:e}, above the -120 dBFS null floor {null_floor:e}: the compensation is \
+         not tracking a latency that changed after `prepare_crosscutting` ran"
+    );
+}

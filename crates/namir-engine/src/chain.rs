@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use namir_params::global::{GLOBAL_BYPASS, OUTPUT_CEILING_DB};
 
 use crate::command::RetireSink;
@@ -57,46 +55,122 @@ pub struct Chain {
     cross_cutting: Option<CrossCuttingState>,
 }
 
+/// Ceiling on the bypass-compensation delay [`Chain::prepare_crosscutting`] pre-sizes each
+/// channel's line to, expressed in milliseconds of the engine rate.
+///
+/// **Why a ceiling at all (issue #58).** The chain's latency is not fixed at preparation: a NAM
+/// model whose declared rate differs from the engine's engages `stages/nam.rs`'s `SlotResampler`
+/// the moment it is installed, and FR-CLAP-040 names exactly that as a runtime latency change.
+/// The compensation therefore has to track `Chain::latency_samples()` *per block*, and the only
+/// way to do that without allocating on the audio thread (P1) is to allocate once, generously,
+/// for a latency the chain will not exceed.
+///
+/// 250 ms is that figure. The largest latency anything in the 1.0 chain can report is one
+/// `SlotResampler`'s (a few hundred samples — 640 for a 44.1 kHz model in a 48 kHz engine, the
+/// configuration `chain_probes.rs` measures), so this is roughly two orders of magnitude of
+/// headroom; a chain whose latency exceeded a quarter of a second would be unusable as a live
+/// amp simulator long before this line ran out. A latency above the ceiling is clamped rather
+/// than allowed to allocate or panic (D-16.3) — see [`DelayLine::run`].
+const MAX_BYPASS_COMPENSATION_MS: f64 = 250.0;
+
+/// One channel's bypass-compensation delay: a fixed-capacity circular buffer, written on **every**
+/// block (both paths — see [`CrossCuttingState::run_delay`]) and read back `delay` samples late
+/// only while bypass is engaged.
+///
+/// A circular `Vec` rather than the `VecDeque` this used to be, because the delay is now a
+/// per-block input rather than a constant fixed at preparation: a `VecDeque` expresses "delay by
+/// exactly its own length", so changing the delay would mean resizing it, which is an allocation
+/// on the audio thread. Indexing a buffer whose length is the *maximum* delay expresses any delay
+/// up to that maximum at no cost.
+struct DelayLine {
+    /// Capacity is `max delay + 1`, so the read index can trail the write index by the maximum
+    /// delay without colliding with it. Never resized after construction.
+    buf: Vec<f32>,
+    /// Where the next sample will be written.
+    write: usize,
+}
+
+impl DelayLine {
+    /// **Not RT-safe** (allocates once, at preparation).
+    fn new(capacity: usize) -> Self {
+        Self {
+            buf: vec![0.0; capacity.max(1)],
+            write: 0,
+        }
+    }
+
+    /// Pushes every sample of `channel` into the line, in order, and — when `emit_delayed` — also
+    /// replaces each with the sample written `delay` positions earlier.
+    ///
+    /// **RT-safe:** no allocation, no branch whose bound depends on anything but `channel.len()`,
+    /// and one modulo for the whole block rather than one per sample. A `delay` above what this
+    /// line was sized for is clamped rather than allowed to index out of bounds (D-16.3: degrade,
+    /// don't panic on the audio thread); see [`MAX_BYPASS_COMPENSATION_MS`] for why that cannot
+    /// happen for any chain this project ships.
+    fn run(&mut self, channel: &mut [f32], delay: usize, emit_delayed: bool) {
+        let cap = self.buf.len();
+        let delay = delay.min(cap - 1);
+        let mut write = self.write;
+        // Trails `write` by `delay`, so the value read at each step is the one written `delay`
+        // steps ago. At `delay == 0` the two indices coincide and the read would be stale by a
+        // whole buffer — hence the `delay > 0` guard below; a zero-delay bypass wants the input
+        // unchanged anyway.
+        let mut read = (write + cap - delay) % cap;
+        for sample in channel.iter_mut() {
+            let delayed = self.buf[read];
+            self.buf[write] = *sample;
+            if emit_delayed && delay > 0 {
+                *sample = delayed;
+            }
+            write += 1;
+            if write == cap {
+                write = 0;
+            }
+            read += 1;
+            if read == cap {
+                read = 0;
+            }
+        }
+        self.write = write;
+    }
+}
+
 /// Non-RT-allocated state that only exists once [`Chain::prepare_crosscutting`] has run:
-/// FR-CHAIN-030's per-channel latency-compensation ring for the bypass path. Sized once, off the
-/// audio thread, to exactly `latency_samples` per channel — `process` only ever pops one sample
-/// and pushes one sample per input sample, so the ring's length never moves outside
-/// `[0, latency_samples]`, and it therefore never needs to grow (P1).
+/// FR-CHAIN-030's per-channel latency-compensation delay for the bypass path, and the
+/// [`PrepareContext`](crate::prepare::PrepareContext) the chain was prepared against, which is
+/// what lets [`crate::AudioEngine::process`] check the block it is handed instead of trusting it
+/// (issue #60).
 struct CrossCuttingState {
-    /// One ring per channel (`ctx.channel_config().output_channels()` many — `stage_io.rs`'s own
+    /// One line per channel (`ctx.channel_config().output_channels()` many — `stage_io.rs`'s own
     /// doc comment: `StageIo`'s channel count is fixed for the whole chain to that figure).
-    /// Empty (zero-capacity, never touched) when `latency_samples == 0`; see `apply_bypass`.
-    delay_rings: Vec<VecDeque<f32>>,
-    /// Cached copy of `Chain::latency_samples()` as it stood when `prepare_crosscutting` ran, so
-    /// `apply_bypass` doesn't need to re-walk `stages` (and doesn't have to borrow `stages`
-    /// alongside `cross_cutting`) on every block.
-    latency_samples: u32,
+    delay_lines: Vec<DelayLine>,
+    /// The context `prepare_crosscutting` was called with. See [`Chain::prepared_for`].
+    prepared_for: crate::prepare::PrepareContext,
 }
 
 impl CrossCuttingState {
-    /// FR-CHAIN-030's bypass path: "input routed to output at unity gain, with only the latency
-    /// compensation needed for sample alignment." Pop-then-push, not the more literal
-    /// push-then-pop: a FIFO's oldest element is unaffected by what gets appended after it, so
-    /// the value released is identical either way, but popping first means the ring's length
-    /// only ever dips to `latency_samples - 1` and returns to `latency_samples` — it never
-    /// touches `latency_samples + 1`, so the `VecDeque` `prepare_crosscutting` sized can never
-    /// need to grow (P1).
-    fn apply_bypass(&mut self, io: &mut StageIo<'_>) {
-        if self.latency_samples == 0 {
-            // Nothing to compensate for: leaving the buffer untouched already *is* "input routed
-            // to output at unity gain" with zero latency (prepare_crosscutting's doc comment).
+    /// FR-CHAIN-030's bypass path, and its always-on other half.
+    ///
+    /// **Every block feeds the line, whether bypass is engaged or not (issue #59).** Writing it
+    /// only while bypassed left it holding whatever the *last* bypass period ended with (zeros,
+    /// the first time), so engaging bypass emitted `delay` samples of stale content followed by a
+    /// hard discontinuity, and disengaging dropped the same number of samples — a click at both
+    /// ends of every transition, which is exactly what FR-CLAP-060 forbids. Feeding it always
+    /// costs one pass over the block on the non-bypassed path (nothing at all when the chain
+    /// reports zero latency, which is the whole of 1.0 with no resampled model loaded) and makes
+    /// the transition sample-accurate in both directions.
+    ///
+    /// `delay` is read from the chain's *current* `latency_samples()` on every block rather than
+    /// cached at preparation, so a model change that alters the reported latency (FR-CLAP-040)
+    /// moves the compensation with it — issue #58.
+    fn run_delay(&mut self, io: &mut StageIo<'_>, delay: usize, bypassed: bool) {
+        if delay == 0 && !bypassed {
+            // Nothing to record and nothing to emit: the line can only ever hand back what it is
+            // given, so skipping it is not a state divergence.
             return;
         }
-        for (ring, channel) in self.delay_rings.iter_mut().zip(io.channels_mut()) {
-            for sample in channel.iter_mut() {
-                // Prefilled with `latency_samples` zeros by `prepare_crosscutting`, so this
-                // `unwrap_or` only ever falls back to 0.0 in principle, never in practice — kept
-                // as a fallback rather than `.unwrap()` so a future bug here degrades to silence
-                // instead of a panic on the audio thread (D-16.3).
-                let delayed = ring.pop_front().unwrap_or(0.0);
-                ring.push_back(*sample);
-                *sample = delayed;
-            }
+        for (line, channel) in self.delay_lines.iter_mut().zip(io.channels_mut()) {
+            line.run(channel, delay, bypassed);
         }
     }
 
@@ -108,7 +182,23 @@ impl CrossCuttingState {
     /// zero is already within any ceiling, so there is nothing left to clamp. Otherwise clamps
     /// every sample's magnitude to `ceiling_linear`, sign preserved via `f32::clamp`'s own
     /// symmetric-range behaviour.
-    fn scan_and_clamp(&mut self, io: &mut StageIo<'_>, ceiling_linear: f32, fault_count: &mut u64) {
+    ///
+    /// **`apply_ceiling` is false on the bypass path (issue #61).** FR-CHAIN-090 is a statement
+    /// about "the output stage"; FR-CHAIN-030 is a statement about a path that does not run the
+    /// output stage at all, and its own `Verify:` method — bypassed output minus delayed input is
+    /// silence to within −120 dBFS — is simply false above 0 dBFS if the default ceiling clamps
+    /// the bypassed signal. The two requirements collide only on the bypass path, and
+    /// FR-CHAIN-030 wins there because "routes input to output with unity gain" leaves no room
+    /// for a gain of anything else. The NaN scan still runs: fault containment (FR-CHAIN-080) is
+    /// about not sending a damaging non-finite sample to hardware, which the bypass path can do
+    /// just as easily as the stage path.
+    fn scan_and_clamp(
+        &mut self,
+        io: &mut StageIo<'_>,
+        ceiling_linear: f32,
+        apply_ceiling: bool,
+        fault_count: &mut u64,
+    ) {
         let faulted = io
             .channels_mut()
             .any(|channel| channel.iter().any(|s| !s.is_finite()));
@@ -117,6 +207,9 @@ impl CrossCuttingState {
                 channel.fill(0.0);
             }
             *fault_count += 1;
+            return;
+        }
+        if !apply_ceiling {
             return;
         }
         for channel in io.channels_mut() {
@@ -171,20 +264,31 @@ impl Chain {
     /// dBFS, and must keep doing so unmodified).
     pub fn prepare_crosscutting(&mut self, ctx: &crate::prepare::PrepareContext) {
         let channel_count = ctx.channel_config().output_channels() as usize;
-        let latency_samples = self.latency_samples();
-        let delay_rings = (0..channel_count)
-            .map(|_| {
-                // Zero-capacity when latency is 0: `apply_bypass` special-cases that to a no-op
-                // and never touches the ring, so there is nothing worth preallocating.
-                let mut ring = VecDeque::with_capacity(latency_samples as usize);
-                ring.resize(latency_samples as usize, 0.0);
-                ring
-            })
+        // Sized to the ceiling, not to today's `latency_samples()` (issue #58): with nothing
+        // loaded that figure is 0, and installing a resampled model raises it *after* this call
+        // has returned. `max` rather than a bare conversion so a chain that somehow already
+        // reports more than the ceiling still gets a line long enough for it.
+        let ceiling =
+            (ctx.sample_rate().hz_f64() * MAX_BYPASS_COMPENSATION_MS / 1000.0).ceil() as usize;
+        let capacity = ceiling.max(self.latency_samples() as usize) + 1;
+        let delay_lines = (0..channel_count)
+            .map(|_| DelayLine::new(capacity))
             .collect();
         self.cross_cutting = Some(CrossCuttingState {
-            delay_rings,
-            latency_samples,
+            delay_lines,
+            prepared_for: *ctx,
         });
+    }
+
+    /// The [`PrepareContext`](crate::prepare::PrepareContext) this chain was prepared against, or
+    /// `None` on a chain built through [`Chain::new`] alone (see `prepare_crosscutting`'s doc
+    /// comment for why that path is deliberately raw).
+    ///
+    /// Exists so [`crate::AudioEngine::process`] can check the `StageIo` it is handed against the
+    /// block size and channel count every stage sized its buffers to, rather than trusting a
+    /// caller and panicking inside a stage when the trust is misplaced (issue #60).
+    pub fn prepared_for(&self) -> Option<crate::prepare::PrepareContext> {
+        self.cross_cutting.as_ref().map(|cc| cc.prepared_for)
     }
 
     /// FR-CHAIN-030: turns the chain-wide bypass on or off. RT-safe — flips one `bool`, nothing
@@ -235,17 +339,22 @@ impl Chain {
     /// prepared for cross-cutting skips all of that and behaves exactly as before this feature
     /// existed.
     pub fn process(&mut self, io: &mut StageIo<'_>) {
-        if self.global_bypass {
-            if let Some(cross_cutting) = self.cross_cutting.as_mut() {
-                cross_cutting.apply_bypass(io);
-            } else {
-                // No ring to bypass through (prepare_crosscutting was never called): today's
-                // behaviour, unchanged. See set_global_bypass's doc comment.
-                for stage in &mut self.stages {
-                    stage.process(io);
-                }
-            }
-        } else {
+        // Read *this block's* latency rather than a figure cached at preparation (issue #58):
+        // installing a model whose declared rate differs from the engine's raises it mid-session,
+        // which is the runtime change FR-CLAP-040 names. Six `Stage::latency_samples()` calls,
+        // each a field read behind a vtable — cheap enough to pay per block, and the alternative
+        // is a compensation that silently stops matching what the host was told.
+        let latency = self.latency_samples() as usize;
+        let bypassed = self.global_bypass;
+
+        let prepared = self.cross_cutting.is_some();
+        if let Some(cross_cutting) = self.cross_cutting.as_mut() {
+            // Runs on both paths — see `run_delay`'s doc comment (issue #59).
+            cross_cutting.run_delay(io, latency, bypassed);
+        }
+        if !bypassed || !prepared {
+            // No line to bypass through (prepare_crosscutting was never called): today's
+            // behaviour, unchanged. See set_global_bypass's doc comment.
             for stage in &mut self.stages {
                 stage.process(io);
             }
@@ -253,7 +362,9 @@ impl Chain {
 
         if let Some(cross_cutting) = self.cross_cutting.as_mut() {
             let ceiling_linear = self.output_ceiling_linear;
-            cross_cutting.scan_and_clamp(io, ceiling_linear, &mut self.fault_count);
+            // The ceiling is an output-stage statement and the bypass path does not run the
+            // output stage; the NaN scan applies to both. See `scan_and_clamp` (issue #61).
+            cross_cutting.scan_and_clamp(io, ceiling_linear, !bypassed, &mut self.fault_count);
         }
     }
 
@@ -755,6 +866,249 @@ mod tests {
         assert!((out[3] - (-0.1)).abs() < 1e-5);
     }
 
+    // --- Issues #58/#59/#61: the bypass path's three defects, one test each. All three are
+    // about the *same* delay line, so they share `VariableLatency` and `run_blocks` below. ---
+
+    /// Id `VariableLatency` answers to. Any value `Chain::apply` does not recognise itself is
+    /// broadcast to every stage, so this needs only to differ from the two chain-level ids.
+    const LATENCY_PARAM_ID: ParamId = ParamId(4242);
+
+    /// A stage whose *declared* latency changes at runtime, which is what `NamStage` does the
+    /// moment a model whose declared rate differs from the engine's is installed (FR-CLAP-040,
+    /// `stages/nam.rs`'s `SlotResampler`). `process` is a no-op, so anything the output shows can
+    /// only have come from the chain's own compensation.
+    struct VariableLatency {
+        latency: u32,
+    }
+
+    impl Stage for VariableLatency {
+        fn process(&mut self, _io: &mut StageIo<'_>) {}
+        fn reset(&mut self) {}
+        fn latency_samples(&self) -> u32 {
+            self.latency
+        }
+        fn tail_samples(&self) -> u32 {
+            0
+        }
+        fn apply(&mut self, change: ParamChange) {
+            if change.id == LATENCY_PARAM_ID {
+                self.latency = change.value as u32;
+            }
+        }
+        fn telemetry(&self, _out: &mut TelemetrySink<'_>) {}
+    }
+
+    /// Drives `input` through `chain` in `block`-frame blocks inside the RT harness, calling
+    /// `at_block` before each one so a test can flip bypass or a parameter mid-stream.
+    fn run_blocks(
+        chain: &mut Chain,
+        input: &[f32],
+        block: usize,
+        mut at_block: impl FnMut(usize, &mut Chain),
+    ) -> Vec<f32> {
+        let mut out = Vec::with_capacity(input.len());
+        for (i, chunk) in input.chunks(block).enumerate() {
+            at_block(i, chain);
+            let mut buf = chunk.to_vec();
+            {
+                let mut channels: [&mut [f32]; 1] = [&mut buf];
+                let mut io = StageIo::new(&mut channels, chunk.len());
+                audio_section(|| chain.process(&mut io));
+            }
+            out.extend_from_slice(&buf);
+        }
+        out
+    }
+
+    /// **Issue #58.** `CrossCuttingState` used to cache `Chain::latency_samples()` at
+    /// `prepare_crosscutting` and size a `VecDeque` to exactly that. `build_default_chain` calls
+    /// that once, with nothing loaded, so the cached figure is always 0 — and
+    /// `NamStage::latency_samples()` becomes nonzero later, the moment a model at a different
+    /// declared rate is installed, which FR-CLAP-040 names explicitly as a runtime latency change.
+    /// The chain then reported a nonzero latency to the host while compensating for none of it.
+    ///
+    /// Committed red-first: before the fix the assertion below fails on the very first compared
+    /// sample, because the bypassed output is the *undelayed* input.
+    #[test]
+    fn bypass_compensation_follows_a_latency_change_made_after_prepare() {
+        const BLOCK: usize = 16;
+        const LATENCY: usize = 5;
+        const CHANGE_AT: usize = 2;
+
+        let mut chain = Chain::new(vec![Box::new(VariableLatency { latency: 0 })]);
+        chain.prepare_crosscutting(&ctx());
+        chain.set_global_bypass(true);
+        assert_eq!(
+            chain.latency_samples(),
+            0,
+            "the line is sized while the chain still reports zero -- that is the whole setup"
+        );
+
+        // A ramp: every sample distinct, so a misalignment of even one sample is visible.
+        let input: Vec<f32> = (0..BLOCK * 8).map(|n| 0.001 * n as f32).collect();
+        let output = run_blocks(&mut chain, &input, BLOCK, |i, chain| {
+            if i == CHANGE_AT {
+                chain.apply(ParamChange {
+                    id: LATENCY_PARAM_ID,
+                    value: LATENCY as f32,
+                });
+            }
+        });
+
+        assert_eq!(chain.latency_samples(), LATENCY as u32);
+        for n in CHANGE_AT * BLOCK..input.len() {
+            let expected = input[n - LATENCY];
+            assert!(
+                (output[n] - expected).abs() < 1e-6,
+                "sample {n}: bypassed output {} against an input delayed by the {LATENCY} samples \
+                 the chain now reports ({expected})",
+                output[n]
+            );
+        }
+    }
+
+    /// **Issue #59.** The delay line used to be written only while bypass was engaged, so it held
+    /// whatever the *last* bypass period ended with — zeros, the first time. Engaging bypass then
+    /// emitted `latency_samples` of that stale content followed by a hard discontinuity, and
+    /// disengaging dropped the same number of samples: a click at both ends of every transition,
+    /// which is exactly what FR-CLAP-060 ("sample-accurate and click-free, equivalent to
+    /// FR-CHAIN-030") forbids.
+    ///
+    /// Three phases, because the third is what proves the fix rather than merely restating it:
+    /// bypass off (the line must be filling), bypass on (the first `LATENCY` samples must be the
+    /// last `LATENCY` samples of the *previous, unbypassed* block), bypass off again, then on
+    /// again (the line must still be coherent across a period it was not being read from).
+    ///
+    /// Committed red-first: before the fix, phase two's first three samples are 0.0.
+    #[test]
+    fn engaging_bypass_emits_the_real_signal_rather_than_stale_ring_content() {
+        const BLOCK: usize = 8;
+        const LATENCY: usize = 3;
+
+        // `ConstantTail::process` is a no-op, so the unbypassed path is an exact passthrough and
+        // every difference between the two paths is the compensation line alone.
+        let mut chain = Chain::new(vec![Box::new(ConstantTail {
+            latency: LATENCY as u32,
+            tail: 0,
+        })]);
+        chain.prepare_crosscutting(&ctx());
+
+        let input: Vec<f32> = (0..BLOCK * 4).map(|n| 0.01 * (n + 1) as f32).collect();
+        let output = run_blocks(&mut chain, &input, BLOCK, |i, chain| {
+            // off, on, off, on.
+            chain.set_global_bypass(i % 2 == 1);
+        });
+
+        // Phase 0 (bypass off): a no-op stage passes the input straight through.
+        assert_eq!(&output[..BLOCK], &input[..BLOCK]);
+        // Phase 1 (bypass on): delayed by LATENCY, and the samples that delay reaches back for
+        // are real input from phase 0 -- not the zeros a line written only while bypassed holds.
+        for n in BLOCK..2 * BLOCK {
+            assert!(
+                (output[n] - input[n - LATENCY]).abs() < 1e-6,
+                "sample {n}: engaging bypass emitted {} instead of the input delayed by \
+                 {LATENCY} ({})",
+                output[n],
+                input[n - LATENCY]
+            );
+        }
+        // Phase 2 (bypass off again): passthrough once more.
+        assert_eq!(&output[2 * BLOCK..3 * BLOCK], &input[2 * BLOCK..3 * BLOCK]);
+        // Phase 3 (bypass on again): the line stayed coherent through a period nothing read it.
+        for n in 3 * BLOCK..4 * BLOCK {
+            assert!(
+                (output[n] - input[n - LATENCY]).abs() < 1e-6,
+                "sample {n}: re-engaging bypass emitted {} instead of {}",
+                output[n],
+                input[n - LATENCY]
+            );
+        }
+    }
+
+    /// **Issue #61.** `scan_and_clamp` used to run in full on the bypass path, so FR-CHAIN-090's
+    /// ceiling (default 0 dBFS) clipped a bypassed signal — and FR-CHAIN-030's own `Verify:`
+    /// method, the null test, is simply false for any input above that ceiling. The two bypass
+    /// tests above this one keep their amplitudes deliberately under it and say so in comments,
+    /// so the behaviour was known and untested.
+    ///
+    /// This is `bypassed_output_nulls_against_delayed_input_to_within_120_dbfs` at an amplitude
+    /// that ceiling would clip, plus the converse — the clamp must still apply when bypass is
+    /// *off*, so the fix cannot be "stop clamping".
+    ///
+    /// Committed red-first: before the fix the residual peaks at ~0.5 (the clipped half of a 1.5
+    /// peak), roughly 114 dB above the −120 dBFS floor.
+    #[test]
+    fn bypass_does_not_clamp_a_signal_above_the_output_ceiling() {
+        const BLOCK: usize = 64;
+        const TOTAL: usize = BLOCK * 8;
+        const LATENCY: usize = 7;
+        let null_floor = namir_core::db_to_linear(-120.0);
+
+        // Peak 1.5, comfortably above the default 0 dBFS ceiling `prepare_crosscutting` activates.
+        let input: Vec<f32> = (0..TOTAL)
+            .map(|n| {
+                let t = n as f32 / 48_000.0;
+                1.5 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+            })
+            .collect();
+
+        let mut chain = Chain::new(vec![Box::new(ConstantTail {
+            latency: LATENCY as u32,
+            tail: 0,
+        })]);
+        chain.prepare_crosscutting(&ctx());
+        chain.set_global_bypass(true);
+        let output = run_blocks(&mut chain, &input, BLOCK, |_, _| {});
+
+        let delayed: Vec<f32> = std::iter::repeat_n(0.0f32, LATENCY)
+            .chain(input.iter().copied())
+            .take(TOTAL)
+            .collect();
+        let peak_residual = output
+            .iter()
+            .zip(&delayed)
+            .map(|(o, d)| (o - d).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            peak_residual <= null_floor,
+            "bypassed output minus delayed input peaked at {peak_residual:e}, above the \
+             -120 dBFS null floor {null_floor:e}: the output ceiling is clipping a path that \
+             FR-CHAIN-030 says routes input to output at unity gain"
+        );
+
+        // The converse: with bypass off, the ceiling still applies. Fixing #61 must not have
+        // turned FR-CHAIN-090 off.
+        chain.set_global_bypass(false);
+        let clamped = run_blocks(&mut chain, &input, BLOCK, |_, _| {});
+        let peak = clamped.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            peak <= 1.0 + 1e-6,
+            "the non-bypassed path must still clamp to the 0 dBFS default, peaked at {peak}"
+        );
+    }
+
+    /// FR-CHAIN-080 is *not* what issue #61 turns off on the bypass path: a non-finite sample must
+    /// still silence the block and raise the fault counter, whichever path produced it.
+    #[test]
+    fn fault_containment_still_runs_on_the_bypass_path() {
+        let mut chain = Chain::new(Vec::new());
+        chain.prepare_crosscutting(&ctx());
+        chain.set_global_bypass(true);
+
+        let mut buf = [1.0f32, f32::NAN, 3.0, 4.0];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, 4);
+        audio_section(|| chain.process(&mut io));
+
+        for s in io.channel(0) {
+            assert_eq!(
+                *s, 0.0,
+                "a NaN reaching the bypass path must still silence the block"
+            );
+        }
+        assert_eq!(chain.fault_count(), 1);
+    }
+
     #[test]
     fn cross_cutting_process_does_not_allocate_in_either_path() {
         // Bypass path, nonzero latency (exercises the delay ring).
@@ -771,8 +1125,9 @@ mod tests {
         let mut io = StageIo::new(&mut channels, 64);
         audio_section(|| chain.process(&mut io));
 
-        // Normal (non-bypassed) path, cross-cutting still active: exercises the fault scan and
-        // ceiling clamp instead of the bypass ring.
+        // Normal (non-bypassed) path, cross-cutting still active: exercises the fault scan, the
+        // ceiling clamp, and -- since issue #59 -- the delay line being *fed* while bypass is off,
+        // which is the one path in `process` that is new work on every block of ordinary playback.
         chain.set_global_bypass(false);
         let mut buf2 = [0.1f32; 64];
         let mut channels2: [&mut [f32]; 1] = [&mut buf2];
