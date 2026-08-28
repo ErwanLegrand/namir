@@ -322,8 +322,15 @@ mod tests {
     }
 
     fn write_nam(dir: &std::path::Path, name: &str) {
+        write_nam_seeded(dir, name, 1);
+    }
+
+    /// `write_nam` with the fixture seed chosen by the caller — two different seeds give two
+    /// different models, hence two different content hashes, which is what FR-LIB-070's "files
+    /// that change" needs in order to be distinguishable from "files that were re-listed".
+    fn write_nam_seeded(dir: &std::path::Path, name: &str, seed: u64) {
         let model =
-            namir_fixtures::nam::generate(namir_fixtures::nam::WaveNetShape::Nano, 1).unwrap();
+            namir_fixtures::nam::generate(namir_fixtures::nam::WaveNetShape::Nano, seed).unwrap();
         std::fs::write(dir.join(name), model.to_json_bytes()).unwrap();
     }
 
@@ -418,9 +425,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// FR-LIB-070: a file removed between scans is reflected as a removal, when the scan
-    /// completed.
-    // trace: FR-LIB-070
+    /// FR-LIB-070's "files that disappear", in isolation: a file removed between scans is
+    /// reflected as a removal, when the scan completed. The requirement's whole set is spanned
+    /// by `one_rescan_reflects_disappeared_changed_and_added_files_and_survives_a_vanishing_one`
+    /// below, which carries the tag.
     #[test]
     fn a_deleted_file_is_reported_as_a_removal_on_a_complete_scan() {
         let root = temp_dir("deleted");
@@ -513,7 +521,8 @@ mod tests {
         assert_eq!(delta.warnings[0].code.id, error_codes::FILE_TOO_LARGE.id);
     }
 
-    // trace: FR-LIB-070
+    /// FR-LIB-070's "a missing file shall never crash Namir", in isolation; the requirement's
+    /// whole set is spanned by the tagged rescan test below.
     #[test]
     fn an_unreadable_file_is_warned_about_and_skipped_not_fatal() {
         let root = temp_dir("vanishing");
@@ -529,6 +538,90 @@ mod tests {
         assert!(delta.upserts.is_empty());
         assert_eq!(delta.warnings.len(), 1);
         assert_eq!(delta.warnings[0].code.id, error_codes::FILE_UNREADABLE.id);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// FR-LIB-070 in full, in a single rescan. The requirement's own sentence enumerates three
+    /// mutations — files that **disappear**, **change** or **are added** while Namir is running —
+    /// and adds that a missing file shall never crash Namir or the host. The three tests around
+    /// this one each pin one member in isolation (deletion above, the same-length edit below, the
+    /// vanish-mid-read race in between); none of them spans the set, and "are added" was spanned
+    /// by nothing at all before this test existed. Here all four conditions are applied at once,
+    /// between one completed scan and the next, and the *single* following rescan must reflect
+    /// every one of them.
+    ///
+    /// The vanishing file is made deterministic rather than raced: the scanner's first `step`
+    /// expands the root and queues every file, so deleting one between that step and the
+    /// file-examining steps that follow guarantees the read finds it missing — inside this same
+    /// rescan, so the no-crash clause is exercised on a scan that must still get the other three
+    /// members right.
+    // trace: FR-LIB-070
+    #[test]
+    fn one_rescan_reflects_disappeared_changed_and_added_files_and_survives_a_vanishing_one() {
+        let root = temp_dir("mutations");
+        write_nam(&root, "gone.nam");
+        write_nam_seeded(&root, "changed.nam", 2);
+        write_nam_seeded(&root, "stable.nam", 3);
+        // Outside D-12.1's settling window, so an unchanged file is genuinely recognised as
+        // unchanged rather than rehashed for safety (which would make the "stable" control
+        // prove nothing).
+        for name in ["gone.nam", "changed.nam", "stable.nam"] {
+            age_mtime(&root.join(name), 3600);
+        }
+
+        let mut index = Index::empty();
+        index.apply(Scanner::new(vec![root.clone()], &index.clone()).run_to_completion(&StdFs));
+        assert_eq!(index.len(), 3);
+        let changed_path = root.join("changed.nam");
+        let stable_path = root.join("stable.nam");
+        let changed_hash_before = index.get(&changed_path).unwrap().hash;
+        let stable_hash_before = index.get(&stable_path).unwrap().hash;
+
+        // Disappears; changes (different model, so a different content hash); is added.
+        std::fs::remove_file(root.join("gone.nam")).unwrap();
+        write_nam_seeded(&root, "changed.nam", 4);
+        write_nam_seeded(&root, "added.nam", 5);
+        // And one more that exists when the directory is listed and is gone by the time the
+        // scanner tries to read it.
+        write_nam_seeded(&root, "racing.nam", 6);
+
+        let mut scanner = Scanner::new(vec![root.clone()], &index);
+        assert!(matches!(scanner.step(&StdFs), Step::Progressed(_))); // expands the root
+        std::fs::remove_file(root.join("racing.nam")).unwrap();
+        while let Step::Progressed(_) = scanner.step(&StdFs) {}
+        let delta = scanner.take_delta();
+
+        assert!(delta.complete);
+        // Disappeared.
+        assert_eq!(delta.removals, vec![root.join("gone.nam")]);
+        // Changed and added -- and only those two: the untouched file is not re-upserted, and
+        // the file that vanished before it could be read contributes no entry.
+        let mut upserted: Vec<PathBuf> = delta.upserts.iter().map(|e| e.path.clone()).collect();
+        upserted.sort();
+        assert_eq!(upserted, vec![root.join("added.nam"), changed_path.clone()]);
+        // Never crashed on the missing file: the scan ran to completion and recorded the miss as
+        // one warning rather than a panic or an aborted scan.
+        assert_eq!(delta.warnings.len(), 1);
+        assert_eq!(delta.warnings[0].code.id, error_codes::FILE_UNREADABLE.id);
+
+        index.apply(delta);
+        let mut paths: Vec<PathBuf> = index.iter().map(|e| e.path.clone()).collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                root.join("added.nam"),
+                changed_path.clone(),
+                stable_path.clone()
+            ]
+        );
+        assert_ne!(
+            index.get(&changed_path).unwrap().hash,
+            changed_hash_before,
+            "a changed file must be reflected as new content, not just re-listed"
+        );
+        assert_eq!(index.get(&stable_path).unwrap().hash, stable_hash_before);
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -559,7 +559,9 @@ mod tests {
         fn telemetry(&self, _out: &mut crate::telemetry::TelemetrySink<'_>) {}
     }
 
-    // trace: FR-CHAIN-030
+    /// One half of FR-CHAIN-030 pinned exactly; the requirement's own null-test method is
+    /// executed by `bypassed_output_nulls_against_delayed_input_to_within_120_dbfs` below, which
+    /// carries the tag.
     #[test]
     fn prepare_crosscutting_bypass_is_unity_gain_passthrough_at_zero_latency() {
         // +6 dB stage: if bypass were merely "skip clamping" rather than "skip the stages
@@ -604,6 +606,82 @@ mod tests {
         // First 3 samples are the ring's zero prefill; from sample 3 onward, output[n] ==
         // input[n - 3] -- exactly latency_samples() of alignment delay, unity gain otherwise.
         assert_eq!(io.channel(0), &[0.0, 0.0, 0.0, 0.1, 0.2]);
+    }
+
+    /// FR-CHAIN-030's own `Verify:` method, executed as written: "null test: bypassed output
+    /// minus delayed input is silence to within -120 dBFS". The two tests above each pin one
+    /// half of the requirement's sentence with an exact four/five-sample comparison; neither
+    /// subtracts a delayed input from a bypassed output, and neither spans both latency cases.
+    /// This one does both, over 512 samples of a deterministic non-trivial signal pushed through
+    /// in 64-sample blocks, so the compensation ring is exercised *across* block boundaries as
+    /// well as within one — including a declared latency longer than the block size, where the
+    /// null depends on the ring carrying samples over several calls.
+    ///
+    /// The +6 dB stage ahead of the delay-declaring one is the unity-gain half: a bypass that
+    /// merely skipped clamping, or that ran the stages and then delayed, could not null. Signal
+    /// amplitude stays at 0.5 so FR-CHAIN-090's 0 dBFS ceiling (active from
+    /// `prepare_crosscutting` onward) cannot clip it and be mistaken for a null.
+    // trace: FR-CHAIN-030
+    #[test]
+    fn bypassed_output_nulls_against_delayed_input_to_within_120_dbfs() {
+        const BLOCK: usize = 64;
+        const BLOCKS: usize = 8;
+        const TOTAL: usize = BLOCK * BLOCKS;
+
+        // -120 dBFS as a linear amplitude: the null floor the requirement's method names.
+        let null_floor = namir_core::db_to_linear(-120.0);
+
+        // Zero latency (nothing to compensate for), a latency shorter than one block, and one
+        // longer than a block so the ring must carry samples between `process` calls.
+        for latency in [0u32, 3, 97] {
+            let input: Vec<f32> = (0..TOTAL)
+                .map(|n| {
+                    let t = n as f32 / 48_000.0;
+                    0.25 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                        + 0.25 * (2.0 * std::f32::consts::PI * 3_001.0 * t).sin()
+                })
+                .collect();
+
+            let stages: Vec<Box<dyn Stage>> = vec![
+                Box::new(FixedGainPrep { gain_db: 6.0 }.prepare(&ctx()).unwrap()),
+                Box::new(ConstantTail { latency, tail: 0 }),
+            ];
+            let mut chain = Chain::new(stages);
+            assert_eq!(chain.latency_samples(), latency);
+            chain.prepare_crosscutting(&ctx());
+            chain.set_global_bypass(true);
+
+            let mut output = Vec::with_capacity(TOTAL);
+            for block in input.chunks(BLOCK) {
+                let mut buffer = block.to_vec();
+                {
+                    let mut channels: [&mut [f32]; 1] = [&mut buffer];
+                    let mut io = StageIo::new(&mut channels, block.len());
+                    audio_section(|| chain.process(&mut io));
+                }
+                output.extend_from_slice(&buffer);
+            }
+            assert_eq!(output.len(), TOTAL);
+
+            // The delayed input: `latency` samples of silence, then the input itself. Only the
+            // alignment delay FR-CHAIN-030 permits, and nothing else.
+            let delay = latency as usize;
+            let delayed_input: Vec<f32> = std::iter::repeat_n(0.0f32, delay)
+                .chain(input.iter().copied())
+                .take(TOTAL)
+                .collect();
+
+            let peak_residual = output
+                .iter()
+                .zip(&delayed_input)
+                .map(|(out, delayed)| (out - delayed).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                peak_residual <= null_floor,
+                "bypassed output minus input delayed by {latency} samples peaked at \
+                 {peak_residual:e}, above the -120 dBFS null floor {null_floor:e}"
+            );
+        }
     }
 
     /// **No FR-CHAIN-080 tag any more** (M14). `NanOnce` writes into an *output* buffer at the end

@@ -154,7 +154,9 @@ mod tests {
         assert_eq!(filter(&index, &query).count(), 1);
     }
 
-    // trace: FR-LIB-040
+    /// One limb of FR-LIB-040 in isolation; the whole requirement is spanned by
+    /// `search_spans_the_file_name_and_every_free_text_metadata_field` below, which carries the
+    /// tag.
     #[test]
     fn matches_the_file_stem_case_insensitively() {
         let index = index_with(vec![nam_entry("marshall/PLEXI.nam", "", "")]);
@@ -162,12 +164,77 @@ mod tests {
         assert_eq!(filter(&index, &Query::parse("fender")).count(), 0);
     }
 
-    // trace: FR-LIB-040
+    /// Two of the six metadata fields in isolation; see the tagged test below for the set.
     #[test]
     fn matches_metadata_fields() {
         let index = index_with(vec![nam_entry("a.nam", "Plexi 1959", "a crunchy amp")]);
         assert_eq!(filter(&index, &Query::parse("crunchy")).count(), 1);
         assert_eq!(filter(&index, &Query::parse("1959")).count(), 1);
+    }
+
+    /// FR-LIB-040 in full: "filter the library by free-text search over file name and metadata
+    /// fields". *Metadata fields* is the requirement's own plural, and the set the index actually
+    /// carries free text in is `NamItemMetadata`'s six strings — architecture, name, modeled_by,
+    /// gear_type, tone_type, description. The two focused tests above exercise two of the six
+    /// between them; this one gives each of the six, and the file name, a token that appears
+    /// nowhere else, so a hit can only have come from the field it belongs to and no field can
+    /// pass by being carried along with a neighbour. (`sample_rate` and an IR's header metadata
+    /// are numbers, not free text — see this module's own doc comment; an IR is searched by file
+    /// name alone, which `ir_entries_are_searched_by_file_stem_only` covers.)
+    ///
+    /// The file name searched is the file's stem: the extension is the item's *kind*, which the
+    /// index carries as `ItemKind` rather than as searchable text, and the directories above it
+    /// are the library root's business rather than the item's name — both asserted below so the
+    /// boundary is stated rather than assumed.
+    // trace: FR-LIB-040
+    #[test]
+    fn search_spans_the_file_name_and_every_free_text_metadata_field() {
+        let index = index_with(vec![LibraryEntry {
+            path: PathBuf::from("cabinets/StemToken.nam"),
+            kind: ItemKind::Nam,
+            size: 10,
+            mtime: FileTime::now(),
+            hash: None,
+            metadata: ItemMetadata::Nam(NamItemMetadata {
+                architecture: "ArchToken".to_string(),
+                sample_rate: Some(48_000),
+                name: "NameToken".to_string(),
+                modeled_by: "AuthorToken".to_string(),
+                gear_type: "GearToken".to_string(),
+                tone_type: "ToneToken".to_string(),
+                description: "DescriptionToken".to_string(),
+            }),
+            origin: Origin::Local,
+        }]);
+
+        for (field, token) in [
+            ("file name", "stemtoken"),
+            ("architecture", "archtoken"),
+            ("name", "nametoken"),
+            ("modeled_by", "authortoken"),
+            ("gear_type", "geartoken"),
+            ("tone_type", "tonetoken"),
+            ("description", "descriptiontoken"),
+        ] {
+            assert_eq!(
+                filter(&index, &Query::parse(token)).count(),
+                1,
+                "a free-text search must match on {field}"
+            );
+            // Case-folded in both directions, for every field rather than just the file name.
+            assert_eq!(
+                filter(&index, &Query::parse(&token.to_uppercase())).count(),
+                1,
+                "matching on {field} must be case-insensitive"
+            );
+        }
+
+        // A term in none of the seven matches nothing -- otherwise the loop above would pass on
+        // a filter that matched everything.
+        assert_eq!(filter(&index, &Query::parse("absenttoken")).count(), 0);
+        // Not part of the item's name: the directory it sits in, and its extension.
+        assert_eq!(filter(&index, &Query::parse("cabinets")).count(), 0);
+        assert_eq!(filter(&index, &Query::parse("stemtoken.nam")).count(), 0);
     }
 
     #[test]
