@@ -10,13 +10,14 @@
 //!   "first call inside the callback, gated by a one-shot flag" is the only way to satisfy both
 //!   halves of that constraint at once).
 //! - Runs [`namir_engine::AudioEngine::process`] itself.
-//! - Counts FR-IO-060's bridge-underrun dropouts directly, via
-//!   [`crate::bridge::BridgeConsumer::pull_into`]'s own return value. `cpal`'s own
+//! - Counts **both** of FR-IO-060's bridge dropouts directly: the output callback's underrun, via
+//!   [`crate::bridge::BridgeConsumer::pull_into`]'s own return value, and — since issue #85 — the
+//!   input callback's overrun, via [`crate::bridge::BridgeProducer::push_captured`]'s. `cpal`'s own
 //!   `StreamFailure::Xrun` reports arrive through the same `on_failure` callback every other
 //!   stream error does; classifying it into the same [`crate::xrun::XrunCounter`] (rather than
 //!   surfacing it as a one-off notice the way `StreamFailure::DeviceLost`/`Other` are) is
 //!   [`crate::app`]'s job, since that is also where the counter this module increments for
-//!   bridge underruns lives.
+//!   bridge under- and overruns lives.
 //!
 //! # Why the engine runs in the *output* callback, not the input one
 //!
@@ -45,12 +46,12 @@
 //! `docs/manual-tests/fr-io-090-channel-mapping.md`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::time::Duration;
 
 use namir_core::ChannelConfig;
 use namir_engine::{AudioEngine, StageIo};
-use namir_platform::{DenormalGuard, elevate_current_thread_priority};
+use namir_platform::{DenormalGuard, ThreadPriorityOutcome, elevate_current_thread_priority};
 
 use crate::audio_io::{
     AudioBackend, AudioStream, DeviceInfo, HostInfo, StreamFailure, StreamParams,
@@ -107,11 +108,107 @@ pub struct StreamSetup<'a> {
     pub max_block_size: usize,
 }
 
+/// `state` values for [`ThreadPriorityReport`]. Plain `u8`s rather than a `#[repr(u8)]` enum
+/// because they live in an `AtomicU8` and the decode is a `match` either way.
+const PRIORITY_PENDING: u8 = 0;
+const PRIORITY_ELEVATED: u8 = 1;
+const PRIORITY_DENIED: u8 = 2;
+const PRIORITY_OS_ERROR: u8 = 3;
+const PRIORITY_UNSUPPORTED: u8 = 4;
+const PRIORITY_CONSUMED: u8 = 5;
+
+/// Where the output callback leaves D-13.2's thread-elevation outcome for a non-audio thread to
+/// read and report (issue #76).
+///
+/// # Why the outcome cannot simply be logged where it happens
+///
+/// A thread can only raise *its own* priority, and `cpal` offers no pre-callback hook, so
+/// [`namir_platform::elevate_current_thread_priority`] has to be called from inside the first
+/// output callback — see this module's own doc comment. That is the audio thread, where FR-ERR-030
+/// forbids logging and formatting for logging, where `xtask rt-logging` fails the build if this
+/// module so much as names the logger, and where D-7.5's harness fails on a `format!`. The
+/// outcome is nevertheless worth having: `ThreadPriorityOutcome` is `#[must_use]` precisely
+/// because "expected and non-fatal" is not "ignorable", and a user reporting xruns on Linux
+/// deserves to be told their process never got the priority it asked for rather than to guess.
+///
+/// So the outcome travels instead of being reported: it is `Copy` and eight bytes, and this type
+/// is the "an atomic ... is enough" carrier `ThreadPriorityOutcome::diagnostic`'s own doc comment
+/// nominates. Posting is two atomic stores; [`crate::host::AppHost`] takes it on a later frame and
+/// writes the FR-ERR-010 record from the UI thread.
+///
+/// **This is what `let _ = elevate_current_thread_priority();` used to be.** That discarded the
+/// distinction between "elevated" and "the OS refused", which is the only distinction the value
+/// carries.
+#[derive(Debug)]
+pub struct ThreadPriorityReport {
+    /// One of the `PRIORITY_*` constants above.
+    state: AtomicU8,
+    /// The raw OS code behind [`PRIORITY_OS_ERROR`]; meaningless for every other state.
+    os_error: AtomicI64,
+}
+
+impl Default for ThreadPriorityReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ThreadPriorityReport {
+    /// A report nothing has been posted to yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: AtomicU8::new(PRIORITY_PENDING),
+            os_error: AtomicI64::new(0),
+        }
+    }
+
+    /// Records `outcome`. **RT-safe:** two atomic stores, no allocation, no lock, no formatting.
+    /// Called once, from the output callback's first invocation.
+    ///
+    /// `pub(crate)` rather than private so [`crate::host`]'s own tests can post an outcome this
+    /// machine does not produce — a `PermissionDenied` on a box that grants the elevation, say.
+    /// Not `pub`: the only legitimate producer is this module's output callback.
+    pub(crate) fn post(&self, outcome: ThreadPriorityOutcome) {
+        let (state, os_error) = match outcome {
+            ThreadPriorityOutcome::Elevated => (PRIORITY_ELEVATED, 0),
+            ThreadPriorityOutcome::PermissionDenied => (PRIORITY_DENIED, 0),
+            ThreadPriorityOutcome::OsError(code) => (PRIORITY_OS_ERROR, code),
+            ThreadPriorityOutcome::Unsupported => (PRIORITY_UNSUPPORTED, 0),
+        };
+        self.os_error.store(os_error, Ordering::Relaxed);
+        // Release, paired with the `Acquire` in `take`, so a reader that sees `PRIORITY_OS_ERROR`
+        // also sees the code stored just above it.
+        self.state.store(state, Ordering::Release);
+    }
+
+    /// The outcome the audio thread posted, **once**: a second call returns `None` unless the
+    /// audio thread has posted again, so a caller polling every frame reports one notice rather
+    /// than one per frame. `None` also while the first output callback has not yet run — a stream
+    /// that never starts never elevates anything, and has nothing to say about it.
+    #[must_use]
+    pub fn take(&self) -> Option<ThreadPriorityOutcome> {
+        match self.state.swap(PRIORITY_CONSUMED, Ordering::AcqRel) {
+            PRIORITY_ELEVATED => Some(ThreadPriorityOutcome::Elevated),
+            PRIORITY_DENIED => Some(ThreadPriorityOutcome::PermissionDenied),
+            PRIORITY_OS_ERROR => Some(ThreadPriorityOutcome::OsError(
+                self.os_error.load(Ordering::Relaxed),
+            )),
+            PRIORITY_UNSUPPORTED => Some(ThreadPriorityOutcome::Unsupported),
+            // `PRIORITY_PENDING` (nothing posted yet) and `PRIORITY_CONSUMED` (already reported)
+            // are both "nothing to say"; writing `CONSUMED` over `PENDING` is harmless because
+            // `post` stores unconditionally, so a later post is still seen by a later `take`.
+            _ => None,
+        }
+    }
+}
+
 /// The running duplex path. Dropping this stops both streams (`AudioStream`'s own drop-stops
 /// contract, per `crate::audio_io`'s doc comment).
 pub struct RunningStreams {
     _input: Box<dyn AudioStream>,
     _output: Box<dyn AudioStream>,
+    thread_priority: Arc<ThreadPriorityReport>,
 }
 
 impl RunningStreams {
@@ -127,40 +224,60 @@ impl RunningStreams {
         self._input.pause()?;
         self._output.pause()
     }
+
+    /// D-13.2's elevation outcome, for a non-audio thread to report (issue #76). Handed to
+    /// [`crate::host::AppHost`] by [`crate::app::run`]; see [`ThreadPriorityReport`] for why the
+    /// outcome travels rather than being reported where it is produced.
+    #[must_use]
+    pub fn thread_priority(&self) -> Arc<ThreadPriorityReport> {
+        Arc::clone(&self.thread_priority)
+    }
 }
 
 /// Opens the duplex path described by `setup`, running `engine` from the output callback.
-/// `on_failure` is called (from whichever callback thread detected it, per FR-IO-070's "shall not
-/// crash or hang") with which side failed and why; the caller is expected to stop using the
-/// returned [`RunningStreams`] and report the condition to the user (FR-IO-070's own wording) —
-/// this function does not itself decide when the stream is unrecoverable, since that judgement
-/// belongs to whatever owns retry/reselection policy ([`crate::app`]).
+///
+/// `on_input_failure`/`on_output_failure` are called (from whichever callback thread detected it,
+/// per FR-IO-070's "shall not crash or hang") with why that side failed; the caller is expected to
+/// stop using the returned [`RunningStreams`] and report the condition to the user (FR-IO-070's
+/// own wording) — this function does not itself decide when the stream is unrecoverable, since
+/// that judgement belongs to whatever owns retry/reselection policy ([`crate::app`]).
+///
+/// **One callback per direction, `FnMut`, rather than one shared `Fn` (issue #88).** These run on
+/// `cpal`'s error-callback threads, which are the streams' own threads — so they are audio-thread
+/// code, and the caller has to be able to put a *pre-allocated, single-producer* sink in each one
+/// rather than format a message and send it down an `mpsc` channel. A single `Fn + Sync` shared
+/// between both directions cannot hold one: two threads would be writing one producer. Splitting
+/// the parameter is what lets [`crate::app::stream_failure_sink`] own an `rtrb::Producer` per
+/// direction, which is what makes the whole path allocation-free.
 pub fn open(
     setup: StreamSetup<'_>,
     engine: AudioEngine,
     xruns: Arc<XrunCounter>,
-    on_failure: impl Fn(Direction, StreamFailure) + Send + Sync + 'static,
+    on_input_failure: impl FnMut(StreamFailure) + Send + 'static,
+    on_output_failure: impl FnMut(StreamFailure) + Send + 'static,
 ) -> Result<RunningStreams, crate::audio_io::AudioIoError> {
     let capacity = (setup.max_block_size.max(1) * 8).next_power_of_two();
     let (producer, consumer) = bridge(capacity);
 
     let input_channel_index = setup.input_channel_index as usize;
     let input_channels = setup.input_params.channels as usize;
-    let on_failure: Arc<dyn Fn(Direction, StreamFailure) + Send + Sync> = Arc::new(on_failure);
 
     let input_stream = build_input(
         &setup,
         producer,
         input_channel_index,
         input_channels,
-        Arc::clone(&on_failure),
+        Arc::clone(&xruns),
+        Box::new(on_input_failure),
     )?;
+    let thread_priority = Arc::new(ThreadPriorityReport::new());
     let output_stream = match build_output(
         &setup,
         engine,
         consumer,
         Arc::clone(&xruns),
-        Arc::clone(&on_failure),
+        Arc::clone(&thread_priority),
+        Box::new(on_output_failure),
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -172,6 +289,7 @@ pub fn open(
     Ok(RunningStreams {
         _input: input_stream,
         _output: output_stream,
+        thread_priority,
     })
 }
 
@@ -180,7 +298,8 @@ fn build_input(
     mut producer: BridgeProducer,
     channel_index: usize,
     channel_count: usize,
-    on_failure: Arc<dyn Fn(Direction, StreamFailure) + Send + Sync>,
+    xruns: Arc<XrunCounter>,
+    on_error: Box<dyn FnMut(StreamFailure) + Send>,
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
     let max_block = setup.max_block_size.max(1);
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(max_block);
@@ -201,14 +320,19 @@ fn build_input(
                     .chunks_exact(channel_count)
                     .map(|frame| frame.get(channel_index).copied().unwrap_or(0.0)),
             );
-            producer.push_captured(&mono_scratch);
+            // FR-IO-060's *other* dropout, and until issue #85 it was thrown away: this return
+            // value is how many captured samples did not fit because the ring was full, which is
+            // a real dropout of exactly the class `crate::bridge` exists to detect. Discarding it
+            // did not merely lose detail — it made the session count under-report, which is the
+            // worst direction for a diagnostic, because a user watching a zero while their audio
+            // glitches concludes the counter works and the glitch is elsewhere. Counted the same
+            // way `build_output` counts an underrun below: one xrun per callback chunk that lost
+            // anything, not one per lost sample, so the two sources are commensurable.
+            if producer.push_captured(&mono_scratch) > 0 {
+                xruns.record();
+            }
         }
     });
-    let on_error = {
-        let on_failure = Arc::clone(&on_failure);
-        Box::new(move |failure: StreamFailure| on_failure(Direction::Input, failure))
-    };
-
     setup.backend.build_input_stream(
         &setup.input_host,
         &setup.input_device,
@@ -224,7 +348,8 @@ fn build_output(
     mut engine: AudioEngine,
     mut consumer: BridgeConsumer,
     xruns: Arc<XrunCounter>,
-    on_failure: Arc<dyn Fn(Direction, StreamFailure) + Send + Sync>,
+    thread_priority: Arc<ThreadPriorityReport>,
+    on_error: Box<dyn FnMut(StreamFailure) + Send>,
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
     let output_channels = setup.output_params.channels as usize;
     let left = setup.output_channel_left as usize;
@@ -249,9 +374,13 @@ fn build_output(
         if !priority_elevated.swap(true, Ordering::AcqRel) {
             // D-13.2: once, lazily, from this callback thread itself -- see this module's doc
             // comment for why "first call inside the callback" is the only place cpal lets this
-            // happen. A denial is expected and non-fatal (that module's own doc comment); nothing
-            // here needs to react to the outcome beyond having attempted it.
-            let _ = elevate_current_thread_priority();
+            // happen. A denial is expected and non-fatal (that module's own doc comment), so
+            // nothing here reacts to it -- but it is no longer *discarded* (issue #76): the
+            // `#[must_use]` outcome is posted, in two atomic stores, for `crate::host` to turn
+            // into an FR-ERR-010 record from the UI thread. This module may not name the logger
+            // (`xtask rt-logging`) and may not `format!` (D-7.5), which is exactly why the value
+            // travels instead of being reported here.
+            thread_priority.post(elevate_current_thread_priority());
         }
         // D-7.4: engaged for the whole callback, not just the `engine.process` call, since this
         // callback's bridge-pull/write-back arithmetic is also floating point and denormal-prone
@@ -310,11 +439,6 @@ fn build_output(
         }
     });
 
-    let on_error = {
-        let on_failure = Arc::clone(&on_failure);
-        Box::new(move |failure: StreamFailure| on_failure(Direction::Output, failure))
-    };
-
     setup.backend.build_output_stream(
         &setup.output_host,
         &setup.output_device,
@@ -341,6 +465,12 @@ pub(crate) struct FakeBackend {
     pub(crate) input_data: std::sync::Mutex<Option<InputCallback>>,
     /// The output callback the last `build_output_stream` captured.
     pub(crate) output_data: std::sync::Mutex<Option<OutputCallback>>,
+    /// The *error* callbacks each direction was opened with. Captured since issue #88, because
+    /// they are audio-thread code too — `cpal` invokes them on the stream's own thread — and until
+    /// then this fake dropped them on the floor, so nothing in this crate had ever run one.
+    pub(crate) input_error: std::sync::Mutex<Option<ErrorCallback>>,
+    /// As [`FakeBackend::input_error`], for the playback direction.
+    pub(crate) output_error: std::sync::Mutex<Option<ErrorCallback>>,
     /// Which device names answer [`ExclusiveModeOutcome::Engaged`] to
     /// `supports_exclusive`. Every other name answers `Unsupported` — what the real
     /// [`crate::audio_io::CpalBackend`] answers for any device with no exclusive-capable WASAPI
@@ -360,6 +490,8 @@ impl FakeBackend {
         Self {
             input_data: std::sync::Mutex::new(None),
             output_data: std::sync::Mutex::new(None),
+            input_error: std::sync::Mutex::new(None),
+            output_error: std::sync::Mutex::new(None),
             exclusive_devices: Vec::new(),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
         }
@@ -401,6 +533,8 @@ impl AudioStream for FakeStream {
 pub(crate) type InputCallback = Box<dyn FnMut(&[f32]) + Send>;
 #[cfg(test)]
 pub(crate) type OutputCallback = Box<dyn FnMut(&mut [f32]) + Send>;
+#[cfg(test)]
+pub(crate) type ErrorCallback = Box<dyn FnMut(StreamFailure) + Send>;
 
 #[cfg(test)]
 impl AudioBackend for FakeBackend {
@@ -460,7 +594,7 @@ impl AudioBackend for FakeBackend {
         _device: &DeviceInfo,
         params: StreamParams,
         on_data: Box<dyn FnMut(&[f32]) + Send>,
-        _on_error: Box<dyn FnMut(StreamFailure) + Send>,
+        on_error: Box<dyn FnMut(StreamFailure) + Send>,
         _timeout: Duration,
     ) -> Result<Box<dyn AudioStream>, AudioIoError> {
         self.asked_share_modes
@@ -468,6 +602,7 @@ impl AudioBackend for FakeBackend {
             .unwrap()
             .push((Direction::Input, params.share_mode));
         *self.input_data.lock().unwrap() = Some(on_data);
+        *self.input_error.lock().unwrap() = Some(on_error);
         Ok(Box::new(FakeStream))
     }
     fn build_output_stream(
@@ -476,7 +611,7 @@ impl AudioBackend for FakeBackend {
         _device: &DeviceInfo,
         params: StreamParams,
         on_data: Box<dyn FnMut(&mut [f32]) + Send>,
-        _on_error: Box<dyn FnMut(StreamFailure) + Send>,
+        on_error: Box<dyn FnMut(StreamFailure) + Send>,
         _timeout: Duration,
     ) -> Result<Box<dyn AudioStream>, AudioIoError> {
         self.asked_share_modes
@@ -484,6 +619,7 @@ impl AudioBackend for FakeBackend {
             .unwrap()
             .push((Direction::Output, params.share_mode));
         *self.output_data.lock().unwrap() = Some(on_data);
+        *self.output_error.lock().unwrap() = Some(on_error);
         Ok(Box::new(FakeStream))
     }
 }
@@ -581,7 +717,13 @@ mod tests {
             setup(&backend, 64),
             engine(64),
             Arc::clone(&xruns),
-            move |_dir, _f| {
+            {
+                let failures = Arc::clone(&failures_clone);
+                move |_f| {
+                    failures.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+            move |_f| {
                 failures_clone.fetch_add(1, Ordering::SeqCst);
             },
         )
@@ -620,7 +762,8 @@ mod tests {
             setup(&backend, 64),
             engine(64),
             Arc::clone(&xruns),
-            |_, _| {},
+            |_| {},
+            |_| {},
         )
         .unwrap();
 
@@ -641,7 +784,8 @@ mod tests {
             setup(&backend, 32),
             engine(32),
             Arc::clone(&xruns),
-            |_, _| {},
+            |_| {},
+            |_| {},
         )
         .unwrap();
 
@@ -671,6 +815,14 @@ mod tests {
     /// new chunking loop does too. The first callback pair is deliberately *outside* the harness:
     /// `build_output`'s first invocation elevates the thread's priority once (D-13.2), a one-time
     /// OS call rather than per-callback work, and a real stream pays it once as well.
+    ///
+    /// **The warm-up drives the exact-size pair only, and that is load-bearing (issue #87).** It
+    /// used to drive the oversized pair as well, which grew `build_input`'s `mono_scratch` to the
+    /// oversized length *before* the harness was armed — so the very regression this test is cited
+    /// as catching, an unchunked `extend` past the reservation, passed it. Re-planting the
+    /// unchunked form with the old warm-up in place is green; with this one it fails. Nothing on
+    /// the output side needs the oversized warm-up: its three buffers are sized at
+    /// `max_block_size` and its chunking loop keeps every write inside them.
     #[test]
     fn the_audio_callbacks_this_module_builds_allocate_nothing() {
         const MAX_BLOCK: usize = 64;
@@ -680,7 +832,8 @@ mod tests {
             setup(&backend, MAX_BLOCK),
             engine(MAX_BLOCK),
             Arc::clone(&xruns),
-            |_, _| {},
+            |_| {},
+            |_| {},
         )
         .unwrap();
 
@@ -694,11 +847,10 @@ mod tests {
         let big_in = [0.1f32; 200];
         let mut big_out = [0.0f32; 400];
 
-        // Warm-up, un-asserted: see this test's own doc comment.
+        // Warm-up, un-asserted, and deliberately *only* the exact-size pair: see this test's own
+        // doc comment for why warming up with the oversized pair blinded it to issue #87.
         input_cb(&exact_in);
         output_cb(&mut exact_out);
-        input_cb(&big_in);
-        output_cb(&mut big_out);
 
         let mut saw_output = false;
         for _ in 0..32 {
@@ -721,6 +873,170 @@ mod tests {
         );
     }
 
+    /// **FR-IO-060's capture-side dropout (issue #85).** `BridgeProducer::push_captured` returns
+    /// how many samples did not fit because the ring was full, and [`build_input`] used to discard
+    /// it — so whenever capture outran the output callback the samples were dropped and the
+    /// session count stayed at zero. Under-reporting is the worst direction for a diagnostic: a
+    /// user watching a stuck zero while their audio glitches concludes the counter works and looks
+    /// elsewhere.
+    ///
+    /// Driven by pushing input with nothing ever pulling: the ring holds
+    /// `(max_block * 8).next_power_of_two()` samples, so the first few callbacks fit and must
+    /// count nothing, and the ones past that overrun and must.
+    // trace-partial: FR-IO-060
+    // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
+    // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
+    // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
+    // uncovered: anywhere in the window; closes M8
+    #[test]
+    fn input_capture_that_outruns_the_output_callback_counts_an_xrun() {
+        const MAX_BLOCK: usize = 64;
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, MAX_BLOCK),
+            engine(MAX_BLOCK),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
+
+        // Comfortably inside the ring's capacity: nothing is lost, so nothing may be counted.
+        for _ in 0..4 {
+            input_cb(&[0.1f32; MAX_BLOCK]);
+        }
+        assert_eq!(
+            xruns.count(),
+            0,
+            "capture that fits in the ring is not a dropout"
+        );
+
+        // Far past it, still with no output callback draining anything.
+        for _ in 0..32 {
+            input_cb(&[0.1f32; MAX_BLOCK]);
+        }
+        assert!(
+            xruns.count() > 0,
+            "capture that overran the bridge ring must reach the session's xrun count"
+        );
+    }
+
+    /// FR-IO-070, and the wiring half of issue #88: each direction's `cpal` error callback reaches
+    /// **that direction's** sink and no other. The two are now separate `FnMut`s rather than one
+    /// shared `Fn` taking a [`Direction`], so a crossed pair would report an input fault as an
+    /// output one — and would be invisible, since neither closure is handed a direction any more.
+    ///
+    /// [`FakeBackend`] captures both error callbacks for this test; before issue #88 it dropped
+    /// them, so nothing in this crate had ever driven one.
+    #[test]
+    fn each_directions_error_callback_reaches_only_that_directions_sink() {
+        let backend = FakeBackend::new();
+        let seen: Arc<std::sync::Mutex<Vec<(Direction, StreamFailure)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let input_seen = Arc::clone(&seen);
+        let output_seen = Arc::clone(&seen);
+        let _streams = open(
+            setup(&backend, 64),
+            engine(64),
+            Arc::new(XrunCounter::new()),
+            move |f| input_seen.lock().unwrap().push((Direction::Input, f)),
+            move |f| output_seen.lock().unwrap().push((Direction::Output, f)),
+        )
+        .unwrap();
+
+        let mut input_err = backend.input_error.lock().unwrap().take().unwrap();
+        let mut output_err = backend.output_error.lock().unwrap().take().unwrap();
+        let driver_fault = StreamFailure::Other(crate::audio_io::InlineDetail::from("OS Error -1"));
+        output_err(driver_fault);
+        input_err(StreamFailure::DeviceLost);
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (Direction::Output, driver_fault),
+                (Direction::Input, StreamFailure::DeviceLost),
+            ]
+        );
+    }
+
+    /// **Issue #76: D-13.2's elevation outcome is carried off the audio thread, not discarded.**
+    /// `elevate_current_thread_priority` returns a `#[must_use]` outcome and this callback used to
+    /// answer it with `let _ = ...`, throwing away the one distinction it carries — "elevated" vs.
+    /// "the OS refused" — which is exactly the diagnostic a user reporting xruns on a Linux box
+    /// with no `rtprio` allowance needs.
+    ///
+    /// Whatever this machine's OS answers is a property of the machine, not of this code, so what
+    /// is asserted is the mechanism: nothing is readable before the first callback; something
+    /// definite is readable after it; and it reads **once**, so a host polling every frame reports
+    /// one notice rather than one per frame.
+    #[test]
+    fn the_first_output_callback_posts_its_elevation_outcome_for_a_non_audio_thread() {
+        let backend = FakeBackend::new();
+        let streams = open(
+            setup(&backend, 64),
+            engine(64),
+            Arc::new(XrunCounter::new()),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let report = streams.thread_priority();
+        assert!(
+            report.take().is_none(),
+            "nothing has run yet, so there is nothing to report"
+        );
+
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+        let mut out = [0.0f32; 128];
+        output_cb(&mut out);
+
+        assert!(
+            report.take().is_some(),
+            "the first output callback must post an outcome, whatever this OS answered"
+        );
+        assert!(
+            report.take().is_none(),
+            "a posted outcome is reported once, not once per frame"
+        );
+
+        // Later callbacks do not elevate again (the one-shot flag), so nothing more appears.
+        output_cb(&mut out);
+        assert!(report.take().is_none());
+    }
+
+    /// The carrier itself, over every outcome `namir-platform` can produce -- including the one
+    /// this machine does not produce. `OsError`'s payload has to survive, since FR-ERR-050's
+    /// bundle is the intended consumer of that number.
+    #[test]
+    fn every_elevation_outcome_survives_the_atomic_round_trip() {
+        for outcome in [
+            ThreadPriorityOutcome::Elevated,
+            ThreadPriorityOutcome::PermissionDenied,
+            ThreadPriorityOutcome::OsError(-2_147_024_882),
+            ThreadPriorityOutcome::Unsupported,
+        ] {
+            let report = ThreadPriorityReport::new();
+            report.post(outcome);
+            assert_eq!(report.take(), Some(outcome));
+            assert_eq!(report.take(), None);
+        }
+    }
+
+    /// Posting is what the audio callback does, so it must allocate nothing -- two atomic stores
+    /// and no formatting, which is the whole reason the outcome travels rather than being logged
+    /// where it is produced.
+    #[test]
+    fn posting_an_elevation_outcome_allocates_nothing() {
+        let report = ThreadPriorityReport::new();
+        crate::rt_harness::audio_section(|| {
+            report.post(ThreadPriorityOutcome::OsError(5));
+            report.post(ThreadPriorityOutcome::Elevated);
+        });
+        assert_eq!(report.take(), Some(ThreadPriorityOutcome::Elevated));
+    }
+
     /// FR-IO-020: whatever share mode [`crate::app`] settled on reaches **both** backend opens
     /// unchanged. This module does not renegotiate, downgrade or second-guess it — the whole
     /// all-or-nothing rule (`crate::app::negotiate_share_mode`) would be undone by one direction
@@ -733,7 +1049,8 @@ mod tests {
                 setup_with_share_mode(&backend, 64, mode),
                 engine(64),
                 Arc::new(XrunCounter::new()),
-                |_, _| {},
+                |_| {},
+                |_| {},
             )
             .unwrap();
             assert_eq!(backend.share_mode_asked_for(Direction::Input), Some(mode));

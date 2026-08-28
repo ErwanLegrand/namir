@@ -412,3 +412,74 @@ fn declining_the_gui_renders_bit_identical_audio_to_opening_it() {
         opened_output[differing.unwrap_or_default()]
     );
 }
+
+/// Issue #98, and the upstream defect that stops it being observable here.
+///
+/// `crates/namir-clap/src/gui.rs`'s `set_size` now refuses every size but the fixed 960x640 it
+/// actually has — `can_resize()` is `false` and `get_size()` returns that same figure whatever a
+/// host asks for, so reporting success for anything else tells a host it may size its parent
+/// window to a figure the editor never adopted. Its unit test (`gui::tests`) asserts that
+/// decision directly.
+///
+/// **This test asserts the opposite, on purpose, and is a live record rather than an approval.**
+/// `clack-extensions` 0.1.1's `set_size` trampoline (`src/gui/plugin.rs:403-412`) reads
+/// `PluginWrapper::handle(plugin, |p| Ok(p.main_thread().as_mut().set_size(size))).is_some()`:
+/// the plugin's `Result` is wrapped as the closure's *success value*, so the boolean the host
+/// receives says only "the call did not panic". `set_scale`, `show` and `hide` in that same file
+/// are all `Ok(...is_ok())`, so this is one function's defect, not the crate's convention — and
+/// this workspace pins clack exactly (D-14.2, R-2), so it is not this crate's to fix.
+///
+/// The day that pin moves to a version that transmits the answer, this test fails and says so,
+/// which is exactly what a recorded gap is for. What *is* asserted unconditionally is the part
+/// that matters to a host either way: nothing about the editor moved.
+#[cfg(feature = "host-ext-tests")]
+#[test]
+fn a_refused_set_size_changes_nothing_and_clack_0_1_1_swallows_the_refusal() {
+    use clack_extensions::gui::{GuiSize, PluginGui};
+    use support::{main_thread_handle, require_plugin_extension};
+
+    let (_entry, mut instance) = instantiate_default();
+    let gui = require_plugin_extension::<PluginGui>(&mut instance);
+    let mut handle = main_thread_handle(&mut instance);
+
+    gui.create(&mut handle, EMBEDDED_WIN32)
+        .expect("create must succeed for the negotiated configuration");
+
+    for requested in [
+        GuiSize {
+            width: 800,
+            height: 600,
+        },
+        GuiSize {
+            width: 1920,
+            height: 1080,
+        },
+        GuiSize {
+            width: EXPECTED_GUI_SIZE.width,
+            height: 480,
+        },
+    ] {
+        assert!(
+            gui.set_size(&mut handle, requested).is_ok(),
+            "clack 0.1.1 reports success for every set_size call; if this now fails, the pin has \
+             moved to a version that transmits the plugin's refusal and this test should assert \
+             Err(GuiError::SetSizeError) instead -- src/gui.rs already returns it"
+        );
+        assert_eq!(
+            gui.get_size(&mut handle),
+            Some(EXPECTED_GUI_SIZE),
+            "whatever the host was told, the editor is still the size it always was"
+        );
+        assert!(
+            !gui.can_resize(&mut handle),
+            "and still says it cannot be resized"
+        );
+    }
+
+    assert!(
+        gui.set_size(&mut handle, EXPECTED_GUI_SIZE).is_ok(),
+        "the size the editor already has is a request it does satisfy"
+    );
+
+    gui.destroy(&mut handle);
+}

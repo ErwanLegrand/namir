@@ -26,10 +26,19 @@ use crate::shared::SharedInner;
 /// Before the split, `push_notice`'s arm here ran in no test at all, which is what
 /// FR-CLAP-050's `uncovered:` field said.
 ///
-/// Returns the same `PluginError` `load` returns for an unparseable document.
-fn adopt_document_bytes(inner: &SharedInner, bytes: &[u8]) -> Result<(), PluginError> {
-    let (state, warnings) =
-        State::read(bytes).map_err(|_| PluginError::Message("failed to parse plugin state"))?;
+/// **Also the preset-recall path** (`crate::worker_jobs::spawn_recall_preset`): a `.namirpreset`
+/// file and a host's state blob are the same document (`docs/04-state-and-preset-format.md`), so
+/// they are adopted by the same function rather than by two that could come to disagree about
+/// which warnings are tolerated.
+///
+/// Returns `namir-state`'s own error, not a `PluginError`: the caller that has a host stream to
+/// answer maps it to one, and the caller that has a user in front of it reports the real
+/// catalogue id.
+pub(crate) fn adopt_document_bytes(
+    inner: &SharedInner,
+    bytes: &[u8],
+) -> Result<(), namir_state::StateError> {
+    let (state, warnings) = State::read(bytes)?;
     for w in warnings {
         inner.push_notice(w.code, w.detail);
     }
@@ -50,7 +59,13 @@ impl<'a> PluginStateImpl for NamirMainThread<'a> {
         let state = self.shared.inner.snapshot_state();
         let onto = self.shared.inner.last_document();
         let document = state.write_onto(&onto);
-        let bytes = document.to_pretty_bytes();
+        // The *checked* writer: NFR-SEC-020's ceiling is enforced on the way out as well as on the
+        // way in, so an FR-STATE-080 embedded copy large enough to exceed it fails here rather
+        // than producing a blob this plugin's own `load` would refuse on the next session --
+        // the moment at which the user's settings are already the thing being lost.
+        let bytes = document
+            .try_to_pretty_bytes()
+            .map_err(|_| PluginError::Message("the plugin state is too large to write"))?;
         output
             .write_all(&bytes)
             .map_err(|_| PluginError::Message("failed to write plugin state"))?;
@@ -65,7 +80,8 @@ impl<'a> PluginStateImpl for NamirMainThread<'a> {
             .read_to_end(&mut bytes)
             .map_err(|_| PluginError::Message("failed to read plugin state"))?;
 
-        adopt_document_bytes(&self.shared.inner, &bytes)?;
+        adopt_document_bytes(&self.shared.inner, &bytes)
+            .map_err(|_| PluginError::Message("failed to parse plugin state"))?;
 
         // Tells the host every parameter's value should be re-queried (`clack_extensions::params`'s
         // own "Loading a preset" scenario) — see `NamirMainThread::notify_params_changed`'s own

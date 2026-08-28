@@ -17,8 +17,12 @@ use clack_extensions::params::{
     ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, PluginAudioProcessorParams,
     PluginMainThreadParams,
 };
+use clack_plugin::events::event_types::{
+    ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
+};
 use clack_plugin::events::io::{InputEvents, OutputEvents};
 use clack_plugin::events::spaces::CoreEventSpace;
+use clack_plugin::events::{Match, Pckn};
 use clack_plugin::utils::{ClapId, Cookie};
 use namir_engine::{ParamChange, ParamId as EngineParamId};
 use namir_params::global::GLOBAL_BYPASS;
@@ -89,24 +93,87 @@ fn parse_text_to_value(descriptor: &ParamDescriptor, text: &str) -> Option<f64> 
     }
 }
 
-/// Applies every `ParamValue` event in `input` to `apply`, mirroring it into the `ParamMirror` via
-/// `mirror` — shared between the main-thread and audio-processor `flush` implementations below.
-fn apply_flush_events(
-    input: &InputEvents,
-    mut apply: impl FnMut(ParamChange),
-    mirror: &crate::param_mirror::ParamMirror,
-) {
+/// Decodes every `ParamValue` event in `input` and hands each to `apply` — the one event-decode
+/// loop **both** `flush` implementations below run.
+///
+/// Issue #97: the audio-processor impl used to hand-roll an identical copy of this loop, while
+/// this helper's own doc comment claimed to be shared by both. Two copies of one decode is exactly
+/// the drift a shared helper exists to prevent, and `crate::audio`'s `apply_direct_and_mirror`
+/// already avoids it for the *apply* half.
+///
+/// Mirroring is the caller's, deliberately: the two sides mirror through different paths (the
+/// audio side through `apply_direct_and_mirror`, which is itself the "one direct-applied change
+/// plus its mirror update" both audio-thread entry points share), so folding it in here would put
+/// a second mirror write on that path rather than removing one.
+fn apply_flush_events(input: &InputEvents, mut apply: impl FnMut(EngineParamId, f32)) {
     for event in input.iter() {
         if let Some(CoreEventSpace::ParamValue(ev)) = event.as_core_event()
             && let Some(id) = ev.param_id()
         {
-            let value = ev.value() as f32;
-            apply(ParamChange {
-                id: EngineParamId(id.get()),
-                value,
-            });
-            mirror.set_by_id(id.get(), value);
+            apply(EngineParamId(id.get()), ev.value() as f32);
         }
+    }
+}
+
+/// Reports every parameter the user moved in **this plugin's own editor** to the host, as a
+/// gesture-wrapped automation point — issue #94, and `clack_extensions::params`' own "Turning a
+/// knob on the Plugin interface" scenario ("send an automation event and don't forget to wrap the
+/// parameter change(s) with `ParamGestureBeginEvent` and `ParamGestureEndEvent`").
+///
+/// Without this a knob turned in the editor reached the engine and the mirror and stopped there:
+/// the host could not record the move as automation, and its own generic parameter UI stayed stale
+/// until it independently re-polled `get_value`.
+///
+/// # Why a begin/end pair around every single change
+///
+/// `namir-ui` emits one [`namir_ui::UiIntent::SetParam`] per changed value and has no notion of a
+/// drag beginning or ending, so this crate cannot honestly report a *long* gesture; it reports each
+/// change as its own complete one, which is what makes a host record it rather than treat it as an
+/// unterminated drag. Widening `UiIntent` to carry drag boundaries is a `namir-ui` change, not a
+/// `namir-clap` one.
+///
+/// # Real-time safety
+///
+/// Called from `process()` (the audio thread) as well as from both `flush` implementations.
+/// Allocation-free and bounded: one `swap`, at most 64 iterations (one per `REGISTRY` entry, and
+/// only for entries actually marked), three stack-built `#[repr(C)]` events each, and no branch
+/// that can loop. `OutputEvents::try_push` calls the host's own callback, which the host is
+/// required to keep real-time safe for exactly this reason.
+///
+/// A `try_push` the host refuses (a full buffer) puts the change back in the pending set rather
+/// than dropping it, so it is reported on the next block instead of silently lost.
+pub(crate) fn emit_gui_param_changes(
+    mirror: &crate::param_mirror::ParamMirror,
+    out: &mut OutputEvents,
+) {
+    let mut pending = mirror.take_gui_pending();
+    let mut undelivered = 0u64;
+    while pending != 0 {
+        let index = pending.trailing_zeros() as usize;
+        let bit = 1u64 << index;
+        pending &= !bit;
+
+        let (Some(descriptor), Some(value)) = (REGISTRY.get(index), mirror.value_at(index)) else {
+            continue;
+        };
+        let id = ClapId::new(descriptor.id.0);
+        let delivered = out.try_push(ParamGestureBeginEvent::new(0, id)).is_ok()
+            && out
+                .try_push(ParamValueEvent::new(
+                    0,
+                    id,
+                    Pckn::new(Match::All, Match::All, Match::All, Match::All),
+                    value as f64,
+                    Cookie::empty(),
+                ))
+                .is_ok()
+            && out.try_push(ParamGestureEndEvent::new(0, id)).is_ok();
+        if !delivered {
+            undelivered |= bit;
+        }
+    }
+    if undelivered != 0 {
+        mirror.restore_gui_pending(undelivered);
     }
 }
 
@@ -152,22 +219,29 @@ impl<'a> PluginMainThreadParams for NamirMainThread<'a> {
     fn flush(
         &mut self,
         input_parameter_changes: &InputEvents,
-        _output_parameter_changes: &mut OutputEvents,
+        output_parameter_changes: &mut OutputEvents,
     ) {
         // Inactive (no live engine): update only the mirror, which the *next* `activate()`'s
         // replay (`crate::audio`) will push onto a fresh engine. See `crate::shared`'s
         // `SharedInner::with_instance` — a `None` instance here is not an error, just "not yet
         // activated", handled the same way `try_submit_param` degrades when abandoned.
-        let mirror = &self.shared.inner.params;
-        apply_flush_events(
-            input_parameter_changes,
-            |change| {
-                self.shared.inner.with_instance(|instance| {
-                    let _ = instance.try_submit_param(change);
-                });
-            },
-            mirror,
-        );
+        // A preset recalled from this plugin's editor may be waiting to be announced; a flush is
+        // a `[main-thread]` call, so it is one of the two places that can do it.
+        self.rescan_params_if_pending();
+
+        // The `&'a NamirShared` is copied out first so the closure borrows only it, never `self`.
+        let shared = self.shared;
+        let mirror = &shared.inner.params;
+        apply_flush_events(input_parameter_changes, |id, value| {
+            mirror.set_by_id(id.0, value);
+            shared.inner.with_instance(|instance| {
+                let _ = instance.try_submit_param(ParamChange { id, value });
+            });
+        });
+        // The outbound half (issue #94). This is the *only* channel a GUI-originated change has
+        // while the plugin is inactive, which is why `crate::main_thread`'s
+        // `request_param_flush_if_pending` exists to ask for this call at all.
+        emit_gui_param_changes(mirror, output_parameter_changes);
     }
 }
 
@@ -175,18 +249,22 @@ impl<'a> PluginAudioProcessorParams for NamirAudioProcessor<'a> {
     fn flush(
         &mut self,
         input_parameter_changes: &InputEvents,
-        _output_parameter_changes: &mut OutputEvents,
+        output_parameter_changes: &mut OutputEvents,
     ) {
         // Active, but `process()` was not called this cycle -- still the audio thread (per
         // `clack_plugin`'s own thread-model doc comment on `PluginAudioProcessorParams`), so this
         // uses the same direct-apply path `process()` itself uses, not the ring.
-        for event in input_parameter_changes.iter() {
-            if let Some(CoreEventSpace::ParamValue(ev)) = event.as_core_event()
-                && let Some(id) = ev.param_id()
-            {
-                self.apply_direct_and_mirror(EngineParamId(id.get()), ev.value() as f32);
-            }
-        }
+        //
+        // Through `apply_flush_events`, which is what that helper's own doc comment has always
+        // said it was for: this impl used to hand-roll the identical decode loop (issue #97), two
+        // copies of one event decode with nothing keeping them in step. The `&'a NamirShared` is
+        // copied out first so the mirror borrow does not hold a borrow of `self` across the
+        // closure's `&mut self.engine`.
+        let shared = self.shared();
+        apply_flush_events(input_parameter_changes, |id, value| {
+            self.apply_direct_and_mirror(id, value)
+        });
+        emit_gui_param_changes(&shared.inner.params, output_parameter_changes);
     }
 }
 
@@ -242,5 +320,86 @@ mod tests {
     #[test]
     fn descriptor_by_id_returns_none_for_an_unknown_id() {
         assert!(descriptor_by_id(ClapId::new(0xFFFF_FFFE)).is_none());
+    }
+
+    /// **Issue #94, at the seam that talks to the host.** A knob moved in the plugin's own editor
+    /// comes out as a complete, gesture-wrapped automation point, on the parameter's own id and
+    /// carrying its plain value.
+    ///
+    /// Driven through a real `clack_common::events::io::EventBuffer` — the same type
+    /// `tests/support`'s host harness collects a block's output events into — so what is asserted
+    /// is the actual CLAP event stream, not an intermediate of this module's own.
+    ///
+    /// **Asserted through `UnknownEvent::as_event`, not `as_core_event`, and that is not a
+    /// stylistic choice.** `clack-common` 0.1.1's `CoreEventSpace::from_unknown`
+    /// (`src/events/spaces/core.rs:66-84`) has arms for eleven of its thirteen variants and omits
+    /// exactly the two gesture ones, so `as_core_event()` answers `None` for a
+    /// `ParamGestureBeginEvent` that is perfectly well-formed — the enum carries
+    /// `ParamGestureBegin`/`ParamGestureEnd` variants that its own decoder can never produce.
+    /// A host reads the raw `clap_event_header`, so this is a defect in clack's convenience
+    /// decoder rather than in what this plugin emits; checking the header's own `type_id` is both
+    /// the accurate assertion and the one that will not silently start passing for the wrong
+    /// reason if that decoder is ever fixed.
+    #[test]
+    fn a_gui_originated_change_comes_out_as_a_gesture_wrapped_automation_point() {
+        use clack_plugin::events::event_types::{
+            ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
+        };
+        use clack_plugin::events::io::EventBuffer;
+
+        let mirror = crate::param_mirror::ParamMirror::new();
+        let descriptor = &namir_params::stages::trim::GAIN_DB;
+        mirror.set_by_key_from_gui(descriptor.key, 4.5);
+
+        let mut buffer = EventBuffer::with_capacity(8);
+        emit_gui_param_changes(&mirror, &mut buffer.as_output());
+
+        let events: Vec<&clack_plugin::events::UnknownEvent> = buffer.iter().collect();
+        assert_eq!(
+            events.len(),
+            3,
+            "a user gesture is begin + value + end, or a host has no complete gesture to record"
+        );
+        let expected_id = Some(ClapId::new(descriptor.id.0));
+
+        let begin = events[0]
+            .as_event::<ParamGestureBeginEvent>()
+            .expect("the first event must be a gesture begin");
+        assert_eq!(begin.param_id(), expected_id);
+
+        let value = events[1]
+            .as_event::<ParamValueEvent>()
+            .expect("the second event must be the value");
+        assert_eq!(value.param_id(), expected_id);
+        assert_eq!(value.value(), 4.5);
+
+        let end = events[2]
+            .as_event::<ParamGestureEndEvent>()
+            .expect("the third event must be a gesture end");
+        assert_eq!(end.param_id(), expected_id);
+
+        // Reported once: a second drain with nothing new emits nothing at all.
+        let mut again = EventBuffer::with_capacity(8);
+        emit_gui_param_changes(&mirror, &mut again.as_output());
+        assert!(
+            again.is_empty(),
+            "a change already reported must not be reported again every block"
+        );
+    }
+
+    /// The other half of the same rule: a change that came *from* the host is not sent back to it.
+    #[test]
+    fn a_host_originated_change_produces_no_output_events() {
+        use clack_plugin::events::io::EventBuffer;
+
+        let mirror = crate::param_mirror::ParamMirror::new();
+        mirror.set_by_id(namir_params::stages::trim::GAIN_DB.id.0, 9.0);
+
+        let mut buffer = EventBuffer::with_capacity(8);
+        emit_gui_param_changes(&mirror, &mut buffer.as_output());
+        assert!(
+            buffer.is_empty(),
+            "echoing the host's own automation back at it is a feedback loop, not a report"
+        );
     }
 }

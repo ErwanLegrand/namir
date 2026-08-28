@@ -29,14 +29,14 @@ use namir_worker::{EngineConfig, Instance, ResourceCache};
 
 use crate::audio_io::{
     AudioBackend, AudioIoError, CpalBackend, DeviceInfo, ExclusiveModeOutcome, HostInfo, ShareMode,
-    StreamParams,
+    StreamFailure, StreamParams,
 };
 use crate::host::AppHost;
 use crate::instance::SharedInstance;
 use crate::settings::{self, AppSettings};
 use crate::startup_probe;
 use crate::stream::{self, StreamSetup};
-use crate::worker::{AppEvent, WorkerContext, WorkerHandle};
+use crate::worker::{WorkerContext, WorkerHandle};
 use crate::xrun::XrunCounter;
 
 /// Falls back to a working default if [`namir_platform::config_dir`] returns `None` (an
@@ -171,6 +171,50 @@ fn negotiate_share_mode(
     }
 }
 
+/// How many stream failures each direction's ring holds before it starts dropping them.
+///
+/// Sized for "several reports arriving between two GUI frames", not for a backlog: a stream that
+/// is failing repeatedly needs one notice, not sixteen, and [`crate::host::AppHost`] drains this
+/// every frame. Small enough that both rings together are a few kilobytes allocated once, at
+/// stream open, and never again.
+const STREAM_FAILURE_RING_SLOTS: usize = 16;
+
+/// Builds one direction's `cpal` error callback (FR-IO-070), and the reason it is a function with
+/// its own tests rather than a closure inlined into [`run`].
+///
+/// # What it must not do, and used to (issue #88)
+///
+/// `cpal` invokes an error callback on the stream's **own** thread — `crate::worker`'s
+/// `AppEvent::StreamFailure` doc says so in as many words — so NFR-RT-010 and FR-ERR-030 apply to
+/// it exactly as they apply to the data callback beside it. The closure this replaces did three
+/// allocating things there: `format!` to build the notice detail, an
+/// `mpsc::Sender::send` (which allocates a queue node), and — one layer down, in
+/// `crate::audio_io`'s `to_stream_failure` — `cpal::Error::to_string()`.
+///
+/// What it does instead is what D-7.3's telemetry path already does in the other direction: push a
+/// pre-allocated, `Copy`, heap-free value into a bounded ring sized at stream open, and let the UI
+/// thread do the formatting. A full ring drops the report rather than blocking or growing, which
+/// is the only RT-legal answer and costs nothing real: [`crate::host::AppHost`] deduplicates
+/// identical notices anyway.
+///
+/// `Xrun` is counted rather than pushed, exactly as before — [`crate::xrun::XrunCounter::record`]
+/// is a single relaxed atomic increment and belongs on the callback thread, and routing it through
+/// the ring would let a burst of dropouts evict the device-loss report behind it.
+fn stream_failure_sink(
+    xruns: Arc<XrunCounter>,
+    mut failures: rtrb::Producer<StreamFailure>,
+) -> impl FnMut(StreamFailure) + Send + 'static {
+    move |failure| {
+        if matches!(failure, StreamFailure::Xrun) {
+            xruns.record();
+            return;
+        }
+        // `StreamFailure` is `Copy` and owns no heap, so the value handed back by a full ring is
+        // dropped without a deallocation -- which is why the payload had to stop being a `String`.
+        let _ = failures.push(failure);
+    }
+}
+
 /// `main`'s real body. Blocks until the window is closed.
 pub fn run() {
     startup_probe::entered();
@@ -245,8 +289,12 @@ pub fn run() {
         settings.sample_rate_hz,
     )
     .unwrap_or(48_000);
-    let buffer_frames = crate::device_state::negotiate_buffer_size(
+    // Both sides, not the input's ranges alone (issue #86): one buffer size is applied to both
+    // `StreamParams` below, so it has to be a size both devices actually accept — the same
+    // intersect-then-choose shape `negotiate_shared_sample_rate` above already has.
+    let buffer_frames = crate::device_state::negotiate_shared_buffer_size(
         &input.configs,
+        &output.configs,
         sample_rate_hz,
         settings.buffer_size_frames,
     );
@@ -357,7 +405,6 @@ pub fn run() {
         state: Arc::clone(&state),
     };
     let worker = WorkerHandle::spawn(worker_ctx);
-    let stream_event_sender = worker.event_sender();
 
     // FR-IO-020's mode indicator: the mode actually granted, never the one requested. The output
     // device names it -- see `namir_ui::AudioModeStatus::device_name` for why one name is enough
@@ -367,6 +414,13 @@ pub fn run() {
         device_name: output.device.name.clone(),
     });
     let mut host = AppHost::new(instance, worker, telemetry, library, state, audio_mode);
+    // FR-STATE-030: `<config_dir>/Presets`, the one directory `namir-clap` must also resolve --
+    // see `crate::presets`' module doc comment for why that rule is written twice today and where
+    // it belongs. `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly, so a
+    // NFR-PERF-030 measurement run stays inside the directory its harness owns.
+    if let Some(dir) = &config_dir {
+        host.watch_presets(crate::presets::preset_dir_under(dir));
+    }
     if let Some(w) = settings_warning {
         host.report(w.code, w.detail);
     }
@@ -405,56 +459,59 @@ pub fn run() {
         max_block_size,
     };
 
-    let xruns_for_failure = Arc::clone(&xruns);
-    // The two device names the failure callback needs, captured before `stream_setup` is consumed.
+    // The two device names the failure notice needs, captured before `stream_setup` is consumed.
     // Issue #44's smallest half: the app knew which device and which direction had failed and
-    // dropped both, so the notice a human read on 2026-08-27 named neither.
+    // dropped both, so the notice a human read on 2026-08-27 named neither. They are handed to
+    // `AppHost` rather than into the callbacks (issue #88), because that is where the notice is
+    // now built -- on the UI thread, where formatting a string is allowed.
     let failed_input_name = input.device.name.clone();
     let failed_output_name = output.device.name.clone();
+    let (input_failure_tx, input_failure_rx) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
+    let (output_failure_tx, output_failure_rx) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
     let running = stream::open(
         stream_setup,
         engine,
         Arc::clone(&xruns),
-        move |direction, failure| match failure {
-            crate::audio_io::StreamFailure::Xrun => xruns_for_failure.record(),
-            other => {
-                let (side, device) = match direction {
-                    crate::stream::Direction::Input => ("input", &failed_input_name),
-                    crate::stream::Direction::Output => ("output", &failed_output_name),
-                };
-                let _ = stream_event_sender.send(AppEvent::StreamFailure {
-                    direction,
-                    // `{other}`, not `{other:?}` -- `StreamFailure`'s `Display` was added at M14
-                    // precisely so no `Debug` rendering reaches a user-facing string.
-                    detail: format!("{side} device \"{device}\": {other}"),
-                    failure: other,
-                });
-            }
-        },
+        stream_failure_sink(Arc::clone(&xruns), input_failure_tx),
+        stream_failure_sink(Arc::clone(&xruns), output_failure_tx),
     );
+    host.watch_stream_failures(crate::host::StreamFailureWatch::new(
+        input_failure_rx,
+        output_failure_rx,
+        failed_input_name,
+        failed_output_name,
+    ));
 
     let _running = match running {
-        Ok(running) => match running.play() {
-            Ok(()) => {
-                // NFR-PERF-030's marking event, emitted before the log line below so the measured
-                // interval ends where the requirement says it does: `RunningStreams::play`
-                // returning `Ok(())` is, in its own doc comment's words, "the one call that
-                // actually makes audio flow". A no-op outside a measurement run.
-                startup_probe::audible(library_index_entries, default_state_params);
-                eprintln!("namir: audio stream started");
-                Some(running)
+        Ok(running) => {
+            // Issue #76: D-13.2's elevation outcome is produced inside the first output callback
+            // and cannot be reported from there (see `stream::ThreadPriorityReport`), so the
+            // report is handed to the host, which polls it and writes the record from the UI
+            // thread. Before `play()`, because that is what makes the first callback run.
+            host.watch_thread_priority(running.thread_priority());
+            match running.play() {
+                Ok(()) => {
+                    // NFR-PERF-030's marking event, emitted before the log line below so the
+                    // measured interval ends where the requirement says it does:
+                    // `RunningStreams::play` returning `Ok(())` is, in its own doc comment's
+                    // words, "the one call that actually makes audio flow". A no-op outside a
+                    // measurement run.
+                    startup_probe::audible(library_index_entries, default_state_params);
+                    eprintln!("namir: audio stream started");
+                    Some(running)
+                }
+                Err(e) => {
+                    // The detail is carried on the marker, not left to the notice alone: a probed
+                    // launch opens no window, so `host.report` below has no reader.
+                    startup_probe::not_audible(
+                        startup_probe::REASON_STREAM_NOT_STARTED,
+                        &e.to_string(),
+                    );
+                    host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
+                    None
+                }
             }
-            Err(e) => {
-                // The detail is carried on the marker, not left to the notice alone: a probed
-                // launch opens no window, so `host.report` below has no reader.
-                startup_probe::not_audible(
-                    startup_probe::REASON_STREAM_NOT_STARTED,
-                    &e.to_string(),
-                );
-                host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
-                None
-            }
-        },
+        }
         Err(e) => {
             startup_probe::not_audible(startup_probe::REASON_STREAM_NOT_STARTED, &e.to_string());
             host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
@@ -535,6 +592,7 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     let telemetry = endpoint.telemetry.clone();
     let instance = SharedInstance::new(Instance::new(EngineConfig { ctx: c }, endpoint));
 
+    let preset_dir = config_dir.as_deref().map(crate::presets::preset_dir_under);
     let library_dir = config_dir.unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
     let (library, _warnings) = namir_worker::library::LibraryService::open_at(&library_dir);
     let library_roots = library.roots().to_vec();
@@ -553,6 +611,12 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     // No device was opened at all on this path, so there is no share mode to indicate -- `None`
     // rather than a truthful-looking "Shared", which would claim a device this window does not have.
     let mut host = AppHost::new(instance, worker, telemetry, library, state, None);
+    // FR-STATE-030 still works on this path: a window with no device can still list, save and
+    // recall presets, and refusing to would be a second degradation the missing device does not
+    // imply.
+    if let Some(dir) = preset_dir {
+        host.watch_presets(dir);
+    }
     // `NO_AUDIO_DEVICE`, not `NO_SUPPORTED_CONFIG` (issue #40): FR-IO-040's entry says none of the
     // rates *a device* reports could be negotiated, and on this path there is no device to be the
     // subject of that sentence. The same judgement two lines up passes `None` for the share-mode
@@ -649,6 +713,65 @@ mod tests {
             params(2),
             requested,
         )
+    }
+
+    /// **Issue #88: the `cpal` error callback allocates nothing.** This is the closure a real
+    /// stream invokes on its own thread when a device is lost or a driver faults, and it used to
+    /// `format!` a notice detail and `mpsc::Sender::send` it — two heap allocations on an audio
+    /// thread, which NFR-RT-010 and FR-ERR-030 both forbid.
+    ///
+    /// Driven under D-7.5's `assert_no_alloc` harness with both shapes it has to handle: an `Xrun`
+    /// (counted on the spot) and an `Other` carrying a real backend message (pushed to the ring).
+    /// The failure is built *outside* the section, because building it is `crate::audio_io`'s job
+    /// and has its own test above.
+    #[test]
+    fn the_stream_failure_sink_allocates_nothing_on_the_callback_thread() {
+        let xruns = Arc::new(XrunCounter::new());
+        let (producer, mut consumer) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
+        let mut sink = stream_failure_sink(Arc::clone(&xruns), producer);
+
+        let lost = StreamFailure::Other(crate::audio_io::InlineDetail::from(
+            "OS Error -2004287450 (FormatMessageW() returned error 317)",
+        ));
+        crate::rt_harness::audio_section(|| {
+            sink(StreamFailure::Xrun);
+            sink(lost);
+        });
+
+        assert_eq!(xruns.count(), 1, "an Xrun is counted, not queued");
+        assert_eq!(
+            consumer.pop().ok(),
+            Some(lost),
+            "a non-xrun failure reaches the ring intact"
+        );
+        assert!(consumer.pop().is_err(), "the Xrun must not also be queued");
+    }
+
+    /// A ring that has filled up must drop the report, not block, grow, or free anything: the
+    /// value `rtrb` hands back on a full push is dropped right there on the callback thread, which
+    /// is only legal because `StreamFailure` owns no heap. Deliberately pushed well past capacity
+    /// inside the harness.
+    #[test]
+    fn a_full_stream_failure_ring_drops_reports_rather_than_allocating() {
+        let xruns = Arc::new(XrunCounter::new());
+        let (producer, mut consumer) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
+        let mut sink = stream_failure_sink(Arc::clone(&xruns), producer);
+
+        let failure = StreamFailure::DeviceLost;
+        crate::rt_harness::audio_section(|| {
+            for _ in 0..(STREAM_FAILURE_RING_SLOTS * 4) {
+                sink(failure);
+            }
+        });
+
+        let mut drained = 0;
+        while consumer.pop().is_ok() {
+            drained += 1;
+        }
+        assert_eq!(
+            drained, STREAM_FAILURE_RING_SLOTS,
+            "the ring holds its capacity and drops the rest"
+        );
     }
 
     /// The untouched-settings case: `AppSettings::default().exclusive_mode` is `false`, so a first

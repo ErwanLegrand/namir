@@ -36,14 +36,30 @@
 //! that is not on any measured hot path (host automation delivers one event at a time, not a
 //! per-sample torrent), so there is nothing to buy back.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use namir_params::REGISTRY;
 use namir_state::ParamValues;
 
+/// The GUI-origin pending set is one bit per [`REGISTRY`] entry, so the registry has to fit in a
+/// `u64`. It holds 31 entries today; this fails the build rather than silently dropping the 65th
+/// parameter's change on the floor, which is the failure mode a wider structure would be bought to
+/// avoid and a narrower one would hide.
+const _: () = assert!(
+    REGISTRY.len() <= 64,
+    "ParamMirror::gui_pending is a u64 bitmask, one bit per REGISTRY entry"
+);
+
 /// The lock-free mirror. See this module's doc comment.
 pub(crate) struct ParamMirror {
     values: Box<[AtomicU32]>,
+    /// Bit *i* set means `REGISTRY[i]`'s current value was written **by this plugin's own editor**
+    /// and has not yet been reported to the host as automation (issue #94).
+    ///
+    /// Only [`Self::set_by_key_from_gui`] sets a bit. Host-originated writes
+    /// ([`Self::set_by_id`], from `crate::audio`'s automation path and from `params`' flush) must
+    /// not, or the plugin would echo the host's own automation straight back at it.
+    gui_pending: AtomicU64,
 }
 
 impl ParamMirror {
@@ -55,7 +71,10 @@ impl ParamMirror {
             .iter()
             .map(|d| AtomicU32::new(defaults.get(d.key).unwrap_or(0.0).to_bits()))
             .collect();
-        Self { values }
+        Self {
+            values,
+            gui_pending: AtomicU64::new(0),
+        }
     }
 
     fn index_of_id(id: u32) -> Option<usize> {
@@ -82,14 +101,68 @@ impl ParamMirror {
         Self::index_of_id(id).map(|i| f32::from_bits(self.values[i].load(Ordering::Relaxed)))
     }
 
-    /// Sets the entry with this `ParamDescriptor::key`. Returns `false`, changing nothing, if
-    /// `key` names no `REGISTRY` entry.
+    /// Sets the entry with this `ParamDescriptor::key` **without** marking it as a GUI-originated
+    /// change. Returns `false`, changing nothing, if `key` names no `REGISTRY` entry.
+    ///
+    /// `#[cfg(test)]` since issue #94: every production write by key is a user gesture in this
+    /// plugin's own editor and goes through [`Self::set_by_key_from_gui`], which is this plus the
+    /// pending-set mark. Tests that want to seed a value without also queueing an automation
+    /// report to a host they do not have use this one.
+    #[cfg(test)]
     pub(crate) fn set_by_key(&self, key: &str, value: f32) -> bool {
-        let Some(i) = Self::index_of_key(key) else {
+        self.store_by_key(key, value).is_some()
+    }
+
+    /// Stores `value` under `key`, returning the `REGISTRY` index it landed at.
+    fn store_by_key(&self, key: &str, value: f32) -> Option<usize> {
+        let i = Self::index_of_key(key)?;
+        self.values[i].store(value.to_bits(), Ordering::Relaxed);
+        Some(i)
+    }
+
+    /// [`Self::set_by_key`], plus "and tell the host about it": marks the entry as a
+    /// GUI-originated change awaiting delivery as an automation gesture (issue #94).
+    ///
+    /// The one caller is `crate::ui_host::ClapUiHost::set_param`, which is the only path in this
+    /// crate a *user gesture inside the plugin's own editor* takes. Everything else that writes
+    /// the mirror — host automation, a `params` flush, a preset/state load — is the host's own
+    /// change or is announced to it by other means (`HostParams::rescan`), and goes through the
+    /// unmarked setters.
+    pub(crate) fn set_by_key_from_gui(&self, key: &str, value: f32) -> bool {
+        let Some(i) = self.store_by_key(key, value) else {
             return false;
         };
-        self.values[i].store(value.to_bits(), Ordering::Relaxed);
+        // Marked *after* the value is stored, so a drain that sees the bit is guaranteed to read
+        // this value or a later one, never the previous one.
+        self.gui_pending.fetch_or(1u64 << i, Ordering::Release);
         true
+    }
+
+    /// Whether any GUI-originated change is still waiting to be reported to the host.
+    pub(crate) fn has_gui_pending(&self) -> bool {
+        self.gui_pending.load(Ordering::Acquire) != 0
+    }
+
+    /// Claims the whole GUI-origin pending set, clearing it.
+    ///
+    /// Taken rather than read-then-cleared so that a knob moved *while* a drain is in flight
+    /// re-marks its own bit and is delivered by the next one — the race can duplicate a report,
+    /// which a host treats as an idempotent automation point, and cannot drop one.
+    pub(crate) fn take_gui_pending(&self) -> u64 {
+        self.gui_pending.swap(0, Ordering::AcqRel)
+    }
+
+    /// Puts a bit back, for a change whose delivery to the host failed (a full output-event
+    /// buffer). See [`Self::take_gui_pending`].
+    pub(crate) fn restore_gui_pending(&self, bits: u64) {
+        self.gui_pending.fetch_or(bits, Ordering::Release);
+    }
+
+    /// The current value of `REGISTRY[index]`, or `None` if `index` is out of range.
+    pub(crate) fn value_at(&self, index: usize) -> Option<f32> {
+        self.values
+            .get(index)
+            .map(|v| f32::from_bits(v.load(Ordering::Relaxed)))
     }
 
     /// Overwrites every entry from `params` (FR-STATE-030's preset recall, and the GUI/host
@@ -209,5 +282,71 @@ mod tests {
             (0..8).map(|i| i as f32).any(|v| v == final_value),
             "final value {final_value} was not written by any thread -- a value tore"
         );
+    }
+
+    /// **Issue #94's ledger, at the mirror.** A GUI-originated write is queued for the host; a
+    /// host-originated one is not, or the plugin would echo the host's own automation back at it.
+    #[test]
+    fn only_a_gui_originated_write_joins_the_pending_set() {
+        let mirror = ParamMirror::new();
+        assert!(!mirror.has_gui_pending());
+
+        assert!(mirror.set_by_id(namir_params::stages::trim::GAIN_DB.id.0, 1.0));
+        assert!(
+            !mirror.has_gui_pending(),
+            "host automation must not be reported back to the host"
+        );
+
+        assert!(mirror.set_by_key_from_gui(namir_params::stages::trim::GAIN_DB.key, 2.0));
+        assert!(mirror.has_gui_pending());
+
+        let index = ParamMirror::index_of_key(namir_params::stages::trim::GAIN_DB.key).unwrap();
+        assert_eq!(mirror.take_gui_pending(), 1u64 << index);
+        assert!(
+            !mirror.has_gui_pending(),
+            "taking the pending set must clear it, so one change is reported once"
+        );
+        assert_eq!(mirror.value_at(index), Some(2.0));
+    }
+
+    /// An unknown key changes nothing and queues nothing.
+    #[test]
+    fn an_unknown_key_from_the_gui_queues_nothing() {
+        let mirror = ParamMirror::new();
+        assert!(!mirror.set_by_key_from_gui("not.a.real.key", 1.0));
+        assert!(!mirror.has_gui_pending());
+    }
+
+    /// A delivery that failed puts its change back rather than dropping it — the host's output
+    /// event buffer is allowed to be full, and a lost automation point is exactly what issue #94
+    /// is about.
+    #[test]
+    fn a_restored_bit_is_reported_again() {
+        let mirror = ParamMirror::new();
+        mirror.set_by_key_from_gui(namir_params::stages::out::GAIN_DB.key, -3.0);
+        let taken = mirror.take_gui_pending();
+        assert_ne!(taken, 0);
+        mirror.restore_gui_pending(taken);
+        assert_eq!(mirror.take_gui_pending(), taken);
+    }
+
+    /// Several parameters moved before one drain are all reported, each exactly once.
+    #[test]
+    fn every_moved_parameter_is_in_one_drain() {
+        let mirror = ParamMirror::new();
+        let keys = [
+            namir_params::stages::trim::GAIN_DB.key,
+            namir_params::stages::out::GAIN_DB.key,
+            namir_params::global::GLOBAL_BYPASS.key,
+        ];
+        for key in keys {
+            mirror.set_by_key_from_gui(key, 1.0);
+        }
+        let taken = mirror.take_gui_pending();
+        assert_eq!(taken.count_ones(), keys.len() as u32);
+        for key in keys {
+            let index = ParamMirror::index_of_key(key).unwrap();
+            assert_ne!(taken & (1u64 << index), 0, "{key} must be in the drain");
+        }
     }
 }

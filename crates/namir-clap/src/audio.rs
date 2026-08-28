@@ -96,7 +96,14 @@ pub struct NamirAudioProcessor<'a> {
     shared: &'a NamirShared<'a>,
     host: HostAudioProcessorHandle<'a>,
     priority_elevated: bool,
+    /// The engine's *own* last `latency_samples()` reading — not the figure the host is being
+    /// told, which `SharedInner::latency_samples` holds and which can legitimately differ from
+    /// this while an activation's replay is still in flight (issue #93; see
+    /// `SharedInner::carried_latency`).
     last_seen_latency: u32,
+    /// This activation's sample rate, kept so [`Self::publish_latency`] can record which rate the
+    /// figure it publishes was measured at without asking the engine again.
+    sample_rate_hz: u32,
 }
 
 impl<'a> NamirAudioProcessor<'a> {
@@ -120,6 +127,13 @@ impl<'a> NamirAudioProcessor<'a> {
         }
     }
 
+    /// This instance's shared state — `pub(crate)` accessor rather than a `pub(crate)` field, so
+    /// `crate::params_ext`'s `flush` can reach the parameter mirror without every field of this
+    /// audio-thread type becoming reachable from outside the module that owns the audio thread.
+    pub(crate) fn shared(&self) -> &'a NamirShared<'a> {
+        self.shared
+    }
+
     /// One direct-applied change plus its `ParamMirror` update — the one piece of logic both
     /// `process()`'s own automation loop and `crate::params_ext`'s `PluginAudioProcessorParams::
     /// flush` (called when active but `process()` was not, per `clack_extensions::params`'s own
@@ -133,18 +147,23 @@ impl<'a> NamirAudioProcessor<'a> {
     /// this module's doc comment for the full FR-CLAP-040 sequence.
     fn publish_latency(&mut self) {
         let latency = self.engine.chain().latency_samples();
+        if latency == self.last_seen_latency {
+            // Nothing moved. In particular this is the whole of a block during an activation's
+            // replay, where the engine still reports 0 and `SharedInner::latency_samples` is
+            // deliberately holding the figure the replay will converge on -- so this must compare
+            // against the engine's own last reading, never against the published one, or it would
+            // republish the transient zero and re-open issue #93's loop from the other side.
+            return;
+        }
+        self.last_seen_latency = latency;
         self.shared
             .inner
-            .latency_samples
-            .store(latency, Ordering::Relaxed);
-        if latency != self.last_seen_latency {
-            self.last_seen_latency = latency;
-            self.shared
-                .inner
-                .latency_dirty
-                .store(true, Ordering::Relaxed);
-            self.host.shared().request_callback();
-        }
+            .publish_latency(latency, self.sample_rate_hz);
+        self.shared
+            .inner
+            .latency_dirty
+            .store(true, Ordering::Relaxed);
+        self.host.shared().request_callback();
     }
 }
 
@@ -195,14 +214,22 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
         shared.inner.install_instance(instance);
         shared.inner.active.store(true, Ordering::Relaxed);
 
-        let latency = engine.chain().latency_samples();
-        shared
+        // The engine this activation just built is a *default* one, so this is 0 -- and
+        // publishing that zero on every activation, while `spawn_recall` below is about to put
+        // the model (and its latency) back, is exactly what made FR-CLAP-040's restart
+        // unbounded (issue #93). `carried_latency` is what decides whether the figure the host
+        // already has survives this activation; see its doc comment for both of its conditions.
+        let engine_latency = engine.chain().latency_samples();
+        let sample_rate_hz = sample_rate.hz();
+        let reported = shared
             .inner
-            .latency_samples
-            .store(latency, Ordering::Relaxed);
+            .carried_latency(sample_rate_hz)
+            .unwrap_or(engine_latency);
+        shared.inner.publish_latency(reported, sample_rate_hz);
         // Permitted here unconditionally per `clack_extensions::latency::HostLatency::changed`'s
         // own doc comment ("allowed to change only during the activate callback") — see this
-        // module's doc comment for the full sequence.
+        // module's doc comment for the full sequence. It is also what records `reported` as the
+        // figure the host has been given, which `on_main_thread` then compares against.
         main_thread.notify_latency_changed();
 
         // FR-STATE-030/050's replay: whatever this instance's `ParamMirror`/resource references
@@ -217,7 +244,8 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
             shared,
             host,
             priority_elevated: false,
-            last_seen_latency: latency,
+            last_seen_latency: engine_latency,
+            sample_rate_hz,
         })
     }
 
@@ -233,7 +261,17 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
         // D-13.2: once, at first `process()` activation — see `namir_platform::thread_priority`'s
         // own module doc comment for why this cadence (not once per callback) is correct.
         if !self.priority_elevated {
-            let _ = namir_platform::elevate_current_thread_priority();
+            // The outcome is `#[must_use]` and is carried *off* this thread rather than reported
+            // here: FR-ERR-030 forbids logging and logging-formatting on the audio thread, and
+            // `xtask rt-logging` forbids this module from so much as naming the logger. Two atomic
+            // stores, and `on_main_thread` turns them into a notice -- see
+            // `SharedInner::record_thread_priority_outcome`.
+            let outcome = namir_platform::elevate_current_thread_priority();
+            if self.shared.inner.record_thread_priority_outcome(outcome) {
+                // Only when there is something to say, and only once per instance -- see that
+                // method's own doc comment. A successful elevation wakes nobody.
+                self.host.shared().request_callback();
+            }
             self.priority_elevated = true;
         }
 
@@ -268,6 +306,13 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
         }
 
         self.publish_latency();
+
+        // FR-PARAM-030's other direction (issue #94): a knob the user turned in *this* plugin's
+        // editor is reported back to the host as automation, wrapped in a gesture, so the host can
+        // record it and keep its own generic UI in step. See `crate::params_ext`'s
+        // `emit_gui_param_changes` for why this is allocation-free and why host-originated changes
+        // are never echoed back through it.
+        crate::params_ext::emit_gui_param_changes(&self.shared.inner.params, events.output);
 
         Ok(ProcessStatus::Continue)
     }

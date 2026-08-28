@@ -269,13 +269,15 @@ mod host_ext {
     ///    `clap_plugin_latency.get`.
     /// 2. **The restart the plugin asked for.** Deactivate/reactivate; `activate()` announces the
     ///    change with `HostLatency::changed`, which is the only point CLAP permits it while a
-    ///    plugin is being (re)activated. The freshly built engine reports `0` again — the model is
-    ///    replayed asynchronously (`crate::worker_jobs::spawn_recall`), so this is a genuine second
-    ///    transition rather than a repeat of the first.
-    /// 3. **The same change announced directly.** The replay lands, the latency moves back off
-    ///    zero, and this time the host deactivates *before* servicing the callback — the other
-    ///    branch of `on_main_thread`, which announces directly because a restart is meaningless
-    ///    for an inactive plugin.
+    ///    plugin is being (re)activated. The figure it announces is the one the host already has —
+    ///    **not zero** (issue #93): the freshly built engine does report zero, but its replay is
+    ///    already dispatched and will put the same model, and the same latency, straight back, so
+    ///    `SharedInner::carried_latency` keeps the converged figure across the activation rather
+    ///    than publishing a transient the plugin would then have to restart for again.
+    /// 3. **The same change announced directly.** The replay lands, the engine's own reading moves
+    ///    back off zero, and this time the host deactivates *before* servicing the callback — the
+    ///    other branch of `on_main_thread`, which announces directly because a restart is
+    ///    meaningless for an inactive plugin.
     // trace: FR-CLAP-040
     #[test]
     fn a_model_change_that_adds_resampling_latency_is_reported_and_notified_on_every_transition() {
@@ -373,9 +375,10 @@ mod host_ext {
         );
         assert_eq!(
             latency.get(&mut main_thread_handle(&mut instance)),
-            0,
-            "the freshly built engine has no model yet (the replay is dispatched to the worker \
-             pool), so the announced figure is zero again"
+            expected,
+            "issue #93: the freshly built engine has no model yet, but its replay is already \
+             dispatched and converges on the same figure -- announcing the transient zero here is \
+             what made every activation observe a latency *change* and ask to be restarted for it"
         );
 
         // -- Limb 3: the replay lands, and the callback is serviced while inactive ------------
@@ -456,5 +459,124 @@ mod host_ext {
             );
             std::thread::yield_now();
         }
+    }
+
+    /// **Issue #93: the restart FR-CLAP-040's contract requires must terminate.**
+    ///
+    /// The test above stops the sequence by deactivating before it services the second callback,
+    /// so it never re-enters `on_main_thread`'s `active` branch a second time. A real host does
+    /// not: it honours the restart request with a deactivate/reactivate cycle and then keeps
+    /// processing. Every `activate()` builds a *default* engine (latency 0) and dispatches
+    /// `spawn_recall` to reload the model asynchronously, so the same model that provoked the
+    /// first restart provokes the identical change again on every subsequent activation — and,
+    /// before this was fixed, another `request_restart` with it, for as long as a rate-mismatched
+    /// model stayed loaded.
+    ///
+    /// This drives the loop the way a host would and asserts it closes: **at most one** restart,
+    /// and the figure the host is left reading is the real one.
+    #[test]
+    fn a_rate_mismatched_model_asks_for_one_restart_and_then_settles() {
+        /// Blocks processed after the replay has landed, to give a plugin that is still churning
+        /// a chance to ask for another restart before this test concludes it has settled.
+        const SETTLE_BLOCKS: usize = 64;
+
+        let model = model_json_bytes();
+        let expected = engine_latency_for(&model);
+        assert!(
+            expected > 0,
+            "a {MODEL_RATE_HZ} Hz model in a {DEFAULT_SAMPLE_RATE} Hz engine must engage D-9.2's \
+             resampler; with zero there is no restart for this test to bound"
+        );
+        let document = state_document_bytes(&model);
+
+        let (_entry, mut instance) = instantiate_default();
+        let latency = require_plugin_extension::<PluginLatency>(&mut instance);
+        let state = require_plugin_extension::<PluginState>(&mut instance);
+
+        let mut processor = activate_default(&mut instance)
+            .start_processing()
+            .expect("processing must start");
+        let mut bufs = StereoBuffers::default_size();
+        let tone = sine_1k(bufs.max_frames(), DEFAULT_SAMPLE_RATE, AMPLITUDE);
+        bufs.fill_input(|_channel, frame| tone[frame]);
+
+        // A few blocks before anything is measured, for the same reason limb 0 of the test above
+        // runs them: the *first* `process()` of an instance may request a main-thread callback
+        // for D-13.2's thread-priority outcome (`SharedInner::record_thread_priority_outcome`,
+        // once per instance), and a wait on "the plugin asked for a callback" has to be about
+        // latency and nothing else.
+        for _ in 0..4 {
+            audio_section(|| bufs.process_block(&mut processor, BLOCK))
+                .expect("a warm-up block must process");
+        }
+        instance.access_shared_handler(|shared| shared.reset_request_counts());
+
+        // The host loads the project's state, and the model's latency reaches the audio thread.
+        let mut reader = document.as_slice();
+        state
+            .load(&mut main_thread_handle(&mut instance), &mut reader)
+            .expect("the host-driven state load must succeed");
+        process_until(
+            &mut bufs,
+            &mut processor,
+            LIMB_TIMEOUT,
+            "first change",
+            || instance.access_shared_handler(|shared| shared.callback_requests()) > 0,
+        );
+
+        // A host services the callback and honours the restart it produces.
+        instance.call_on_main_thread_callback();
+        assert_eq!(
+            instance.access_shared_handler(|shared| shared.restart_requests()),
+            1,
+            "the first latency change must produce exactly one restart request"
+        );
+        let stopped = processor.stop_processing();
+        instance.deactivate(stopped);
+        instance.access_shared_handler(|shared| shared.reset_request_counts());
+        let mut processor = activate_default(&mut instance)
+            .start_processing()
+            .expect("processing must restart");
+
+        // ...and then keeps processing. The activation's own replay restores the same model and
+        // therefore the same latency; that is not a *new* change, and must not cost another
+        // restart.
+        process_until(&mut bufs, &mut processor, LIMB_TIMEOUT, "replay", || {
+            instance.access_shared_handler(|shared| shared.callback_requests()) > 0
+        });
+        instance.call_on_main_thread_callback();
+        assert_eq!(
+            instance.access_shared_handler(|shared| shared.restart_requests()),
+            0,
+            "the replay of the model the plugin already restarted for asked for a second restart \
+             -- that is issue #93's loop: every activate() rebuilds a default engine at latency 0, \
+             reloads the same model, and observes the same change again, indefinitely"
+        );
+
+        for _ in 0..SETTLE_BLOCKS {
+            audio_section(|| bufs.process_block(&mut processor, BLOCK))
+                .expect("a settled block must process");
+            if instance.access_shared_handler(|shared| shared.callback_requests()) > 0 {
+                instance.access_shared_handler(|shared| shared.reset_request_counts());
+                instance.call_on_main_thread_callback();
+            }
+            assert_eq!(
+                instance.access_shared_handler(|shared| shared.restart_requests()),
+                0,
+                "the plugin is still asking to be restarted after it has settled"
+            );
+        }
+
+        assert_eq!(
+            latency.get(&mut main_thread_handle(&mut instance)),
+            expected,
+            "after the one restart it asked for, the figure the host reads must be the real \
+             latency of the model that is loaded -- not the zero a freshly rebuilt engine reports \
+             while its replay is still in flight"
+        );
+
+        let stopped = processor.stop_processing();
+        instance.deactivate(stopped);
+        drop(instance); // `clap_plugin.destroy`
     }
 }

@@ -182,6 +182,99 @@ pub fn negotiate_shared_sample_rate(
     None
 }
 
+/// FR-IO-040 applied to a duplex pair, the buffer-size half — the counterpart
+/// [`negotiate_shared_sample_rate`] has had all along and this function did not (issue #86).
+///
+/// # The bug this closes
+///
+/// [`crate::app::run`] called [`negotiate_buffer_size`] against the **input** device's ranges and
+/// then applied the answer to *both* `StreamParams`. On a duplex pair of different devices whose
+/// ranges do not overlap the way the input's alone suggests — an input reporting
+/// `Range { min: 16, max: 8192 }`, which picks 256, against an output whose minimum is 480 — the
+/// output open is asked for `cpal::BufferSize::Fixed(256)`, fails, and the session ends with no
+/// audio at all. The sample rate never had this problem because it intersects both sides; the
+/// buffer size simply had no equivalent.
+///
+/// # What it picks
+///
+/// A frame count both sides accept, preferring `remembered` when both accept it (FR-IO-080's
+/// "remember the user's choice"), otherwise the value nearest [`PREFERRED_BUFFER_FRAMES`] inside
+/// some pairwise intersection of an input range with an output range.
+///
+/// `None` means "ask each backend for its own default" (`cpal::BufferSize::Default`), and is
+/// returned in three cases: either side covers `sample_rate_hz` with no config at all; no pair of
+/// ranges intersects; or no pair of ranges is constrained on **both** sides. That last one is
+/// deliberately conservative. A side reporting [`BufferSizeRange::Unknown`] has told us nothing,
+/// so imposing the *other* side's number on it is a guess that can fail the open — whereas
+/// `Default` is a value every backend accepts by construction. It is also what the single-sided
+/// function already answered for an `Unknown` input, so no working configuration changes shape.
+pub fn negotiate_shared_buffer_size(
+    input_configs: &[SupportedConfigRange],
+    output_configs: &[SupportedConfigRange],
+    sample_rate_hz: u32,
+    remembered: Option<u32>,
+) -> Option<u32> {
+    let input: Vec<BufferSizeRange> = configs_at_rate(input_configs, sample_rate_hz)
+        .map(|c| c.buffer_size)
+        .collect();
+    let output: Vec<BufferSizeRange> = configs_at_rate(output_configs, sample_rate_hz)
+        .map(|c| c.buffer_size)
+        .collect();
+    if input.is_empty() || output.is_empty() {
+        return None;
+    }
+
+    if let Some(frames) = remembered
+        && accepts_buffer_size(&input, frames)
+        && accepts_buffer_size(&output, frames)
+    {
+        return Some(frames);
+    }
+
+    let mut best: Option<u32> = None;
+    for i in &input {
+        for o in &output {
+            let (
+                BufferSizeRange::Range {
+                    min: in_min,
+                    max: in_max,
+                },
+                BufferSizeRange::Range {
+                    min: out_min,
+                    max: out_max,
+                },
+            ) = (i, o)
+            else {
+                // At least one side is `Unknown`: see this function's doc comment for why that
+                // yields `Default` rather than a number taken from the other side alone.
+                continue;
+            };
+            let min = (*in_min).max(*out_min);
+            let max = (*in_max).min(*out_max);
+            if min > max {
+                continue;
+            }
+            let candidate = PREFERRED_BUFFER_FRAMES.clamp(min, max);
+            if best.is_none_or(|b| {
+                candidate.abs_diff(PREFERRED_BUFFER_FRAMES) < b.abs_diff(PREFERRED_BUFFER_FRAMES)
+            }) {
+                best = Some(candidate);
+            }
+        }
+    }
+    best
+}
+
+/// Whether any of one direction's applicable buffer-size ranges covers `frames`.
+/// [`BufferSizeRange::Unknown`] imposes no constraint, so it accepts anything — the same reading
+/// [`negotiate_buffer_size`] has always given it.
+fn accepts_buffer_size(ranges: &[BufferSizeRange], frames: u32) -> bool {
+    ranges.iter().any(|r| match r {
+        BufferSizeRange::Range { min, max } => frames >= *min && frames <= *max,
+        BufferSizeRange::Unknown => true,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +504,252 @@ mod tests {
         assert_eq!(
             negotiate_shared_sample_rate(&input, &output, Some(88_200)),
             Some(88_200)
+        );
+    }
+
+    // --- negotiate_shared_buffer_size: issue #86 ---
+
+    /// **The reported bug, verbatim.** The input reports `Range { 16, 8192 }`, from which the
+    /// single-sided [`negotiate_buffer_size`] picks 256; the output cannot go below 480. Applying
+    /// the input's answer to both streams asks `cpal` for `Fixed(256)` on a device that refuses
+    /// it, and the session ends up with no audio at all.
+    #[test]
+    fn a_size_the_input_alone_would_pick_is_raised_to_what_the_output_can_also_open() {
+        let input = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        let output = vec![config(
+            2,
+            48_000,
+            48_000,
+            BufferSizeRange::Range {
+                min: 480,
+                max: 4096,
+            },
+        )];
+        assert_eq!(
+            negotiate_buffer_size(&input, 48_000, None),
+            Some(256),
+            "the single-sided function is unchanged -- this is the answer that was wrong to apply \
+             to both streams"
+        );
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, None),
+            Some(480)
+        );
+    }
+
+    /// The mirror case: the *output* is the permissive side, so the intersection is driven by the
+    /// input's floor. A fix that only checked one direction would pass the test above and fail
+    /// this one.
+    #[test]
+    fn the_intersection_is_taken_in_both_directions() {
+        let input = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range {
+                min: 512,
+                max: 2048,
+            },
+        )];
+        let output = vec![config(
+            2,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, None),
+            Some(512)
+        );
+    }
+
+    /// Both sides comfortably cover [`PREFERRED_BUFFER_FRAMES`], so neither constrains the answer.
+    #[test]
+    fn an_overlapping_pair_that_both_cover_the_preferred_size_gets_it() {
+        let input = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        let output = vec![config(
+            2,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 32, max: 4096 },
+        )];
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, None),
+            Some(PREFERRED_BUFFER_FRAMES)
+        );
+    }
+
+    /// FR-IO-080: a remembered size both devices accept is honoured over the preferred default.
+    #[test]
+    fn a_remembered_size_both_sides_accept_is_used() {
+        let input = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        let output = vec![config(
+            2,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 64, max: 4096 },
+        )];
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, Some(1024)),
+            Some(1024)
+        );
+    }
+
+    /// ...and one only the input accepts is not: it would fail the output open, which is the whole
+    /// defect. The negotiated answer falls back into the intersection instead.
+    #[test]
+    fn a_remembered_size_only_one_side_accepts_is_not_honoured() {
+        let input = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        let output = vec![config(
+            2,
+            48_000,
+            48_000,
+            BufferSizeRange::Range {
+                min: 480,
+                max: 4096,
+            },
+        )];
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, Some(64)),
+            Some(480)
+        );
+    }
+
+    /// Two ranges that do not overlap at all leave nothing to pick, so the backends are asked for
+    /// their own defaults rather than handed a number one of them is certain to refuse.
+    #[test]
+    fn ranges_that_do_not_overlap_fall_back_to_the_backend_default() {
+        let input = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 128 },
+        )];
+        let output = vec![config(
+            2,
+            48_000,
+            48_000,
+            BufferSizeRange::Range {
+                min: 480,
+                max: 4096,
+            },
+        )];
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, None),
+            None
+        );
+    }
+
+    /// An `Unknown` range on either side has told us nothing to intersect against, so the answer
+    /// is `Default` -- the value every backend accepts -- rather than the other side's number.
+    /// This is also the shape `crate::stream::FakeBackend` reports, so every stream test keeps
+    /// opening with `BufferSize::Default` exactly as before.
+    #[test]
+    fn an_unknown_range_on_either_side_falls_back_to_the_backend_default() {
+        let known = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        let unknown = vec![config(2, 48_000, 48_000, BufferSizeRange::Unknown)];
+        assert_eq!(
+            negotiate_shared_buffer_size(&known, &unknown, 48_000, None),
+            None
+        );
+        assert_eq!(
+            negotiate_shared_buffer_size(&unknown, &known, 48_000, None),
+            None
+        );
+        assert_eq!(
+            negotiate_shared_buffer_size(&unknown, &unknown, 48_000, None),
+            None
+        );
+    }
+
+    /// A rate one side does not cover leaves that side with no applicable config, which is a
+    /// rate/config mismatch for the caller to handle -- not a buffer size to invent.
+    #[test]
+    fn a_rate_one_side_does_not_cover_yields_none() {
+        let input = vec![config(
+            1,
+            48_000,
+            48_000,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        let output = vec![config(
+            2,
+            44_100,
+            44_100,
+            BufferSizeRange::Range { min: 16, max: 8192 },
+        )];
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, None),
+            None
+        );
+    }
+
+    /// Several reported ranges per side: the answer must come from the pair whose intersection
+    /// lands nearest the preferred size, not from whichever range happened to be enumerated first.
+    #[test]
+    fn the_nearest_intersection_wins_not_the_first_one_enumerated() {
+        let input = vec![
+            config(
+                1,
+                48_000,
+                48_000,
+                BufferSizeRange::Range {
+                    min: 2048,
+                    max: 8192,
+                },
+            ),
+            config(
+                1,
+                48_000,
+                48_000,
+                BufferSizeRange::Range { min: 64, max: 512 },
+            ),
+        ];
+        let output = vec![
+            config(
+                2,
+                48_000,
+                48_000,
+                BufferSizeRange::Range {
+                    min: 2048,
+                    max: 8192,
+                },
+            ),
+            config(
+                2,
+                48_000,
+                48_000,
+                BufferSizeRange::Range { min: 64, max: 512 },
+            ),
+        ];
+        assert_eq!(
+            negotiate_shared_buffer_size(&input, &output, 48_000, None),
+            Some(PREFERRED_BUFFER_FRAMES)
         );
     }
 }
