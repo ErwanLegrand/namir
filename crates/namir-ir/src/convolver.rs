@@ -1710,19 +1710,32 @@ mod tests {
                 },
                 passband.summary()
             );
-            if let Some(stopband_db) = stopband.stopband_db {
-                assert!(
-                    stopband_db <= -100.0,
-                    "FR-NAM-060 requires 100 dB of stopband attenuation from {} upward; {label} \
-                     measured {}",
-                    if restated {
-                        "0.5 x the lower rate"
-                    } else {
-                        "the lower Nyquist"
-                    },
+            // Every pair in the list has an out-of-band region, in both directions: a
+            // down-conversion has input frequencies above the output Nyquist that must alias away,
+            // and an up-conversion has output bins above the input Nyquist where images must not
+            // appear. `measure` reports `None` only when there is no such region at all, which
+            // takes `source_hz == engine_hz` and is true of no pair here. So a `None` would mean
+            // the instrument had stopped measuring, not that this pair had nothing to measure --
+            // and letting it skip the assertion, as this test did until issue #55, retires the
+            // 100 dB half of the bar for every pair at once while the test still reports green.
+            let stopband_db = stopband.stopband_db.unwrap_or_else(|| {
+                panic!(
+                    "{label}: no stopband figure was measured, but this pair has an out-of-band \
+                     region -- {}",
                     stopband.summary()
-                );
-            }
+                )
+            });
+            assert!(
+                stopband_db <= -100.0,
+                "FR-NAM-060 requires 100 dB of stopband attenuation from {} upward; {label} \
+                 measured {}",
+                if restated {
+                    "0.5 x the lower rate"
+                } else {
+                    "the lower Nyquist"
+                },
+                stopband.summary()
+            );
         }
     }
 
