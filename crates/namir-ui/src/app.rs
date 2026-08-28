@@ -250,7 +250,7 @@ mod tests {
     use super::*;
     use crate::host::RecordingHost;
     use namir_params::REGISTRY;
-    use namir_params::stages::trim;
+    use namir_params::stages::gate;
 
     fn headless_frame(view: &mut ViewState, snapshot: &UiSnapshot, intents: &mut Vec<UiIntent>) {
         let ctx = egui::Context::default();
@@ -389,27 +389,159 @@ mod tests {
         );
     }
 
-    /// A `SetParam` intent from a section round-trips to the host via `NamirUi::frame`'s real
-    /// `UiHost::dispatch` path -- checked here at the `RecordingHost` level (private-field access
-    /// is available because this `tests` module is a descendant of `app`, where `NamirUi::host`
-    /// is declared).
+    /// The `RawInput` a headless frame runs on, `events` swapped in per call -- the same shape
+    /// [`headless_frame`] builds, exposed separately because driving an interaction needs several
+    /// consecutive frames against one shared [`egui::Context`] rather than one throwaway frame.
+    /// `time` advances so `egui`'s own click/drag timing logic sees successive instants.
+    fn frame_input(time: f64, events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(960.0, 640.0),
+            )),
+            events,
+            ..Default::default()
+        }
+    }
+
+    /// Every text `render` painted this frame, with the rect it occupies on screen -- how a test
+    /// finds a *real* control to interact with without this module exposing a widget id or a
+    /// layout constant to it. `egui` emits one `Shape::Text` per painted galley (nested inside
+    /// `Shape::Vec` for a panel's contents), so a control's own name and its formatted value are
+    /// both locatable by the exact string the user reads on screen.
+    fn painted_texts(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    out.push((text.galley.text().to_string(), text.visual_bounding_rect()));
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// The rect of the one shape whose painted text is exactly `needle`. Asserts uniqueness: a
+    /// string that appears twice on screen (a section heading that repeats a control's name, say)
+    /// would otherwise silently pick whichever came first and make the interaction below land
+    /// somewhere other than the control this test means to drive.
+    fn unique_text_rect(output: &egui::FullOutput, needle: &str) -> egui::Rect {
+        let matches: Vec<egui::Rect> = painted_texts(output)
+            .into_iter()
+            .filter(|(text, _)| text == needle)
+            .map(|(_, rect)| rect)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one control painting {needle:?} this frame, found {} -- if a \
+             default value changed so two controls now read the same text, drive a different \
+             control rather than relaxing this",
+            matches.len()
+        );
+        matches[0]
+    }
+
+    /// **The glue `NamirUi::frame` is: snapshot → [`render`] → collect intents → `UiHost::dispatch`.**
+    /// Driven end to end here by dragging a real control in a real frame, rather than by calling
+    /// `dispatch` directly -- which is what this test used to do, and which only re-tested
+    /// `RecordingHost`'s own `Vec::push` while leaving the one path it claimed to cover untested
+    /// (issue #102).
+    ///
+    /// The control is located by the text it actually paints (`unique_text_rect`), so nothing here
+    /// depends on a layout constant or a widget id this module would have to expose: the pointer
+    /// lands wherever `render` really put the Gate Threshold `DragValue` this frame. Three frames,
+    /// because that is what a drag is: press, move (the frame the value changes on), release.
     #[test]
     fn dispatched_intents_from_a_frame_reach_the_host() {
+        let snapshot = UiSnapshot::default();
+        let before = snapshot
+            .params
+            .get(gate::THRESHOLD_DB.key)
+            .expect("gate.threshold_db is a REGISTRY entry");
         let host = RecordingHost {
-            snapshot: UiSnapshot::default(),
+            snapshot,
             dispatched: Vec::new(),
         };
         let mut namir_ui = NamirUi::new(host);
-        namir_ui.host.dispatch(UiIntent::SetParam {
-            key: trim::GAIN_DB.key,
-            value: 3.0,
-        });
-        assert_eq!(
-            namir_ui.host.dispatched,
-            vec![UiIntent::SetParam {
-                key: trim::GAIN_DB.key,
-                value: 3.0
-            }]
+        let ctx = egui::Context::default();
+
+        // Frame 0, no input: find where `render` put the control's value, by its own painted text.
+        let output = ctx.run_ui(frame_input(0.0, Vec::new()), |ui| namir_ui.frame(ui));
+        let value_rect = unique_text_rect(&output, &gate::THRESHOLD_DB.format_value(before));
+        let pos = value_rect.center();
+
+        // Frame 1: press on it. Pressing alone changes nothing, so nothing may reach the host yet.
+        let _ = ctx.run_ui(
+            frame_input(
+                0.1,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            ),
+            |ui| namir_ui.frame(ui),
         );
+        assert!(
+            namir_ui.host.dispatched.is_empty(),
+            "a press with no movement must not dispatch anything, got {:?}",
+            namir_ui.host.dispatched
+        );
+
+        // Frame 2: drag right. This is the frame `DragValue::changed()` fires on, so this is the
+        // frame `render` appends a `SetParam` and `frame` hands it to the host.
+        let moved = pos + egui::vec2(40.0, 0.0);
+        let _ = ctx.run_ui(
+            frame_input(0.2, vec![egui::Event::PointerMoved(moved)]),
+            |ui| namir_ui.frame(ui),
+        );
+        let dispatched = namir_ui.host.dispatched.clone();
+        assert_eq!(
+            dispatched.len(),
+            1,
+            "the drag frame must dispatch exactly one intent, got {dispatched:?}"
+        );
+        let UiIntent::SetParam { key, value } = dispatched[0] else {
+            panic!("dragging a control must dispatch SetParam, got {dispatched:?}");
+        };
+        assert_eq!(key, gate::THRESHOLD_DB.key);
+        // Deliberately not an exact figure: how many dB a 40-pixel drag is worth is `egui`'s own
+        // mapping of `DragValue::speed`, not a property of this crate. What this crate owns is
+        // that a rightward drag raises *this* control's value and reports it to the host.
+        assert!(
+            value > before,
+            "a rightward drag must raise the value: {value} vs {before}"
+        );
+
+        // Frame 3: release. The intent already dispatched stands; nothing new is invented on the
+        // way out of the gesture.
+        let _ = ctx.run_ui(
+            frame_input(
+                0.3,
+                vec![egui::Event::PointerButton {
+                    pos: moved,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ),
+            |ui| namir_ui.frame(ui),
+        );
+        assert_eq!(namir_ui.host.dispatched, dispatched);
     }
 }

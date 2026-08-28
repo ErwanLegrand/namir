@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "parameters": {
+    "trim.gain_db": 3.0
+  },
+  "references": {
+    "ir": {
+      "absolute": "/home/erwan/irs/cabs/1960a.wav",
+      "display_name": "1960a.wav",
+      "hash": "175b38765489b554a27a588061510a764a62f844dae9dfca6710eeda59055d13",
+      "library_relative": "cabs/1960a.wav"
+    },
+    "nam": {
+      "absolute": "C:\\Users\\erwan\\Models\\plexi.nam",
+      "display_name": "plexi.nam",
+      "embedded": {
+        "data": "eyJmYWtlIjoibWluaW1hbCBuYW0tc2hhcGVkIGpzb24gZm9yIGNvcnB1cyBzZWVkaW5nIn0=",
+        "encoding": "base64",
+        "media_type": "application/vnd.namir.nam+json"
+      },
+      "hash": "dc57749e025523f24f989853b68405829607c4c84942579df0c3368694a531e3",
+      "library_relative": "marshall/plexi.nam"
+    }
+  }
+}

@@ -488,68 +488,85 @@ impl AudioBackend for FakeBackend {
     }
 }
 
+/// A duplex [`StreamSetup`] over `backend`: one mono input channel, two output channels, 48 kHz,
+/// shared mode. `pub(crate)` for the same reason [`FakeBackend`] itself is — the tests in
+/// `crate::audio_io::convert` drive the very callbacks this setup produces, and a second copy of
+/// the setup would be free to drift away from the one every other test uses.
+#[cfg(test)]
+pub(crate) fn fake_duplex_setup(backend: &FakeBackend, max_block_size: usize) -> StreamSetup<'_> {
+    fake_duplex_setup_with_share_mode(backend, max_block_size, ShareMode::Shared)
+}
+
+/// As [`fake_duplex_setup`], with the share mode both directions are opened with chosen by the
+/// caller.
+#[cfg(test)]
+pub(crate) fn fake_duplex_setup_with_share_mode(
+    backend: &FakeBackend,
+    max_block_size: usize,
+    share_mode: ShareMode,
+) -> StreamSetup<'_> {
+    StreamSetup {
+        backend,
+        input_host: HostInfo {
+            name: "fake".to_string(),
+        },
+        input_device: DeviceInfo {
+            name: "in".to_string(),
+            is_default: true,
+        },
+        input_params: StreamParams {
+            sample_rate_hz: 48_000,
+            buffer_frames: None,
+            channels: 1,
+            share_mode,
+        },
+        output_host: HostInfo {
+            name: "fake".to_string(),
+        },
+        output_device: DeviceInfo {
+            name: "out".to_string(),
+            is_default: true,
+        },
+        output_params: StreamParams {
+            sample_rate_hz: 48_000,
+            buffer_frames: None,
+            channels: 2,
+            share_mode,
+        },
+        channel_config: ChannelConfig::MonoToStereo,
+        input_channel_index: 0,
+        output_channel_left: 0,
+        output_channel_right: 1,
+        max_block_size,
+    }
+}
+
+/// A real default chain, split into the [`AudioEngine`] half [`open`] runs from the output
+/// callback. `pub(crate)` for the same reason [`fake_duplex_setup`] is.
+#[cfg(test)]
+pub(crate) fn default_test_engine(max_block_size: usize) -> AudioEngine {
+    let c = namir_engine::PrepareContext::new(
+        namir_core::SampleRate::new(48_000).unwrap(),
+        max_block_size,
+        ChannelConfig::MonoToStereo,
+    )
+    .unwrap();
+    let chain = namir_engine::build_default_chain(&c).unwrap();
+    let (engine, _endpoint) = namir_engine::split(chain, namir_engine::RingCapacities::default());
+    engine
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
-
-    fn setup(backend: &FakeBackend, max_block_size: usize) -> StreamSetup<'_> {
-        setup_with_share_mode(backend, max_block_size, ShareMode::Shared)
-    }
-
-    fn setup_with_share_mode(
-        backend: &FakeBackend,
-        max_block_size: usize,
-        share_mode: ShareMode,
-    ) -> StreamSetup<'_> {
-        StreamSetup {
-            backend,
-            input_host: HostInfo {
-                name: "fake".to_string(),
-            },
-            input_device: DeviceInfo {
-                name: "in".to_string(),
-                is_default: true,
-            },
-            input_params: StreamParams {
-                sample_rate_hz: 48_000,
-                buffer_frames: None,
-                channels: 1,
-                share_mode,
-            },
-            output_host: HostInfo {
-                name: "fake".to_string(),
-            },
-            output_device: DeviceInfo {
-                name: "out".to_string(),
-                is_default: true,
-            },
-            output_params: StreamParams {
-                sample_rate_hz: 48_000,
-                buffer_frames: None,
-                channels: 2,
-                share_mode,
-            },
-            channel_config: ChannelConfig::MonoToStereo,
-            input_channel_index: 0,
-            output_channel_left: 0,
-            output_channel_right: 1,
-            max_block_size,
-        }
-    }
-
-    fn engine(max_block_size: usize) -> AudioEngine {
-        let c = namir_engine::PrepareContext::new(
-            namir_core::SampleRate::new(48_000).unwrap(),
-            max_block_size,
-            ChannelConfig::MonoToStereo,
-        )
-        .unwrap();
-        let chain = namir_engine::build_default_chain(&c).unwrap();
-        let (engine, _endpoint) =
-            namir_engine::split(chain, namir_engine::RingCapacities::default());
-        engine
-    }
+    // The three helpers below live at module level (and `pub(crate)`) so `audio_io::convert`'s
+    // tests can build the same duplex path this module's own tests do; aliased back to their
+    // original names here so every test body below reads as it always has.
+    use super::{
+        default_test_engine as engine, fake_duplex_setup as setup,
+        fake_duplex_setup_with_share_mode as setup_with_share_mode,
+    };
 
     /// Wiring proof: input capture reaches the output buffer, duplicated into both channels
     /// (`ChannelConfig::MonoToStereo`), with no crash and no underrun when supply matches demand.
