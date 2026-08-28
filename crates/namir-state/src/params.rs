@@ -80,8 +80,10 @@ impl ParamValues {
     /// `0..values.len() - 1` (`Stepped`) rather than rejecting an out-of-range value outright —
     /// the same tolerance [`Self::from_document_section`] applies to a value read from a file,
     /// applied here so a programmatic caller (a UI control, a test) gets identical behaviour
-    /// rather than a second set of rules. Fails only when `key` names no `REGISTRY` entry at
-    /// all, since there is then no descriptor to clamp against.
+    /// rather than a second set of rules. A NaN is likewise not rejected but normalised, to the
+    /// descriptor's default — the read path's own rule for a non-finite value (issue #116; it
+    /// used to be stored, and then serialised as JSON `null`). Fails only when `key` names no
+    /// `REGISTRY` entry at all, since there is then no descriptor to clamp against.
     pub fn set(&mut self, key: &str, value: f32) -> Result<(), UnknownParameter> {
         let index = Self::index_of(key).ok_or_else(|| UnknownParameter(key.to_string()))?;
         self.0[index] = clamp_to_descriptor(&REGISTRY[index], value);
@@ -178,7 +180,20 @@ fn default_of(descriptor: &ParamDescriptor) -> f32 {
     }
 }
 
+/// `value` brought into the range `descriptor` declares, and — since issue #116 — made finite.
+///
+/// **The NaN arm is not defensive padding.** `f32::clamp` panics on NaN *bounds* but returns NaN
+/// for a NaN *input*, and `f32::round` is NaN-preserving too, so neither arm below filters one
+/// out: a NaN handed to [`ParamValues::set`] used to be stored, and [`number_value`] then wrote
+/// it as `Value::Null`, which reads back as a `state.param.invalid` warning and a silent reset.
+/// The rule applied here is the one [`ParamValues::from_document_section`] already applies to a
+/// non-finite number arriving from a file ("there is no nearby value to clamp a non-number to" —
+/// reset to the documented default), so the setter and the read path stay one set of rules rather
+/// than two. ±Infinity needs no arm of its own: it is ordered, so `clamp` maps it onto a bound.
 fn clamp_to_descriptor(descriptor: &ParamDescriptor, value: f32) -> f32 {
+    if value.is_nan() {
+        return default_of(descriptor);
+    }
     match descriptor.kind {
         ParamKind::Continuous { min, max, .. } => value.clamp(min, max),
         ParamKind::Stepped { values, .. } => {
@@ -201,9 +216,13 @@ fn clamp_to_descriptor(descriptor: &ParamDescriptor, value: f32) -> f32 {
 fn number_value(value: f32) -> Value {
     Number::from_f64(f64::from(value))
         .map(Value::Number)
-        .unwrap_or(Value::Null) // value is always finite (clamp_to_descriptor never produces
-    // NaN/Infinity from a finite descriptor range), so this arm is unreachable in practice; Null
-    // rather than a panic keeps that unreachability a documented assumption, not a crash site.
+        .unwrap_or(Value::Null) // Unreachable: every value stored in a `ParamValues` has been
+    // through `clamp_to_descriptor`, which is total over `f32` -- NaN to the default, ±Infinity
+    // to a bound, everything else into a finite declared range. That was an *assumption* until
+    // issue #116, where the public setter passed a NaN straight through and this arm wrote the
+    // `null` that made the document unreadable; it is now established by that function rather
+    // than only asserted here. Null rather than a panic keeps a future violation a warning on
+    // read instead of a crash on save.
 }
 
 #[cfg(test)]
@@ -312,6 +331,63 @@ mod tests {
     fn json_cannot_represent_nan_or_infinity_so_the_finite_check_is_a_documented_invariant() {
         assert!(Number::from_f64(f64::NAN).is_none());
         assert!(Number::from_f64(f64::INFINITY).is_none());
+    }
+
+    /// **Issue #116.** `f32::clamp` returns NaN for a NaN input (it panics only on NaN *bounds*),
+    /// so before this the public setter stored one, `number_value` turned it into `Value::Null`,
+    /// and the document that had just been saved read back as a `state.param.invalid` warning
+    /// plus a silent reset — a value the caller set, lost across a save/load with no error at the
+    /// point it went wrong. The setter now applies the same rule the file-read path applies to a
+    /// non-finite number (reset to the descriptor's default), so the invariant `number_value`
+    /// documents is actually established rather than merely assumed.
+    ///
+    /// Both kinds are covered: `Stepped` reaches the identical trap through `value.round()`,
+    /// which is also NaN-preserving.
+    #[test]
+    fn set_replaces_a_nan_with_the_default_rather_than_storing_it() {
+        let mut values = ParamValues::defaults();
+        // trim.gain_db is Continuous, eq.enabled is Stepped.
+        for key in ["trim.gain_db", "eq.enabled"] {
+            let default = values.get(key).expect("a registry key");
+            values.set(key, 6.0).ok();
+            values.set(key, f32::NAN).unwrap();
+            let stored = values.get(key).expect("a registry key");
+            assert!(stored.is_finite(), "{key} stored {stored}");
+            assert_eq!(stored, default, "{key}");
+        }
+    }
+
+    /// The consequence the issue was actually reported against: a NaN reaching `set` used to
+    /// serialise as JSON `null`, which `from_document_section` then rejected as invalid. Whatever
+    /// the setter stores, the section it produces must be numbers only and must survive the
+    /// round trip without a warning.
+    #[test]
+    fn a_document_written_after_a_nan_set_reads_back_without_a_warning() {
+        let mut values = ParamValues::defaults();
+        values.set("trim.gain_db", f32::NAN).unwrap();
+
+        let section = values.to_document_section();
+        assert!(
+            section.values().all(Value::is_number),
+            "a non-number reached the document: {section:?}"
+        );
+
+        let (restored, warnings) = ParamValues::from_document_section(&section);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(restored, values);
+    }
+
+    /// ±Infinity needs no separate filter: `f32::clamp` maps it onto the descriptor's own bound,
+    /// which is finite. Pinned so the NaN rule above is not later "simplified" into one that
+    /// sends infinities to the default too, which would silently change a saturating set into a
+    /// reset.
+    #[test]
+    fn set_saturates_an_infinite_value_to_the_descriptor_bound() {
+        let mut values = ParamValues::defaults();
+        values.set("trim.gain_db", f32::INFINITY).unwrap();
+        assert_eq!(values.get("trim.gain_db"), Some(24.0));
+        values.set("trim.gain_db", f32::NEG_INFINITY).unwrap();
+        assert_eq!(values.get("trim.gain_db"), Some(-24.0));
     }
 
     #[test]
