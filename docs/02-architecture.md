@@ -1334,6 +1334,33 @@ FR-LIB-070's "never crash Namir or the host" spirit (an emptied library is a dat
 not a crash, but the requirement's intent is the same: a missing file must degrade gracefully, not
 propagate as false information).
 
+*Consequence (added M15, 2026-08-28, from issues #65-#73).* This decision's suppression rule was
+built as one flag: a scan either saw the whole tree or it did not. That is right for cancellation
+and wrong for a directory the scanner reached and could not read, because clearing `complete` for
+the whole tree suppresses removals everywhere — one ACL-restricted folder would leave a genuinely
+deleted file elsewhere in the index forever. The rule is now two mechanisms: `complete` keeps its
+cancellation meaning, and a separate list of unreadable prefixes filters removals *under those
+prefixes only*, so the index degrades exactly where sight failed and nowhere else. A directory
+listing that fails partway, and a child whose `file_type`/`metadata` cannot be read, both feed the
+same list rather than discarding their siblings.
+
+*Consequence (added M15, 2026-08-28, from issue #67).* The settling window above is described
+against the scan's completion time. That protected only files examined in the final seconds of a
+scan: a file edited during a long scan, after its own examination, could be invisible until some
+later edit moved its mtime again. The index now records the scan's **start**, and the test is
+one-sided (`mtime >= prior_start - 2 s`), which covers every examination time in that scan since
+`start <= t` for all of them. The on-disk key was renamed with a serde alias, so an index written
+by an earlier build still loads.
+
+*Consequence (added M15, 2026-08-28, from issue #73).* The scanner did not traverse directory
+symlinks, and got loop safety for free as a result. That was never a decision — it fell out of
+asking `file_type()` and nothing else — and it left a user whose library is a symlinked collection,
+an ordinary arrangement on Linux and macOS, with an empty library and no warning. Symlinks are now
+followed, and the loop safety that shape supplied implicitly is an explicit guard: each canonical
+directory target is followed at most once, and the skipped second spelling is reported rather than
+dropped, and protected from removal, since those files are still on disk.
+
+
 **Decision D-12.3 (AQ-3 resolved — added M5)** — The index is stored as a single pretty-printed
 JSON document, written whole and replaced atomically (temp file, `sync_all`, `std::fs::rename` over
 the destination — which replaces an existing file on both Unix and Windows, so no
@@ -1369,6 +1396,22 @@ an embedded B-tree store's build-script and cross-compilation risk (both new cra
 `aarch64-linux-android`/`aarch64-apple-ios`, NFR-PORT-030) for a 5 MB rebuildable cache on a **Must**
 is a weaker case than that one was, and D-17.1 already set the precedent for how this project
 weighs that trade.
+
+*Consequence (added M15, 2026-08-28, from issues #68 and #69).* "Degrades to a full rescan" is true
+of entries and false of favourites: a rescan repopulates what it finds on disk, and a favourite mark
+exists nowhere on disk. The corruption policy was therefore destroying hand-curated, unrecoverable
+data under a warning that promised a rebuild. Favourites still ride inside the index document, and
+are additionally mirrored to a sidecar written with the same stage-and-rename discipline. Precedence
+is one-directional and deliberate: **the index document is authoritative whenever it loads**, so a
+stale sidecar can never resurrect a mark the user removed; the sidecar is read only when the
+document could not be. A sidecar write failure is not a save failure — the marks are also in the
+index that just landed, and reporting a failure for a successful save is the opposite of P8.
+
+Separately, the atomic replacement above staged through a fixed, predictable file name beside the
+destination. Two Namir processes — an ordinary arrangement, the standalone app and a plugin
+instance in a DAW — therefore staged onto each other. The staging name now carries the process id
+and a per-process counter, still beside the destination so the rename stays within one filesystem.
+
 
 **Decision D-12.4 (for RD-1)** — A library entry carries an `origin` field from the outset —
 `Local` in 1.0, extensible to a remote source later. Tone3000 integration then adds a variant
@@ -1453,6 +1496,30 @@ any audio thread** — recorded so it is not mistaken for wired-in, the same dis
 draws for the denormal guard. See that module's own doc comment for exactly when and how a future
 caller should invoke it, and §17's dependency register for the one new dependency it takes
 (`libc`, Linux/macOS only) and why.
+
+*Consequence (added M15, 2026-08-28, from issues #75, #76 and #81).* Two corrections to what this
+crate's thread-priority half actually promises. First, "elevation" was implemented as the policy's
+**maximum** priority, which on Linux is `SCHED_FIFO` 99 — where `watchdog/N` and `migration/N` live,
+and above the 50 that threaded IRQ handlers take. A runaway audio thread at 99 outranks everything
+capable of preempting it. The target is now `min + 10` (11 on Linux), expressed relative to the
+policy minimum because the two Unix ranges (1..=99 on Linux, 15..=47 on Darwin) do not overlap in
+meaning. Second, `SCHED_FIFO` is not how Darwin schedules audio: CoreAudio-grade threads are
+promoted with `thread_policy_set(..., THREAD_TIME_CONSTRAINT_POLICY, ...)`, a period/computation/
+constraint deadline contract no POSIX priority number expresses. What this module does on macOS
+raises the thread within the timeshare band and reports `Elevated`, a success materially weaker
+than the Windows and Linux paths. That is recorded rather than implemented — macOS is a secondary,
+non-1.0 target and no CI machine available to this project can exercise a Mach binding — and when
+macOS becomes supported the outcome enum will need a way to say "raised, but without a deadline
+guarantee".
+
+The "not yet called from any audio thread" note above is also out of date: both shells now call it.
+The outcome is `#[must_use]` and carries `diagnostic() -> Option<ErrorCode>` returning a catalogued
+code with no allocation, because the call happens *inside* the audio callback — a thread can only
+raise its own priority — where `namir-app`'s `stream.rs` and `namir-clap`'s `audio.rs` are both on
+`xtask rt-logging`'s audio-thread module list and may not name the logger, and a `format!` would
+trip D-7.5's allocation harness. The `Copy` outcome is carried off the audio thread and recorded
+from the UI thread.
+
 
 **Decision D-13.3** — The CLAP plugin installs to the **CLAP-specified search paths only**, and the
 per-user path is the default.
@@ -3787,3 +3854,4 @@ drift was findable.
 | 0.33 | 2026-08-12 | **M14 Phase 0: two risk rows answered in place, no decision rewritten, no code.** **R-13's stated test has fired and its reinterpretation is now written down at the row itself**, which is the point of the exercise — the partial count went **56 -> 68** against a row that said a count not falling by M12 means the mechanism is being used as a bypass. The arithmetic is recorded there: the twenty *uncovered* Musts M9a left are now zero, M9b converted twelve of them and then demoted two of its own plain tags on finding they over-claimed, and M14's A2 pass demoted two more. Every movement made the ledger weaker and truer, which is the opposite of the failure the row predicted — so the count is **demoted from a test to an indicator**, the uncovered count and the per-milestone re-reading of `uncovered:` fields are named as the replacement tests, and **the row stays open at Medium** rather than being declared mitigated, because no cheap mechanical discriminator between the two kinds of partial has been designed. **R-11 (signing) is recorded as still open and explicitly not decided** — issue #23 turns on whether 1.0 is a public release, which is an owner's question, and the signed CI path is unbuilt either way. **R-9 is unchanged and stays reopened.** Eighteen `*Consequence*` notes land in the FRS rather than here (see `01-functional-requirements.md` change log 0.8): the sub-40 kHz clause at FR-NAM-060/FR-IR-030, FR-CHAIN-070's Should dropped, NFR-PORT-030's method kept as a door-open check, FR-STATE-040's compound method, seven accepted limitations and five items recorded as still open. **No decision in this document is amended and no new D-number is added** — Phase 0 was a disposition pass over existing decisions, and where one is affected the note sits at the requirement it governs. |
 | 0.34 | 2026-08-12 | **M14 Phase 4b: A2 is compared against `NeuralAmpModelerCore` for the first time, and the comparison holds.** Two generated A2 fixtures (`a2_full.nam`, `a2_lite.nam`, seed 30, D-19.1) rendered through the pinned reference build (`3cde95c`, `-DNAM_USE_INLINE_GEMM -DNAM_ENABLE_A2_FAST=OFF`, built outside the repository) over the same `input_10s.wav` the two existing goldens use, asserted in-process: **A2-Full -132.58 dB, A2-Lite -126.46 dB**. `FR-NAM-030` and `FR-NAM-150` are promoted from `trace-partial:` to plain `trace:` **by closing their `uncovered:` fields, not by promoting the tags** — the golden set now spans all three configurations this crate runs, and FR-NAM-150's probe clause is met by the 10-second signal rather than by `a2_fixtures.rs`'s 4 000-sample probe, which was *shorter* than A2's 6 346-sample receptive field and is raised to 20 000 in the same pass. The golden bar tightens from -85 dB to FR-NAM-030's own **-90 dB**, because a plain tag cannot be carried by an assertion looser than the requirement it claims to verify; all four fixtures clear it by ≥36 dB, and the headroom that spends is recorded at the constant (M10's `Standard`-shape cross-check sat at -90.3 to -90.9 dB). **FR-NAM-110's method is performed for the first time**: `crates/namir-nam/tests/latency.rs` drives an impulse through every architecture, differences it against the model's own zero-input response, and cross-correlates — the previous evidence was two tests reading an accessor whose body is the literal `0` and asserting it equalled `0`, which would have passed unchanged had inference introduced delay. Its tag stays `trace-partial:`, narrowed to the residue in `namir-engine` (`NamStage`'s `SlotResampler` latency, asserted only as `> 0`) and re-booked M8 → M14. **R-9 is narrowed, not retired**, severity High → Medium: the silent-wrong-weight-order failure it was raised about is now excluded by a real-reference comparison, and this pass also resolves the contradiction in its own reopening text — M10's recorded "A2 Full and A2 Lite at -90.31 dB each" cannot have been an A2 measurement, since the two shapes measure -132.58 and -126.46. What stays open is stated rather than absorbed: no genuine trainer-produced A2 export has ever been loaded, so a *shared* misreading of the schema between generator, parser and reference target is invisible to every test in the tree; and upstream's default `NAM_ENABLE_A2_FAST=ON` path is not what these renders exercise — a rationale for excluding it is now recorded at `golden_reference.rs`'s header where before there was none, which is not the same as a measurement, and none was taken. Partial count 68 → 66. |
 | 0.35 | 2026-08-28 | **A manual-test document now has to say whether it was run, and the traceability gate reads that instead of the file name (issue #34).** D-18.6 gains a `*Consequence (added M15, 2026-08-28)*` note holding the verdict convention: every file under `docs/manual-tests/` carries a line beginning `**Result:` opening with one of `PASS`, `FAIL`, `PARTIAL` or `NOT EXECUTED`; only `PASS` credits a requirement; the worst line in a document wins; and a missing, tokenless or self-contradicting verdict is a **hard error** that aborts the run upstream of `--write`, `--allow-uncovered` and every exit-status term, on D-23.1's malformed-annotation footing — a bad input, not a coverage gap. `docs/manual-tests/README.md` is added as the authors' copy of the rule and is the one file exempt from it. Eight live documents carried no verdict line and were given one recording what their own prose already said; two carried a verdict line no token opened (`fr-ui-010`'s self-contradicting `PASS`, corrected to `PARTIAL`, and `fr-io-070`'s second line). No verdict was promoted and no requirement became more met: the six Musts left uncovered — FR-IO-030, FR-IO-050, FR-UI-030, FR-UI-040, FR-UI-050 and FR-UI-070 — are the same six their documents already recorded as NOT EXECUTED, PARTIAL or FAIL. |
+| 0.36 | 2026-08-28 | **A pass over the open issue tracker; five decisions gain consequence notes recording where their stated behaviour had drifted from the built one.** **D-12.1** twice: its removal-suppression rule was one flag, right for cancellation and wrong for an unreadable directory, since clearing `complete` tree-wide would leave a genuinely deleted file elsewhere in the index forever — unreadable prefixes now suppress removals under themselves only; and its settling window, described against scan *completion*, protected only files examined in a scan's final seconds and is re-anchored to the scan's start. A third note records that the scanner now follows directory symlinks: not following them was never a decision, it fell out of asking `file_type()`, and it left a user with a symlinked collection holding an empty library — the loop safety that shape supplied implicitly is now an explicit canonical-target guard. **D-12.3**: "degrades to a full rescan" is true of entries and false of favourites, which exist nowhere on disk, so the corruption policy was destroying hand-curated data under a warning promising a rebuild; favourites gain a sidecar with the index document authoritative whenever it loads, so a stale sidecar cannot resurrect a removed mark. Its staging file also carried a fixed name, so two Namir processes staged onto each other. **D-13.2**: elevation was implemented at the policy maximum, which on Linux is `SCHED_FIFO` 99 — where `watchdog/N` and `migration/N` live, above the 50 threaded IRQ handlers take — so a runaway audio thread outranked everything able to preempt it; now `min + 10`. The same note records that `SCHED_FIFO` is not Darwin's mechanism at all (CoreAudio-grade threads take `THREAD_TIME_CONSTRAINT_POLICY`, a deadline contract no priority number expresses), recorded rather than implemented, and retires that decision's "not yet called from any audio thread" line. **D-16.1** gains its own note, written by the notice work: it still described three catalogue fields while the tree has carried a fourth (`remedy`) and a one-token substitution vocabulary since M14 W10. |
