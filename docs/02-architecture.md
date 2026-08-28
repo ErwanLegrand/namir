@@ -1748,6 +1748,35 @@ identifier, a severity, and a user-facing message template.
 *Consequence:* FR-ERR-020 requires every user-visible error to map to a catalogue entry, verified
 statically. The catalogue is the single source for that check and for the user documentation.
 
+*Consequence (added M14, 2026-08-28) — an entry has **four** fields, and its template has a defined
+substitution vocabulary.* The decision above names three (identifier, severity, message template),
+and the tree has carried a fourth since M14's W10 without this decision saying so; recorded here
+rather than left to be rediscovered from the type.
+
+The fourth is `remedy: &'static str` — what the user can do — added because FR-UI-070's third clause
+("an error shall state ... what the user can do") was met by **none** of the catalogue's entries
+when a human ran `docs/manual-tests/fr-ui-070-non-modal-error-notices.md` on 2026-08-27 (issue #41).
+It is a field rather than a trailing sentence in the template for two reasons that are the same
+reason twice: nothing mechanical can tell a remedy sentence from any other sentence, so the clause
+would go back to being met by review alone — which is how it came to be met nowhere — and the UI
+cannot style or omit half of one string. All 74 entries carry one, and two checks enforce it from
+opposite sides: `xtask error-catalogue` rejects an empty literal at the source line, and
+`namir_core::assert_unique_ids` rejects an empty value in a crate's enumerated `ALL` slice.
+
+The message template's `{placeholder}` notation was decorative until the same pass: **nothing in the
+tree substituted anything**, and a template reading `The {direction} device "{device}"` reached a
+real screen with the braces in it (issue #15). `ErrorCode::render` now fills exactly one token,
+`{detail}`, from the one free-text string every error producer in the tree already carries; a
+template with no token gets the detail appended in parentheses instead. A named-field map was
+rejected — it would have threaded names through five crates to reach the same sentence, and several
+named slots plus an appended detail is what makes a notice say everything twice. `xtask
+error-catalogue` refuses any other `{...}` in a template, so the notation is now implemented rather
+than aspirational, at one token wide.
+
+This does not disturb D-16.2 below: `render` allocates, and the audio thread never reaches it —
+it never holds an `ErrorCode` at all, reporting through the telemetry ring as numbers that the
+non-RT side maps to entries.
+
 **Decision D-16.2** — The audio thread emits **numeric fault codes** through the telemetry ring.
 All formatting, allocation and logging happen on the UI or worker side.
 
