@@ -35,6 +35,11 @@
 //! plugin's real geometry, because a test that passes only in a wide default window is the defect
 //! rather than the check.
 //!
+//! **The same defect had a second axis, and M14's own fix is what put it there** -- the remedy line
+//! below doubled every row's height and the cap of sixteen bounded the list's length without
+//! bounding the space it takes, so a full list clipped its last rows off the bottom of the same
+//! editor. [`render`]'s doc comment carries that half.
+//!
 //! **The remedy line costs vertical space in the top panel**, and FR-UI-020's own manual run
 //! records that the 960x640 editor already cannot show every element at once. That cost is
 //! accepted rather than overlooked: it is paid only while a notice is showing, the notice is
@@ -52,15 +57,58 @@ use crate::host::UiNotice;
 /// How many notices a shell keeps on screen at once (see [`push_deduplicated`]).
 pub const MAX_NOTICES: usize = 16;
 
+/// The largest share of the window's height the notice list may occupy before it starts to
+/// scroll. See [`render`] for why the list needs a bound at all and why the bound is a fraction of
+/// the window rather than a number of rows.
+pub const MAX_NOTICE_AREA_FRACTION: f32 = 1.0 / 3.0;
+
 /// Renders every notice in `notices`, each as its own non-modal, dismissible line. Appends
 /// [`UiIntent::DismissNotice`] to `intents` for whichever notice's dismiss button was clicked
 /// this frame (at most one per frame, since a click can only land on one button).
+///
+/// # The list is bounded on screen, not only in memory (issue #42, vertical axis)
+///
+/// Issue #42 is "some notices can never be dismissed in the CLAP plugin", and M14 fixed the axis
+/// it was reported on: a *long* notice pushed `Dismiss` past the right edge of an editor fixed at
+/// 960x640 that `can_resize() == false`. The same pass added FR-UI-070's remedy line beneath every
+/// message and capped the list at [`MAX_NOTICES`] — which together put the identical defect on the
+/// other axis, and measurably so. Sixteen notices at ~46 px a row is ~736 px of content in a
+/// 640 px editor: driving the real `namir_ui::render` at exactly that geometry drew **thirteen**
+/// `Dismiss` buttons and clipped three away, and the top panel had by then swallowed the whole
+/// window, so not one FR-UI-020 control was painted either. A notice nobody can reach is a notice
+/// nobody can dismiss, and the plugin's escape hatch — widen the window — still does not exist.
+///
+/// So the list gets the same treatment its length already had: it is bounded, and the overflow
+/// stays reachable. The notices live in a vertical [`egui::ScrollArea`] capped at
+/// [`MAX_NOTICE_AREA_FRACTION`] of the window height, which shrinks to its content while the list
+/// is short (one notice still costs one row, not a third of the screen) and scrolls once it is
+/// not.
+///
+/// **A fraction of the window, not a row count.** A row's height depends on how far its text
+/// wraps, which depends on the width the shell gives it, so no constant number of rows is safe at
+/// every geometry — a bound in rows would be the same class of mistake as a `Dismiss` button whose
+/// position depends on the length of the label beside it. The fraction also leaves the rest of the
+/// screen its majority share by construction, which is the property FR-UI-020's single-screen
+/// layout actually needs.
 pub fn render(ui: &mut Ui, notices: &[UiNotice], intents: &mut Vec<UiIntent>) {
-    for notice in notices {
-        if render_one(ui, notice).clicked() {
-            intents.push(UiIntent::DismissNotice { id: notice.id });
-        }
+    if notices.is_empty() {
+        return;
     }
+    let max_height = ui.ctx().content_rect().height() * MAX_NOTICE_AREA_FRACTION;
+    egui::ScrollArea::vertical()
+        .id_salt("namir_ui_notices")
+        .max_height(max_height)
+        // Never shrink horizontally: the row is laid out right-to-left, so the dismiss button is
+        // placed against this area's right edge, and an area narrower than the panel would move it
+        // back inside the text's reach -- the very coupling this row's layout exists to break.
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for notice in notices {
+                if render_one(ui, notice).clicked() {
+                    intents.push(UiIntent::DismissNotice { id: notice.id });
+                }
+            }
+        });
 }
 
 /// Draws one notice's row and returns its dismiss button's `Response`.
@@ -239,9 +287,13 @@ mod tests {
     ///
     /// The detail is deliberately far longer than anything the catalogue produces -- the point is
     /// that the button's position does not depend on the text at all.
+    ///
+    /// The rectangle comes from what [`render`] itself *painted*, not from a second call to
+    /// `render_one`: since the list acquired a bounding scroll area (see `render`'s doc comment),
+    /// a row drawn outside that area is not the row a user can click, and a test that measured one
+    /// would be back to measuring a layout `render` never drew.
     #[test]
     fn a_long_notice_keeps_its_dismiss_button_reachable_in_a_960x640_editor() {
-        const EDITOR: egui::Vec2 = egui::vec2(960.0, 640.0);
         let long_detail = "C:/Users/somebody/Documents/Namir/Library/marshall/\
                            a-very-long-model-name-of-the-kind-a-capture-session-produces-\
                            plexi-1959-bright-channel-treble-boosted-take-3.nam: \
@@ -249,79 +301,117 @@ mod tests {
         let notices = vec![notice(7, SAMPLE, long_detail)];
 
         let ctx = egui::Context::default();
-        let mut button_rect = None;
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, EDITOR)),
-                ..Default::default()
-            },
-            // `render_one`, which is what `render` itself calls -- see its doc comment for why the
-            // rectangle must come from the real layout and not from a copy of it.
-            |ui| button_rect = Some(render_one(ui, &notices[0]).rect),
-        );
-        let rect = button_rect.expect("dismiss button laid out");
+        let rects = dismiss_button_rects(&ctx, &notices, EDITOR, Vec::new());
+        assert_eq!(rects.len(), 1, "one notice, one dismiss button");
         assert!(
-            rect.max.x <= EDITOR.x && rect.min.x >= 0.0,
-            "Dismiss button at {rect:?} is outside a {EDITOR:?} editor"
+            EDITOR.contains_rect(rects[0]),
+            "Dismiss button at {:?} is outside a {EDITOR:?} editor",
+            rects[0]
         );
 
-        let pos = rect.center();
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, EDITOR)),
-                events: click_at(pos),
-                ..Default::default()
-            },
-            |ui| {
-                render(ui, &notices, &mut intents);
-            },
-        );
+        let _ = ctx.run_ui(frame(EDITOR, click_at(rects[0].center())), |ui| {
+            render(ui, &notices, &mut intents);
+        });
         assert_eq!(intents, vec![UiIntent::DismissNotice { id: 7 }]);
+    }
+
+    /// **Issue #42 on its other axis.** A full [`MAX_NOTICES`] list is ~736 px of rows in a 640 px
+    /// editor that cannot be resized, so before `render` bounded the list it simply clipped the
+    /// last three notices away -- and, having taken the whole window for the top panel, painted no
+    /// FR-UI-020 control at all. Both halves are asserted here: nothing is drawn outside the
+    /// editor, and the notices stop short of owning the screen.
+    #[test]
+    fn a_full_notice_list_does_not_take_the_whole_editor() {
+        let notices: Vec<UiNotice> = (0..MAX_NOTICES as u64)
+            .map(|i| notice(i, SAMPLE, &format!("C:/Namir/Library/model-{i}.nam")))
+            .collect();
+
+        let ctx = egui::Context::default();
+        let rects = dismiss_button_rects(&ctx, &notices, EDITOR, Vec::new());
+        assert!(!rects.is_empty(), "a bounded list still shows notices");
+        for rect in &rects {
+            assert!(
+                EDITOR.contains_rect(*rect),
+                "a Dismiss button at {rect:?} falls outside a {EDITOR:?} editor that cannot be \
+                 resized -- that notice can never be removed"
+            );
+        }
+        let lowest = rects.iter().map(|r| r.max.y).fold(f32::MIN, f32::max);
+        let bound = EDITOR.height() * MAX_NOTICE_AREA_FRACTION;
+        assert!(
+            lowest <= bound,
+            "the notice list reaches {lowest} px in a {EDITOR:?} editor, past its {bound} px bound"
+        );
+    }
+
+    /// The overflow a bound creates has to stay reachable, or the bound has merely moved the
+    /// undismissable notice rather than removed it. Scrolls the notice area to its end and clicks
+    /// what is then the lowest button, which must be the **last** notice in the list.
+    ///
+    /// Unlike the two tests above this one does *not* reproduce issue #42 — an unbounded list is
+    /// trivially "scrolled to its end" — it guards the failure mode the **fix** could introduce,
+    /// which is a bound that hides notices instead of clipping them.
+    #[test]
+    fn the_last_notice_of_a_full_list_is_reachable_by_scrolling() {
+        let notices: Vec<UiNotice> = (0..MAX_NOTICES as u64)
+            .map(|i| notice(i, SAMPLE, &format!("C:/Namir/Library/model-{i}.nam")))
+            .collect();
+
+        let ctx = egui::Context::default();
+        // A wheel event applies to whatever the pointer is over, so the pointer is put inside the
+        // notice area first; the delta is far larger than the list is tall, and `egui` clamps.
+        let over_notices = egui::pos2(EDITOR.width() / 2.0, 20.0);
+        let scroll = vec![
+            egui::Event::PointerMoved(over_notices),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -4000.0),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            },
+        ];
+        let rects = dismiss_button_rects(&ctx, &notices, EDITOR, scroll);
+        let lowest = rects
+            .iter()
+            .copied()
+            .max_by(|a, b| a.center().y.total_cmp(&b.center().y))
+            .expect("a Dismiss button was drawn");
+        assert!(EDITOR.contains_rect(lowest), "{lowest:?}");
+
+        let mut intents = Vec::new();
+        let _ = ctx.run_ui(frame(EDITOR, click_at(lowest.center())), |ui| {
+            render(ui, &notices, &mut intents);
+        });
+        assert_eq!(
+            intents,
+            vec![UiIntent::DismissNotice {
+                id: MAX_NOTICES as u64 - 1
+            }],
+            "scrolled to the end, the lowest button must belong to the last notice"
+        );
     }
 
     #[test]
     fn dismissing_a_notice_emits_its_own_id_not_anothers() {
-        let ctx = egui::Context::default();
+        const WINDOW: egui::Rect =
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(500.0, 300.0));
         let notices = vec![notice(7, SAMPLE, "first"), notice(9, SAMPLE, "second")];
 
-        // Discover the second notice's dismiss-button position by driving `render`'s own per-row
-        // function for both rows, in order -- the second row's vertical position depends on the
-        // first row already having been laid out above it.
-        let mut button_pos = None;
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(500.0, 300.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                for (i, notice) in notices.iter().enumerate() {
-                    let response = render_one(ui, notice);
-                    if i == 1 {
-                        button_pos = Some(response.rect.center());
-                    }
-                }
-            },
-        );
-        let pos = button_pos.expect("dismiss button laid out");
+        let ctx = egui::Context::default();
+        let rects = dismiss_button_rects(&ctx, &notices, WINDOW, Vec::new());
+        assert_eq!(rects.len(), 2, "two notices, two dismiss buttons");
+        // The second row is the lower one; its button is the one this test means to click.
+        let second = rects
+            .iter()
+            .copied()
+            .max_by(|a, b| a.center().y.total_cmp(&b.center().y))
+            .expect("two buttons");
 
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(500.0, 300.0),
-                )),
-                events: click_at(pos),
-                ..Default::default()
-            },
-            |ui| {
-                render(ui, &notices, &mut intents);
-            },
-        );
+        let _ = ctx.run_ui(frame(WINDOW, click_at(second.center())), |ui| {
+            render(ui, &notices, &mut intents);
+        });
 
         assert_eq!(intents, vec![UiIntent::DismissNotice { id: 9 }]);
     }
@@ -334,6 +424,70 @@ mod tests {
             render(ui, &[], &mut intents);
         });
         assert!(intents.is_empty());
+    }
+
+    /// The CLAP editor's real geometry -- fixed, and `can_resize() == false`
+    /// (`crates/namir-clap/src/gui.rs`). Every layout assertion in this module is made at it,
+    /// because a check that passes only in a generous standalone window is the defect rather than
+    /// the check.
+    const EDITOR: egui::Rect =
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(960.0, 640.0));
+
+    /// One frame's input at `window`, carrying `events`.
+    fn frame(window: egui::Rect, events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(window),
+            events,
+            ..Default::default()
+        }
+    }
+
+    /// Where [`render`] actually put each `Dismiss` button, read off the shapes it painted.
+    ///
+    /// Several frames, because two `egui` behaviours make a single one unrepresentative: a scroll
+    /// area is sized from what it measured the frame *before*, so the first frame's clip rectangle
+    /// is a placeholder and nothing inside it is drawn yet; and a wheel delta is applied smoothly
+    /// over the frames that follow it rather than all at once. So `events` are delivered on the
+    /// second frame, once there is a real area under the pointer to receive them, and the
+    /// measurement is taken after the scroll has come to rest -- which is also the state the
+    /// caller's own click frame will be in.
+    ///
+    /// Going through the paint output rather than through a second call to `render_one` is the
+    /// same rule this module's `render_one` doc comment records: measure the layout that was
+    /// drawn, never a copy of it.
+    fn dismiss_button_rects(
+        ctx: &egui::Context,
+        notices: &[UiNotice],
+        window: egui::Rect,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::Rect> {
+        let mut discard = Vec::new();
+        let _ = ctx.run_ui(frame(window, Vec::new()), |ui| {
+            render(ui, notices, &mut discard);
+        });
+        let mut output = ctx.run_ui(frame(window, events), |ui| {
+            render(ui, notices, &mut discard);
+        });
+        for _ in 0..16 {
+            output = ctx.run_ui(frame(window, Vec::new()), |ui| {
+                render(ui, notices, &mut discard);
+            });
+        }
+
+        fn walk(shape: &egui::Shape, out: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == "Dismiss" => {
+                    out.push(text.visual_bounding_rect());
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut rects = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut rects);
+        }
+        rects
     }
 
     /// One press-and-release of the primary button at `pos`.

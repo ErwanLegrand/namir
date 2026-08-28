@@ -484,7 +484,7 @@ mod tests {
         // Frame 1: press on it. Pressing alone changes nothing, so nothing may reach the host yet.
         let _ = ctx.run_ui(
             frame_input(
-                0.1,
+                0.2,
                 vec![
                     egui::Event::PointerMoved(pos),
                     egui::Event::PointerButton {
@@ -543,5 +543,86 @@ mod tests {
             |ui| namir_ui.frame(ui),
         );
         assert_eq!(namir_ui.host.dispatched, dispatched);
+    }
+
+    /// **Issue #42's other axis, at the layer that owns the container.** The horizontal half of
+    /// that issue — a long notice pushing `Dismiss` past the right edge — is fixed and asserted in
+    /// `notices`' own tests. The vertical half is a property of *this* module, because it is here
+    /// that the notice list is given the top panel to live in: a full `MAX_NOTICES` list, each row
+    /// two lines tall since FR-UI-070's remedy line was added beneath the message, in a CLAP
+    /// editor fixed at 960x640 with `can_resize() == false`.
+    ///
+    /// Before `notices::render` bounded the list, that measured ~736 px of rows in a 640 px
+    /// window: three `Dismiss` buttons were clipped away entirely — undismissable, in a window
+    /// that cannot be widened, from a list nothing else removes — and the top panel had swallowed
+    /// the screen so completely that **not one FR-UI-020 control was painted**. Both halves are
+    /// asserted, by the text `render` really painted rather than by a layout constant.
+    #[test]
+    fn a_full_notice_list_leaves_the_rest_of_the_screen_on_a_960x640_editor() {
+        const EDITOR: egui::Rect =
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(960.0, 640.0));
+        const CODE: namir_core::ErrorCode = namir_core::ErrorCode::new(
+            "ui.example.file_missing",
+            namir_core::Severity::Error,
+            "The file could not be found ({detail}).",
+            "Check the file is still where the library lists it, then rescan.",
+        );
+
+        let snapshot = UiSnapshot {
+            notices: (0..crate::MAX_NOTICES as u64)
+                .map(|i| crate::host::UiNotice {
+                    id: i,
+                    code: CODE,
+                    detail: format!(
+                        "C:/Users/somebody/Documents/Namir/Library/marshall/plexi-1959-bright-\
+                         channel-take-{i}.nam: the file could not be read (os error 2)"
+                    ),
+                })
+                .collect(),
+            ..UiSnapshot::default()
+        };
+        let mut view = ViewState::default();
+        let mut intents = Vec::new();
+
+        // Two frames: `egui` sizes a panel from what it measured the frame before, so nothing
+        // inside the top panel is painted on the first one.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(frame_input(0.0, Vec::new()), |ui| {
+            render(ui, &mut view, &snapshot, &mut intents);
+        });
+        let output = ctx.run_ui(frame_input(0.1, Vec::new()), |ui| {
+            render(ui, &mut view, &snapshot, &mut intents);
+        });
+        let painted = painted_texts(&output);
+
+        for (text, rect) in &painted {
+            if text == "Dismiss" {
+                assert!(
+                    EDITOR.contains_rect(*rect),
+                    "a Dismiss button at {rect:?} falls outside a {EDITOR:?} editor that cannot \
+                     be resized -- that notice can never be removed"
+                );
+            }
+        }
+        assert!(
+            painted.iter().any(|(text, _)| text == "Dismiss"),
+            "the notices are on screen at all"
+        );
+
+        // The screen the notices share. One element from each of the other two panels, so a top
+        // panel that has taken the window cannot pass this.
+        for element in ["Library", "Input Trim"] {
+            let rect = painted
+                .iter()
+                .find(|(text, _)| text == element)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| {
+                    panic!("a full notice list left no room to paint {element:?} at all")
+                });
+            assert!(
+                EDITOR.contains_rect(rect),
+                "{element:?} was pushed to {rect:?}, outside a {EDITOR:?} editor"
+            );
+        }
     }
 }
