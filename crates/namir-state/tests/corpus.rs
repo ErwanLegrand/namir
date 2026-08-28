@@ -228,6 +228,79 @@ fn writing_the_references_fixture_back_reproduces_its_documented_section() {
     assert_eq!(written["references"], on_disk["references"]);
 }
 
+/// Issue #113 / §7.4's four-step resolution order, driven end to end against the hand-authored
+/// fixture rather than against a `FileRef` a test built in memory. The fixture's `nam` slot
+/// carries all three external hints *and* an embedded copy; resolved on a machine that has none
+/// of the three (no such library root, no such absolute path, nothing in the index — which is
+/// precisely §7.2's "a preset shared with someone whose library is configured differently, or no
+/// library at all"), the embedded copy is what makes it resolvable. Its `ir` slot, identical but
+/// for having no embed, is the control: it reports missing, with the name and hash FR-STATE-070
+/// says the user must be shown.
+#[test]
+fn the_embedded_copy_resolves_a_reference_no_configured_path_can_find() {
+    let bytes = read_corpus_file("unreleased-v1/references.namirpreset");
+    let (state, _warnings) = namir_state::State::read(&bytes).unwrap();
+
+    let nam = state.nam.expect("references.nam is present in the fixture");
+    match namir_state::resolve(&nam, &FindsNothing) {
+        namir_state::Resolution::Embedded(embedded) => {
+            // P7: what the fallback hands back really is the bytes the reference identifies.
+            assert_eq!(namir_core::ContentHash::of(&embedded.data), nam.hash);
+        }
+        other => panic!("expected the embedded fallback, got {other:?}"),
+    }
+
+    let ir = state.ir.expect("references.ir is present in the fixture");
+    match namir_state::resolve(&ir, &FindsNothing) {
+        namir_state::Resolution::Missing(missing) => {
+            assert_eq!(missing.display_name, "1960a.wav");
+            assert_eq!(missing.hash, ir.hash);
+        }
+        other => panic!("the ir slot carries no embed and must be missing, got {other:?}"),
+    }
+}
+
+/// A resolver on a machine that has none of the fixture's files — the UC-3 recipient.
+struct FindsNothing;
+
+impl namir_state::FileResolver for FindsNothing {
+    fn resolve_library_relative(&self, _rel: &namir_state::RelPath) -> Option<PathBuf> {
+        None
+    }
+    fn resolve_absolute(&self, _absolute: &str) -> Option<PathBuf> {
+        None
+    }
+    fn resolve_by_hash(&self, _hash: namir_core::ContentHash) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// Issue #112 against hand-authored bytes: unloading the model and saving over the document it
+/// came from must actually remove `references.nam`. §7's "absent means nothing of that kind is
+/// loaded" is the only way this format can express an empty slot, so a save that cannot write it
+/// cannot express the user's own gesture — the model comes back on the next load.
+#[test]
+fn unloading_a_reference_and_saving_over_the_fixture_removes_its_slot() {
+    let bytes = read_corpus_file("unreleased-v1/references.namirpreset");
+    let original = namir_state::Document::parse(&bytes).unwrap();
+    let (mut state, _warnings) = namir_state::State::read(&bytes).unwrap();
+    assert!(state.nam.is_some() && state.ir.is_some());
+
+    state.nam = None; // the user unloads the model
+    let saved = state.write_onto(&original).to_pretty_bytes();
+
+    let saved_json: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert!(
+        saved_json["references"].get("nam").is_none(),
+        "the cleared slot must be gone from the written bytes: {}",
+        saved_json["references"]
+    );
+    let (reloaded, warnings) = namir_state::State::read(&saved).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(reloaded.nam, None);
+    assert_eq!(reloaded.ir, state.ir, "the untouched slot survives intact");
+}
+
 /// A document from a build newer than this one (`format_version: 2`, greater than
 /// `namir_state::FORMAT_VERSION`) must not be rejected outright -- D-11.2's stated purpose is
 /// exactly this case. `migrate.rs`, landing later in this milestone, will add the specific

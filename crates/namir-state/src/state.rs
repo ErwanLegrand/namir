@@ -171,8 +171,23 @@ impl State {
     /// [`Self::into_document`] followed by [`Document::to_pretty_bytes`], for a caller with no
     /// reason to keep the intermediate `Document` around and nothing to preserve from an
     /// existing one — most usefully, creating a brand-new preset from scratch.
+    /// **Unchecked against [`crate::MAX_DOCUMENT_BYTES`]** — see
+    /// [`Document::to_pretty_bytes`]'s own doc comment, and [`Self::try_write`] for the form that
+    /// refuses to produce bytes [`Self::read`] would reject.
     pub fn write(&self) -> Vec<u8> {
         self.clone().into_document().to_pretty_bytes()
+    }
+
+    /// As [`Self::write`], but fails with `DOCUMENT_TOO_LARGE` rather than returning a document
+    /// over NFR-SEC-020's ceiling — the write-side half of that bound (see
+    /// [`Document::try_to_pretty_bytes`]). The only thing in this format that can realistically
+    /// reach the ceiling is FR-STATE-080's `embedded` copy: base64 costs 4/3, and
+    /// `namir_core::MAX_FILE_BYTES` admits a source file large enough that its encoded form alone
+    /// exceeds what a document may hold. A caller writing to a file or to a host's state blob
+    /// should use this one; the infallible [`Self::write`] stays for callers with nothing to
+    /// embed and no `Result` to act on.
+    pub fn try_write(&self) -> Result<Vec<u8>, StateError> {
+        self.clone().into_document().try_to_pretty_bytes()
     }
 
     /// Builds a fresh [`Document`] from this state — every section this crate owns, sorted,
@@ -197,6 +212,17 @@ impl State {
     /// [`FileRef`]'s doc comment on why an unrecognised field *inside* a single reference object
     /// is not yet preserved.
     ///
+    /// **The one thing this method deletes:** a `references` slot this state does not carry.
+    /// `merge_section` can only add keys, so `State { nam: None, .. }.write_onto(a document that
+    /// had one)` used to write the old `references.nam` straight back — the user removes a model,
+    /// saves, reloads, and it is back (issue #112; the CLAP save path is literally
+    /// `save() -> write_onto(&last_document())`). §7 of `docs/04-state-and-preset-format.md` says
+    /// "absent means nothing of that kind is loaded", and merging alone has no way to say it. So
+    /// `nam`/`ir` are removed explicitly when this state's own field is `None`. This is not a
+    /// D-11.2 exception: both keys are ones this build fully owns and rewrites on every save, and
+    /// the removal is per-key (`Document::remove_from_section`), so an unrecognised key
+    /// alongside them inside `references` still survives untouched.
+    ///
     /// **D-10.4:** if `onto` carries a legacy `global` section (D-11.2 tolerance: this build can
     /// still have read one, via [`Self::from_document`]), it is left exactly as it is here — the
     /// same treatment any other section this build no longer owns gets. It becomes inert rather
@@ -210,6 +236,12 @@ impl State {
         let mut document = onto.clone();
         document.merge_section("parameters", self.params.to_document_section());
         document.merge_section("references", references_section(&self.nam, &self.ir));
+        if self.nam.is_none() {
+            document.remove_from_section("references", "nam");
+        }
+        if self.ir.is_none() {
+            document.remove_from_section("references", "ir");
+        }
         document
     }
 }
@@ -351,6 +383,112 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(restored.nam, state.nam);
         assert_eq!(restored.ir, None);
+    }
+
+    /// Issue #112: the user removes the loaded model and saves. Before the fix, `write_onto`
+    /// could only ever *add* to `references`, so the old `nam` object was written straight back
+    /// and the removed model returned on the next load — the CLAP save path is exactly
+    /// `save() -> write_onto(&last_document())`, so this was a silent resurrection of state the
+    /// user had deliberately cleared, not merely a stale key.
+    #[test]
+    fn write_onto_clears_a_reference_the_state_no_longer_carries() {
+        let mut state = State::defaults();
+        state.nam = Some(a_reference("plexi.nam"));
+        state.ir = Some(a_reference("1960a.wav"));
+        let original = state.clone().into_document();
+
+        state.nam = None; // the user unloads the model
+        let saved = state.write_onto(&original);
+
+        let references = saved.section("references").unwrap();
+        assert!(
+            !references.contains_key("nam"),
+            "the cleared model must not be written back: {:?}",
+            references.get("nam")
+        );
+        assert!(
+            references.contains_key("ir"),
+            "the IR the user did not touch must stay"
+        );
+
+        // The whole point: the next load agrees.
+        let (restored, warnings) = State::from_document(saved);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(restored.nam, None);
+        assert_eq!(restored.ir, state.ir);
+    }
+
+    /// The same clearing, all the way through bytes rather than through `Document`s only — the
+    /// shape the CLAP host actually saves and reloads.
+    #[test]
+    fn a_cleared_reference_stays_cleared_across_a_save_and_reload() {
+        let mut state = State::defaults();
+        state.nam = Some(a_reference("plexi.nam"));
+        let original = Document::parse(&state.write()).unwrap();
+
+        state.nam = None;
+        let bytes = state.write_onto(&original).to_pretty_bytes();
+
+        let (restored, warnings) = State::read(&bytes).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(restored.nam, None);
+    }
+
+    /// Clearing a slot must not become a licence to rewrite the `references` section wholesale:
+    /// D-11.2's promise about an unrecognised key inside a section this build owns still holds
+    /// for `references`, exactly as it does for `parameters`.
+    #[test]
+    fn write_onto_preserves_an_unknown_key_inside_references_while_clearing_a_slot() {
+        let mut original = Document::empty();
+        let mut references = Map::new();
+        references.insert("nam".to_string(), a_reference("plexi.nam").to_value());
+        references.insert(
+            "cab_sim".to_string(), // a slot only a newer build knows about
+            Value::from("something this build has never heard of"),
+        );
+        original.set_section("references", references);
+
+        let state = State::defaults(); // no nam, no ir
+        let saved = state.write_onto(&original);
+
+        let saved_references = saved.section("references").unwrap();
+        assert!(!saved_references.contains_key("nam"));
+        assert_eq!(
+            saved_references.get("cab_sim"),
+            Some(&Value::from("something this build has never heard of")),
+            "an unrecognised key inside `references` must survive a save that clears a slot"
+        );
+    }
+
+    /// Issue #115's write half at the `State` level: the ceiling is enforced on the bytes this
+    /// crate hands out, not only on the bytes it is given. Driven through `Document`'s
+    /// limit-taking seam so the assertion costs microseconds; `try_write` is this exact path at
+    /// `MAX_DOCUMENT_BYTES`, which only an FR-STATE-080 embedded copy can realistically reach.
+    #[test]
+    fn a_state_whose_document_exceeds_the_ceiling_is_refused_at_write_time() {
+        let mut state = State::defaults();
+        let payload = vec![b'x'; 4096];
+        state.nam = Some(FileRef {
+            hash: ContentHash::of(&payload),
+            library_relative: None,
+            absolute: None,
+            display_name: "embedded.nam".to_string(),
+            embedded: Some(crate::EmbeddedRef {
+                media_type: "application/vnd.namir.nam+json".to_string(),
+                data: payload,
+            }),
+        });
+
+        let document = state.clone().into_document();
+        let err = document.to_pretty_bytes_within(1024).unwrap_err();
+        assert_eq!(err.code.id, crate::error_codes::DOCUMENT_TOO_LARGE.id);
+
+        // Under the real ceiling the same state writes normally, and what it writes reads back.
+        let bytes = state.try_write().unwrap();
+        assert_eq!(bytes, state.write());
+        let (restored, warnings) = State::read(&bytes).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(restored, state);
     }
 
     #[test]
