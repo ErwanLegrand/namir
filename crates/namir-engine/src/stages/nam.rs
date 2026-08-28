@@ -836,12 +836,32 @@ impl NamStage {
 
         if crossfade.remaining == 0 {
             // Deferred-finalization state (see this method's finalization block below): the fade
-            // is mathematically complete but the retire pen is still occupied, so `active` has
-            // not flipped yet. Run only the incoming slot rather than blending in an outgoing one
-            // scaled by `cos(FRAC_PI_2)` — which is -4.4e-8 in f32, not exactly zero, and would
-            // otherwise leave a faint copy of the old model in the output for as long as the
-            // deferral lasts. Skipping it also avoids paying the 2x inference cost in a state
-            // that can persist across many blocks.
+            // is mathematically complete but the retire pen was still occupied when it ended, so
+            // `active` has not flipped yet.
+            //
+            // **Try to finalize first, every block (issue #56).** This used to fall straight
+            // through to the incoming-only render, which made the state a dead end: nothing else
+            // in `process_channel0` re-tests `self.retired`, so once entered, `active` never
+            // flipped, `crossfade` never cleared and the outgoing slot never reached the pen — for
+            // the rest of the session. The consequences were permanent and all silent:
+            // `latency_samples()` kept reporting the outgoing slot (FR-CLAP-040 wrong),
+            // `telemetry.nam.handover_active` stayed pinned at 1.0, `recompute_mix_target` never
+            // re-ran (so a *first* load left the stage bypassed forever), and a later install
+            // displaced the audible slot and re-faded from the stale outgoing one. The block
+            // comment below promised exactly this recovery; it simply did not exist.
+            //
+            // The retry is one `Option::is_none()` check per block. `collect_retired` empties the
+            // pen as soon as the worker drains, so the deferral is normally over within a block or
+            // two — but nothing bounds it, which is precisely why it must be retried rather than
+            // entered once.
+            self.try_finalize_handover();
+
+            // Run only the incoming slot rather than blending in an outgoing one scaled by
+            // `cos(FRAC_PI_2)` — which is -4.4e-8 in f32, not exactly zero, and would otherwise
+            // leave a faint copy of the old model in the output for as long as the deferral lasts.
+            // Skipping it also avoids paying the 2x inference cost in a state that can persist
+            // across many blocks. `incoming_idx` names the same slot either way: a successful
+            // finalization sets `self.active` *to* it.
             if let Some(slot) = &mut self.slots[incoming_idx] {
                 slot.process_wet(
                     &self.dry[0][..n],
@@ -888,20 +908,7 @@ impl NamStage {
         }
 
         if crossfade.remaining == 0 {
-            if self.retired.is_none() {
-                // **The M2 P1 violation, closed.** This used to be `self.slots[outgoing_idx] =
-                // None`, i.e. a *drop* — freeing the outgoing `NamState`'s scratch and possibly
-                // the last `Arc<PreparedNam>` reference, on the audio thread, at the exact
-                // instant a handover completed. `take()` *moves*: nothing is dropped here, and
-                // the return ring carries the slot to a worker that can afford to free it
-                // (D-8.1 step 4). Do not "simplify" this back to an assignment.
-                self.retired = self.slots[outgoing_idx]
-                    .take()
-                    .map(|slot| Resource::nam(slot, self.prepared_for));
-                self.active = incoming_idx;
-                self.crossfade = None;
-                self.recompute_mix_target();
-            } else {
+            if !self.try_finalize_handover() {
                 // The pen is still occupied because the return ring was full when
                 // `collect_retired` last ran — i.e. the worker is not draining (D-8.1: "If the
                 // worker dies, the ring fills and memory is retained but audio continues.
@@ -910,8 +917,9 @@ impl NamStage {
                 // Only the *bookkeeping* is deferred; the audio is already correct. `theta` has
                 // saturated at FRAC_PI_2, so the outgoing slot is multiplied by cos(pi/2) and
                 // contributes nothing audible, and `process_channel0`'s own fast path above skips
-                // running it at all. The stage simply stays in this state until a later block's
-                // `collect_retired` empties the pen, then finalizes.
+                // running it at all. The stage stays in this state until a later block's
+                // `collect_retired` empties the pen — and that same fast path retries the
+                // finalization on every block until it does (issue #56).
                 //
                 // The wrong "fix" here is to drop the outgoing slot to make progress. That is
                 // exactly the bug this milestone removes; deferring costs bounded memory, and
@@ -921,6 +929,38 @@ impl NamStage {
         } else {
             self.crossfade = Some(crossfade);
         }
+    }
+
+    /// D-8.1's step-4 bookkeeping for a fade that has reached zero: move the outgoing slot into
+    /// the retire pen, flip `active` onto the incoming one, clear the crossfade and recompute the
+    /// bypass blend's target. Returns `false` — changing nothing at all — when the pen is still
+    /// occupied, which is the deferred-finalization state both callers document.
+    ///
+    /// **RT-safe:** one `Option::is_none()`, one `Option::take()` (a move, never a drop — see the
+    /// note in `install`), and three scalar assignments.
+    ///
+    /// Called from two places, and that is the fix for issue #56: once at the end of the fade in
+    /// `process_channel0`, and again on every subsequent block from that method's `remaining == 0`
+    /// fast path, so a deferral entered because the worker was not draining is left as soon as it
+    /// is.
+    fn try_finalize_handover(&mut self) -> bool {
+        if self.retired.is_some() {
+            return false;
+        }
+        let outgoing_idx = self.active;
+        // **The M2 P1 violation, closed.** This used to be `self.slots[outgoing_idx] = None`, i.e.
+        // a *drop* — freeing the outgoing `NamState`'s scratch and possibly the last
+        // `Arc<PreparedNam>` reference, on the audio thread, at the exact instant a handover
+        // completed. `take()` *moves*: nothing is dropped here, and the return ring carries the
+        // slot to a worker that can afford to free it (D-8.1 step 4). Do not "simplify" this back
+        // to an assignment.
+        self.retired = self.slots[outgoing_idx]
+            .take()
+            .map(|slot| Resource::nam(slot, self.prepared_for));
+        self.active = 1 - outgoing_idx;
+        self.crossfade = None;
+        self.recompute_mix_target();
+        true
     }
 }
 
@@ -1683,6 +1723,155 @@ mod tests {
             measured, reported as usize,
             "the stage reports {reported} samples of latency and delays the signal by {measured}: \
              FR-NAM-110 asks for the figure it reports, not one of the right order of magnitude"
+        );
+    }
+
+    /// **Issue #56: the deferred-finalization state was entered and never left.**
+    ///
+    /// When a fade reached `remaining == 0` while the retire pen was occupied, `process_channel0`
+    /// set `crossfade = Some(remaining: 0)` and skipped finalization. On every later block the
+    /// `remaining == 0` fast path returned *before* the finalization block, so `self.retired` was
+    /// never re-tested: `active` never flipped, `crossfade` never cleared, and the outgoing slot
+    /// never reached the pen — permanently, for the rest of the session, even after the worker
+    /// resumed draining. `latency_samples()` kept reporting the outgoing slot (FR-CLAP-040), the
+    /// `handover_active` reading stayed pinned at 1.0, and a later install would displace the
+    /// audible slot and re-fade from the stale outgoing one.
+    ///
+    /// The state is reached the way the engine reaches it: an install that displaces a slot still
+    /// fading in parks that slot in the pen, and the fade then completes with the pen occupied.
+    /// This test simply does not collect in between, which is what a stalled worker looks like
+    /// from inside the stage.
+    ///
+    /// Committed red-first: before the fix, the final three assertions all fail — `crossfade` is
+    /// still `Some`, `active` is still 1, and the pen is empty because the outgoing slot is stuck
+    /// in `slots[1]` forever.
+    #[test]
+    fn a_handover_deferred_by_a_full_retire_pen_finalizes_once_the_pen_clears() {
+        const SR: u32 = 48_000;
+        // 20 ms at 48 kHz = 960 samples; 2048 is comfortably past a whole fade.
+        const PAST_A_FADE: usize = 2_048;
+        // Well inside one, so the next install displaces a slot that is still fading in.
+        const MID_FADE: usize = 128;
+
+        let mut stage = stage(SR, ChannelConfig::Mono);
+
+        // First model: settles with nothing displaced, so the pen stays empty.
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(stage.active, 1);
+        assert!(stage.crossfade.is_none());
+        assert!(stage.retired.is_none());
+
+        // Second model, then a third *while the second is still fading in*: the third install
+        // displaces the second into the pen (`install`'s "a move, not a drop").
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, MID_FADE, 0.1);
+        stage.load_model(tiny_model(SR));
+        assert!(
+            stage.retired.is_some(),
+            "the displaced slot should be parked in the pen"
+        );
+
+        // Let the third model's fade run to completion with the pen still occupied -- nothing
+        // collects, which is exactly D-8.1's "the worker is not draining" case.
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(
+            stage.crossfade,
+            Some(Crossfade {
+                remaining: 0,
+                total: stage.crossfade_total_samples
+            }),
+            "the fade should have reached zero and deferred its finalization"
+        );
+        assert_eq!(
+            stage.active, 1,
+            "`active` may not flip while the pen is full"
+        );
+
+        // The worker drains: the pen empties.
+        let (mut producer, mut consumer) = crate::ring::ring::<Resource>(4);
+        {
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+        assert!(stage.retired.is_none());
+        assert!(
+            consumer.try_pop().is_some(),
+            "the displaced slot reached the ring"
+        );
+
+        // One more block is all it should take. Before the fix, no number of blocks was enough.
+        process_constant_in_chunks(&mut stage, 64, 0.1);
+        assert!(
+            stage.crossfade.is_none(),
+            "the deferred handover must finalize once the pen clears, not stay in it forever"
+        );
+        assert_eq!(
+            stage.active, 0,
+            "finalization flips `active` onto the slot that faded in"
+        );
+        assert!(
+            stage.retired.is_some(),
+            "the outgoing slot must reach the pen, not stay stuck in `slots`"
+        );
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "`recompute_mix_target` must have re-run against the newly-active slot"
+        );
+    }
+
+    /// The consequence of issue #56 that is audible rather than merely wrong on paper: a
+    /// **first** load deferred by a full pen left `mix_target` at 0.0, so the stage stayed
+    /// bypassed — silent as far as the model is concerned — for the rest of the session.
+    ///
+    /// Reached the same way as the test above, but with the pen filled by an unload rather than by
+    /// a prior model, so the deferred handover is the one that first makes a model audible.
+    #[test]
+    fn a_deferred_first_handover_does_not_leave_the_stage_bypassed_forever() {
+        const SR: u32 = 48_000;
+        const PAST_A_FADE: usize = 2_048;
+        const MID_FADE: usize = 128;
+
+        let mut stage = stage(SR, ChannelConfig::Mono);
+
+        // Get one model settled and audible, then unload it so the stage is back to nothing
+        // active -- and immediately load a replacement while that unload fade is still running,
+        // which parks the unload's own slot in the pen.
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        {
+            let (mut producer, _consumer) = crate::ring::ring::<Resource>(4);
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+        stage.unload();
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(stage.mix_target, 0.0, "an unloaded stage fades to dry");
+        {
+            // The unload's own finalization parks the formerly-active slot; clear it so the next
+            // install is the ordinary pen-empty case and the deferral this test is about is
+            // caused by the mid-fade displacement below, not by leftovers.
+            let (mut producer, _consumer) = crate::ring::ring::<Resource>(4);
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, MID_FADE, 0.1);
+        stage.load_model(tiny_model(SR));
+        assert!(stage.retired.is_some());
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(stage.mix_target, 0.0, "still deferred, still bypassed");
+
+        let (mut producer, _consumer) = crate::ring::ring::<Resource>(4);
+        {
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+        process_constant_in_chunks(&mut stage, 64, 0.1);
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "once the pen clears the stage must become audible again, not stay bypassed forever"
         );
     }
 

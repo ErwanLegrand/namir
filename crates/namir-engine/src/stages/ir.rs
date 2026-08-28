@@ -548,10 +548,16 @@ impl IrStage {
 
         if crossfade.remaining == 0 {
             // Deferred-finalization state -- see the finalization block below and `nam.rs`'s
-            // identical fast path. The fade is mathematically complete but the retire pen is
-            // still occupied, so run only the incoming slot rather than blending in an outgoing
-            // one scaled by `cos(FRAC_PI_2)` (-4.4e-8 in f32, not exactly zero) and paying its
-            // convolution cost for as long as the deferral lasts.
+            // identical fast path, whose comment carries the full account of issue #56. The fade
+            // is mathematically complete but the retire pen was still occupied when it ended, so
+            // retry the finalization first, on every block: falling straight through to the render
+            // made this state a dead end nothing re-tested, permanently for the session.
+            self.try_finalize_handover();
+
+            // Then run only the incoming slot rather than blending in an outgoing one scaled by
+            // `cos(FRAC_PI_2)` (-4.4e-8 in f32, not exactly zero) and paying its convolution cost
+            // for as long as the deferral lasts. `incoming_idx` names the same slot either way: a
+            // successful finalization sets `self.active` *to* it.
             if let Some(slot) = &mut self.slots[incoming_idx] {
                 let produced = slot.channel_count();
                 slot.process_wet(&self.dry[0][..n], &mut self.crossfade_incoming, n);
@@ -617,21 +623,10 @@ impl IrStage {
         }
 
         if crossfade.remaining == 0 {
-            if self.retired.is_none() {
-                // **The M2 P1 violation, closed** -- identical change and identical reasoning to
-                // `nam.rs`'s finalization block; read that one for the full note. This used to be
-                // `self.slots[outgoing_idx] = None`, a drop of the outgoing `IrState`'s
-                // convolution ring buffers (and possibly the last `Arc<PreparedIr>`) on the audio
-                // thread. `take()` moves instead. Do not "simplify" this back to an assignment.
-                self.retired = self.slots[outgoing_idx]
-                    .take()
-                    .map(|slot| Resource::ir(slot, self.prepared_for));
-                self.active = incoming_idx;
-                self.crossfade = None;
-                self.recompute_mix_target();
-            } else {
+            if !self.try_finalize_handover() {
                 // Return ring full, worker not draining: defer the bookkeeping only. The audio is
-                // already correct (the fast path above runs the incoming slot alone). D-8.1's
+                // already correct (the fast path above runs the incoming slot alone, and retries
+                // this finalization on every block until the pen clears -- issue #56). D-8.1's
                 // "degradation, not failure (P8)". Dropping the outgoing slot here to make
                 // progress is the exact bug this milestone removes.
                 self.crossfade = Some(crossfade);
@@ -639,6 +634,26 @@ impl IrStage {
         } else {
             self.crossfade = Some(crossfade);
         }
+    }
+
+    /// `nam.rs`'s `try_finalize_handover`, for this stage -- same contract, same two call sites,
+    /// same `false`-means-the-pen-is-still-occupied return. Read that one's doc comment.
+    fn try_finalize_handover(&mut self) -> bool {
+        if self.retired.is_some() {
+            return false;
+        }
+        let outgoing_idx = self.active;
+        // **The M2 P1 violation, closed** -- identical change and identical reasoning to
+        // `nam.rs`'s. This used to be `self.slots[outgoing_idx] = None`, a drop of the outgoing
+        // `IrState`'s convolution ring buffers (and possibly the last `Arc<PreparedIr>`) on the
+        // audio thread. `take()` moves instead. Do not "simplify" this back to an assignment.
+        self.retired = self.slots[outgoing_idx]
+            .take()
+            .map(|slot| Resource::ir(slot, self.prepared_for));
+        self.active = 1 - outgoing_idx;
+        self.crossfade = None;
+        self.recompute_mix_target();
+        true
     }
 }
 
@@ -972,6 +987,70 @@ mod tests {
                 reference[i]
             );
         }
+    }
+
+    /// **Issue #56's Ir half.** `nam.rs`'s
+    /// `a_handover_deferred_by_a_full_retire_pen_finalizes_once_the_pen_clears` carries the full
+    /// account; this is the same defect in the same shape, in `process_wet`'s `remaining == 0`
+    /// fast path, and it needs its own test because the two stages carry two copies of the state
+    /// machine.
+    ///
+    /// Committed red-first: before the fix, `crossfade` is still `Some(remaining: 0)` and `active`
+    /// is still 1 after the pen has been drained and further blocks processed.
+    #[test]
+    fn a_handover_deferred_by_a_full_retire_pen_finalizes_once_the_pen_clears() {
+        const SR: u32 = 48_000;
+        /// 20 ms at 48 kHz is 960 samples; this is comfortably past a whole fade.
+        const PAST_A_FADE: usize = 2_048;
+        /// Well inside one, so the next install displaces a slot still fading in.
+        const MID_FADE: usize = 128;
+
+        let mut stage = stage(SR, ChannelConfig::Mono);
+        let taps = [0.6f32, -0.2, 0.1];
+
+        stage.load_ir(mono_ir(SR, &taps, 64));
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(stage.active, 1);
+        assert!(stage.crossfade.is_none());
+        assert!(stage.retired.is_none());
+
+        stage.load_ir(mono_ir(SR, &taps, 64));
+        process_constant_in_chunks(&mut stage, MID_FADE, 0.1);
+        stage.load_ir(mono_ir(SR, &taps, 64));
+        assert!(
+            stage.retired.is_some(),
+            "the displaced slot should be parked in the pen"
+        );
+
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(
+            stage.crossfade,
+            Some(Crossfade {
+                remaining: 0,
+                total: stage.crossfade_total_samples
+            }),
+            "the fade should have reached zero and deferred its finalization"
+        );
+        assert_eq!(
+            stage.active, 1,
+            "`active` may not flip while the pen is full"
+        );
+
+        let (mut producer, mut consumer) = crate::ring::ring::<Resource>(4);
+        {
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+        assert!(consumer.try_pop().is_some());
+
+        process_constant_in_chunks(&mut stage, 64, 0.1);
+        assert!(
+            stage.crossfade.is_none(),
+            "the deferred handover must finalize once the pen clears, not stay in it forever"
+        );
+        assert_eq!(stage.active, 0);
+        assert!(stage.retired.is_some());
+        assert_eq!(stage.mix_target, 1.0);
     }
 
     #[test]
