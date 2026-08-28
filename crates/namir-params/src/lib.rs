@@ -11,7 +11,10 @@
 //!   [`ParamKind::Continuous`]), and a [`ValueFormat`].
 //! - FR-PARAM-020 — [`ParamId::from_key`]'s permanent FNV-1a derivation (see `id.rs`) plus
 //!   [`render_manifest`]/[`check_manifest`]'s enforcement that an existing entry's identifier or
-//!   kind never changes and a retired entry is tombstoned, never silently dropped.
+//!   kind never changes and a retired entry is tombstoned, never silently dropped. Since
+//!   `params.lock`'s format version 2 the manifest also records each parameter's range, default
+//!   and stepped-value fingerprint, so a change to *those* is a diff a reviewer sees rather than a
+//!   silent reinterpretation of every saved preset (issue #121).
 //! - FR-PARAM-050 — [`ParamKind::Stepped`], with named values and a [`descriptor::StepIndex`]
 //!   value-representation type, instead of forcing discrete choices through a continuous range.
 //! - D-10.2 — the `stage_instance` field on every descriptor, present and zeroed now so RD-2's
@@ -121,6 +124,21 @@ mod tests {
         for d in REGISTRY {
             assert!(keys.insert(d.key), "duplicate key: {}", d.key);
             assert!(ids.insert(d.id), "duplicate id for key: {}", d.key);
+        }
+    }
+
+    /// Issue #119: the duplicate check above is about a key's relationship to *other* keys, and
+    /// nothing checked a descriptor against itself. `ParamDescriptor::new` is a `const fn` that
+    /// accepts a `default` outside its own range and a `StepIndex` past the end of its own values,
+    /// `format_value` clamps the latter rather than reporting it, and every consumer that indexes
+    /// `values` directly gets a panic instead. Spans every entry, including any added after this
+    /// test was written — the shipped registry, not a transcribed list of it.
+    #[test]
+    fn every_registry_descriptor_satisfies_its_own_invariants() {
+        for d in REGISTRY {
+            if let Err(problem) = d.validate() {
+                panic!("{}: {problem}", d.key);
+            }
         }
     }
 

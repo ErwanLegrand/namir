@@ -71,14 +71,43 @@ pub const DROPPED: ErrorCode = ErrorCode::new(
      accounted for and can never be handed to a different parameter.",
 );
 
-/// A line in the old manifest text didn't parse as either a comment, the `format_version` line,
-/// or a well-formed `key id kind tombstoned` data line.
+/// A line in the old manifest text didn't parse as either a comment, a well-formed
+/// `format_version <n>` line, or a well-formed `key id kind live|tombstoned <shape...>` data line,
+/// every shape column being a `name=value` pair.
 pub const MALFORMED_LINE: ErrorCode = ErrorCode::new(
     "params.manifest.malformed_line",
     Severity::Error,
     "A line in the manifest text could not be parsed.",
     "Restore params.lock from version control and regenerate it with `cargo run -p xtask -- \
      params-lock --write` rather than editing it by hand.",
+);
+
+/// The manifest declares a `format_version` this build cannot read: either newer than
+/// [`crate::FORMAT_VERSION`], or not a number at all. Reported alone, because every other finding
+/// under an unknown line grammar would be a guess — before this code existed, a future file was
+/// reported as a pile of `MALFORMED_LINE`s instead.
+pub const FORMAT_VERSION_UNSUPPORTED: ErrorCode = ErrorCode::new(
+    "params.manifest.format_version_unsupported",
+    Severity::Error,
+    "params.lock declares a format version this build cannot read: {detail}.",
+    "Build from a revision whose namir-params writes that format version. Do not regenerate the \
+     file with an older build: that would overwrite a manifest written by newer tooling, tombstones \
+     included. An *older* format version needs none of this -- it is migrated by `cargo run -p \
+     xtask -- params-lock --write`.",
+);
+
+/// A descriptor in the new set contradicts itself: a default outside its own range, a stepped
+/// default index past the end of its values, a non-finite bound. `ParamDescriptor::new` is a
+/// `const fn` that accepts all of these, and since format version 2 the manifest records the range,
+/// the default and the stepped-value fingerprint — so an inconsistent descriptor would be written
+/// into the checked-in file as fact.
+pub const INVALID_DESCRIPTOR: ErrorCode = ErrorCode::new(
+    "params.manifest.invalid_descriptor",
+    Severity::Error,
+    "A parameter descriptor contradicts its own declared value space: {detail}.",
+    "Correct the descriptor in its stage's module under crates/namir-params/src. A default has to \
+     lie inside the range it belongs to, and a stepped default index has to index its own values \
+     list.",
 );
 
 /// One diagnosed manifest problem: a catalogued [`ErrorCode`] plus a `detail` string naming the
@@ -110,6 +139,8 @@ const ALL: &[ErrorCode] = &[
     DUPLICATE_KEY,
     DROPPED,
     MALFORMED_LINE,
+    FORMAT_VERSION_UNSUPPORTED,
+    INVALID_DESCRIPTOR,
 ];
 
 #[cfg(test)]
