@@ -6358,14 +6358,30 @@ properties), NFR-RT-040.
   had already landed when that was written.
 - **Two gates in the documented set never ran during this branch's work, and neither was claimed
   green at the time.** *Clippy* ran, but on `rustc 1.94.1`; `trunk`'s `4b0d49a` fixes lints new in
-  **1.98**. **Closed after the merge:** the sandbox is now on 1.98 and
-  `cargo clippy --workspace --all-targets -- -D warnings` is **clean on CI's exact compiler**.
-  *`cargo deny check`* still could not run — `cargo-deny` is not installed here. What is checked
-  instead, and is the reason this is a note rather than a risk: the licence and advisory surface is
-  **unchanged** from `trunk`. `Cargo.lock` gains no dependency on this branch, `deny.toml`'s diff is
-  its `# trace-partial:` annotation text with no `allow` or `deny` entry touched, and the manifest
-  changes are `[[bench]]` declarations. `trunk` passes the gate; this branch does not move what the
-  gate reads. CI runs both properly on the merge.
+  **1.98**. *`cargo deny check`* could not run at all — `cargo-deny` was not installed. What was
+  checked instead, and the reason this was a note rather than a risk: the licence and advisory
+  surface is **unchanged** from `trunk`. `Cargo.lock` gains no dependency on this branch,
+  `deny.toml`'s diff is its `# trace-partial:` annotation text with no `allow` or `deny` entry
+  touched, and the manifest changes are `[[bench]]` declarations. `trunk` passes the gate; this
+  branch does not move what the gate reads.
+
+  **Both are closed, and so is the gap they were symptoms of (2026-08-27, after the merge.)** The
+  sandbox is on **1.98 — CI's exact compiler** — where
+  `cargo clippy --workspace --all-targets -- -D warnings` is clean; `cargo-deny 0.20.2` is installed
+  and `cargo deny check` reports **`advisories ok, bans ok, licenses ok, sources ok`**, confirming
+  by measurement what the paragraph above argued by inspection. Beyond those two commands, **the
+  whole of AGENTS.md's "Full local gate" now runs here** — all sixteen, verified in one pass on
+  1.98: `fmt`, `clippy -D warnings`, `test --workspace --no-fail-fast`,
+  `test -p namir-clap --features host-ext-tests`, the eleven `xtask` subcommands, and
+  `cargo deny check`. Every one green.
+
+  **That is the correction that matters, and it is not a tidy-up.** The reason this milestone's
+  local gate stayed green through three CI failures is that it was a *partial proxy* for CI — a
+  compiler release behind on lints, no coverage, no licence audit. It is not a proxy any more. The
+  uncomfortable part is how cheap the repair was: two of the three gaps were one `cargo install`
+  away and the third a `rustup update`, and all three were written down as environmental
+  limitations without first being tried. That is this milestone's own theme — a check that exists
+  and is never run — aimed at the environment instead of at the tests.
 - **FR-UI-070 is fixable but not fixed in the ledger's eyes.** All eight defects behind it are
   closed. Its cell moves when a human re-runs the fifteen steps, and not before.
 
