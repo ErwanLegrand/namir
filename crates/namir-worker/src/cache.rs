@@ -80,7 +80,18 @@ pub struct ResourceCache {
 
 static SHARED: OnceLock<Arc<ResourceCache>> = OnceLock::new();
 
-/// Reaping starts once a map exceeds this many entries; the threshold then tracks the live count.
+/// Reaping starts once a map holds more than this many entries, and from then on runs on every
+/// miss. **The floor is the whole rule** — there is no second, live-count term.
+///
+/// Issue #110: this line used to end "the threshold then tracks the live count", describing a
+/// `len > max(REAP_FLOOR, 2 * live)` rule the code has never implemented. The comment was the
+/// wrong half, and this is the corrected text rather than the missing term, deliberately. A sweep
+/// runs only on a *miss*, and a miss has just parsed a whole file — tens to hundreds of
+/// milliseconds — so an O(n) `retain` over a few dozen `Weak`s is invisible beside what it is
+/// amortised against. The live-count term would buy nothing measurable, would need the live count
+/// carried across calls to avoid counting it every time, and would deliberately let dead entries
+/// accumulate to twice the live set before reclaiming any — which is the residue NFR-PERF-070
+/// cares about, kept for longer, in exchange for a saving nothing can observe.
 const REAP_FLOOR: usize = 64;
 
 impl ResourceCache {
@@ -250,7 +261,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Amortised reaping: only on a miss (which has just paid for a whole file parse, so an O(n) sweep
-/// is invisible), and only once the map has grown past both a floor and twice its live count.
+/// is invisible), and only once the map has grown past [`REAP_FLOOR`] — see that constant for why
+/// the floor is the whole condition.
 fn maybe_reap<K, V>(map: &mut HashMap<K, Weak<V>>)
 where
     K: std::hash::Hash + Eq,
@@ -294,6 +306,59 @@ mod tests {
 
     fn rate(hz: u32) -> SampleRate {
         SampleRate::new(hz).unwrap()
+    }
+
+    /// **Issue #110, the rule as it actually is.** Past [`REAP_FLOOR`] the next sweep removes
+    /// every dead entry, whatever the live count is — which is the assertion that tells that rule
+    /// apart from the `len > max(REAP_FLOOR, 2 * live)` one [`REAP_FLOOR`]'s comment used to
+    /// describe. With 65 entries live, *that* rule would not sweep until the map reached 130, so
+    /// the five dead entries below would still be there afterwards.
+    ///
+    /// Driven against [`maybe_reap`] directly rather than through 71 cached models: the divergence
+    /// the issue reports is wholly inside this function, it is generic over its map's types, and
+    /// the `.nam` parses a cache-level version needs cost ten seconds to assert the same thing.
+    #[test]
+    fn a_sweep_past_the_floor_removes_dead_entries_whatever_the_live_count() {
+        let live: Vec<Arc<usize>> = (0..=REAP_FLOOR).map(Arc::new).collect();
+        let mut map: HashMap<usize, Weak<usize>> =
+            live.iter().map(|a| (**a, Arc::downgrade(a))).collect();
+        for i in 0..5 {
+            let doomed = Arc::new(1_000 + i);
+            map.insert(*doomed, Arc::downgrade(&doomed));
+            // `doomed` dies here, leaving a `Weak` that still occupies its slot.
+        }
+        assert_eq!(map.len(), REAP_FLOOR + 6);
+
+        maybe_reap(&mut map);
+
+        assert_eq!(
+            map.len(),
+            REAP_FLOOR + 1,
+            "every dead entry must go, leaving exactly the live ones"
+        );
+        assert!(map.values().all(|w| w.strong_count() > 0));
+        drop(live);
+    }
+
+    /// The floor's other side: at or below it nothing is swept, even a map that is entirely dead.
+    /// Reaping is amortised against a file parse, and a handful of `Weak`s is not worth a sweep —
+    /// [`ResourceCache::reap`] is the explicit hook for a caller that wants one anyway.
+    #[test]
+    fn a_sweep_at_the_floor_leaves_the_map_alone() {
+        let mut map: HashMap<usize, Weak<usize>> = HashMap::new();
+        for i in 0..REAP_FLOOR {
+            let doomed = Arc::new(i);
+            map.insert(i, Arc::downgrade(&doomed));
+        }
+        assert_eq!(map.len(), REAP_FLOOR);
+
+        maybe_reap(&mut map);
+
+        assert_eq!(
+            map.len(),
+            REAP_FLOOR,
+            "at the floor the sweep does not run, so even dead entries stay"
+        );
     }
 
     /// **FR-CLAP-090's core mechanism:** two loads of the same content share one copy of the

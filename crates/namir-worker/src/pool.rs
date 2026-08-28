@@ -88,6 +88,24 @@ struct Shared {
 pub struct ThreadPool {
     shared: Arc<Shared>,
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// This pool's own worker threads, by id, fixed at construction. Read by exactly one decision:
+    /// whether a [`Self::shutdown`] caller that found the handle list already drained may *wait*
+    /// for the join to finish or must return at once — see that method's doc comment (issue #111).
+    worker_ids: Vec<std::thread::ThreadId>,
+    /// Set once every handle taken by a [`Self::shutdown`] caller has been joined, so a concurrent
+    /// caller can wait for that rather than returning on an empty list.
+    joined: (Mutex<bool>, Condvar),
+}
+
+/// Publishes "the threads are joined" however the join loop ends, so a concurrent waiter is
+/// released even if the loop unwinds rather than returning.
+struct PublishJoined<'a>(&'a (Mutex<bool>, Condvar));
+
+impl Drop for PublishJoined<'_> {
+    fn drop(&mut self) {
+        *lock(&self.0.0) = true;
+        self.0.1.notify_all();
+    }
 }
 
 impl ThreadPool {
@@ -107,7 +125,7 @@ impl ThreadPool {
             ready: Condvar::new(),
             shutdown: AtomicBool::new(false),
         });
-        let threads = (0..threads.max(1))
+        let threads: Vec<_> = (0..threads.max(1))
             .map(|_| {
                 let shared = Arc::clone(&shared);
                 // Incremented on *this* thread, before the spawn, so the count is already exact by
@@ -122,7 +140,9 @@ impl ThreadPool {
             .collect();
         Self {
             shared,
+            worker_ids: threads.iter().map(|t| t.thread().id()).collect(),
             threads: Mutex::new(threads),
+            joined: (Mutex::new(false), Condvar::new()),
         }
     }
 
@@ -174,6 +194,22 @@ impl ThreadPool {
     /// meant. Skipping detaches that one thread — it still observes the shutdown flag and exits on
     /// its own — which is a leak of one handle in a path that should not be reachable at all, and
     /// strictly better than wedging the thread that asked for the shutdown.
+    ///
+    /// # Two callers at once, which is not the same as a re-entrant one (issue #111)
+    ///
+    /// Draining the list is what makes the re-entrant case terminate, but "found an empty list"
+    /// covers two quite different callers, and returning at once is right for only one of them.
+    /// A **re-entrant** caller is a pool thread of *this* pool: whoever is joining is joining that
+    /// very thread, so waiting is a guaranteed deadlock, and it returns immediately. Any **other**
+    /// caller — a genuinely independent thread that simply lost the race to the handle list — is
+    /// entitled to the contract in the first paragraph, so it waits for the caller that took the
+    /// handles to finish joining them. That distinction is why the pool records its own threads'
+    /// ids: it is the only way to tell the two apart from inside `&self`.
+    ///
+    /// What the wait cannot cover, and no implementation could: when the *joining* caller is
+    /// itself a pool thread, its own handle was skipped, so "joined" means "every thread but the
+    /// re-entrant one". A waiter released by such a caller is told about one thread that is still
+    /// running — the same thread that, by construction, cannot be waited for by anyone.
     pub fn shutdown(&self) {
         {
             // Published under the queue lock, so `spawn`'s check of it cannot straddle the store.
@@ -183,12 +219,37 @@ impl ThreadPool {
         self.shared.ready.notify_all();
 
         let handles = std::mem::take(&mut *lock(&self.threads));
+        if handles.is_empty() {
+            self.await_join();
+            return;
+        }
+
+        let _publish = PublishJoined(&self.joined);
         let current = std::thread::current().id();
         for handle in handles {
             if handle.thread().id() == current {
                 continue;
             }
             let _ = handle.join();
+        }
+    }
+
+    /// Waits for whichever [`Self::shutdown`] caller took the handle list to finish joining it —
+    /// unless this thread is one of the pool's own workers, in which case that caller is waiting
+    /// for *this* thread and returning at once is the only non-deadlocking answer. Also the path a
+    /// second, later `shutdown` (or the `Drop` after an explicit one) takes, where the flag is
+    /// already set and this returns immediately.
+    fn await_join(&self) {
+        if self.worker_ids.contains(&std::thread::current().id()) {
+            return;
+        }
+        let mut joined = lock(&self.joined.0);
+        while !*joined {
+            joined = self
+                .joined
+                .1
+                .wait(joined)
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 
@@ -444,6 +505,53 @@ mod tests {
             "the dropped job must have released what it captured"
         );
         assert_eq!(captured.load(Ordering::SeqCst), 0, "and never have run");
+    }
+
+    /// **Issue #111.** Two *independent* threads calling `shutdown` at the same time: the one that
+    /// loses the race to the handle list must still not return until the threads are gone, because
+    /// that return is what `clap_plugin.destroy`'s caller reads as permission to unload the
+    /// library. Before the fix it found an empty list and returned at once, so the contract held
+    /// for exactly one of the two callers.
+    ///
+    /// The assertion is symmetric on purpose — whichever caller takes the handles does the
+    /// joining, and the test does not care which — so it does not depend on the two threads
+    /// interleaving in any particular order.
+    #[test]
+    fn a_second_concurrent_shutdown_also_waits_for_the_threads() {
+        let pool = Arc::new(ThreadPool::with_threads(2));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = mpsc::channel();
+
+        let job_finished = Arc::clone(&finished);
+        pool.spawn(move || {
+            started_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            job_finished.store(true, Ordering::Release);
+        });
+        started_rx.recv().expect("the job must start");
+
+        let callers: Vec<_> = (0..2)
+            .map(|i| {
+                let pool = Arc::clone(&pool);
+                let finished = Arc::clone(&finished);
+                std::thread::spawn(move || {
+                    // Staggered so the second caller arrives while the first is inside its join
+                    // loop, which is the condition being tested. Both orders are asserted the
+                    // same way, so a stagger that misses only makes the test weaker, never flaky.
+                    std::thread::sleep(std::time::Duration::from_millis(50 * i));
+                    pool.shutdown();
+                    finished.load(Ordering::Acquire)
+                })
+            })
+            .collect();
+
+        for (i, caller) in callers.into_iter().enumerate() {
+            assert!(
+                caller.join().unwrap(),
+                "shutdown caller {i} returned while a job was still running"
+            );
+        }
+        assert_eq!(pool.threads(), 0);
     }
 
     /// The self-join guard. A job that happens to hold the last reference to whatever owns the pool
