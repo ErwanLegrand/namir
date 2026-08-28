@@ -47,13 +47,18 @@ pub const UNSUPPORTED_HEAD_CONFIG: ErrorCode = ErrorCode::new(
      default settings produces one.",
 );
 
-/// A layer array's `activation` string is not one of `Tanh`, `ReLU`, `Sigmoid`, `Identity`.
+/// A layer array's `activation` names something outside the vocabulary `wavenet.rs`'s
+/// `Activation` implements: `Tanh`, `ReLU`, `Sigmoid`, `Identity`, `LeakyReLU`, `SiLU`,
+/// `Hardswish`, `Softsign`, `LeakyHardtanh` (either casing, matching the reference's own
+/// `type_map`) and `PReLU`. M10 grew that set from A1's first four to these ten; this doc comment
+/// and the remedy below said four until issue #51.
 pub const UNSUPPORTED_ACTIVATION: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_activation",
     Severity::Error,
     "This model uses an activation function that is not supported.",
-    "Load a model whose layers use Tanh, ReLU, Sigmoid or Identity -- the four Namir implements. \
-     Re-export from the trainer with a standard activation.",
+    "Load a model whose layers use Tanh, ReLU, Sigmoid, Identity, LeakyReLU, SiLU, Hardswish, \
+     Softsign, LeakyHardtanh or PReLU -- the ten Namir implements. Re-export from the trainer \
+     with a standard activation.",
 );
 
 /// `config.layers` is empty — there is no WaveNet stack to build at all.

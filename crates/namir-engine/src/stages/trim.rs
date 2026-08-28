@@ -23,7 +23,7 @@
 //! Trim is not in FR-CHAIN-020's bypassable list, so unlike Gate/Nam/Ir/Eq this stage has no
 //! dry/wet crossfade machinery.
 
-use namir_core::db_to_linear;
+use namir_core::{SampleRate, db_to_linear};
 use namir_dsp::{DcBlocker, GainRamp, Meter};
 use namir_params::ParamKind;
 use namir_params::stages::trim::{DC_BLOCKER_ENABLED, GAIN_DB};
@@ -99,11 +99,8 @@ impl StagePrep for TrimPrep {
             }
         };
 
-        let mut gain_ramp = GainRamp::new(sample_rate, GAIN_RAMP_TIME_CONSTANT_MS);
-        gain_ramp.set_target_db(gain_default_db);
-
         Ok(TrimStage {
-            gain_ramp,
+            gain_ramp: gain_ramp_at_default(sample_rate, gain_default_db),
             dc_blocker: DcBlocker::new(sample_rate, DC_BLOCKER_CORNER_HZ),
             dc_blocker_enabled: dc_blocker_default_on,
             meter: Meter::new(sample_rate),
@@ -219,6 +216,16 @@ impl Stage for TrimStage {
     }
 }
 
+/// Issue #127's follow-up: the one place this stage's gain ramp is constructed, so `prepare` and the
+/// test that pins its start point cannot drift apart. `GainRamp::new_at_db` rather than
+/// `GainRamp::new` followed by `set_target_db`: the latter leaves `current` at unity and `target`
+/// at the default, so the first ~25 ms of audio after every prepare, sample-rate change or
+/// re-prepare ramps from 0 dB to the parameter's real default. That is inaudible only because
+/// `trim.gain_db` happens to default to 0.0 dB today — see `GainRamp::new_at_db`'s own doc comment.
+fn gain_ramp_at_default(sample_rate: SampleRate, default_db: f32) -> GainRamp {
+    GainRamp::new_at_db(sample_rate, GAIN_RAMP_TIME_CONSTANT_MS, default_db)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +266,50 @@ mod tests {
             offset = end;
         }
         buf[buf.len() - 1]
+    }
+
+    /// Issue #127's follow-up. The defect is invisible at the shipped 0.0 dB default — a ramp from
+    /// unity to unity has nowhere to travel — so this drives the same constructor `prepare` uses
+    /// with a default that is *not* unity, which is the shape the trap is set for. Red against
+    /// `GainRamp::new` + `set_target_db`: that starts `current` at 1.0 and the first block fades.
+    #[test]
+    fn the_gain_ramp_is_built_settled_at_a_non_unity_default() {
+        let sample_rate = SampleRate::new(48_000).unwrap();
+        let mut ramp = gain_ramp_at_default(sample_rate, -12.0);
+        assert!(
+            (ramp.current_db() - (-12.0)).abs() < 1e-4,
+            "the ramp starts at {} dB, not the -12.0 dB default it was built with",
+            ramp.current_db()
+        );
+
+        let expected = db_to_linear(-12.0);
+        let mut buf = [1.0f32; 64];
+        ramp.process(&mut buf);
+        for (i, x) in buf.iter().enumerate() {
+            assert!(
+                (x - expected).abs() < 1e-6,
+                "sample {i} of the first block is {x}, not {expected} -- the ramp is \
+                 travelling to its default instead of starting there"
+            );
+        }
+    }
+
+    /// The other half: `prepare` really does route through gain_ramp_at_default, so the assertion above is
+    /// about this stage and not just about `namir-dsp`. At the shipped default this is a
+    /// tripwire rather than a live check -- it starts failing the day the default moves and the
+    /// construction has drifted back.
+    #[test]
+    fn a_prepared_stage_starts_settled_at_the_gain_default() {
+        let stage = stage(ChannelConfig::Mono);
+        let default_db = match GAIN_DB.kind {
+            ParamKind::Continuous { default, .. } => default,
+            ParamKind::Stepped { .. } => unreachable!("trim.gain_db is declared Continuous"),
+        };
+        assert!(
+            (stage.gain_ramp.current_db() - default_db).abs() < 1e-4,
+            "a freshly prepared stage's ramp sits at {} dB, not its {default_db} dB default",
+            stage.gain_ramp.current_db()
+        );
     }
 
     // trace: FR-IN-010
