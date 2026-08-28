@@ -46,7 +46,7 @@ pub use entry::{
 };
 pub use error::{LibraryError, LibraryWarning};
 pub use favourites::Favourites;
-pub use fs::{DirEntryInfo, ScanFs, StdFs};
+pub use fs::{DirEntryInfo, DirListing, ScanFs, StdFs};
 pub use index::Index;
 pub use probe::{kind_from_extension, probe};
 pub use resolver::{LibraryResolver, RootsOnlyResolver};
