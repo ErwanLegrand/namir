@@ -100,6 +100,32 @@ fn truncate(data: &[u8], rng: &mut impl Rng) -> Vec<u8> {
     data[..cut].to_vec()
 }
 
+/// Appends one segment to a JSON Pointer, escaping it per RFC 6901 §3: `~` becomes `~0` and `/`
+/// becomes `~1`, in that order (reversing the order would re-escape the `~` the second rule just
+/// introduced).
+///
+/// Not a formality. Every pointer in this module is built by string concatenation and then handed
+/// to `serde_json`'s `pointer`/`pointer_mut`, which un-escape what they are given — so an
+/// unescaped `/` inside a key silently *splits* the segment and the lookup resolves to `None`.
+/// `drop_field`, `corrupt_number`, `null_field` and `retype_field` all treat `None` as "nothing to
+/// do" and return the input, which puts a byte-identical duplicate of the seed file into the fuzz
+/// corpus in place of a mutant: a mutation kind that appears to have run and did nothing. Keys
+/// carrying `/` or `~` are reachable in real input — `.nam` files pass training metadata through
+/// verbatim — so this is a live case, not a theoretical one.
+fn push_pointer_segment(path: &str, segment: &str) -> String {
+    let mut out = String::with_capacity(path.len() + segment.len() + 1);
+    out.push_str(path);
+    out.push('/');
+    for ch in segment.chars() {
+        match ch {
+            '~' => out.push_str("~0"),
+            '/' => out.push_str("~1"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Walks a JSON value, collecting every `(container, key)` pair addressable for field removal —
 /// `container` is a JSON Pointer (RFC 6901) to the object that owns `key`. Recurses into arrays
 /// too (indices become pointer segments) so a field nested inside `config.layers[1]` is as
@@ -109,12 +135,12 @@ fn collect_object_keys(value: &Value, path: &str, out: &mut Vec<(String, String)
         Value::Object(map) => {
             for (k, v) in map {
                 out.push((path.to_string(), k.clone()));
-                collect_object_keys(v, &format!("{path}/{k}"), out);
+                collect_object_keys(v, &push_pointer_segment(path, k), out);
             }
         }
         Value::Array(items) => {
             for (i, v) in items.iter().enumerate() {
-                collect_object_keys(v, &format!("{path}/{i}"), out);
+                collect_object_keys(v, &push_pointer_segment(path, &i.to_string()), out);
             }
         }
         _ => {}
@@ -127,12 +153,12 @@ fn collect_number_paths(value: &Value, path: &str, out: &mut Vec<String>) {
         Value::Number(_) => out.push(path.to_string()),
         Value::Object(map) => {
             for (k, v) in map {
-                collect_number_paths(v, &format!("{path}/{k}"), out);
+                collect_number_paths(v, &push_pointer_segment(path, k), out);
             }
         }
         Value::Array(items) => {
             for (i, v) in items.iter().enumerate() {
-                collect_number_paths(v, &format!("{path}/{i}"), out);
+                collect_number_paths(v, &push_pointer_segment(path, &i.to_string()), out);
             }
         }
         _ => {}
@@ -203,7 +229,7 @@ fn object_mut<'a>(
 /// The current value of `container_ptr`'s `key` field, addressed the same way
 /// [`collect_object_keys`] built the pointer.
 fn child<'a>(value: &'a Value, container_ptr: &str, key: &str) -> Option<&'a Value> {
-    value.pointer(&format!("{container_ptr}/{key}"))
+    value.pointer(&push_pointer_segment(container_ptr, key))
 }
 
 /// Replaces one random object field's value with `null`, keeping the key. See
@@ -310,6 +336,59 @@ mod tests {
     #[test]
     fn truncate_on_empty_input_does_not_panic() {
         assert_eq!(mutate(&[], Mutation::Truncate, 1), Vec::<u8>::new());
+    }
+
+    /// A key containing `/` or `~` used to defeat every JSON-aware mutation kind: the pointer to
+    /// its container was built by raw concatenation, `serde_json` un-escaped it back into a
+    /// different path, the lookup missed, and `drop_field`/`corrupt_number`/`null_field`/
+    /// `retype_field` all returned the input **unchanged** — writing a byte-identical copy of the
+    /// seed file into the corpus as if it were a mutant. Both special characters are reachable in
+    /// real input, since `.nam` files carry exporter training-metadata keys through verbatim.
+    ///
+    /// Every addressable field in this document sits behind such a key, so *whichever* field a
+    /// given seed picks, the mutation has to change something. Swept over many seeds rather than
+    /// pinned to one: which field a seed reaches is an implementation detail, "no seed produces a
+    /// no-op" is the property.
+    #[test]
+    fn a_key_containing_a_slash_or_a_tilde_is_still_mutable() {
+        let data = serde_json::json!({
+            "a/b": {"c~d": 1, "e/~f": [2, 3]},
+            "g~1h": {"i//j": 4}
+        })
+        .to_string()
+        .into_bytes();
+
+        for mutation in [
+            Mutation::DropField,
+            Mutation::CorruptNumber,
+            Mutation::NullField,
+            Mutation::RetypeField,
+        ] {
+            for seed in 0..40u64 {
+                let mutated = mutate(&data, mutation, seed);
+                assert_ne!(
+                    mutated, data,
+                    "{mutation:?} with seed {seed} silently returned its input unchanged: the \
+                     JSON Pointer for a key containing `/` or `~` did not resolve"
+                );
+                // The fallback byte flip would also change the bytes -- but only by corrupting
+                // the JSON. These four kinds are meant to produce a structurally *valid*
+                // document with one field changed, which is what makes them different seeds for
+                // a fuzzer than `ByteFlip` already is.
+                serde_json::from_slice::<Value>(&mutated).unwrap_or_else(|e| {
+                    panic!("{mutation:?} with seed {seed} fell back to a byte flip: {e}")
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn pointer_segments_are_escaped_per_rfc_6901() {
+        assert_eq!(push_pointer_segment("", "plain"), "/plain");
+        assert_eq!(push_pointer_segment("/a", "b/c"), "/a/b~1c");
+        assert_eq!(push_pointer_segment("/a", "b~c"), "/a/b~0c");
+        // `~` first, then `/`: escaping in the other order would turn `~` into `~01`.
+        assert_eq!(push_pointer_segment("", "~/"), "/~0~1");
     }
 
     #[test]
