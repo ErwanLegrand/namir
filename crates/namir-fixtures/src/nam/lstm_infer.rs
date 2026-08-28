@@ -92,9 +92,12 @@ impl<'a> WeightReader<'a> {
     }
 }
 
-/// `activations::sigmoid`, `activations.h:64-67`.
+/// `activations::sigmoid`, `activations.h:64-67`. Evaluated through [`crate::detmath`] rather than
+/// `f32::exp` for the reason that module's doc comment gives: this runs inside the calibration
+/// pass whose result becomes the bytes of a checked-in fixture, and the platform libm is not
+/// bit-identical across platforms.
 fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
+    crate::detmath::sigmoid_f32(x)
 }
 
 /// One LSTM cell: upstream's `LSTMCell` (`lstm.h:17-61`), weights and evolving state together,
@@ -158,11 +161,12 @@ impl<'a> LstmCell<'a> {
         // Every c[k] first (`lstm.cpp:61-63`) ...
         for k in 0..hidden_size {
             self.c[k] = sigmoid(self.ifgo[f_off + k]) * self.c[k]
-                + sigmoid(self.ifgo[i_off + k]) * self.ifgo[g_off + k].tanh();
+                + sigmoid(self.ifgo[i_off + k]) * crate::detmath::tanh_f32(self.ifgo[g_off + k]);
         }
         // ... then every h[k], from the just-updated c (`lstm.cpp:65-66`).
         for k in 0..hidden_size {
-            self.xh[input_size + k] = sigmoid(self.ifgo[o_off + k]) * self.c[k].tanh();
+            self.xh[input_size + k] =
+                sigmoid(self.ifgo[o_off + k]) * crate::detmath::tanh_f32(self.c[k]);
         }
     }
 
@@ -287,8 +291,8 @@ mod tests {
             pre(gate_order[2]),
             pre(gate_order[3]),
         );
-        let c = sigmoid(zf) * c_prev + sigmoid(zi) * zg.tanh();
-        let h = sigmoid(zo) * c.tanh();
+        let c = sigmoid(zf) * c_prev + sigmoid(zi) * crate::detmath::tanh_f32(zg);
+        let h = sigmoid(zo) * crate::detmath::tanh_f32(c);
         (h, c)
     }
 
