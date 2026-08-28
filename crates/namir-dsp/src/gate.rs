@@ -261,38 +261,116 @@ mod tests {
         assert_eq!(gate.status(), GateStatus::Closed);
     }
 
-    // trace: FR-GATE-020
-    #[test]
-    fn hysteresis_prevents_chatter_on_a_slowly_decaying_signal() {
+    /// E2, the low-E fundamental of a standard-tuned guitar: the lowest note the instrument
+    /// ahead of this gate actually produces, and the hardest case for the detector, whose
+    /// rectified ripple grows as the carrier frequency falls towards its own time constant.
+    const LOW_E_HZ: f64 = 82.41;
+
+    /// FR-GATE-010's hold range (0..500 ms): both ends, the default, and the values between where
+    /// hold and hysteresis trade off. The test below filters this list rather than spanning it,
+    /// and the two settings the filter drops are the subject of its `// uncovered:` field.
+    const FRS_HOLD_MS: [f32; 8] = [0.0, 1.0, 5.0, 10.0, 30.0, 100.0, 250.0, 500.0];
+
+    /// Counts transitions into `Closing` — FR-GATE-020's "close event" — while a low-E note
+    /// decaying from -10 dBFS to about -97 dBFS over 5 s passes down through the gate's
+    /// threshold (-70 dBFS) and its hysteresis band.
+    ///
+    /// The carrier is the whole point. A bare decaying envelope, which is what this test used
+    /// before, is monotonic at the detector's output, so it crosses the close threshold once
+    /// whatever the parameters are: it reports one close event with the hysteresis removed
+    /// entirely, and so cannot falsify the requirement it was annotated for (issue #125). A real
+    /// note is a carrier, the detector sees its rectified ripple, and the ripple is what
+    /// hysteresis exists to bridge.
+    fn close_events_on_a_decaying_low_e(hold_ms: f32, hysteresis_db: f32) -> u32 {
         let sample_rate = 48_000u32;
         let mut gate = NoiseGate::new(sr(sample_rate));
-        // A smoothly, slowly decaying "envelope" (no carrier ripple, so the only reason for
-        // multiple close events would be missing hysteresis, not envelope-follower artefacts).
-        // Starts well above threshold, decays over several seconds down through the threshold
-        // region and on to silence.
-        let total = sample_rate as usize * 5;
-        // Starts comfortably above the open threshold (-70 dBFS) and, over the 5 s window, decays
-        // to well below the close threshold (threshold - hysteresis) — about -97 dBFS by the end
-        // — so the envelope actually crosses the hysteresis band once, rather than asymptoting
-        // to a level still above it.
+        gate.set_params(GateParams {
+            hold_ms,
+            hysteresis_db,
+            ..GateParams::default()
+        });
+
+        // Starts comfortably above the open threshold and, over the 5 s window, decays to well
+        // below the close threshold (threshold - hysteresis) — so the note actually crosses the
+        // hysteresis band once, rather than asymptoting to a level still above it.
         let start_linear = namir_core::db_to_linear(-10.0);
         let tau = (sample_rate as f64) * 0.5; // slow decay relative to detector/attack times.
+        let radians_per_sample = 2.0 * std::f64::consts::PI * LOW_E_HZ / sample_rate as f64;
 
         let mut closing_transitions = 0u32;
         let mut prev_status = gate.status();
-        for n in 0..total {
-            let amplitude = start_linear * (-(n as f64) / tau).exp() as f32;
-            let mut sample = [amplitude];
+        for n in 0..sample_rate as usize * 5 {
+            let envelope = start_linear * (-(n as f64) / tau).exp() as f32;
+            let mut sample = [envelope * (radians_per_sample * n as f64).sin() as f32];
             gate.process(&mut sample);
             if gate.status() == GateStatus::Closing && prev_status != GateStatus::Closing {
                 closing_transitions += 1;
             }
             prev_status = gate.status();
         }
+        closing_transitions
+    }
 
+    // trace-partial: FR-GATE-020
+    // uncovered: FR-GATE-020 — the method ("exactly one close event") is asserted over
+    // uncovered: FR-GATE-010's hold range from 5 ms up. At 0 and 1 ms the same decaying low-E
+    // uncovered: note produces 62 and 61 close events with the shipped 3 dB gap: the 1 ms
+    // uncovered: detector ripples about 9 dB peak-to-peak on an 82 Hz carrier and the gap is
+    // uncovered: narrower than the ripple. That is a gate defect rather than a test gap — 12 dB
+    // uncovered: of hysteresis, or a detector whose release is slow relative to the lowest
+    // uncovered: program frequency, produces exactly one at every hold — so the two settings are
+    // uncovered: left unasserted rather than pinned to today's numbers; closes M8
+    #[test]
+    fn hysteresis_prevents_chatter_on_a_decaying_low_e_note() {
+        // (a) The requirement's own method, over the hold settings it holds for. 5 ms is the
+        //     shortest one, and at 5 ms it is hysteresis and not hold that carries it — see (b).
+        for hold_ms in FRS_HOLD_MS.into_iter().filter(|&ms| ms >= 5.0) {
+            let events = close_events_on_a_decaying_low_e(hold_ms, 3.0);
+            assert_eq!(
+                events, 1,
+                "hold {hold_ms} ms: expected exactly one transition into Closing, got {events}"
+            );
+        }
+
+        // (b) The falsifier for (a)'s shortest hold: with the hysteresis gap removed and nothing
+        //     else changed, the same stimulus chatters. Without this the assertion above would
+        //     rest on hold — every value from 10 ms up reports one close event at 0 dB of
+        //     hysteresis, because a hold longer than the ripple period absorbs the ripple by
+        //     itself, which is the second half of what made the old test unfalsifiable.
+        let without_hysteresis = close_events_on_a_decaying_low_e(5.0, 0.0);
+        assert!(
+            without_hysteresis > 1,
+            "hold 5 ms with no hysteresis should chatter, got {without_hysteresis} close events \
+             — the assertion above is then resting on hold, not on hysteresis"
+        );
+
+        // (c) At the bottom of FR-GATE-010's hold range hysteresis is the only mechanism left, so
+        //     this is where the requirement's own sentence — "the level at which the gate closes
+        //     shall be measurably below the level at which it opens" — is what is measured.
+        //     Widening the gap must reduce the chatter monotonically, and a gap wider than the
+        //     detector's ripple must remove it entirely.
+        let sweep: Vec<(f32, u32)> = [0.0f32, 1.0, 3.0, 6.0, 12.0, 24.0]
+            .into_iter()
+            .map(|db| (db, close_events_on_a_decaying_low_e(0.0, db)))
+            .collect();
+        assert!(
+            sweep[0].1 > 1,
+            "hold 0 ms with no hysteresis should chatter, got {} close events",
+            sweep[0].1
+        );
+        for pair in sweep.windows(2) {
+            let ((narrow_db, narrow), (wide_db, wide)) = (pair[0], pair[1]);
+            assert!(
+                wide <= narrow,
+                "widening hysteresis from {narrow_db} dB to {wide_db} dB raised the close-event \
+                 count from {narrow} to {wide}"
+            );
+        }
+        let (widest_db, widest) = *sweep.last().unwrap();
         assert_eq!(
-            closing_transitions, 1,
-            "expected exactly one transition into Closing, got {closing_transitions}"
+            widest, 1,
+            "hold 0 ms at {widest_db} dB of hysteresis — wider than the detector's ripple on this \
+             carrier — should close exactly once, got {widest}"
         );
     }
 
