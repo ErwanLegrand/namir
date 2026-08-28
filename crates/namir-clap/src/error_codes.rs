@@ -38,6 +38,30 @@ pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode::new(
      the plugin.",
 );
 
+/// A named preset could not be placed: this environment has no per-user configuration directory
+/// (so [`crate::presets::preset_dir`] resolved nothing), or the name the user typed is not one
+/// that can name a plain file inside it. `namir_ui::UiIntent::SavePreset`'s own doc comment makes
+/// rejecting such a name the host's responsibility, and this is that rejection made visible
+/// instead of silent.
+pub const PRESET_UNAVAILABLE: ErrorCode = ErrorCode::new(
+    "clap.preset.unavailable",
+    Severity::Warning,
+    "The preset could not be saved: {detail}.",
+    "Pick a name without slashes, colons or other characters a filename cannot contain. If no \
+     preset folder exists at all, Namir's standalone application creates one the first time it \
+     saves a preset.",
+);
+
+/// A preset file could not be written or read back — a full disk, a read-only folder, a file
+/// another program holds open.
+pub const PRESET_IO_FAILED: ErrorCode = ErrorCode::new(
+    "clap.preset.io_failed",
+    Severity::Error,
+    "The preset file could not be read or written ({detail}).",
+    "Check that the preset folder exists and is writable, then try again. namir.log records the \
+     exact path and the operating system's own reason.",
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,6 +72,8 @@ mod tests {
             LIBRARY_UNAVAILABLE,
             GUI_INVALID_PARENT,
             INVALID_SAMPLE_RATE,
+            PRESET_UNAVAILABLE,
+            PRESET_IO_FAILED,
         ]);
     }
 }

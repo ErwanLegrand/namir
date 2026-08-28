@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use namir_core::ContentHash;
-use namir_state::FileRef;
+use namir_state::{FileRef, RelPath};
 use namir_worker::{LoadSource, Target};
 
 use crate::shared::SharedInner;
@@ -94,11 +94,13 @@ fn record_reference(
 ) {
     let reference = FileRef {
         hash,
-        // A full library-relative path needs the matching root identity, which
-        // `namir_library::LibraryEntry` does not carry back to the caller today (only the
-        // resolved absolute path) -- recorded as `absolute` (FR-STATE-070's second resolution
-        // candidate) rather than its first, library-relative one. See this module's doc comment.
-        library_relative: None,
+        // FR-STATE-070's **first** resolution candidate, and the one that makes a preset portable
+        // between two machines whose library sits at two different absolute paths. It used to be
+        // a hardcoded `None` here on the grounds that `namir_library::LibraryEntry` hands back
+        // only the resolved absolute path -- but the root it was found under is not a mystery,
+        // it is one of the roots this instance's own `LibraryService` is configured with, and
+        // stripping it off is all "library-relative" means (issue #96's other half).
+        library_relative: library_relative_reference(shared, path),
         absolute: Some(path.to_string_lossy().into_owned()),
         display_name,
         embedded: None,
@@ -107,6 +109,113 @@ fn record_reference(
         Target::Nam => shared.set_nam_ref(Some(reference)),
         Target::Ir => shared.set_ir_ref(Some(reference)),
     }
+}
+
+/// `path` expressed relative to whichever of this instance's library roots contains it, or `None`
+/// if it lies outside all of them (a file the user loaded from somewhere else entirely, for which
+/// there is no library-relative form to record).
+///
+/// The first containing root wins, matching the order `namir_library::LibraryResolver` itself
+/// tries them in, so a path recorded here resolves back to the same file it came from.
+fn library_relative_reference(shared: &SharedInner, path: &Path) -> Option<RelPath> {
+    shared.library_roots().iter().find_map(|root| {
+        let relative = path.strip_prefix(root).ok()?;
+        RelPath::from_relative_path(relative).ok()
+    })
+}
+
+/// FR-STATE-030's save half: write this instance's current state to `<preset dir>/<name>`.
+///
+/// On the pool, not the GUI thread, for the same reason every other job in this module is: it
+/// creates a directory, serialises a document and writes a file. Every failure it can meet — no
+/// preset directory on this system, a name that cannot be a filename, a document over
+/// NFR-SEC-020's ceiling, a write the OS refused — becomes an FR-UI-070 notice rather than a
+/// silently dropped click.
+pub(crate) fn spawn_save_preset(shared: Arc<SharedInner>, name: String) {
+    let inner = Arc::clone(&shared);
+    shared.pool.spawn(move || {
+        let shared = inner;
+        let Some(dir) = crate::presets::preset_dir() else {
+            shared.push_notice(
+                crate::error_codes::PRESET_UNAVAILABLE,
+                "this system has no per-user configuration directory to keep presets in",
+            );
+            return;
+        };
+        let Some(path) = crate::presets::preset_path(&dir, &name) else {
+            shared.push_notice(
+                crate::error_codes::PRESET_UNAVAILABLE,
+                format!("{name:?} is not a usable preset name"),
+            );
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            shared.push_notice(
+                crate::error_codes::PRESET_IO_FAILED,
+                format!("{}: {e}", dir.display()),
+            );
+            return;
+        }
+
+        // The same document a host `state` save produces -- D-11.2's write-back included, so a
+        // preset written by a build that did not understand every section still carries them --
+        // and the same *checked* writer, so a preset this build cannot read back is never written.
+        let document = shared.snapshot_state().write_onto(&shared.last_document());
+        let bytes = match document.try_to_pretty_bytes() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                shared.push_notice(e.code, e.detail);
+                return;
+            }
+        };
+        match std::fs::write(&path, &bytes) {
+            Ok(()) => {
+                shared.set_last_document(document);
+                shared.mark_clean();
+                shared.mark_presets_stale();
+            }
+            Err(e) => shared.push_notice(
+                crate::error_codes::PRESET_IO_FAILED,
+                format!("{}: {e}", path.display()),
+            ),
+        }
+    });
+}
+
+/// FR-STATE-030's recall half: load the preset at `path` onto this instance.
+///
+/// Follows the host-driven `state` load exactly (`crate::state_ext`) — the same
+/// `adopt_document_bytes`, the same `spawn_recall` afterwards — because a `.namirpreset` and a
+/// host's state blob are the same document. The two differences are both about who is asking:
+/// the bytes come from a file rather than a `clap_istream`, and the host has to be told its
+/// cached parameter values are stale, which a GUI-thread caller cannot do itself (see
+/// `crate::main_thread`'s `notify_params_changed`).
+pub(crate) fn spawn_recall_preset(shared: Arc<SharedInner>, path: PathBuf) {
+    let inner = Arc::clone(&shared);
+    shared.pool.spawn(move || {
+        let shared = inner;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                shared.push_notice(
+                    namir_worker::error_codes::FILE_UNREADABLE,
+                    format!("{}: {e}", path.display()),
+                );
+                return;
+            }
+        };
+        if let Err(e) = crate::state_ext::adopt_document_bytes(&shared, &bytes) {
+            shared.push_notice(e.code, e.detail);
+            return;
+        }
+        // The mirror now holds values the host has never seen. It cannot be told from here --
+        // this is a pool thread and `HostParams::rescan` is `[main-thread]` -- so the request is
+        // parked for whichever main-thread callback comes next.
+        shared
+            .params_rescan_pending
+            .store(true, std::sync::atomic::Ordering::Release);
+        spawn_recall(Arc::clone(&shared));
+    });
 }
 
 /// FR-STATE-030/050's replay: whatever `shared`'s `ParamMirror`/resource references currently
@@ -129,7 +238,15 @@ pub(crate) fn spawn_recall(shared: Arc<SharedInner>) {
             return; // Nothing to replay; the common case for a brand-new instance.
         }
         let index = shared.library_snapshot().index;
-        let roots: Vec<PathBuf> = Vec::new();
+        // **Issue #96: the real roots, off the `LibraryService` this instance already holds.**
+        // This was a hardcoded `Vec::new()`, so `LibraryResolver::resolve_library_relative` could
+        // never succeed here and FR-STATE-070's *first* resolution candidate was dead in the
+        // plugin: a preset carrying a `library_relative` reference resolved in `namir-app` (which
+        // passes `LibraryService::roots()`) and fell through to hash search -- or reported Missing
+        // -- in `namir-clap`. That is an FR-CFG-020 parity divergence, and the same "the two
+        // shells' library wiring drifted apart" failure `crate::shared`'s own module doc comment
+        // records one layer up for the bootstrap itself.
+        let roots = shared.library_roots();
         let resolver = namir_library::LibraryResolver::new(&index, &roots);
         shared.with_instance(|instance| {
             let outcome = instance.recall(&shared.cache, &state, &resolver);
@@ -159,4 +276,79 @@ fn library_target(shared: &SharedInner, path: &Path) -> Option<Target> {
         namir_library::ItemKind::Nam => Target::Nam,
         namir_library::ItemKind::Ir => Target::Ir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::SharedInner;
+
+    fn temp_config_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "namir-clap-worker-jobs-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// **Issue #96's other half.** A file loaded from inside a library root is recorded with
+    /// FR-STATE-070's *first* resolution candidate, not only its absolute path — that is the one
+    /// field that survives the project being opened on another machine whose library sits
+    /// somewhere else.
+    #[test]
+    fn a_file_under_a_library_root_is_recorded_library_relative() {
+        let config = temp_config_dir("relative");
+        let shared = SharedInner::new_at(&config);
+        let path = config.join("Library").join("marshall").join("jcm800.nam");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{}").unwrap();
+
+        record_reference(
+            &shared,
+            Target::Nam,
+            ContentHash::of(b"{}"),
+            "jcm800.nam".to_string(),
+            &path,
+        );
+
+        let reference = shared.nam_ref().expect("the reference must be recorded");
+        assert_eq!(
+            reference.library_relative.as_ref().map(|r| r.as_str()),
+            Some("marshall/jcm800.nam"),
+            "a hardcoded None here is why a preset's library_relative reference resolved in \
+             namir-app and missed in the plugin"
+        );
+        assert_eq!(
+            reference.absolute,
+            Some(path.to_string_lossy().into_owned())
+        );
+
+        let _ = std::fs::remove_dir_all(&config);
+    }
+
+    /// A file from outside every root has no library-relative form, and inventing one would be
+    /// worse than recording none: it would resolve, on another machine, to a different file.
+    #[test]
+    fn a_file_outside_every_root_records_no_library_relative_form() {
+        let config = temp_config_dir("outside");
+        let shared = SharedInner::new_at(&config);
+        let path = config.join("elsewhere.nam");
+        std::fs::write(&path, b"{}").unwrap();
+
+        record_reference(
+            &shared,
+            Target::Ir,
+            ContentHash::of(b"{}"),
+            "elsewhere.nam".to_string(),
+            &path,
+        );
+
+        let reference = shared.ir_ref().expect("the reference must be recorded");
+        assert!(reference.library_relative.is_none());
+        assert!(reference.absolute.is_some());
+
+        let _ = std::fs::remove_dir_all(&config);
+    }
 }

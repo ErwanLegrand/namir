@@ -23,6 +23,11 @@ use crate::{UiIntent, meter};
 #[derive(Default)]
 pub struct ViewState {
     library: LibraryViewState,
+    /// What the user has typed into the preset-name box, between the frame they type it and the
+    /// frame they press Save. This crate's own transient state -- a half-typed preset name is not
+    /// engine state and never reaches a host, which is exactly why it lives here rather than in a
+    /// [`UiSnapshot`] field the host would have to echo back every frame.
+    preset_name: String,
     /// The brand mark's uploaded texture, `None` until the first frame draws it. Cached here
     /// rather than re-uploaded per frame -- see `brand`'s module doc comment for why this crate's
     /// own view state is the right owner for it.
@@ -58,6 +63,7 @@ pub fn render(
                 );
             }
         });
+        preset_controls(ui, snapshot, &mut view.preset_name, intents);
         notices::render(ui, &snapshot.notices, intents);
     });
 
@@ -93,18 +99,105 @@ pub fn render(
                         .as_deref()
                         .unwrap_or("(no IR loaded)"),
                 );
-                param_section(ui, "Impulse Response", "ir.", &snapshot.params, intents);
+                // Heading already drawn above the IR-name label this section belongs to -- see
+                // `param_controls`' doc comment (issue #103).
+                param_controls(ui, "ir.", &snapshot.params, intents);
 
                 param_section(ui, "EQ", "eq.", &snapshot.params, intents);
 
-                ui.heading("Output");
+                // No `ui.heading("Output")` here: the meter row below is labelled "Output" and
+                // both controls under it are named "Output ...", so a heading would be the third
+                // "Output" on four consecutive rows -- the same duplication issue #103 reports,
+                // with the meter as the element in between. Mirrors the input side, where the
+                // "Input" meter likewise stands as its own row above its controls.
                 meter::render(ui, "Output", snapshot.output_meter);
-                param_section(ui, "Output", "out.", &snapshot.params, intents);
+                param_controls(ui, "out.", &snapshot.params, intents);
                 render_single(ui, &OUTPUT_CEILING_DB, &snapshot.params, intents);
 
                 ui.separator();
                 render_single(ui, &GLOBAL_BYPASS, &snapshot.params, intents);
             });
+    });
+}
+
+/// FR-STATE-030's two controls: name a preset and save it, or pick one the host listed and
+/// recall it. Appends [`UiIntent::SavePreset`] / [`UiIntent::RecallPreset`] for whichever the user
+/// operated this frame.
+///
+/// # Why here, and why these two shapes (issue #100)
+///
+/// FR-STATE-030 is a Must and this crate is the only GUI, so a save and a recall gesture have to
+/// exist here or they exist nowhere. Before this row, `UiSnapshot::unsaved_changes` was rendered
+/// two labels to the left as "* unsaved changes" and `UiIntent` had no variant that could resolve
+/// it: the screen stated a problem and offered no control for it. The row is placed beside that
+/// indicator for exactly that reason.
+///
+/// **Save takes a name; recall takes a path.** Neither is a file dialog, and that asymmetry is
+/// D-5.1's, not a shortcut. This crate may not depend on `namir-platform`, so it cannot know where
+/// a preset directory is; it therefore hands the host a *name* to place, and can only offer for
+/// recall the paths the host itself listed in [`UiSnapshot::presets`]. A host that wants a real
+/// file picker can still open one when it receives either intent -- which is also where
+/// NFR-PORT-030's "no blocking dialog on an audio-affecting path" has to be honoured, since only
+/// the host knows what its own dialog would block.
+///
+/// The save button is disabled while the box is empty rather than emitting an empty name: "a
+/// **named** preset" is the requirement's own wording, and a host handed an empty name could only
+/// invent a filename or refuse.
+fn preset_controls(
+    ui: &mut egui::Ui,
+    snapshot: &UiSnapshot,
+    preset_name: &mut String,
+    intents: &mut Vec<UiIntent>,
+) {
+    ui.horizontal(|ui| {
+        let label = ui
+            .add(egui::Label::new("Preset").sense(egui::Sense::hover()))
+            .on_hover_text(
+                "Save the current settings under a name, or recall one you saved earlier. \
+                 Presets are interchangeable between the standalone application and the plugin.",
+            );
+        let entry = ui
+            .add(
+                egui::TextEdit::singleline(preset_name)
+                    .hint_text("Preset name")
+                    .desired_width(160.0),
+            )
+            .labelled_by(label.id);
+
+        let name = preset_name.trim().to_string();
+        // Enter inside the box saves too -- the same gesture the button is, for a user whose
+        // hands are already on the keyboard (FR-UI-030's "operable by keyboard").
+        let entered = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let save = ui
+            .add_enabled(!name.is_empty(), egui::Button::new("Save preset"))
+            .on_hover_text("Save the current settings as a preset under the name to the left.");
+        if !name.is_empty() && (save.clicked() || entered) {
+            intents.push(UiIntent::SavePreset { name });
+        }
+
+        let mut recalled: Option<std::path::PathBuf> = None;
+        let has_presets = !snapshot.presets.is_empty();
+        ui.add_enabled_ui(has_presets, |ui| {
+            egui::ComboBox::from_id_salt("namir_ui_preset_recall")
+                .selected_text(if has_presets {
+                    "Recall preset"
+                } else {
+                    "No saved presets"
+                })
+                .show_ui(ui, |ui| {
+                    for preset in &snapshot.presets {
+                        // `false`: this is a menu of actions, not a selection that persists --
+                        // nothing in a snapshot says which preset is "current", and claiming one
+                        // was would be the same class of lie `audio_mode_label` refuses to tell.
+                        if ui.selectable_label(false, &preset.name).clicked() {
+                            recalled = Some(preset.path.clone());
+                        }
+                    }
+                });
+        });
+        if let Some(path) = recalled {
+            intents.push(UiIntent::RecallPreset { path });
+        }
     });
 }
 
@@ -125,10 +218,8 @@ fn audio_mode_label(mode: &crate::host::AudioModeStatus) -> String {
     format!("{name} mode — {}", mode.device_name)
 }
 
-/// One [`param_control`] for every `REGISTRY` entry whose key starts with `prefix`, under a
-/// heading -- reads the live registry rather than a hand-maintained per-section list, so a
-/// parameter added to a stage's descriptor module (`namir-params/src/stages/*.rs`) appears here
-/// automatically.
+/// A heading, then [`param_controls`] for `prefix` -- the ordinary section, for the four stages
+/// whose heading has nothing between it and its own controls.
 fn param_section(
     ui: &mut egui::Ui,
     title: &str,
@@ -137,6 +228,26 @@ fn param_section(
     intents: &mut Vec<UiIntent>,
 ) {
     ui.heading(title);
+    param_controls(ui, prefix, params, intents);
+}
+
+/// One [`param_control`] for every `REGISTRY` entry whose key starts with `prefix`, with **no**
+/// heading of its own -- reads the live registry rather than a hand-maintained per-section list,
+/// so a parameter added to a stage's descriptor module (`namir-params/src/stages/*.rs`) appears
+/// here automatically.
+///
+/// Split out of [`param_section`] for issue #103. Two sections put something between their
+/// heading and their controls -- the IR name under "Impulse Response", the output meter under
+/// "Output" -- so both drew the heading themselves *and* called `param_section` with the same
+/// title, and the shipped screen carried each of those two headings twice, separated only by the
+/// element in between. The heading is the caller's to draw whenever anything comes between it and
+/// the controls; `param_section` stays the shorthand for when nothing does.
+fn param_controls(
+    ui: &mut egui::Ui,
+    prefix: &str,
+    params: &ParamValues,
+    intents: &mut Vec<UiIntent>,
+) {
     for (descriptor, value) in params.iter().filter(|(d, _)| d.key.starts_with(prefix)) {
         param_control(ui, descriptor, value, intents);
     }
@@ -543,6 +654,290 @@ mod tests {
             |ui| namir_ui.frame(ui),
         );
         assert_eq!(namir_ui.host.dispatched, dispatched);
+    }
+
+    /// One press-and-release of the primary button at `pos`, as one frame's events.
+    fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    /// The rect of the first shape whose painted text is exactly `needle`, or `None`.
+    fn find_text(output: &egui::FullOutput, needle: &str) -> Option<egui::Rect> {
+        painted_texts(output)
+            .into_iter()
+            .find(|(text, _)| text == needle)
+            .map(|(_, rect)| rect)
+    }
+
+    /// A [`NamirUi`] over a [`RecordingHost`] plus its own [`egui::Context`], with a running
+    /// clock -- the shape every multi-frame interaction test below drives.
+    struct Driver {
+        ui: NamirUi<RecordingHost>,
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Driver {
+        fn new(snapshot: UiSnapshot) -> Self {
+            Self {
+                ui: NamirUi::new(RecordingHost {
+                    snapshot,
+                    dispatched: Vec::new(),
+                }),
+                ctx: egui::Context::default(),
+                time: 0.0,
+            }
+        }
+
+        /// One whole frame through `NamirUi::frame` -- snapshot, render, dispatch -- carrying
+        /// `events`, returning what it painted.
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.time += 0.1;
+            let time = self.time;
+            let ui = &mut self.ui;
+            self.ctx.run_ui(frame_input(time, events), |u| ui.frame(u))
+        }
+
+        /// Where the control painting exactly `needle` ended up, once the layout has settled.
+        ///
+        /// **Two idle frames, and the second is the one measured.** A panel is sized from what it
+        /// measured the frame before, so the first frame after any change paints a partial row:
+        /// with the preset row, frame 0 paints the name box but neither the "Preset" label nor the
+        /// buttons, which puts the box at an x it will not keep. A rect taken from that frame
+        /// sends the click below to where the control *was*, and the interaction lands on nothing.
+        fn locate(&mut self, needle: &str) -> egui::Rect {
+            self.frame(Vec::new());
+            let output = self.frame(Vec::new());
+            find_text(&output, needle).unwrap_or_else(|| {
+                panic!(
+                    "nothing painting {needle:?} is on screen; painted: {:?}",
+                    painted_texts(&output)
+                        .into_iter()
+                        .map(|(text, _)| text)
+                        .collect::<Vec<_>>()
+                )
+            })
+        }
+
+        /// Types `text` into whichever text box paints `hint` while empty: locate it, click into
+        /// it, then send the text.
+        fn type_into(&mut self, hint: &str, text: &str) {
+            let rect = self.locate(hint);
+            self.frame(click_at(rect.center()));
+            self.frame(vec![egui::Event::Text(text.to_string())]);
+        }
+
+        /// Clicks whichever control paints `needle`.
+        fn click_text(&mut self, needle: &str) {
+            let rect = self.locate(needle);
+            self.frame(click_at(rect.center()));
+        }
+    }
+
+    /// **Issue #100, the save half, driven end to end.** FR-STATE-030 is a Must and `namir-ui` is
+    /// the only GUI: before this, `UiSnapshot::unsaved_changes` was rendered as "* unsaved
+    /// changes" and `UiIntent` had no variant that could resolve it, so the screen showed the user
+    /// a dirty flag and no control that could act on it.
+    ///
+    /// Typed into the real box and clicked on the real button, both located by the text `render`
+    /// painted, so nothing here depends on a layout constant this module would have to expose.
+    #[test]
+    fn naming_a_preset_and_pressing_save_dispatches_a_save_intent() {
+        let mut driver = Driver::new(UiSnapshot {
+            unsaved_changes: true,
+            ..UiSnapshot::default()
+        });
+        driver.type_into("Preset name", "Crunch");
+        assert!(
+            driver.ui.host.dispatched.is_empty(),
+            "typing a name is not yet a save: {:?}",
+            driver.ui.host.dispatched
+        );
+
+        driver.click_text("Save preset");
+        assert_eq!(
+            driver.ui.host.dispatched,
+            vec![UiIntent::SavePreset {
+                name: "Crunch".to_string()
+            }]
+        );
+    }
+
+    /// The dirty flag and the control that resolves it are on screen together -- the exact
+    /// complaint issue #100 opens with. Asserted on one frame's paint output, so a save control
+    /// that existed only on some other screen or behind a menu would not satisfy it.
+    #[test]
+    fn the_unsaved_changes_flag_is_shown_beside_a_control_that_can_resolve_it() {
+        let mut driver = Driver::new(UiSnapshot {
+            unsaved_changes: true,
+            ..UiSnapshot::default()
+        });
+        driver.frame(Vec::new());
+        let output = driver.frame(Vec::new());
+        assert!(
+            find_text(&output, "* unsaved changes").is_some(),
+            "the dirty flag is shown"
+        );
+        assert!(
+            find_text(&output, "Save preset").is_some(),
+            "and a save control is shown on the same screen"
+        );
+    }
+
+    /// An empty name is not a preset: FR-STATE-030 says "a **named** preset", and a host handed an
+    /// empty name would have to invent a filename or refuse. The control refuses first.
+    #[test]
+    fn saving_with_an_empty_name_dispatches_nothing() {
+        let mut driver = Driver::new(UiSnapshot::default());
+        driver.click_text("Save preset");
+        assert!(
+            driver.ui.host.dispatched.is_empty(),
+            "an unnamed save must not reach the host: {:?}",
+            driver.ui.host.dispatched
+        );
+    }
+
+    /// FR-UI-030's "operable by keyboard", for the one gesture this row adds: a user whose hands
+    /// are already in the name box presses Enter rather than reaching for the button.
+    #[test]
+    fn pressing_enter_in_the_name_box_saves_under_that_name() {
+        let mut driver = Driver::new(UiSnapshot::default());
+        driver.type_into("Preset name", "Crunch");
+        driver.frame(vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert_eq!(
+            driver.ui.host.dispatched,
+            vec![UiIntent::SavePreset {
+                name: "Crunch".to_string()
+            }]
+        );
+    }
+
+    /// A host that has listed no presets gets a control that says so and does nothing, rather than
+    /// an empty menu or no control at all -- "there is nothing to recall" and "this build cannot
+    /// recall" must not look the same, the same rule `audio_mode_label` follows for a share mode.
+    #[test]
+    fn with_no_presets_listed_the_recall_control_says_so_and_dispatches_nothing() {
+        let mut driver = Driver::new(UiSnapshot::default());
+        driver.click_text("No saved presets");
+        assert!(
+            driver.ui.host.dispatched.is_empty(),
+            "{:?}",
+            driver.ui.host.dispatched
+        );
+    }
+
+    /// **Issue #100, the recall half.** The user picks from what the host listed, and the intent
+    /// carries that entry's own path -- not its name, and not a path this crate built: a host can
+    /// only ever be asked to recall something it itself put in [`UiSnapshot::presets`].
+    ///
+    /// The second preset is chosen deliberately, so an implementation that always reported the
+    /// first cannot pass.
+    #[test]
+    fn recalling_a_preset_dispatches_that_presets_own_path() {
+        let mut driver = Driver::new(UiSnapshot {
+            presets: vec![
+                crate::host::PresetSummary {
+                    name: "Clean".to_string(),
+                    path: std::path::PathBuf::from("/presets/clean.namirpreset"),
+                },
+                crate::host::PresetSummary {
+                    name: "Crunch".to_string(),
+                    path: std::path::PathBuf::from("/presets/crunch.namirpreset"),
+                },
+            ],
+            ..UiSnapshot::default()
+        });
+
+        driver.click_text("Recall preset");
+        driver.click_text("Crunch");
+
+        assert_eq!(
+            driver.ui.host.dispatched,
+            vec![UiIntent::RecallPreset {
+                path: std::path::PathBuf::from("/presets/crunch.namirpreset")
+            }]
+        );
+    }
+
+    /// **Issue #103.** Every section heading `render` paints must be painted once. Two were
+    /// painted twice: `ui.heading("Impulse Response")` was immediately followed by a
+    /// `param_section` whose own title was also `"Impulse Response"`, separated on screen only by
+    /// the IR-name label, and `"Output"` had the identical shape with the output meter between the
+    /// two copies. The smoke test above only asserts that rendering does not panic, so nothing
+    /// caught it.
+    ///
+    /// Driven at a window tall enough that the central panel's `ScrollArea` has no content below
+    /// the fold: `egui` culls a widget whose rectangle is not visible, so a heading scrolled out
+    /// of view is never painted at all, and a duplicate-count assertion at 960x640 would be
+    /// counting what fits rather than what is drawn.
+    ///
+    /// `"Input Trim"` is deliberately **not** on this list and is not a defect: it is painted
+    /// twice because `trim.gain_db`'s own `ParamDescriptor::name` is also "Input Trim", so the
+    /// second painting is a control's name, not a repeated heading.
+    ///
+    /// `"Output"` had a **third** painting the issue's own diagnosis does not name: the output
+    /// meter's label. `ui.heading("Output")`, a meter labelled "Output" and a `param_section`
+    /// titled "Output" put the word on three consecutive rows. Removing the section title alone
+    /// left two, and this test is what said so -- which is why `"Input"` (the input meter's label,
+    /// with no heading above it) is on the list too, as the shape the output side now matches.
+    #[test]
+    fn each_section_heading_is_painted_exactly_once() {
+        const TALL: egui::Rect =
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1200.0, 2400.0));
+        let mut view = ViewState::default();
+        let snapshot = UiSnapshot::default();
+        let mut intents = Vec::new();
+
+        // Two frames: a panel is sized from what it measured the frame before.
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(TALL),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input(), |ui| {
+            render(ui, &mut view, &snapshot, &mut intents);
+        });
+        let output = ctx.run_ui(input(), |ui| {
+            render(ui, &mut view, &snapshot, &mut intents);
+        });
+        let painted = painted_texts(&output);
+
+        for heading in [
+            "Library",
+            "Input",
+            "Gate",
+            "Model",
+            "NAM",
+            "Impulse Response",
+            "EQ",
+            "Output",
+        ] {
+            let count = painted.iter().filter(|(text, _)| text == heading).count();
+            assert_eq!(
+                count, 1,
+                "the heading {heading:?} was painted {count} times, not once"
+            );
+        }
     }
 
     /// **Issue #42's other axis, at the layer that owns the container.** The horizontal half of

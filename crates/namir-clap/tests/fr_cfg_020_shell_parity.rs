@@ -101,7 +101,7 @@ mod host_ext {
         HostInfo, ShareMode, StreamFailure, StreamParams, SupportedConfigRange,
     };
     use namir_app::instance::SharedInstance;
-    use namir_app::stream::{self, Direction, StreamSetup};
+    use namir_app::stream::{self, StreamSetup};
     use namir_app::worker::{
         AppCommand, AppEvent, LoadOutcomeSummary, RecallOutcomeSummary, WorkerContext, WorkerHandle,
     };
@@ -795,13 +795,20 @@ mod host_ext {
         let xruns = Arc::new(XrunCounter::new());
         let failures = Arc::new(AtomicUsize::new(0));
         let streams = {
-            let failures = Arc::clone(&failures);
+            // One callback per direction since issue #88 (`namir_app::stream::open`'s own doc
+            // comment): both are pointed at the same counter here, because this test only cares
+            // that no stream failed at all, not which side would have.
+            let input_failures = Arc::clone(&failures);
+            let output_failures = Arc::clone(&failures);
             stream::open(
                 app_stream_setup(&backend),
                 engine,
                 Arc::clone(&xruns),
-                move |_direction: Direction, _failure: StreamFailure| {
-                    failures.fetch_add(1, Ordering::SeqCst);
+                move |_failure: StreamFailure| {
+                    input_failures.fetch_add(1, Ordering::SeqCst);
+                },
+                move |_failure: StreamFailure| {
+                    output_failures.fetch_add(1, Ordering::SeqCst);
                 },
             )
             .expect("the streams must open")

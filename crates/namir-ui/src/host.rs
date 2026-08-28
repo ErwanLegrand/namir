@@ -122,6 +122,22 @@ pub struct AudioModeStatus {
     pub device_name: String,
 }
 
+/// One preset the host knows the user can recall, for the recall control to list (FR-STATE-030).
+///
+/// A name and a path, and nothing else: this crate cannot open a file, does not know where a
+/// preset directory lives (that is `namir-platform`, which D-5.1 puts out of reach), and has no
+/// business parsing a `namir_state::State` it would only render one field of. The host enumerates
+/// whatever it considers recallable -- a preset directory, a factory set, a most-recently-used
+/// list -- and this crate draws the names it is given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetSummary {
+    /// What the user sees and picks by. Not required to be unique; the `path` is the identity.
+    pub name: String,
+    /// What [`crate::UiIntent::RecallPreset`] names when this entry is chosen. Opaque here --
+    /// this crate never reads it, only hands it back.
+    pub path: PathBuf,
+}
+
 /// Everything [`crate::render`] needs to draw one frame of FR-UI-020's screen -- a single,
 /// self-contained, read-only picture of engine/library/preset state at one instant. Built fresh by
 /// [`UiHost::snapshot`] every frame; this crate never retains one past the frame it was rendered
@@ -154,6 +170,10 @@ pub struct UiSnapshot {
     pub unsaved_changes: bool,
     /// FR-UI-070's non-modal notices currently shown, oldest first.
     pub notices: Vec<UiNotice>,
+    /// FR-STATE-030's recallable presets, in whatever order the host wants them listed. Empty
+    /// when the host knows of none (or has not looked yet), in which case the recall control
+    /// renders disabled rather than vanishing -- see [`crate::render`].
+    pub presets: Vec<PresetSummary>,
 }
 
 impl Default for UiSnapshot {
@@ -172,6 +192,7 @@ impl Default for UiSnapshot {
             audio_mode: None,
             unsaved_changes: false,
             notices: Vec::new(),
+            presets: Vec::new(),
         }
     }
 }
@@ -196,8 +217,6 @@ pub enum UiIntent {
         /// The parameter's stable string key.
         key: &'static str,
     },
-    /// The library search box's text changed to this value.
-    LibraryQueryChanged(String),
     /// The user asked to load the library entry at this path (FR-UI-050-adjacent: this is
     /// `namir-library`'s FR-LIB-060 "select" gesture, wired to a double-click in
     /// [`crate::library_view`]).
@@ -210,6 +229,33 @@ pub enum UiIntent {
     DismissNotice {
         /// The dismissed [`UiNotice`]'s `id`.
         id: u64,
+    },
+    /// FR-STATE-030's save half: write the current state as a preset under this name.
+    ///
+    /// **A name, not a path**, and that is the whole of the layering argument. FR-STATE-030 says
+    /// "save the current state as a *named* preset"; where a named preset lives is a
+    /// `namir-platform` question, and D-5.1 puts `namir-platform` out of this crate's reach. The
+    /// host resolves the name to a `.namirpreset` path under whatever directory it considers the
+    /// user's, which is also what lets the standalone and the plugin agree on where a preset goes
+    /// without this crate knowing either answer.
+    ///
+    /// Already trimmed of surrounding whitespace and never empty -- the control that emits this
+    /// is disabled until the box holds a name. Nothing else about the string is checked here: a
+    /// name that is illegal as a filename, or one that would overwrite an existing preset, is the
+    /// host's to reject (and to report through a [`UiNotice`]), since only the host knows the
+    /// filesystem it is about to write to.
+    SavePreset {
+        /// The preset's name, as typed.
+        name: String,
+    },
+    /// FR-STATE-030's recall half: load the preset at this path onto the running instance.
+    ///
+    /// The path is one this crate was handed in [`UiSnapshot::presets`] and never constructed --
+    /// so a host can only ever be asked to recall something it itself listed, and this crate
+    /// stays unable to name a file of its own.
+    RecallPreset {
+        /// The chosen [`PresetSummary`]'s `path`, verbatim.
+        path: PathBuf,
     },
 }
 

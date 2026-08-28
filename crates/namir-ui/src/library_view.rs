@@ -125,12 +125,14 @@ pub fn render(
     let search_label = ui
         .add(egui::Label::new("Search").sense(egui::Sense::hover()))
         .on_hover_text("Filters by file name and, for NAM models, author/gear/description.");
-    let search = ui
+    // No intent is emitted when this changes, deliberately (issue #104). The query is view state:
+    // it lives in `LibraryViewState`, `ensure_filtered` runs `namir_library::filter` against the
+    // snapshot's own index, and no `UiSnapshot` field can feed a query back the other way -- so a
+    // per-keystroke `String` clone across the seam bought a host nothing, and both shells
+    // explicitly did nothing with it.
+    let _search = ui
         .add(TextEdit::singleline(&mut state.query_text).hint_text("Search name, author, gear..."))
         .labelled_by(search_label.id);
-    if search.changed() {
-        intents.push(UiIntent::LibraryQueryChanged(state.query_text.clone()));
-    }
 
     state.ensure_filtered(&snapshot.index);
 
@@ -280,6 +282,103 @@ mod tests {
         assert_eq!(state.filtered_count(), 1);
         state.ensure_filtered(&second);
         assert_eq!(state.filtered_count(), 2);
+    }
+
+    /// **Issue #104, driven through the real text box.** Typing in the search field must not
+    /// dispatch anything: the query lives in [`LibraryViewState`] and [`filter`] runs against the
+    /// snapshot's own index, so the whole gesture is view-local. `UiIntent::LibraryQueryChanged`
+    /// carried a fresh `String` clone per keystroke to two hosts that both explicitly did nothing
+    /// with it, and no `UiSnapshot` field could ever feed a query back the other way.
+    ///
+    /// Both halves are asserted, because "emits nothing" is only correct if the typing still
+    /// *worked*: the intent list stays empty **and** the list narrows to the matching entry.
+    #[test]
+    fn typing_in_the_search_box_filters_locally_and_dispatches_nothing() {
+        const WINDOW: egui::Rect =
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 600.0));
+        let mut index = Index::empty();
+        index.upsert(entry("a.nam", "Alpha"));
+        index.upsert(entry("b.nam", "Beta"));
+        let snapshot = LibrarySnapshot {
+            index: Arc::new(index),
+            scan: None,
+        };
+        let mut state = LibraryViewState::default();
+        let ctx = egui::Context::default();
+
+        let frame = |events: Vec<egui::Event>| egui::RawInput {
+            screen_rect: Some(WINDOW),
+            events,
+            ..Default::default()
+        };
+
+        // Frame 0: find the search box by the hint text `render` really painted into it.
+        let mut intents = Vec::new();
+        let output = ctx.run_ui(frame(Vec::new()), |ui| {
+            render(ui, &mut state, &snapshot, &mut intents);
+        });
+        let hint = text_rect(&output, "Search name, author, gear...")
+            .expect("the search box paints its hint text while empty");
+
+        // Frame 1: click into it. A click alone changes no text, so nothing may be emitted yet.
+        let pos = hint.center();
+        let mut intents = Vec::new();
+        let _ = ctx.run_ui(
+            frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]),
+            |ui| render(ui, &mut state, &snapshot, &mut intents),
+        );
+        assert!(intents.is_empty(), "a click into the box: {intents:?}");
+
+        // Frame 2: type. This is the frame the box's own `changed()` fires on.
+        let mut intents = Vec::new();
+        let _ = ctx.run_ui(frame(vec![egui::Event::Text("Alpha".to_string())]), |ui| {
+            render(ui, &mut state, &snapshot, &mut intents)
+        });
+        assert_eq!(
+            state.query_text, "Alpha",
+            "the keystrokes must still reach the view's own query"
+        );
+        assert_eq!(
+            state.filtered_paths,
+            vec![PathBuf::from("a.nam")],
+            "and must still filter the list locally"
+        );
+        assert!(
+            intents.is_empty(),
+            "typing is view-local and must dispatch nothing, got {intents:?}"
+        );
+    }
+
+    /// The rect of the one shape whose painted text is exactly `needle`, or `None`.
+    fn text_rect(output: &egui::FullOutput, needle: &str) -> Option<egui::Rect> {
+        fn walk(shape: &egui::Shape, needle: &str, out: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == needle => {
+                    out.push(text.visual_bounding_rect());
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, needle, out)),
+                _ => {}
+            }
+        }
+        let mut rects = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, needle, &mut rects);
+        }
+        rects.first().copied()
     }
 
     /// FR-UI-060's cheap regression guard, exercised against a real 10,000-file corpus

@@ -461,7 +461,8 @@ mod tests {
             crate::stream::fake_duplex_setup(&backend, MAX_BLOCK),
             crate::stream::default_test_engine(MAX_BLOCK),
             std::sync::Arc::clone(&xruns),
-            |_, _| {},
+            |_| {},
+            |_| {},
         )
         .unwrap();
 
