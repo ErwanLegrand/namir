@@ -102,6 +102,21 @@ const MAX_DILATION: usize = 8_192;
 /// saturation only ever affects a value this check was going to reject anyway.
 const MAX_CONV_HISTORY_ELEMENTS: usize = 16_777_216;
 
+/// Issue #48's product ceiling, the activation-parameter counterpart of
+/// `MAX_CONV_HISTORY_ELEMENTS`: bounds the floats one layer array's *resolved* activations hold in
+/// total, `activation parameter elements * dilations.len()`. An `activation` stated once for the
+/// whole array (`ActivationSpec::One`) is resolved once and then cloned per layer, so a
+/// per-channel `PReLU`'s `negative_slopes` — the only activation parameter that is a vector — is
+/// stored `dilations.len()` times while the file carries it once. `bottleneck` and
+/// `dilations.len()` are each individually bounded above, but at their own ceilings their product
+/// is still 8192 * 4096 f32 = 134 MB grown out of the 8192 the file actually contains, and no
+/// single-factor ceiling bounds that product. 1 Mi elements (4 MB) is ~800x above any plausible
+/// export — the S-1-verified "standard" shape's widest array is 16 channels over 10 layers, 160
+/// elements — while ruling out the amplification. A per-layer `activation` array is not bounded
+/// here and needs no bound: it carries one entry per layer in the file itself, so its storage is
+/// linear in file size rather than a multiple of it.
+const MAX_ACTIVATION_PARAMETER_ELEMENTS: usize = 1_048_576;
+
 /// FRS §2's definitions: model sample rate is "typically 48 kHz" — the fallback when a `.nam`
 /// file omits `sample_rate` entirely (real exported files sometimes do).
 const DEFAULT_SAMPLE_RATE_HZ: u32 = 48_000;
@@ -396,6 +411,16 @@ fn check_activation_parameters_finite(
         Activation::PReLU(PReluSlopes::PerChannel(slopes)) => {
             check_finite(slopes, &format!("{at} negative_slopes"))
         }
+    }
+}
+
+/// How many floats a resolved activation holds — i.e. how much this array's per-layer clone
+/// multiplies. Every variant but a per-channel `PReLU` carries only inline scalars, so only that
+/// one can grow; see [`MAX_ACTIVATION_PARAMETER_ELEMENTS`].
+fn activation_parameter_elements(activation: &Activation) -> usize {
+    match activation {
+        Activation::PReLU(PReluSlopes::PerChannel(slopes)) => slopes.len(),
+        _ => 0,
     }
 }
 
@@ -1167,6 +1192,22 @@ fn resolve_layer_array(
 
     let num_layers = cfg.dilations.len();
 
+    // Issue #48, the same NFR-SEC-020 ordering argument one paragraph up, for the other dimension
+    // this function uses before `validate_layer_array_dims` gets to bound it. `bottleneck` is the
+    // width a per-channel `PReLU`'s `negative_slopes` must match, and `ActivationSpec::One` then
+    // clones that vector once per layer — so an unbounded `bottleneck` bought an unbounded clone:
+    // a 188 KB file declaring `dilations: [1; 4096]`, `bottleneck: 9000` and a 9000-entry
+    // `negative_slopes` allocated 4096 * 9000 f32 = 147 MB and only then returned
+    // `DIMENSION_LIMIT_EXCEEDED` from the *next* call, scaling linearly with file size from there.
+    // `validate_layer_array_dims` still checks the same bound afterwards, for the same reason the
+    // `dilations.len()` copy above is left in place.
+    let bottleneck = cfg.bottleneck.unwrap_or(cfg.channels);
+    check_max(
+        bottleneck,
+        MAX_CHANNELS,
+        &format!("layer array {index}: bottleneck"),
+    )?;
+
     let kernel_sizes = match (cfg.kernel_size, &cfg.kernel_sizes) {
         (Some(_), Some(_)) => {
             return Err(inconsistent(
@@ -1195,8 +1236,6 @@ fn resolve_layer_array(
         }
     };
 
-    let bottleneck = cfg.bottleneck.unwrap_or(cfg.channels);
-
     let (head_out_channels, head_kernel_size, head_dilation, head_bias) =
         match (cfg.head_size, &cfg.head) {
             (Some(_), Some(_)) => {
@@ -1222,6 +1261,14 @@ fn resolve_layer_array(
     let activations = match &cfg.activation {
         file::ActivationSpec::One(entry) => {
             let activation = resolve_activation_entry(entry, bottleneck, index, 0)?;
+            // Issue #48's second half: this is the clone that multiplies. See
+            // `MAX_ACTIVATION_PARAMETER_ELEMENTS` for why the two factors' own ceilings don't
+            // bound their product.
+            check_max(
+                activation_parameter_elements(&activation).saturating_mul(num_layers),
+                MAX_ACTIVATION_PARAMETER_ELEMENTS,
+                &format!("layer array {index}: activation parameter elements * dilations.len()"),
+            )?;
             vec![activation; num_layers]
         }
         file::ActivationSpec::PerLayer(entries) => {
@@ -1420,9 +1467,11 @@ impl PreparedWaveNet {
     ///    permanently out-of-scope feature the array uses is rejected by name
     ///    (`UNSUPPORTED_CONFIGURATION`), a self-contradictory shape (both-or-neither of an A1/A2
     ///    field pair present, or an array length disagreeing with `dilations.len()`) is rejected as
-    ///    such (`INCONSISTENT_CONFIGURATION`, including `dilations.len()` itself against its own
-    ///    ceiling — see that function's own doc comment for why that one check can't wait for step
-    ///    8's next part), then its dimensions (now including A2's per-layer `kernel_sizes`,
+    ///    such (`INCONSISTENT_CONFIGURATION`, including `dilations.len()` and `bottleneck` against
+    ///    their own ceilings, and the floats a per-array `activation` clone stores in total against
+    ///    `MAX_ACTIVATION_PARAMETER_ELEMENTS` — see that function's own doc comment for why those
+    ///    checks can't wait for step 8's next part; issue #48), then its dimensions (now including
+    ///    A2's per-layer `kernel_sizes`,
     ///    `bottleneck`, and the nested head's `out_channels`/`kernel_size`/`head_dilation`) are
     ///    checked against their ceilings, at least 1, and `condition_size == 1`
     ///    (`DIMENSION_LIMIT_EXCEEDED` / `UNSUPPORTED_CONDITION_SIZE`), including the per-layer and
@@ -2121,6 +2170,44 @@ mod tests {
         assert_eq!(err.code.id, error_codes::EMPTY_LAYER_ARRAYS.id);
     }
 
+    /// Issue #51. The supported activation vocabulary is stated in three places that have to
+    /// agree: `Activation`'s own `TryFrom<&str>`, `resolve_activation_kind`'s object form, and
+    /// `UNSUPPORTED_ACTIVATION`'s user-facing remedy — which is the only one of the three a user
+    /// ever reads, and which still named A1's four after M10 grew the set to ten. Listing the
+    /// names here rather than deriving them keeps this an assertion about what is *documented*,
+    /// which is the thing that drifted.
+    const SUPPORTED_ACTIVATION_NAMES: [&str; 10] = [
+        "Tanh",
+        "ReLU",
+        "Sigmoid",
+        "Identity",
+        "LeakyReLU",
+        "SiLU",
+        "Hardswish",
+        "Softsign",
+        "LeakyHardtanh",
+        "PReLU",
+    ];
+
+    #[test]
+    fn every_supported_activation_name_is_named_by_the_error_remedy() {
+        for name in SUPPORTED_ACTIVATION_NAMES {
+            assert!(
+                Activation::try_from(name).is_ok(),
+                "{name} is listed as supported but does not resolve"
+            );
+            assert!(
+                error_codes::UNSUPPORTED_ACTIVATION.remedy.contains(name),
+                "UNSUPPORTED_ACTIVATION's remedy does not name {name}, so a user who exported one \
+                 is told to re-export with something Namir already plays"
+            );
+        }
+        assert!(
+            Activation::try_from("GELU").is_err(),
+            "the vocabulary should still be closed"
+        );
+    }
+
     #[test]
     fn rejects_unsupported_activation() {
         let mut file = minimal_valid_file();
@@ -2175,6 +2262,125 @@ mod tests {
         file.config.layers[0].dilations = vec![MAX_DILATION];
         let err = expect_err(PreparedWaveNet::from_file(&file));
         assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+    }
+
+    /// Issue #48's fixture shape: a layer array whose per-channel `PReLU` names `slopes` slopes,
+    /// repeated over `layers` dilations. `bottleneck` is stated explicitly so the activation's
+    /// declared width and the array's internal width can be made to agree (or not) on purpose.
+    fn prelu_per_channel_file(bottleneck: usize, slopes: usize, layers: usize) -> NamFile {
+        let mut file = minimal_valid_file();
+        file.config.layers[0].bottleneck = Some(bottleneck);
+        file.config.layers[0].dilations = vec![1; layers];
+        file.config.layers[0].activation =
+            file::ActivationSpec::One(file::ActivationEntry::Params(file::ActivationParams {
+                kind: "PReLU".to_string(),
+                negative_slope: None,
+                negative_slopes: Some(vec![0.01; slopes]),
+                min_val: None,
+                max_val: None,
+                min_slope: None,
+                max_slope: None,
+            }));
+        file
+    }
+
+    /// Counts allocator calls made inside `f`, using the same `assert_no_alloc` global allocator
+    /// `rt_harness` registers for this test binary — in its counting (`warn_debug`/`warn_release`)
+    /// mode, so an allocation is tallied rather than fatal. Deallocations count too, so a clone
+    /// made and then dropped inside `f` shows up as two.
+    fn count_allocator_calls<T>(f: impl FnOnce() -> T) -> (T, u32) {
+        assert_no_alloc::reset_violation_count();
+        let out = assert_no_alloc::assert_no_alloc(f);
+        (out, assert_no_alloc::violation_count())
+    }
+
+    /// Issue #48, the ordering half. `bottleneck` was bounded only by `validate_layer_array_dims`,
+    /// which runs *after* `resolve_layer_array` has already used the unbounded value — here as the
+    /// length a per-channel `PReLU`'s `negative_slopes` must match. So a file declaring an
+    /// over-ceiling `bottleneck` was diagnosed by whatever `resolve_layer_array` tripped over
+    /// first: with a short slopes array, `INCONSISTENT_CONFIGURATION`, which is the wrong answer —
+    /// the file's primary defect is the dimension, and NFR-SEC-020 wants it caught before the
+    /// dimension is used for anything.
+    #[test]
+    fn bounds_bottleneck_before_resolving_an_activation_against_it() {
+        let file = prelu_per_channel_file(MAX_CHANNELS + 808, 4, 1);
+        let err = expect_err(PreparedWaveNet::from_file(&file));
+        assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+        assert!(
+            err.detail.contains("bottleneck"),
+            "the ceiling that rejected the file should name bottleneck, got: {}",
+            err.detail
+        );
+    }
+
+    /// Issue #48, the allocation half — the reason the ordering above matters. `ActivationSpec::One`
+    /// clones its resolved activation once per dilation, so an unbounded `bottleneck` bought an
+    /// unbounded clone: the issue measured a 188 KB file (`dilations: [1; 4096]`,
+    /// `bottleneck: 9000`, a 9000-entry `negative_slopes`) allocating 4096 * 9000 f32 = 147 MB and
+    /// only *then* returning `DIMENSION_LIMIT_EXCEEDED`, scaling linearly with file size from
+    /// there. With the ceiling moved ahead of the resolution, the file is refused before the first
+    /// of those clones.
+    #[test]
+    fn rejects_an_over_ceiling_bottleneck_without_cloning_its_slopes_per_layer() {
+        let over = MAX_CHANNELS + 808; // 9000, the figure the issue measured
+        let file = prelu_per_channel_file(over, over, MAX_DILATIONS_PER_LAYER_ARRAY);
+        let (err, allocator_calls) =
+            count_allocator_calls(|| expect_err(PreparedWaveNet::from_file(&file)));
+        assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+        // Pre-fix this ran 8219 allocator calls — 4096 slope-vector clones plus their frees, 147 MB
+        // in flight. The rejection now costs the error string and nothing else; 64 is slack for
+        // formatting internals, not room for a per-layer clone.
+        assert!(
+            allocator_calls <= 64,
+            "rejecting an over-ceiling bottleneck made {allocator_calls} allocator calls; \
+             the per-layer slope clone is back"
+        );
+    }
+
+    /// The product ceiling, the same shape of gap `MAX_CONV_HISTORY_ELEMENTS` closes for the
+    /// causal-conv history: `bottleneck` and `dilations.len()` are each individually within their
+    /// own ceilings here, and their product — the slopes actually stored, once per layer — is
+    /// still 8192 * 4096 f32 = 134 MB from a file carrying only 8192 of them. No single-factor
+    /// ceiling bounds that product, so `MAX_ACTIVATION_PARAMETER_ELEMENTS` does.
+    #[test]
+    fn rejects_activation_parameter_storage_whose_product_exceeds_its_own_ceiling() {
+        let file =
+            prelu_per_channel_file(MAX_CHANNELS, MAX_CHANNELS, MAX_DILATIONS_PER_LAYER_ARRAY);
+        let (err, allocator_calls) =
+            count_allocator_calls(|| expect_err(PreparedWaveNet::from_file(&file)));
+        assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+        assert!(
+            allocator_calls <= 64,
+            "rejecting an over-ceiling slope-storage product made {allocator_calls} allocator \
+             calls; the per-layer slope clone is back"
+        );
+    }
+
+    /// The other side of that ceiling: a per-channel `PReLU` of a plausible real width, repeated
+    /// over a plausible real layer count, must still load.
+    #[test]
+    fn a_realistically_sized_per_channel_prelu_still_loads() {
+        let mut cfg = minimal_layer_array();
+        cfg.channels = 16;
+        cfg.bottleneck = Some(16);
+        cfg.dilations = (0..10).map(|i| 1usize << i).collect();
+        cfg.activation =
+            file::ActivationSpec::One(file::ActivationEntry::Params(file::ActivationParams {
+                kind: "PReLU".to_string(),
+                negative_slope: None,
+                negative_slopes: Some(vec![0.01; 16]),
+                min_val: None,
+                max_val: None,
+                min_slope: None,
+                max_slope: None,
+            }));
+        let n = weight_count_for(&cfg);
+        let mut weights = vec![0.01f32; n];
+        weights.push(0.5); // trailing head_scale
+        let mut file = minimal_valid_file();
+        file.config.layers = vec![cfg];
+        file.weights = weights;
+        PreparedWaveNet::from_file(&file).expect("a 16-channel, 10-layer PReLU model should load");
     }
 
     // trace: FR-NAM-040

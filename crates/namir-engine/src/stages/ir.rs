@@ -179,9 +179,7 @@ impl StagePrep for IrPrep {
 
         let mut level = Vec::with_capacity(channel_count);
         for _ in 0..channel_count {
-            let mut ramp = GainRamp::new(sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS);
-            ramp.set_target_db(level_db_default);
-            level.push(ramp);
+            level.push(level_ramp_at_default(sample_rate, level_db_default));
         }
 
         let mut stage = IrStage {
@@ -818,6 +816,16 @@ impl Stage for IrStage {
     }
 }
 
+/// Issue #127's follow-up: the one place this stage's per-channel level ramp is constructed, so `prepare` and the
+/// test that pins its start point cannot drift apart. `GainRamp::new_at_db` rather than
+/// `GainRamp::new` followed by `set_target_db`: the latter leaves `current` at unity and `target`
+/// at the default, so the first ~25 ms of audio after every prepare, sample-rate change or
+/// re-prepare ramps from 0 dB to the parameter's real default. That is inaudible only because
+/// `ir.level_db` happens to default to 0.0 dB today — see `GainRamp::new_at_db`'s own doc comment.
+fn level_ramp_at_default(sample_rate: SampleRate, default_db: f32) -> GainRamp {
+    GainRamp::new_at_db(sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS, default_db)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,6 +840,49 @@ mod tests {
         IrPrep
             .prepare(&ctx(sample_rate_hz, channel_config))
             .unwrap()
+    }
+
+    /// Issue #127's follow-up. The defect is invisible at the shipped 0.0 dB default — a ramp from
+    /// unity to unity has nowhere to travel — so this drives the same constructor `prepare` uses
+    /// with a default that is *not* unity, which is the shape the trap is set for. Red against
+    /// `GainRamp::new` + `set_target_db`: that starts `current` at 1.0 and the first block fades.
+    #[test]
+    fn the_level_ramp_is_built_settled_at_a_non_unity_default() {
+        let sample_rate = SampleRate::new(48_000).unwrap();
+        let mut ramp = level_ramp_at_default(sample_rate, -12.0);
+        assert!(
+            (ramp.current_db() - (-12.0)).abs() < 1e-4,
+            "the ramp starts at {} dB, not the -12.0 dB default it was built with",
+            ramp.current_db()
+        );
+
+        let expected = db_to_linear(-12.0);
+        let mut buf = [1.0f32; 64];
+        ramp.process(&mut buf);
+        for (i, x) in buf.iter().enumerate() {
+            assert!(
+                (x - expected).abs() < 1e-6,
+                "sample {i} of the first block is {x}, not {expected} -- the ramp is \
+                 travelling to its default instead of starting there"
+            );
+        }
+    }
+
+    /// The other half: `prepare` really does route through level_ramp_at_default, so the assertion above is
+    /// about this stage and not just about `namir-dsp`. At the shipped default this is a
+    /// tripwire rather than a live check -- it starts failing the day the default moves and the
+    /// construction has drifted back.
+    #[test]
+    fn a_prepared_stage_starts_settled_at_the_level_default() {
+        let stage = stage(48_000, ChannelConfig::Stereo);
+        let default_db = continuous_default(LEVEL_DB);
+        for (index, ramp) in stage.level.iter().enumerate() {
+            assert!(
+                (ramp.current_db() - default_db).abs() < 1e-4,
+                "channel {index}'s level ramp sits at {} dB, not its {default_db} dB default",
+                ramp.current_db()
+            );
+        }
     }
 
     /// Writes a small in-memory mono WAV via `hound::WavWriter`, the same pattern

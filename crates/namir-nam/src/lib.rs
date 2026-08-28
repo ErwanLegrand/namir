@@ -72,7 +72,14 @@
 //! - FR-NAM-100 (dBu-calibrated operating levels, user-stated interface sensitivity) — a distinct,
 //!   Should-priority requirement from FR-NAM-090 above; this crate reads neither
 //!   `input_level_dbu` nor `output_level_dbu`, and no calibrated-mode UI exists anywhere.
-//! - FR-NAM-120 (computational cost reporting) — needs a benchmark harness.
+//! - FR-NAM-120 (computational cost reporting) — but not for the reason this line gave until
+//!   issue #51. The *measurement* half is here and has been since M10: `benches/
+//!   wavenet_inner_loops.rs` and `benches/lstm_inner_loops.rs` measure per-block inference cost
+//!   across the real shape grid rather than estimating it, which is the harness this note said was
+//!   missing. What is out of scope is the requirement's other half — *exposing* that cost to the
+//!   user as a real-time factor, before they commit to a model — which needs a live per-block
+//!   measurement in `namir-engine` and somewhere in `namir-ui` to show it, and this crate may
+//!   depend on neither (D-5.1).
 //! - Parametric/conditioning inputs for either architecture (WaveNet's `condition_size == 1`
 //!   restriction, `wavenet.rs`; LSTM's `input_size == in_channels == out_channels == 1`
 //!   restriction, `lstm.rs`) — both only ever feed the raw mono signal as input in 1.0 scope.
