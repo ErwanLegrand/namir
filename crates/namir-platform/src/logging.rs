@@ -14,14 +14,27 @@
 //!
 //! **Why a mutex in a logger is acceptable here, and why this module lives in *this* crate.**
 //! D-5.1's table gives `namir-engine` `core, params, dsp, nam, ir` and nothing else, and `cargo
-//! run -p xtask -- layering` checks that edge on every merge — so no code on the audio thread can
-//! so much as *name* this module. The lint is what makes the lock safe; siting the writer in
-//! `namir-platform` is therefore load-bearing rather than incidental. What the lint does not cover
-//! is stated rather than assumed: `namir-app` and `namir-clap` depend on everything and own the
-//! audio callbacks, so those two crates *could* call in from `cpal`'s callback or from
-//! `process()`. Nothing mechanical stops them; the rule that no record is emitted from an audio
-//! callback or a per-frame UI path is held by review plus `namir-worker`'s `assert_no_alloc`
-//! stress harness, which fails on the allocation a record's formatting performs.
+//! run -p xtask -- layering` checks that edge on every merge — so no *production* code on the
+//! audio thread can so much as *name* this module. The lint is what makes the lock safe; siting
+//! the writer in `namir-platform` is therefore load-bearing rather than incidental. Two things the
+//! lint does not cover, stated rather than assumed:
+//!
+//! 1. **The edge check exempts dev-dependencies**, and `crates/namir-engine/Cargo.toml` carries
+//!    `namir-platform` as one (for D-7.4's `DenormalGuard` in `benches/denormal_guard.rs` and
+//!    `benches/rt_invariance.rs`). So `namir-engine`'s own benches and integration tests —
+//!    including the RT harnesses that drive `AudioEngine::process` — *can* name this module, and
+//!    the "cannot so much as name it" guarantee holds for the shipped build, not for the test
+//!    build. Nothing shipped is affected, and no test target does name it today; the carve-out is
+//!    recorded because a guarantee stated without its exception is the kind that gets relied on
+//!    where it does not hold.
+//! 2. **`namir-app` and `namir-clap` depend on everything and own the audio callbacks**, so those
+//!    two crates *could* call in from `cpal`'s callback or from `process()`. `xtask rt-logging`
+//!    (M9b, FR-ERR-030's static half) is what now stops them, per-module: it fails the build if
+//!    any file on its `AUDIO_THREAD_MODULES` list names `logging`, `Logger`, `LogLevel` or
+//!    `record_verbose`. Beyond the names it reads, the rule that no record is emitted from an
+//!    audio callback or a per-frame UI path is held by review plus `namir-worker`'s
+//!    `assert_no_alloc` stress harness, which fails on the allocation a record's formatting
+//!    performs.
 //!
 //! **What this module deliberately does not have.** No `BufWriter`: a half-flushed buffer loses
 //! precisely the records written in the moments a crash makes interesting, so a record is exactly
@@ -271,13 +284,24 @@ impl Logger {
         };
         logger.record(LOG_SESSION_STARTED, &detail);
         if let Some(value) = choice.rejected {
-            logger.record(
-                LOG_BAD_LEVEL,
-                &format!(
-                    "{LEVEL_ENV_VAR}={value} is not one of off/error/info/verbose; using {}",
-                    choice.level
-                ),
-            );
+            // Emitted through `write_locked`, deliberately bypassing `record`'s severity
+            // admission. [`LOG_BAD_LEVEL`] is a `Severity::Warning` (that const's doc comment
+            // argues why it may not be anything else), and `admits` does not pass a `Warning` at
+            // `LogLevel::Error` -- so a user running at `error` who mistyped `NAMIR_LOG` was told
+            // nothing at all by the record whose entire purpose is to tell them. The one check
+            // kept is `Off`, because that level's contract is that the file is never opened or
+            // created; a record forced past *that* would create a log the user switched off.
+            let bits = choice.level as u8;
+            if bits != LogLevel::Off as u8 {
+                logger.write_locked(
+                    bits,
+                    LOG_BAD_LEVEL,
+                    &format!(
+                        "{LEVEL_ENV_VAR}={value} is not one of off/error/info/verbose; using {}",
+                        choice.level
+                    ),
+                );
+            }
         }
         logger
     }

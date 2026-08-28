@@ -14,6 +14,16 @@
 //! next reader does not mistake "built, uncalled" for "built, working": nothing measures the
 //! effect of calling this yet, the same gap D-7.4's M3 audit found for `DenormalGuard`.
 //!
+//! *Correction (2026-08-28, issue #76).* The paragraph above is history now, kept rather than
+//! rewritten per this project's convention: M6 did land both callers, and
+//! `crates/namir-app/src/stream.rs` and `crates/namir-clap/src/audio.rs` each call this exactly
+//! once, from inside their own audio callback. What they did *not* do is look at the answer --
+//! both wrote `let _ = elevate_current_thread_priority();`, so a Linux user whose xruns come from
+//! a missing `rtprio` limit got no diagnostic anywhere. [`ThreadPriorityOutcome`] is now
+//! `#[must_use]` and [`ThreadPriorityOutcome::diagnostic`] maps a non-`Elevated` outcome to the
+//! catalogue entry to record; the recording itself has to happen off the audio thread
+//! (FR-ERR-030), which is that method's own doc comment.
+//!
 //! **When and how a future caller should invoke this, stated explicitly so it isn't
 //! rediscovered:** once, from the thread being elevated -- OS thread-priority and
 //! scheduling-policy APIs act on a thread handle referring to *some* thread, and every API this
@@ -42,15 +52,52 @@
 //! codebase (D-7.1's worker-pool floor, D-8.1's return-ring backpressure): an unelevated thread
 //! still processes audio correctly, just with a higher chance of an OS-scheduling-induced xrun
 //! (FR-IO-060) under system load. Nothing in this module may panic or abort on a denied request.
+//!
+//! **What the Unix path deliberately does *not* ask for (issue #75).** It no longer requests the
+//! policy's maximum priority. `sched_get_priority_max(SCHED_FIFO)` is 99 on Linux, which outranks
+//! the very kernel threads that would otherwise notice and preempt a runaway audio thread, and a
+//! spin or deadlock up there can take a machine down. The module now targets the policy minimum
+//! plus a fixed offset -- 11 on Linux, 25 on macOS -- which is the band JACK and PipeWire settled
+//! on for the same reason. The constant and its full argument are in `unix::RT_PRIORITY_ABOVE_MIN`
+//! below; **it is not yet recorded in D-13.2**, whose text still reads "at that policy's maximum
+//! priority", and doing so is the follow-up this change owes `docs/02-architecture.md`.
+//!
+//! **What the macOS path is not (issue #81).** `pthread_setschedparam` with `SCHED_FIFO` is *not*
+//! how Darwin grants an audio thread real-time scheduling. CoreAudio-grade threads there are
+//! promoted with `thread_policy_set(..., THREAD_TIME_CONSTRAINT_POLICY, ...)`, which states a
+//! period, a computation budget and a constraint -- a deadline contract POSIX's priority number
+//! has no way to express. What this module does on Darwin raises the thread within the timeshare
+//! band and typically returns [`ThreadPriorityOutcome::Elevated`], so the outcome enum reports a
+//! success that delivers materially less than the Windows and Linux paths do. That is recorded
+//! rather than fixed here on purpose: macOS is a secondary platform and not a 1.0 target
+//! (`AGENTS.md`, "Primary platform is Windows 11 x86-64"), a Mach `thread_policy_set` binding
+//! would add a second unsafe surface with no machine in this project's CI able to exercise it,
+//! and shipping the wrong mechanism quietly is worse than shipping a weaker one that says so.
+//! When macOS becomes a supported target, this is the call to replace, and the outcome enum will
+//! need a way to say "raised, but without a deadline guarantee".
 
 #![allow(unsafe_code)]
+
+use namir_core::ErrorCode;
+
+use crate::error_codes::{THREAD_PRIORITY_DENIED, THREAD_PRIORITY_NOT_ELEVATED};
 
 /// Outcome of one call to [`elevate_current_thread_priority`]. Deliberately not a `Result`
 /// wrapping an error type with a `Display` impl or similar: per this module's own doc comment, a
 /// denial is an expected, common, non-exceptional outcome on Linux/macOS without prior privilege
 /// configuration, not an error condition to propagate with `?`. A caller matches on this and
 /// decides what to log; it is not expected to bail out.
+///
+/// **`#[must_use]`, because "expected and non-fatal" is not the same as "ignorable".** The whole
+/// value of distinguishing [`ThreadPriorityOutcome::PermissionDenied`] from
+/// [`ThreadPriorityOutcome::Elevated`] is that a user reporting xruns can be told their process
+/// never got the priority it asked for -- exactly D-13.3's "support request we can answer without
+/// a round trip" reasoning. Discarding the value with `let _ =` leaves that user with no
+/// diagnostic anywhere. [`ThreadPriorityOutcome::diagnostic`] is the one-call route from an
+/// outcome to the catalogue entry a caller should record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "an unelevated audio thread is a diagnosable cause of xruns; record the outcome \
+              (see ThreadPriorityOutcome::diagnostic) rather than discarding it"]
 pub enum ThreadPriorityOutcome {
     /// The calling thread's scheduling priority/class was raised successfully.
     Elevated,
@@ -63,7 +110,15 @@ pub enum ThreadPriorityOutcome {
     /// OS error code (`GetLastError` on Windows, the `pthread_*` return value or `errno` on
     /// Unix) for diagnostics -- FR-ERR-050's diagnostic bundle is the intended consumer of this
     /// value, not a user-facing message formatted from it directly.
-    OsError(i32),
+    ///
+    /// **`i64`, not `i32`, and the width is load-bearing on exactly one platform.** Unix's two
+    /// sources are both `c_int` and fit an `i32` with room to spare. Windows's `GetLastError`
+    /// returns a `u32`, and the Win32 codes with bit 31 set (an `HRESULT`-shaped failure
+    /// propagated as a last-error value) are exactly the ones a two's-complement narrowing turns
+    /// into a negative number that appears in no header: `0x8007000E` would reach a reader of
+    /// FR-ERR-050's bundle as `-2147024882`. Widening to `i64` keeps every code on every platform
+    /// printable as the number the platform's own documentation uses.
+    OsError(i64),
     /// This target has no implementation in this module (anything besides Windows/Linux/macOS --
     /// notably Android and iOS, which D-5.1 marks this crate as building for but which M6's
     /// product shells do not target for 1.0). Matches
@@ -71,6 +126,42 @@ pub enum ThreadPriorityOutcome {
     /// anything" fallback for an architecture it has no implementation for: NFR-PORT-030 must not
     /// be precluded by this module failing to compile or panicking on an unsupported target.
     Unsupported,
+}
+
+impl ThreadPriorityOutcome {
+    /// The catalogue entry a caller should record for this outcome -- `None` for
+    /// [`ThreadPriorityOutcome::Elevated`], which has nothing to report.
+    ///
+    /// [`ThreadPriorityOutcome::PermissionDenied`] maps to
+    /// [`crate::error_codes::THREAD_PRIORITY_DENIED`], the one case with a remedy the user can
+    /// act on; [`ThreadPriorityOutcome::OsError`] and [`ThreadPriorityOutcome::Unsupported`] both
+    /// map to [`crate::error_codes::THREAD_PRIORITY_NOT_ELEVATED`], which says the same thing
+    /// without a remedy that does not apply. The two are split on remedy rather than on severity
+    /// -- see those consts' own doc comments.
+    ///
+    /// **Where the record may be written, which is not where this is called.** Returning an
+    /// [`ErrorCode`] and formatting nothing is deliberate: an `ErrorCode` is four `&'static str`s
+    /// and a [`namir_core::Severity`], so obtaining one allocates nothing and is safe to do from
+    /// an audio callback -- which is exactly where both of this crate's callers invoke the
+    /// elevation, since a thread can only raise *its own* priority and neither `cpal`'s data
+    /// callback nor CLAP's `process()` runs on a thread the shell can reach beforehand. Emitting
+    /// the record is a different matter: FR-ERR-030 forbids logging, allocation and
+    /// logging-formatting on the audio thread, and `xtask rt-logging` fails the build if
+    /// `crates/namir-app/src/stream.rs` or `crates/namir-clap/src/audio.rs` so much as names the
+    /// logger. A caller must therefore carry the outcome off the audio thread -- it is `Copy` and
+    /// eight bytes, so an atomic or the shell's existing notice channel is enough -- and record it
+    /// from the main/UI thread, the way `namir-clap`'s `audio.rs` already routes its
+    /// unusable-sample-rate condition through `shared.rs`'s `push_notice`.
+    #[must_use]
+    pub fn diagnostic(self) -> Option<ErrorCode> {
+        match self {
+            ThreadPriorityOutcome::Elevated => None,
+            ThreadPriorityOutcome::PermissionDenied => Some(THREAD_PRIORITY_DENIED),
+            ThreadPriorityOutcome::OsError(_) | ThreadPriorityOutcome::Unsupported => {
+                Some(THREAD_PRIORITY_NOT_ELEVATED)
+            }
+        }
+    }
 }
 
 /// Raises the *calling* thread's OS scheduling priority to a level suitable for an audio callback
@@ -85,9 +176,14 @@ pub enum ThreadPriorityOutcome {
 ///   Windows implements the actual real-time protection at the *process* priority class level
 ///   (`REALTIME_PRIORITY_CLASS`), not at this thread-priority level, so this call is expected to
 ///   succeed in the overwhelming majority of cases.
-/// - **Linux/macOS:** `pthread_setschedparam` with `SCHED_FIFO` at that policy's maximum priority.
-///   Requires a privilege (`CAP_SYS_NICE`) or resource limit (`rtprio`) the user may not have
-///   configured -- see this module's doc comment for why that is an expected, non-fatal outcome.
+/// - **Linux/macOS:** `pthread_setschedparam` with `SCHED_FIFO` at the policy's *minimum* priority
+///   plus a fixed offset of 10 -- 11 on Linux, 25 on macOS -- deliberately not at the maximum,
+///   which on Linux is 99 and outranks the kernel's own watchdog and IRQ threads (see
+///   `unix::RT_PRIORITY_ABOVE_MIN`). Requires a privilege (`CAP_SYS_NICE`) or resource limit
+///   (`rtprio`) the user may not have configured -- see this module's doc comment for why that is
+///   an expected, non-fatal outcome. On macOS this raises the thread inside the timeshare band
+///   and is *not* the `thread_policy_set` deadline contract CoreAudio-grade threads use; that
+///   limitation is stated in full in this module's doc comment.
 /// - **Everything else:** [`ThreadPriorityOutcome::Unsupported`], unconditionally.
 pub fn elevate_current_thread_priority() -> ThreadPriorityOutcome {
     #[cfg(target_os = "windows")]
@@ -160,7 +256,9 @@ mod windows {
         if code == ERROR_ACCESS_DENIED {
             ThreadPriorityOutcome::PermissionDenied
         } else {
-            ThreadPriorityOutcome::OsError(code as i32)
+            // `i64::from`, never `as i32`: `GetLastError` is a `u32` and its bit-31 codes must not
+            // be sign-mangled on the way into the outcome -- see `OsError`'s own doc comment.
+            ThreadPriorityOutcome::OsError(i64::from(code))
         }
     }
 }
@@ -183,8 +281,31 @@ mod unix {
     // vetted, widely-used binding removes that risk entirely; hand-rolling it to save one
     // dependency would trade a real soundness risk for a cosmetic win.
     use libc::{
-        SCHED_FIFO, pthread_self, pthread_setschedparam, sched_get_priority_max, sched_param,
+        SCHED_FIFO, pthread_self, pthread_setschedparam, sched_get_priority_max,
+        sched_get_priority_min, sched_param,
     };
+
+    /// How far above `SCHED_FIFO`'s own minimum this module elevates. **Deliberately not the
+    /// policy maximum**, which is the whole point of this constant existing.
+    ///
+    /// `sched_get_priority_max(SCHED_FIFO)` is 99 on Linux, and 99 is the band the kernel keeps
+    /// for its own supervision: the per-CPU `watchdog/N` and `migration/N` threads sit there, and
+    /// threaded IRQ handlers (`irq/N-*`) sit at 50. A userspace audio thread pinned at 99 that
+    /// spins, deadlocks or simply overruns its budget therefore outranks everything able to
+    /// notice and preempt it, and on a single CPU (or a thread pinned to one) the machine is
+    /// unrecoverable short of the NMI watchdog or the reset button. This is the standard
+    /// pro-audio footgun, and the reason JACK's default `rtprio` is 10 and PipeWire's `rt.prio`
+    /// stays well below the maximum rather than at it.
+    ///
+    /// `min + 10` resolves to **11 on Linux** (min = 1) and **25 on macOS** (min = 15, max = 47):
+    /// above every `SCHED_OTHER` thread on the system and above `PREEMPT_RT`'s softirq/timer
+    /// threads at 1, which is all an audio callback actually needs to beat, and comfortably below
+    /// both the IRQ-thread band and the watchdog band, which keep their ability to preempt it.
+    /// The offset is expressed relative to the policy minimum rather than as a bare 11 because
+    /// the two supported Unix targets do not share a numeric range at all (1..=99 versus
+    /// 15..=47), so a literal that is moderate on one would be near-maximal or invalid on the
+    /// other.
+    const RT_PRIORITY_ABOVE_MIN: i32 = 10;
 
     pub(super) fn elevate() -> ThreadPriorityOutcome {
         // SAFETY: `sched_get_priority_max` takes a plain `c_int` policy constant and performs no
@@ -194,6 +315,15 @@ mod unix {
         if max_priority == -1 {
             return os_error_outcome();
         }
+
+        // SAFETY: identical to `sched_get_priority_max` above -- a plain `c_int` argument, no
+        // memory access, `-1` on an unsupported policy.
+        let min_priority = unsafe { sched_get_priority_min(SCHED_FIFO) };
+        if min_priority == -1 {
+            return os_error_outcome();
+        }
+
+        let target_priority = target_priority(min_priority, max_priority);
 
         // Zero-initialised rather than built as a struct literal: `libc::sched_param` carries a
         // private padding field on Darwin (see the module-level comment above) that this crate
@@ -207,7 +337,7 @@ mod unix {
         // pattern is a valid value of every field, so `mem::zeroed` cannot produce an invalid
         // `sched_param`.
         let mut param: sched_param = unsafe { core::mem::zeroed() };
-        param.sched_priority = max_priority;
+        param.sched_priority = target_priority;
 
         // SAFETY: `pthread_self()` takes no arguments and returns an opaque thread identifier for
         // the calling thread by value -- no memory access, cannot be unsound.
@@ -224,8 +354,22 @@ mod unix {
         } else if rc == libc::EPERM {
             ThreadPriorityOutcome::PermissionDenied
         } else {
-            ThreadPriorityOutcome::OsError(rc)
+            ThreadPriorityOutcome::OsError(i64::from(rc))
         }
+    }
+
+    /// The priority [`elevate`] asks for, given the policy's own bounds. Split out as a pure
+    /// function of two integers so it can be tested at both platforms' real ranges from a
+    /// sandbox that is only one of them -- reading a thread's applied priority back would need
+    /// `pthread_getschedparam`, and this crate's tests may carry no `unsafe` (D-5.3).
+    ///
+    /// `.min(max)` rather than `clamp`: `clamp` panics when its two bounds are inverted, and
+    /// nothing in this module may panic (this module's doc comment, last paragraph). A libc
+    /// reporting max < min would be broken beyond what a guard here could repair; taking the
+    /// maximum in that case still yields a value the policy accepts. `saturating_add` for the
+    /// same reason -- an absurd `min` must not wrap into a negative priority.
+    pub(super) fn target_priority(min: i32, max: i32) -> i32 {
+        min.saturating_add(RT_PRIORITY_ABOVE_MIN).min(max)
     }
 
     /// `sched_get_priority_max` reports failure via `-1` and sets `errno` (unlike
@@ -237,8 +381,49 @@ mod unix {
         if code == libc::EPERM {
             ThreadPriorityOutcome::PermissionDenied
         } else {
-            ThreadPriorityOutcome::OsError(code)
+            ThreadPriorityOutcome::OsError(i64::from(code))
         }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(test)]
+mod unix_priority_tests {
+    use super::unix::target_priority;
+
+    /// Issue #75: the elevation must not land on `SCHED_FIFO`'s maximum, which on Linux is 99 --
+    /// the band `watchdog/N` and `migration/N` occupy. Asserted at both supported ranges from
+    /// whichever one this test happens to run on, which is what makes `target_priority` a pure
+    /// function of its bounds rather than a lookup.
+    #[test]
+    fn the_target_priority_is_moderate_at_both_platforms_real_ranges() {
+        // Linux: 1..=99.
+        assert_eq!(target_priority(1, 99), 11);
+        assert!(
+            target_priority(1, 99) < 99,
+            "an audio thread at SCHED_FIFO 99 outranks the kernel threads that would preempt it"
+        );
+        // macOS: 15..=47.
+        assert_eq!(target_priority(15, 47), 25);
+        assert!(target_priority(15, 47) < 47);
+    }
+
+    /// Nothing in this module may panic (its doc comment's last paragraph), including on bounds
+    /// no real libc reports.
+    #[test]
+    fn degenerate_bounds_neither_panic_nor_overflow() {
+        assert_eq!(target_priority(1, 5), 5, "a narrow range clamps to its max");
+        assert_eq!(target_priority(0, 0), 0);
+        assert_eq!(
+            target_priority(i32::MAX, i32::MAX),
+            i32::MAX,
+            "the offset must saturate rather than wrap into a negative priority"
+        );
+        assert_eq!(
+            target_priority(10, 1),
+            1,
+            "inverted bounds must not panic the way `clamp` would"
+        );
     }
 }
 

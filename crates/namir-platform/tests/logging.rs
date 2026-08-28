@@ -584,6 +584,40 @@ fn clause_6_the_namir_log_parser() {
     );
     assert_eq!(logger.level(), LogLevel::Info);
 
+    // ...and it reaches the log at `error` too, where the level check would otherwise drop it
+    // (issue #79). LOG_BAD_LEVEL is a WARN and `error` admits only ERROR and FAULT, so a user who
+    // had chosen a quiet log *and* mistyped NAMIR_LOG used to be told nothing at all -- the one
+    // combination where the record matters most. The session record, an INFO, is correctly absent
+    // here: it is the bad-level record specifically that bypasses admission.
+    let scratch = Scratch::new("bad-level-at-error");
+    let logger = Logger::new(
+        Some(scratch.sink()),
+        resolve_level(Some(OsStr::new("shout")), Some(LogLevel::Error)),
+    );
+    assert_eq!(logger.level(), LogLevel::Error);
+    assert_eq!(
+        codes_in(&scratch.sink()),
+        vec!["platform.log.bad_level".to_owned()],
+        "a mistyped NAMIR_LOG must be reported even at a level that does not admit WARN"
+    );
+    assert!(
+        read_lines(&scratch.sink())[0].contains("NAMIR_LOG=shout"),
+        "the forced record must still name the rejected value"
+    );
+
+    // The one level that keeps its silence: `off` promises the file is never opened or created,
+    // and a forced record would create a log the user switched off.
+    let scratch = Scratch::new("bad-level-at-off");
+    let logger = Logger::new(
+        Some(scratch.sink()),
+        resolve_level(Some(OsStr::new("shout")), Some(LogLevel::Off)),
+    );
+    assert_eq!(logger.level(), LogLevel::Off);
+    assert!(
+        !scratch.logs_dir().exists(),
+        "`off` must still create nothing on disk, bad-level record or not"
+    );
+
     // The module-level entry points exist and are safe to call before `init` has run -- a record
     // submitted during static initialisation must be a no-op, not a panic and not a logger
     // installed at the wrong level behind the shell's back.
