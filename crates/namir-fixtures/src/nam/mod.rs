@@ -147,9 +147,21 @@ pub struct LstmConfig {
 }
 
 /// A thin public re-export of `lstm_infer::run`, exposed *specifically* as a cross-crate numeric
-/// parity oracle for `namir-nam`'s independently-written LSTM implementation — the LSTM
-/// counterpart of [`reference_infer`]; see that function's doc comment, which applies here
-/// unchanged except for architecture.
+/// parity oracle for `namir-nam`'s own LSTM implementation — the LSTM counterpart of
+/// [`reference_infer`]; see that function's doc comment, which applies here unchanged except for
+/// architecture and for the paragraph below.
+///
+/// **What "parity oracle" is worth here, stated precisely** (this doc comment used to call
+/// `namir-nam`'s LSTM implementation "independently-written" with respect to this one, which was
+/// false as written): `lstm_infer.rs` was originally written from `namir-nam`'s *reading* of the
+/// `.nam` LSTM format, not from the format's own source, so agreement between the two could not
+/// rule out a misreading they shared. M14 re-derived it from `NeuralAmpModelerCore`'s
+/// `NAM/lstm.h`/`NAM/lstm.cpp` at the pinned commit, fact by fact with citations, and pinned each
+/// fact to hand-computed arithmetic in that module's own tests. Two things are still true and
+/// worth keeping in view: the re-derivation was not blind (its author had seen the earlier port),
+/// and the only *external* LSTM evidence this project holds — `namir-nam`'s
+/// `tests/golden_reference.rs` `lstm_tiny` render — is a one-layer model, so the multi-layer
+/// facts rest on `lstm_infer.rs`'s analytic tests rather than on a real reference render.
 pub fn reference_infer_lstm(model: &LstmModel, input: &[f32]) -> Vec<f32> {
     lstm_infer::run(model, input)
 }
