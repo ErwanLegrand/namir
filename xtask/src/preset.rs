@@ -59,6 +59,14 @@ fn sample_state() -> State {
 /// parameters/references it found, plus any warnings — the read half of FR-STATE-040's manual
 /// test (docs/manual-tests/): a document hand-edited after `preset` wrote it must still load, and
 /// the edit must actually take effect.
+/// The sample document's bytes, so `xtask schema`'s default document set can include the one
+/// document this tool itself produces -- the artifact `docs/manual-tests/`'s FR-STATE-040 script
+/// hands a human to inspect and hand-edit, which had better conform to the format that script is
+/// demonstrating.
+pub fn sample_bytes() -> Vec<u8> {
+    sample_state().write()
+}
+
 pub fn run(args: &[String]) -> bool {
     if args.first().map(String::as_str) == Some("--verify") {
         let Some(path_str) = args.get(1) else {

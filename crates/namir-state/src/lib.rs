@@ -20,7 +20,10 @@
 //! - FR-STATE-020 — [`ParamValues`]'s complete-array-over-`REGISTRY` shape, so an absent
 //!   parameter's default cannot fail to apply.
 //! - FR-STATE-040 — the JSON format itself: pretty-printed, sorted, and, via [`reference::RelPath`],
-//!   free of platform-specific path syntax in what it stores.
+//!   free of platform-specific path syntax in what it stores; plus, since M15, the **schema check**
+//!   the second half of that requirement's compound `*Verify:*` method names — [`schema`], a
+//!   validator for §§3–7 of `docs/04-state-and-preset-format.md` written independently of this
+//!   crate's own reader (issue #27).
 //! - FR-STATE-070 — [`resolve::candidates`]/[`resolve::FileResolver`]/[`resolve::resolve`]: the
 //!   three-step resolution order as data plus the port a resolving crate implements, and — since
 //!   issue #113 — §7.4 of `docs/04-state-and-preset-format.md`'s fourth step, the embedded copy,
@@ -50,6 +53,7 @@ mod migrate;
 mod params;
 mod reference;
 mod resolve;
+mod schema;
 mod state;
 
 pub use document::{Document, FORMAT_VERSION, MAX_DOCUMENT_BYTES};
@@ -59,5 +63,8 @@ pub use reference::{EmbeddedRef, FileRef, MAX_EMBEDDED_BYTES, RelPath, RelPathEr
 pub use resolve::{
     Candidate, FileResolver, MissingFile, Resolution, ResolvedFile, ResolvedVia, candidates,
     resolve,
+};
+pub use schema::{
+    EMBEDDED_FIELDS, FILE_REFERENCE_FIELDS, SchemaViolation, Severity, validate, validate_bytes,
 };
 pub use state::State;
