@@ -32,15 +32,22 @@ const OUTPUT_CEILING_DB_ID: ParamId = ParamId(OUTPUT_CEILING_DB.id.0);
 /// `global_bypass` and `output_ceiling_linear` are plain fields, not folded into
 /// `cross_cutting`, precisely so [`Chain::set_global_bypass`] and
 /// [`Chain::set_output_ceiling_db`] are callable in either order relative to
-/// [`Chain::prepare_crosscutting`] without one silently no-oping — they just record intent.
-/// Whether that intent has any effect on `process` depends only on whether `cross_cutting` is
-/// `Some`, i.e. whether `prepare_crosscutting` was ever called. See `prepare_crosscutting`'s own
-/// doc comment for why that call is opt-in rather than folded into `new`.
+/// [`Chain::prepare_crosscutting`] without one silently no-oping — they just record intent. See
+/// `prepare_crosscutting`'s own doc comment for why that call is opt-in rather than folded into
+/// `new`.
+///
+/// **What that call does and does not gate (issue #36).** It gates FR-CHAIN-080's NaN scan,
+/// FR-CHAIN-090's ceiling, and FR-CHAIN-030's *latency compensation* — the three things that need
+/// state allocated off the audio thread. It does **not** gate the bypass itself. It used to: a
+/// chain with `global_bypass` set but no `cross_cutting` ran every stage anyway, which is a global
+/// bypass that does not bypass, and the failure was indistinguishable from working because audio
+/// kept flowing. `output_ceiling_linear` has no such trap — an unclamped block is a block, not a
+/// contradiction in terms — so it stays gated.
 pub struct Chain {
     stages: Vec<Box<dyn Stage>>,
-    /// FR-CHAIN-030: when `true` *and* `cross_cutting` is `Some`, `process` takes the bypass path
-    /// instead of running `stages`. RT-safe to flip (see `set_global_bypass`) since it is read,
-    /// never allocated, on the audio thread.
+    /// FR-CHAIN-030: when `true`, `process` routes the block to the output instead of running
+    /// `stages` — unconditionally, whether or not `cross_cutting` is `Some` (issue #36). RT-safe
+    /// to flip (see `set_global_bypass`) since it is read, never allocated, on the audio thread.
     global_bypass: bool,
     /// FR-CHAIN-090's ceiling, already converted to a linear multiplier (so `process` never calls
     /// `db_to_linear` itself — that conversion happens once, in `set_output_ceiling_db`, off the
@@ -224,8 +231,10 @@ impl Chain {
     /// Wraps an already-`prepare`d stage list. Building that list is the caller's job; see this
     /// struct's doc comment.
     ///
-    /// Deliberately leaves `cross_cutting` at `None` — FR-CHAIN-030/080/090 stay inactive until
-    /// [`Chain::prepare_crosscutting`] is called explicitly. See that method's doc comment for
+    /// Deliberately leaves `cross_cutting` at `None` — FR-CHAIN-080/090, and FR-CHAIN-030's
+    /// latency compensation, stay inactive until [`Chain::prepare_crosscutting`] is called
+    /// explicitly (the bypass itself is not gated on it; see this struct's own doc comment and
+    /// issue #36). See that method's doc comment for
     /// why this constructor doesn't do it implicitly: this file's own 8 pre-existing tests (and
     /// any future test scaffolding built directly on `Chain::new`) rely on a raw, untouched
     /// `process` — only the real product path (`build_default_chain`, once wired) is expected to
@@ -241,10 +250,11 @@ impl Chain {
     }
 
     /// Non-RT setup call that switches the chain into "cross-cutting active" mode: from this
-    /// call onward, `process` also applies FR-CHAIN-030 (global bypass, once
-    /// [`set_global_bypass`](Chain::set_global_bypass) turns it on), FR-CHAIN-080 (NaN/Inf ->
-    /// silence + fault flag), and FR-CHAIN-090 (output ceiling clamp). Before this call, `process`
-    /// behaves exactly as it always has — see `Chain::new`'s doc comment.
+    /// call onward, `process` also applies FR-CHAIN-030's *latency compensation* on the bypass
+    /// path, FR-CHAIN-080 (NaN/Inf -> silence + fault flag), and FR-CHAIN-090 (output ceiling
+    /// clamp). Before this call, `process` behaves exactly as it always has, save that global
+    /// bypass now bypasses rather than running every stage (issue #36) — see `Chain::new`'s doc
+    /// comment.
     ///
     /// May allocate (it is not run on the audio thread): it pre-sizes one delay ring per channel,
     /// each `self.latency_samples()` long, using this chain's *own* `latency_samples()` (computed
@@ -295,11 +305,11 @@ impl Chain {
     /// else — so this may be called from the audio thread's own command-handling path as well as
     /// from setup code.
     ///
-    /// Only has any effect once [`prepare_crosscutting`](Chain::prepare_crosscutting) has been
-    /// called: with no delay ring built, there is nothing for `process` to route input through
-    /// besides the stages themselves, so `process` just runs them as it always has. No existing
-    /// test calls this — it is exercised only by this module's new cross-cutting tests, which do
-    /// call `prepare_crosscutting` first.
+    /// Takes effect immediately, on a prepared chain or an unprepared one (issue #36). What
+    /// [`prepare_crosscutting`](Chain::prepare_crosscutting) adds is the latency-compensation
+    /// delay: without it a bypassed block is the input undelayed, which is unity-gain passthrough
+    /// but not sample-aligned against the latency the chain reports. Until M14 the bypass was
+    /// gated on that call and an unprepared chain ran every stage while nominally bypassed.
     ///
     /// **D-10.4:** the product path no longer calls this directly — a `global.bypass` change now
     /// arrives as an ordinary [`ParamChange`] through [`Chain::apply`], exactly like every stage
@@ -332,12 +342,12 @@ impl Chain {
     }
 
     /// Runs every stage in order, on the audio thread (RT) — unless global bypass (FR-CHAIN-030)
-    /// is active, in which case the bypass path runs instead. Either way, once cross-cutting is
-    /// active (`prepare_crosscutting` has been called), the block this produces is then scanned
-    /// for NaN/Inf (FR-CHAIN-080) and ceiling-clamped (FR-CHAIN-090) before returning. See
-    /// `prepare_crosscutting`'s doc comment for why a chain built via `Chain::new` and never
-    /// prepared for cross-cutting skips all of that and behaves exactly as before this feature
-    /// existed.
+    /// is active, in which case the block passes to the output unmodified instead. Either way,
+    /// once cross-cutting is active (`prepare_crosscutting` has been called), the block this
+    /// produces is then scanned for NaN/Inf (FR-CHAIN-080) and ceiling-clamped (FR-CHAIN-090)
+    /// before returning, and the bypass path is delayed by the chain's reported latency. See
+    /// `prepare_crosscutting`'s doc comment for what a chain built via `Chain::new` and never
+    /// prepared for cross-cutting skips — the bypass is not on that list (issue #36).
     pub fn process(&mut self, io: &mut StageIo<'_>) {
         // Read *this block's* latency rather than a figure cached at preparation (issue #58):
         // installing a model whose declared rate differs from the engine's raises it mid-session,
@@ -347,14 +357,16 @@ impl Chain {
         let latency = self.latency_samples() as usize;
         let bypassed = self.global_bypass;
 
-        let prepared = self.cross_cutting.is_some();
         if let Some(cross_cutting) = self.cross_cutting.as_mut() {
             // Runs on both paths — see `run_delay`'s doc comment (issue #59).
             cross_cutting.run_delay(io, latency, bypassed);
         }
-        if !bypassed || !prepared {
-            // No line to bypass through (prepare_crosscutting was never called): today's
-            // behaviour, unchanged. See set_global_bypass's doc comment.
+        // Bypass is not conditional on `cross_cutting` (issue #36). With no ring built there is
+        // nothing to compensate the chain's latency with, so an unprepared bypass is the input
+        // undelayed rather than the input delayed — but it is still the *input*, which is the
+        // whole of what "bypass" claims. Running every stage instead, as this used to when
+        // `prepare_crosscutting` had not been called, is the one reading the word cannot bear.
+        if !bypassed {
             for stage in &mut self.stages {
                 stage.process(io);
             }
@@ -1021,6 +1033,67 @@ mod tests {
                 "sample {n}: re-engaging bypass emitted {} instead of {}",
                 output[n],
                 input[n - LATENCY]
+            );
+        }
+    }
+
+    /// **Issue #36.** `process` used to gate the bypass on `cross_cutting.is_some()`
+    /// (`if !bypassed || !prepared { run every stage }`), so a chain that never had
+    /// `prepare_crosscutting` called on it **ran the whole chain while nominally bypassed** — a
+    /// global bypass that does not bypass. Nothing detected it: audio keeps flowing, so the only
+    /// symptom is a bypass button that appears to do nothing, which a user attributes to their host
+    /// or their own routing.
+    ///
+    /// Both product shells reach `process` only through `build_default_chain`, whose last statement
+    /// before returning is `prepare_crosscutting`, so this was a latent trap rather than a shipped
+    /// defect — but "latent" was the only thing standing between the two, and it was a property of
+    /// a call ordering rather than of anything checked. Bypass now means bypass on both paths:
+    /// `prepare_crosscutting` adds FR-CHAIN-030's *latency compensation*, not the passthrough
+    /// itself, and an unprepared chain's `latency_samples()` is uncompensated exactly as an
+    /// unprepared chain gets no NaN scan and no ceiling.
+    ///
+    /// Committed red-first: before the fix the first assertion reads `db_to_linear(6.0)` (≈2.0)
+    /// against the input's 0.25 — the stage ran.
+    #[test]
+    fn global_bypass_bypasses_on_a_chain_that_never_prepared_crosscutting() {
+        let prep = FixedGainPrep { gain_db: 6.0 };
+        let stage = prep.prepare(&ctx()).unwrap();
+        let mut chain = Chain::new(vec![Box::new(stage)]);
+        assert_eq!(
+            chain.prepared_for(),
+            None,
+            "the whole point of this test is the chain `Chain::new` alone leaves behind"
+        );
+        chain.set_global_bypass(true);
+
+        let input = [0.25f32, -0.5, 0.75, -0.125];
+        let mut buf = input;
+        {
+            let mut channels: [&mut [f32]; 1] = [&mut buf];
+            let mut io = StageIo::new(&mut channels, 4);
+            audio_section(|| chain.process(&mut io));
+        }
+        assert_eq!(
+            buf, input,
+            "a bypassed chain must route its input to its output unmodified, whether or not \
+             `prepare_crosscutting` has run"
+        );
+
+        // The converse, so the fix cannot be "an unprepared chain never runs its stages": with
+        // bypass released the same chain gains by the same +6 dB it always did.
+        chain.set_global_bypass(false);
+        let mut buf = input;
+        {
+            let mut channels: [&mut [f32]; 1] = [&mut buf];
+            let mut io = StageIo::new(&mut channels, 4);
+            audio_section(|| chain.process(&mut io));
+        }
+        let gain = namir_core::db_to_linear(6.0);
+        for (out, inp) in buf.iter().zip(&input) {
+            assert!(
+                (out - inp * gain).abs() < 1e-4,
+                "releasing bypass on an unprepared chain must run the stages again: {out} vs {}",
+                inp * gain
             );
         }
     }
