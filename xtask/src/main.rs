@@ -34,6 +34,7 @@ mod preset;
 #[cfg_attr(not(test), allow(dead_code))]
 mod release_workflow;
 mod rt_logging;
+mod schema;
 mod traceability;
 
 use std::collections::HashMap;
@@ -710,9 +711,9 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
     // per annotation. Only Musts appear in `requirements`, so an id that is not one is simply
     // absent and passes the guard -- this tool has never restricted what a tag may *name*, only
     // what a tag *means*.
-    let verify_codes: HashMap<&str, char> = requirements
+    let verify_codes: HashMap<&str, &[char]> = requirements
         .iter()
-        .map(|req| (req.id.as_str(), req.verify))
+        .map(|req| (req.id.as_str(), req.verify.as_slice()))
         .collect();
 
     let mut source_hits: HashMap<String, Vec<String>> = HashMap::new();
@@ -766,7 +767,12 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
             }
         }
         for req in &requirements {
-            if req.verify == 'M'
+            // A requirement whose method names no source-class code at all (`Verify: M` alone,
+            // `Verify: Process`) has nothing for a test-function name to stand for. One whose
+            // method names a source-class code *among others* does -- FR-STATE-040's `M plus S`
+            // is owed a source annotation as well as its manual document (issue #27), so the
+            // fn-name fallback has to be offered it.
+            if !traceability::resolves_through_partials(&req.verify)
                 || source_hits.contains_key(&req.id)
                 || partial_hits.contains_key(&req.id)
             {
@@ -859,7 +865,12 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
         for req in &report.missing {
             println!(
                 "{}",
-                uncovered_line(req, &owners, report.manual_unexecuted.get(&req.id))
+                uncovered_line(
+                    req,
+                    &owners,
+                    report.manual_unexecuted.get(&req.id),
+                    report.missing_codes.get(&req.id),
+                )
             );
         }
         // Mandatory rather than decorative: without it a derived label reads as a curated ownership
@@ -906,11 +917,28 @@ fn uncovered_line(
     req: &traceability::Requirement,
     owners: &HashMap<String, String>,
     manual: Option<&(String, String)>,
+    unresolved: Option<&Vec<char>>,
 ) -> String {
     let owner = owners
         .get(&req.id)
         .map_or(milestones::UNATTRIBUTED, String::as_str);
-    let mut line = format!("  - {} (Verify: {}) [{owner}]", req.id, req.verify);
+    let mut line = format!(
+        "  - {} (Verify: {}) [{owner}]",
+        req.id,
+        traceability::render_verify_codes(&req.verify)
+    );
+    // Issue #27: for a compound method, which half is missing is the whole of what the reader
+    // needs -- FR-STATE-040's manual document exists and passes, and it is the `S` its method also
+    // names that nothing executes. Printed only for a compound method: for a single-code one the
+    // codes repeat what the `(Verify: ...)` field already said.
+    if req.verify.len() > 1
+        && let Some(codes) = unresolved
+    {
+        line.push_str(&format!(
+            " -- no evidence for the {} half of its compound method",
+            traceability::render_verify_codes(codes)
+        ));
+    }
     if let Some((file, reason)) = manual {
         line.push_str(&format!(" -- docs/manual-tests/{file} {reason}"));
     }
@@ -1057,7 +1085,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|ci-commands|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|ci-commands|schema [path...]|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
     );
 }
 
@@ -1072,6 +1100,9 @@ fn main() {
         Some("network-free") => run_network_free(&root),
         Some("error-catalogue") => run_error_catalogue(&root),
         Some("ci-commands") => run_ci_commands(&root),
+        // FR-STATE-040's `S` half (issue #27). See `schema.rs`'s header for why the check lives in
+        // `namir-state` and this is only its build-time face.
+        Some("schema") => schema::run(&root, &args[1..]),
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
@@ -1591,13 +1622,13 @@ mod tests {
     fn an_uncovered_line_carries_its_derived_milestone() {
         let req = traceability::Requirement {
             id: "FR-CFG-020".into(),
-            verify: 'G',
+            verify: vec!['G'],
             section: "4".into(),
         };
         let mut owners = HashMap::new();
         owners.insert("FR-CFG-020".to_string(), "M9".to_string());
         assert_eq!(
-            uncovered_line(&req, &owners, None),
+            uncovered_line(&req, &owners, None, None),
             "  - FR-CFG-020 (Verify: G) [M9]"
         );
     }
@@ -1609,7 +1640,7 @@ mod tests {
         // EXECUTED" are different pieces of work.
         let req = traceability::Requirement {
             id: "FR-UI-020".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: "5.13".into(),
         };
         let manual = (
@@ -1617,7 +1648,7 @@ mod tests {
             "records `NOT EXECUTED.`".to_string(),
         );
         assert_eq!(
-            uncovered_line(&req, &HashMap::new(), Some(&manual)),
+            uncovered_line(&req, &HashMap::new(), Some(&manual), Some(&vec!['M'])),
             "  - FR-UI-020 (Verify: M) [unattributed] -- \
              docs/manual-tests/fr-ui-020-single-screen-elements.md records `NOT EXECUTED.`"
         );
@@ -1627,12 +1658,29 @@ mod tests {
     fn an_uncovered_line_with_no_owner_says_so_rather_than_guessing() {
         let req = traceability::Requirement {
             id: "FR-XXXX-010".into(),
-            verify: 'U',
+            verify: vec!['U'],
             section: "9.9".into(),
         };
         assert_eq!(
-            uncovered_line(&req, &HashMap::new(), None),
+            uncovered_line(&req, &HashMap::new(), None, None),
             "  - FR-XXXX-010 (Verify: U) [unattributed]"
+        );
+    }
+
+    /// Issue #27: for a compound method the reader needs to know *which* half resolved to nothing,
+    /// because the other half's evidence exists and is what made the row read green before. This is
+    /// FR-STATE-040's own shape: a manual document that passes, and an `S` nothing executes.
+    #[test]
+    fn an_uncovered_compound_must_names_the_half_with_no_evidence() {
+        let req = traceability::Requirement {
+            id: "FR-STATE-040".into(),
+            verify: vec!['M', 'S'],
+            section: "5.9".into(),
+        };
+        assert_eq!(
+            uncovered_line(&req, &HashMap::new(), None, Some(&vec!['S'])),
+            "  - FR-STATE-040 (Verify: M+S) [unattributed] -- no evidence for the S half of its \
+             compound method"
         );
     }
 
@@ -1994,7 +2042,7 @@ mod tests {
         // rather than being dropped -- it is still someone recording a gap.
         let requirements = vec![traceability::Requirement {
             id: "FR-CHAIN-010".into(),
-            verify: 'U',
+            verify: vec!['U'],
             section: "5.1".into(),
         }];
         let mut partial_hits = HashMap::new();
@@ -2009,6 +2057,7 @@ mod tests {
         }
         let report = traceability::Report {
             missing: Vec::new(),
+            missing_codes: HashMap::new(),
             manual_hits: HashMap::new(),
             manual_unexecuted: HashMap::new(),
             source_hits: HashMap::new(),

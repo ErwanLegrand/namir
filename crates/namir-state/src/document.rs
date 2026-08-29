@@ -167,6 +167,17 @@ impl Document {
         self.root.get(key)?.as_object()
     }
 
+    /// The raw value of a top-level key, whatever its JSON type — unlike [`Self::section`], which
+    /// collapses "absent" and "present but not an object" into one `None`. [`crate::schema`] is
+    /// the caller that needs them apart, and it is the caller `section`'s own doc comment
+    /// anticipated: an absent `parameters` key is the documented, legal minimal document (§3 of
+    /// `docs/04-state-and-preset-format.md`), where a `parameters` key holding a string is a
+    /// schema violation to report. Every other caller in this crate is loading tolerantly and
+    /// genuinely does treat the two the same.
+    pub(crate) fn top_level(&self, key: &str) -> Option<&Value> {
+        self.root.get(key)
+    }
+
     /// Replaces (or creates) a named top-level section wholesale, discarding whatever was there
     /// before. Correct only when there is nothing worth keeping — building a section from a
     /// document that started empty ([`Self::empty`], [`State::into_document`](crate::State)) is
