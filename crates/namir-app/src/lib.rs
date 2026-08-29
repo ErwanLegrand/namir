@@ -30,6 +30,9 @@
 //!
 //! - [`error_codes`] — this crate's own `ErrorCode` catalogue (D-16.1), for the FR-IO failure modes
 //!   no existing crate's catalogue names (device open failure, xrun, stream loss).
+//! - [`diagnostics`] — the only module in this crate outside [`host`] that names `namir-platform`'s
+//!   logger, so that [`app`] and [`audio_io`] can go on FR-ERR-030's audio-thread list. The same
+//!   `audio.rs` -> `shared.rs` split `namir-clap` already uses; see its own doc comment.
 //! - [`audio_io`] — D-13.1's trait plus the real `cpal` implementation.
 //! - [`device_state`] — FR-IO-010/040/080's pure selection logic: which device, sample rate and
 //!   buffer size to use, given what the system reports and what was remembered.
@@ -64,6 +67,7 @@ pub mod app;
 pub mod audio_io;
 pub mod bridge;
 pub mod device_state;
+pub mod diagnostics;
 pub mod error_codes;
 pub mod host;
 pub mod instance;

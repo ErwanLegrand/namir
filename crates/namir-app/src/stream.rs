@@ -46,6 +46,8 @@
 //! `docs/manual-tests/fr-io-090-channel-mapping.md`.
 
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::time::Duration;
 
@@ -459,6 +461,27 @@ fn build_output(
 /// `pub(crate)`, for the same reason `namir_ui::host::RecordingHost` is: [`crate::app`]'s tests
 /// need an [`AudioBackend`] too, and a second, separately-drifting fake is worse than one shared
 /// one.
+///
+/// # It is also FR-IO-070's failable virtual device (issue #24, §22 **R-5**)
+///
+/// FR-IO-070's stated method is *"I with a virtual device that can be made to fail on demand"*, and
+/// for two milestones no such device existed — the requirement's own apparatus was missing, which
+/// is what issue #24 is about. It is this type, because this is where D-13.1's Namir-owned trait
+/// already puts the seam: making a fake backend fail needs no OS device manipulation, no
+/// `#[cfg(target_os)]` (which D-5.1 forbids outside `namir-platform` anyway) and no hardware, so
+/// the method runs on a headless CI container exactly as it would on the reference machine.
+///
+/// Two kinds of failure, matching the two halves of the requirement's first sentence:
+///
+/// - **A device that fails to open** — [`FakeBackend::failing_to_open`], which makes that
+///   direction's `build_*_stream` return [`AudioIoError::OpenFailed`].
+/// - **A device that fails while in use** — [`FakeBackend::input_error`]/
+///   [`FakeBackend::output_error`], the error callbacks captured since issue #88, fired by the
+///   test at whatever point in the stream's life it chooses.
+///
+/// What a stream then *did* is readable from [`FakeBackend::input_stream`]/
+/// [`FakeBackend::output_stream`]: FR-IO-070's "stop the stream cleanly" is not observable from a
+/// backend that only records the callbacks it was handed.
 #[cfg(test)]
 pub(crate) struct FakeBackend {
     /// The input callback the last `build_input_stream` captured, for a test to drive directly.
@@ -471,6 +494,16 @@ pub(crate) struct FakeBackend {
     pub(crate) input_error: std::sync::Mutex<Option<ErrorCallback>>,
     /// As [`FakeBackend::input_error`], for the playback direction.
     pub(crate) output_error: std::sync::Mutex<Option<ErrorCallback>>,
+    /// What the capture direction's stream was told to do, and whether it has been stopped —
+    /// FR-IO-070's "stop the stream cleanly" needs an observable, and the callbacks above are not
+    /// one. Shared with the [`FakeStream`] handed back by `build_input_stream`, so it survives that
+    /// stream being dropped, which is precisely the event it has to record.
+    pub(crate) input_stream: Arc<FakeStreamLog>,
+    /// As [`FakeBackend::input_stream`], for the playback direction.
+    pub(crate) output_stream: Arc<FakeStreamLog>,
+    /// Directions whose `build_*_stream` fails outright rather than returning a stream — the
+    /// open-failure half of FR-IO-070's fault injection. See [`FakeBackend::failing_to_open`].
+    open_failures: Vec<Direction>,
     /// Which device names answer [`ExclusiveModeOutcome::Engaged`] to
     /// `supports_exclusive`. Every other name answers `Unsupported` — what the real
     /// [`crate::audio_io::CpalBackend`] answers for any device with no exclusive-capable WASAPI
@@ -492,6 +525,9 @@ impl FakeBackend {
             output_data: std::sync::Mutex::new(None),
             input_error: std::sync::Mutex::new(None),
             output_error: std::sync::Mutex::new(None),
+            input_stream: Arc::new(FakeStreamLog::default()),
+            output_stream: Arc::new(FakeStreamLog::default()),
+            open_failures: Vec::new(),
             exclusive_devices: Vec::new(),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
         }
@@ -502,6 +538,37 @@ impl FakeBackend {
     pub(crate) fn granting_exclusive_to(mut self, device_name: &str) -> Self {
         self.exclusive_devices.push(device_name.to_string());
         self
+    }
+
+    /// Makes `direction`'s `build_*_stream` fail rather than hand back a stream — FR-IO-070's
+    /// "a device failing to open". The message is the shape a real backend's is: something the
+    /// user can be shown, carried on [`AudioIoError::OpenFailed`].
+    pub(crate) fn failing_to_open(mut self, direction: Direction) -> Self {
+        self.open_failures.push(direction);
+        self
+    }
+
+    /// The log for one direction, so a test can name the direction it is asserting about rather
+    /// than remembering which field is which.
+    pub(crate) fn stream_log(&self, direction: Direction) -> &Arc<FakeStreamLog> {
+        match direction {
+            Direction::Input => &self.input_stream,
+            Direction::Output => &self.output_stream,
+        }
+    }
+
+    /// `Err` when this direction was told to fail its open, `Ok(())` otherwise.
+    fn open_outcome(&self, direction: Direction) -> Result<(), AudioIoError> {
+        if self.open_failures.contains(&direction) {
+            let side = match direction {
+                Direction::Input => "input",
+                Direction::Output => "output",
+            };
+            return Err(AudioIoError::OpenFailed(format!(
+                "the fake {side} device was told to fail on demand"
+            )));
+        }
+        Ok(())
     }
 
     /// The share mode `direction`'s stream was actually opened with, or `None` if that direction
@@ -516,16 +583,56 @@ impl FakeBackend {
     }
 }
 
+/// What one [`FakeStream`] was told to do, and whether it has been stopped.
+///
+/// `stops` counts **drops**, not `pause` calls, because dropping is what stopping a stream *is* in
+/// this crate: [`AudioStream`]'s own doc comment makes "dropping this stops the stream" the
+/// contract every real implementation relies on rather than re-implements, and
+/// [`RunningStreams`]'s drop is the mechanism [`crate::host::AppHost`] uses to honour FR-IO-070's
+/// "stop the stream cleanly". Counting rather than flagging so a double stop is visible as a
+/// count of 2 rather than indistinguishable from a single one.
 #[cfg(test)]
-struct FakeStream;
+#[derive(Default)]
+pub(crate) struct FakeStreamLog {
+    plays: AtomicUsize,
+    pauses: AtomicUsize,
+    stops: AtomicUsize,
+}
+
+#[cfg(test)]
+impl FakeStreamLog {
+    pub(crate) fn plays(&self) -> usize {
+        self.plays.load(Ordering::Relaxed)
+    }
+    pub(crate) fn pauses(&self) -> usize {
+        self.pauses.load(Ordering::Relaxed)
+    }
+    pub(crate) fn stops(&self) -> usize {
+        self.stops.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+struct FakeStream {
+    log: Arc<FakeStreamLog>,
+}
 
 #[cfg(test)]
 impl AudioStream for FakeStream {
     fn play(&self) -> Result<(), AudioIoError> {
+        self.log.plays.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
     fn pause(&self) -> Result<(), AudioIoError> {
+        self.log.pauses.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for FakeStream {
+    fn drop(&mut self) {
+        self.log.stops.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -601,9 +708,15 @@ impl AudioBackend for FakeBackend {
             .lock()
             .unwrap()
             .push((Direction::Input, params.share_mode));
+        // Before the callbacks are stored: a real backend that refuses the open never received
+        // them either, and a test asserting the teardown must not find a live callback behind a
+        // failed open.
+        self.open_outcome(Direction::Input)?;
         *self.input_data.lock().unwrap() = Some(on_data);
         *self.input_error.lock().unwrap() = Some(on_error);
-        Ok(Box::new(FakeStream))
+        Ok(Box::new(FakeStream {
+            log: Arc::clone(&self.input_stream),
+        }))
     }
     fn build_output_stream(
         &self,
@@ -618,9 +731,12 @@ impl AudioBackend for FakeBackend {
             .lock()
             .unwrap()
             .push((Direction::Output, params.share_mode));
+        self.open_outcome(Direction::Output)?;
         *self.output_data.lock().unwrap() = Some(on_data);
         *self.output_error.lock().unwrap() = Some(on_error);
-        Ok(Box::new(FakeStream))
+        Ok(Box::new(FakeStream {
+            log: Arc::clone(&self.output_stream),
+        }))
     }
 }
 

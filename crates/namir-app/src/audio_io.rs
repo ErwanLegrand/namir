@@ -761,11 +761,33 @@ mod cpal_impl {
     /// carrying WASAPI's `AUDCLNT_E_RESOURCES_INVALIDATED`. So the message is read before giving
     /// up on it — see [`super::classifies_as_device_loss`] for the marker list, the transcript it
     /// came from, and what this recovery does and does not claim.
-    fn to_stream_failure(error: cpal::Error) -> StreamFailure {
+    ///
+    /// **`StreamInvalidated` is matched too, added for issue #24, and it is what should have
+    /// caught that unplug in the first place.** M14 read the transcript's *message* and concluded
+    /// `cpal` had not classified the condition; the fork's own source says otherwise. Its WASAPI
+    /// `From<windows::core::Error>` maps `AUDCLNT_E_RESOURCES_INVALIDATED` — the exact code the
+    /// unplug produced — onto [`cpal::ErrorKind::StreamInvalidated`], which this `match` did not
+    /// name, so the failure reached the `_` arm and was rescued only because that message happened
+    /// to carry the raw OS number.
+    ///
+    /// Two reasons to match the kind rather than leave the substring to do it. The kind is what the
+    /// backend actually *said*, so it survives a reworded message — the failure mode
+    /// [`super::DEVICE_LOSS_MARKERS`]' own doc admits it cannot survive. And there is a case the
+    /// substring provably cannot reach: the fork's `default_device_change_error` returns a bare
+    /// `ErrorKind::StreamInvalidated` with no message at all, whose `Display` is the kind's own
+    /// prose ("The stream configuration is no longer valid and must be rebuilt.") — no OS number,
+    /// no marker, and therefore a device loss reported as a generic
+    /// [`crate::error_codes::STREAM_FAILED`] until this arm existed.
+    ///
+    /// What is deliberately *not* folded in here: `ErrorKind::DeviceChanged`, which the fork
+    /// documents as "the stream remains active and no rebuild is required" — a reroute is not a
+    /// loss, and reporting it as one would stop a stream that is still working (see
+    /// [`crate::host::AppHost`], which stops the streams on exactly this classification).
+    pub(super) fn to_stream_failure(error: cpal::Error) -> StreamFailure {
         match error.kind() {
-            cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::HostUnavailable => {
-                StreamFailure::DeviceLost
-            }
+            cpal::ErrorKind::DeviceNotAvailable
+            | cpal::ErrorKind::HostUnavailable
+            | cpal::ErrorKind::StreamInvalidated => StreamFailure::DeviceLost,
             cpal::ErrorKind::Xrun => StreamFailure::Xrun,
             _ => {
                 // `InlineDetail::from_display`, not `error.to_string()` (issue #88): this runs on
@@ -1237,7 +1259,7 @@ mod cpal_impl {
 mod tests {
     use super::cpal_impl::{
         acceptable_formats, exclusive_outcome, preferred_format, scratch_samples,
-        to_supported_configs, wasapi_options,
+        to_stream_failure, to_supported_configs, wasapi_options,
     };
     use super::*;
 
@@ -1311,6 +1333,55 @@ mod tests {
         ] {
             assert!(classifies_as_device_loss(message), "{message}");
         }
+    }
+
+    /// **Issue #24: the classification is widened at the `ErrorKind` it should have read all
+    /// along.** The M14 recovery above reads the backend's *message*, and it only rescued the
+    /// 2026-08-27 unplug because that message happened to carry the raw OS number. The fork itself
+    /// says what the condition was: `crates/.../cpal/src/host/wasapi/mod.rs` maps
+    /// `AUDCLNT_E_RESOURCES_INVALIDATED` — the exact code that unplug produced — onto
+    /// [`cpal::ErrorKind::StreamInvalidated`], which `to_stream_failure` did not match, so the
+    /// failure fell through to the `_` arm and was saved by a substring.
+    ///
+    /// The case the substring cannot save is in the same file: `default_device_change_error`
+    /// returns `ErrorKind::StreamInvalidated` with **no message at all**, so `Display` renders the
+    /// kind's own prose ("The stream configuration is no longer valid and must be rebuilt.") — no
+    /// OS number, no marker, and until this test a reported-as-`STREAM_FAILED` device loss.
+    #[test]
+    fn a_stream_invalidated_by_the_backend_is_a_device_loss() {
+        for error in [
+            cpal::Error::new(cpal::ErrorKind::StreamInvalidated),
+            cpal::Error::with_message(
+                cpal::ErrorKind::StreamInvalidated,
+                "OS Error -2004287450 (FormatMessageW() returned error 317)",
+            ),
+        ] {
+            assert_eq!(
+                to_stream_failure(error.clone()),
+                StreamFailure::DeviceLost,
+                "{error}"
+            );
+        }
+    }
+
+    /// The two arms that were already right, kept beside the new one so a future edit to the
+    /// `match` has to keep all three: an xrun is an xrun, and an error that names no device and is
+    /// classified as nothing in particular stays [`StreamFailure::Other`] rather than being
+    /// promoted.
+    #[test]
+    fn the_other_stream_failure_classifications_are_unchanged() {
+        assert_eq!(
+            to_stream_failure(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable)),
+            StreamFailure::DeviceLost
+        );
+        assert_eq!(
+            to_stream_failure(cpal::Error::new(cpal::ErrorKind::Xrun)),
+            StreamFailure::Xrun
+        );
+        assert!(matches!(
+            to_stream_failure(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig)),
+            StreamFailure::Other(_)
+        ));
     }
 
     /// The safe direction: an error that says nothing about a device stays unclassified, so it is
