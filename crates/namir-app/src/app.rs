@@ -200,7 +200,7 @@ const STREAM_FAILURE_RING_SLOTS: usize = 16;
 /// `Xrun` is counted rather than pushed, exactly as before — [`crate::xrun::XrunCounter::record`]
 /// is a single relaxed atomic increment and belongs on the callback thread, and routing it through
 /// the ring would let a burst of dropouts evict the device-loss report behind it.
-fn stream_failure_sink(
+pub(crate) fn stream_failure_sink(
     xruns: Arc<XrunCounter>,
     mut failures: rtrb::Producer<StreamFailure>,
 ) -> impl FnMut(StreamFailure) + Send + 'static {
@@ -229,13 +229,17 @@ pub fn run() {
     // verbosity field, and M9b does not add one — the plugin is environment-variable-only by
     // decision (roadmap §15 item 8) and giving the app a second, divergent control was ruled out of
     // this round. `NAMIR_LOG` therefore governs both products identically. The seam is already
-    // there for the day a settings field arrives: `logging::init` takes the level as a parameter
-    // precisely so `namir-platform` need not know what `AppSettings` is.
+    // there for the day a settings field arrives: the platform initialiser takes the level as a
+    // parameter precisely so `namir-platform` need not know what `AppSettings` is.
     //
     // Before `resolve_config_dir` because the log's own location is `namir_platform::
     // log_file_path`, which is independent of the app's config directory and of
     // `startup_probe`'s override of it — a probed launch logs to the same place a real one does.
-    namir_platform::logging::init(None);
+    //
+    // Through `crate::diagnostics` rather than `namir-platform` directly: this file is on
+    // FR-ERR-030's audio-thread list (it owns `stream_failure_sink`), so it may not name the
+    // logger even for a main-thread call. See that module's doc comment.
+    crate::diagnostics::install();
 
     let config_dir = resolve_config_dir();
 
@@ -482,7 +486,13 @@ pub fn run() {
         failed_output_name,
     ));
 
-    let _running = match running {
+    // Handed to `AppHost` rather than kept in a local (issue #24): FR-IO-070 requires the stream
+    // to be stopped cleanly when a device is lost, and this function is about to block inside
+    // `namir_ui::open_blocking` for the whole life of the window. The UI thread is the only one
+    // that both learns of the loss (it drains the failure rings) and may act on it -- see
+    // `AppHost::hold_streams`. The host drops the path when the window closes, which is where
+    // this local used to drop it.
+    match running {
         Ok(running) => {
             // Issue #76: D-13.2's elevation outcome is produced inside the first output callback
             // and cannot be reported from there (see `stream::ThreadPriorityReport`), so the
@@ -498,7 +508,7 @@ pub fn run() {
                     // measurement run.
                     startup_probe::audible(library_index_entries, default_state_params);
                     eprintln!("namir: audio stream started");
-                    Some(running)
+                    host.hold_streams(running);
                 }
                 Err(e) => {
                     // The detail is carried on the marker, not left to the notice alone: a probed
@@ -508,16 +518,17 @@ pub fn run() {
                         &e.to_string(),
                     );
                     host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
-                    None
+                    // Not held: a path that never started is dropped here, which stops the half
+                    // of it that did open (FR-IO-070's "stop the stream cleanly" for the
+                    // failed-to-start case, and `RunningStreams`' own drop contract).
                 }
             }
         }
         Err(e) => {
             startup_probe::not_audible(startup_probe::REASON_STREAM_NOT_STARTED, &e.to_string());
             host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
-            None
         }
-    };
+    }
 
     // NFR-PERF-030: a measurement run has nothing left to do — its marker is out — and returning
     // here is what makes the process exit instead of blocking in `open_blocking` below. Before the
@@ -562,7 +573,7 @@ pub fn run() {
         // file that silently failed to save is precisely the "why did it forget my device again?"
         // report a log exists to answer — and is now the record it always should have been.
         if let Err(w) = settings::save(&settings::settings_path(dir), &settings) {
-            namir_platform::logging::record(w.code, &w.detail);
+            crate::diagnostics::record(w.code, &w.detail);
         }
     }
 }

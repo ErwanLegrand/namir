@@ -333,12 +333,16 @@ mod tests {
     /// FR-IO-070's non-hardware-dependent half: a device that cannot be opened at all (here,
     /// none present) is handled by returning `None` rather than panicking, which is what lets
     /// `crate::app::run` fall back to `open_window_without_audio` instead of crashing or hanging.
-    // trace-partial: FR-IO-070
-    // uncovered: FR-IO-070 — the method's named apparatus, a virtual device that can be made to
-    // uncovered: fail on demand, does not exist and the tagged test opens no device, its whole body
-    // uncovered: asserting that selecting from an empty slice is None, so device removal while in
-    // uncovered: use, "stop the stream cleanly" and "allow the user to select another device" are
-    // uncovered: all unexercised; closes M8
+    ///
+    /// **FR-IO-070's tag moved off this test at issue #24, and this is the note that says where.**
+    /// It carried the requirement's only annotation while asserting nothing more than that
+    /// selecting from an empty slice is `None` — no device opened, nothing stopped, no failure
+    /// injected — which is what the partial's own `uncovered:` field said in as many words. The
+    /// requirement's stated apparatus now exists (`crate::stream::FakeBackend` can be made to fail
+    /// on demand), so the tag lives on the test that uses it:
+    /// `crate::host`'s `a_device_lost_mid_stream_is_reported_and_stops_both_streams_cleanly`.
+    /// This test keeps its own value — it is the branch `open_window_without_audio` depends on —
+    /// and simply no longer claims to be FR-IO-070's evidence.
     #[test]
     fn no_devices_at_all_yields_none() {
         assert!(select_device(&[], Some("Anything")).is_none());

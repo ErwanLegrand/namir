@@ -108,6 +108,19 @@ pub const AUDIO_THREAD_MODULES: &[(&str, &str)] = &[
         "crates/namir-app/src/xrun.rs",
         "is incremented from the output callback (`XrunCounter::record`)",
     ),
+    (
+        "crates/namir-app/src/app.rs",
+        "owns `stream_failure_sink`, the closure `cpal` runs on the stream's own error thread",
+    ),
+    (
+        "crates/namir-app/src/audio_io.rs",
+        "wraps every `cpal` callback, and classifies a failure inside the error one \
+         (`to_stream_failure`)",
+    ),
+    (
+        "crates/namir-app/src/audio_io/convert.rs",
+        "converts every sample format inside the two data callbacks",
+    ),
 ];
 
 /// The identifiers an audio-thread module may not name. Whole-identifier matches, so a path is
@@ -204,6 +217,48 @@ mod tests {
     fn record_verbose_is_flagged_bare() {
         let source = "record_verbose(CODE, \"per-block detail\");\n";
         assert_eq!(scan_logger_names(source), vec![(1, "record_verbose")]);
+    }
+
+    /// **The list must not silently shrink.** `AUDIO_THREAD_MODULES` is hand-maintained (residual
+    /// blind spot 2), and its worst failure mode is not a false alarm but a quiet un-covering: a
+    /// module dropped from it stops being checked and nothing says so. `crate::main` already turns
+    /// an *unreadable* listed file into a violation; this pins the entries themselves, both shells'
+    /// callback-carrying modules together, so removing one is a test failure rather than a diff
+    /// nobody reads.
+    ///
+    /// The three `namir-app` entries beyond `stream.rs`/`bridge.rs`/`xrun.rs` were added at issue
+    /// #24's follow-up and are the reason this test exists: `app.rs` owns `stream_failure_sink`,
+    /// the closure `cpal` runs on the stream's own error thread, and it was outside the list for
+    /// as long as that closure has existed.
+    #[test]
+    fn every_module_known_to_carry_callback_code_is_listed() {
+        for expected in [
+            "crates/namir-clap/src/audio.rs",
+            "crates/namir-clap/src/params_ext.rs",
+            "crates/namir-clap/src/param_mirror.rs",
+            "crates/namir-app/src/stream.rs",
+            "crates/namir-app/src/bridge.rs",
+            "crates/namir-app/src/xrun.rs",
+            "crates/namir-app/src/app.rs",
+            "crates/namir-app/src/audio_io.rs",
+            "crates/namir-app/src/audio_io/convert.rs",
+        ] {
+            assert!(
+                AUDIO_THREAD_MODULES.iter().any(|(rel, _)| *rel == expected),
+                "{expected} carries audio-thread code and must stay on FR-ERR-030's list"
+            );
+        }
+    }
+
+    /// Every entry carries a reason, and no path is listed twice -- a duplicate would report the
+    /// same violation twice and make the count meaningless.
+    #[test]
+    fn the_listed_modules_are_unique_and_each_says_why_it_is_listed() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (rel, why) in AUDIO_THREAD_MODULES {
+            assert!(seen.insert(*rel), "{rel} is listed twice");
+            assert!(!why.trim().is_empty(), "{rel} is listed with no reason");
+        }
     }
 
     #[test]

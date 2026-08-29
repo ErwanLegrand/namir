@@ -45,7 +45,7 @@ use namir_worker::library::LibraryService;
 
 use crate::audio_io::StreamFailure;
 use crate::instance::SharedInstance;
-use crate::stream::{Direction, ThreadPriorityReport};
+use crate::stream::{Direction, RunningStreams, ThreadPriorityReport};
 use crate::worker::{AppCommand, AppEvent, LoadOutcomeSummary, WorkerHandle};
 
 /// This crate's own catalogue entries for the notices [`AppHost`] itself synthesises (as opposed
@@ -320,6 +320,10 @@ pub struct AppHost {
     /// FR-IO-070's stream-failure reports, when this host is driving a real duplex path. `None`
     /// on `crate::app`'s `open_window_without_audio` path, where there is no stream to fail.
     stream_failures: Option<StreamFailureWatch>,
+    /// The running duplex path itself, so FR-IO-070's "stop the stream cleanly" has something to
+    /// stop (issue #24). `None` before [`AppHost::hold_streams`] is called, on the
+    /// `open_window_without_audio` path, and again after a device loss has stopped it.
+    streams: Option<RunningStreams>,
     /// D-13.2's thread-elevation outcome, posted by the output callback and reported from here
     /// (issue #76). Cleared once reported, so the notice is written once per session rather than
     /// once per frame.
@@ -358,6 +362,7 @@ impl AppHost {
             presets: Vec::new(),
             presets_listed_at: None,
             stream_failures: None,
+            streams: None,
             thread_priority: None,
             notices: Vec::new(),
             next_notice_id: AtomicU64::new(1),
@@ -369,6 +374,23 @@ impl AppHost {
     /// with no streams behind it (`open_window_without_audio`) simply never calls it.
     pub fn watch_stream_failures(&mut self, watch: StreamFailureWatch) {
         self.stream_failures = Some(watch);
+    }
+
+    /// Takes ownership of the running duplex path, so FR-IO-070's "stop the stream cleanly" is
+    /// something this host can actually do (issue #24).
+    ///
+    /// **Why the host and not [`crate::app::run`].** The failure is *detected* on a `cpal` error
+    /// thread, which may not stop anything (it is inside the stream it would be closing, and
+    /// NFR-RT-010 forbids the blocking work either way), and it is *reported* here, on the UI
+    /// thread, one frame later. `run` is meanwhile blocked inside `namir_ui::open_blocking` for the
+    /// whole life of the window and cannot react to anything. So the only thread that both learns
+    /// of the loss and is allowed to act on it is this one — which is why the streams live here
+    /// rather than in a `run` local, as they did until this change.
+    ///
+    /// Called once, after `RunningStreams::play`, so the elevation watch and the first callback
+    /// are already in place; a session with no audio device never calls it.
+    pub fn hold_streams(&mut self, streams: RunningStreams) {
+        self.streams = Some(streams);
     }
 
     /// Points this host at FR-STATE-030's preset directory (`<config_dir>/Presets`, see
@@ -453,6 +475,26 @@ impl AppHost {
             });
         }
         self.stream_failures = Some(watch);
+    }
+
+    /// FR-IO-070's "stop the stream cleanly", on a device loss and on nothing else (issue #24).
+    ///
+    /// Dropping is the stop: [`crate::audio_io::AudioStream`]'s own contract is that dropping
+    /// stops the stream, [`RunningStreams`] is built on it, and unlike `pause()` it cannot fail —
+    /// which matters here, because the device this is stopping has just gone away, so a `pause`
+    /// against it is as likely to error as to succeed and there would be nothing useful to do with
+    /// that error. Taking the field also makes the stop idempotent: a second report from the other
+    /// direction's ring, or a second frame, finds `None` and does nothing.
+    ///
+    /// **Only on `DEVICE_LOST`.** [`crate::error_codes::STREAM_FAILED`] covers everything a
+    /// backend reported that was *not* classified as a removal, and some of those are survivable —
+    /// `cpal`'s own `ErrorKind` includes `RealtimeDenied` ("audio will still play") and
+    /// `DeviceChanged` ("the stream remains active and no rebuild is required"). Stopping on those
+    /// would turn a warning into a silent session. A loss is different in kind: the endpoint is
+    /// gone, the callbacks are running against nothing, and `DEVICE_LOST`'s own remedy already
+    /// tells the user that audio does not resume by itself.
+    fn stop_streams(&mut self) {
+        drop(self.streams.take());
     }
 
     /// Queues one FR-UI-070 notice **and writes the matching FR-ERR-010 log record**.
@@ -545,6 +587,9 @@ impl AppHost {
                 // The *classification* picks the entry (issue #44); the direction is carried in
                 // `detail`, which `crate::app`'s callback builds naming both it and the device.
                 let code = local_error_codes::stream_failure_code(&failure);
+                if code.id == crate::error_codes::DEVICE_LOST.id {
+                    self.stop_streams();
+                }
                 self.push_notice(code, detail);
             }
         }
@@ -1197,6 +1242,217 @@ mod tests {
         assert!(!other.detail.contains("Other("), "{}", other.detail);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Opens the whole duplex path over [`crate::stream::FakeBackend`] and hands both ends to
+    /// `host`: the real [`crate::app::stream_failure_sink`] closures on the callback side, the
+    /// [`StreamFailureWatch`] and the [`RunningStreams`] themselves on this side. Everything below
+    /// the backend is the production code path; only the device is virtual.
+    fn open_fake_duplex(host: &mut AppHost, backend: &crate::stream::FakeBackend) {
+        let xruns = Arc::new(crate::xrun::XrunCounter::new());
+        let (input_tx, input_rx) = rtrb::RingBuffer::new(8);
+        let (output_tx, output_rx) = rtrb::RingBuffer::new(8);
+        let running = crate::stream::open(
+            crate::stream::fake_duplex_setup(backend, BLOCK),
+            crate::stream::default_test_engine(BLOCK),
+            Arc::clone(&xruns),
+            crate::app::stream_failure_sink(Arc::clone(&xruns), input_tx),
+            crate::app::stream_failure_sink(xruns, output_tx),
+        )
+        .expect("the fake backend opens unless it was told to fail");
+        running.play().unwrap();
+        host.watch_stream_failures(StreamFailureWatch::new(
+            input_rx,
+            output_rx,
+            "Line (AudioBox 22VSL)".to_string(),
+            "Speakers (AudioBox 22VSL)".to_string(),
+        ));
+        host.hold_streams(running);
+    }
+
+    /// **FR-IO-070 through its own stated apparatus (issue #24, §22 R-5).** The requirement's
+    /// method is *"I with a virtual device that can be made to fail on demand"*, and until this
+    /// test no such device existed: the tagged artifact asserted that selecting from an empty
+    /// slice is `None`, and the only evidence of a real removal was a manual document.
+    ///
+    /// What runs here is the production path end to end, with nothing but the device faked. A
+    /// [`crate::stream::FakeBackend`] stream is opened by `crate::stream::open`, played, and driven
+    /// for a few blocks so the failure is genuinely *mid-stream*; then the error callback `cpal`
+    /// itself would invoke — captured by the fake since issue #88 — is fired on the output
+    /// direction with the 2026-08-27 transcript verbatim.
+    ///
+    /// It is fired as [`StreamFailure::Other`], not `DeviceLost`, deliberately: that is the shape
+    /// the real unplug arrived in, and it is what makes this exercise
+    /// `crate::audio_io::classifies_as_device_loss` rather than a pre-classified value a test
+    /// handed itself.
+    ///
+    /// Three of the requirement's four clauses are asserted: no crash or hang (the test completes),
+    /// the condition is reported (one `DEVICE_LOST` notice naming the side and the device), and the
+    /// stream is stopped cleanly (both directions' streams dropped exactly once, from the UI
+    /// thread, and not before the report). The fourth is `select_device`'s re-selection, in the
+    /// test below.
+    // trace-partial: FR-IO-070
+    // uncovered: FR-IO-070 — "allow the user to select another device" is spanned only by the
+    // uncovered: restart-mediated substitute below (`device_state::select_device` picking a
+    // uncovered: replacement on the next launch); no in-session device chooser exists in either
+    // uncovered: shell, so the clause as written is unimplemented (issue #26, roadmap §15 item 16)
+    // uncovered: and no test can reach it. The failable device is also virtual, so what a real
+    // uncovered: removal makes the OS and cpal do stays evidenced only by
+    // uncovered: docs/manual-tests/fr-io-070-device-removal.md, whose steps 1 and 3 are still
+    // uncovered: NOT EXECUTED; closes M8
+    #[test]
+    fn a_device_lost_mid_stream_is_reported_and_stops_both_streams_cleanly() {
+        let dir = temp_dir("device_lost_mid_stream");
+        let (mut host, _engine) = build_host(&dir);
+        let backend = crate::stream::FakeBackend::new();
+        open_fake_duplex(&mut host, &backend);
+
+        assert_eq!(backend.input_stream.plays(), 1);
+        assert_eq!(backend.output_stream.plays(), 1);
+
+        // Mid-stream, not at open: audio is flowing before anything fails, which is the condition
+        // FR-IO-070 names ("device removal **while in use**").
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+        let mut out = [0.0f32; BLOCK * 2];
+        for _ in 0..4 {
+            output_cb(&mut out);
+        }
+        assert_eq!(
+            backend.output_stream.stops(),
+            0,
+            "nothing has failed yet, so nothing may have been stopped"
+        );
+
+        // The transcript from the 2026-08-27 unplug, verbatim, arriving the way it really did --
+        // as an `Other` carrying an OS error whose own message formatting had failed.
+        let mut output_err = backend.output_error.lock().unwrap().take().unwrap();
+        output_err(StreamFailure::Other(crate::audio_io::InlineDetail::from(
+            "OS Error -2004287450 (FormatMessageW() returned error 317) (os error -2004287450)",
+        )));
+
+        let notices = host.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].code.id, crate::error_codes::DEVICE_LOST.id);
+        assert!(
+            notices[0].detail.contains("output"),
+            "{}",
+            notices[0].detail
+        );
+        assert!(
+            notices[0].detail.contains("Speakers (AudioBox 22VSL)"),
+            "{}",
+            notices[0].detail
+        );
+
+        // "stop the stream cleanly": both directions, exactly once each. `DEVICE_LOST`'s own
+        // catalogue text has claimed "the stream was stopped" since M14; until issue #24 nothing
+        // stopped it, and the notice was telling the user something untrue.
+        assert_eq!(
+            backend.output_stream.stops(),
+            1,
+            "the failing direction's stream must be stopped"
+        );
+        assert_eq!(
+            backend.input_stream.stops(),
+            1,
+            "the other direction goes with it: half a duplex path is not a working session"
+        );
+        assert_eq!(
+            backend.output_stream.pauses(),
+            0,
+            "the stop is a drop, not a pause: pausing an endpoint that has just gone away is as \
+             likely to error as to succeed, and a paused stream is still an open device"
+        );
+
+        // Idempotent: a second frame, or a second report from the direction still holding a full
+        // ring, must not double-stop or re-report a path that is already gone.
+        assert!(host.snapshot().notices.len() <= 1);
+        assert_eq!(backend.output_stream.stops(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same apparatus for FR-IO-070's *other* first-sentence half — "a device failing to open"
+    /// — which `docs/manual-tests/fr-io-070-device-removal.md` records as step 1, **NOT EXECUTED**,
+    /// because inducing it needs a device that can be made to refuse an open.
+    ///
+    /// The output direction is told to fail, so the input stream has already been built when the
+    /// open gives up. What is asserted is the teardown: `crate::stream::open` must stop the half it
+    /// did open rather than leaking a live capture stream on a session that has no audio, and the
+    /// caller gets a reportable error rather than a panic.
+    #[test]
+    fn a_device_that_fails_to_open_reports_and_leaves_no_half_open_stream() {
+        let dir = temp_dir("device_open_failure");
+        let (mut host, _engine) = build_host(&dir);
+        let backend = crate::stream::FakeBackend::new().failing_to_open(Direction::Output);
+
+        let xruns = Arc::new(crate::xrun::XrunCounter::new());
+        let (input_tx, _input_rx) = rtrb::RingBuffer::new(8);
+        let (output_tx, _output_rx) = rtrb::RingBuffer::new(8);
+        let opened = crate::stream::open(
+            crate::stream::fake_duplex_setup(&backend, BLOCK),
+            crate::stream::default_test_engine(BLOCK),
+            Arc::clone(&xruns),
+            crate::app::stream_failure_sink(Arc::clone(&xruns), input_tx),
+            crate::app::stream_failure_sink(xruns, output_tx),
+        );
+        let error = opened.err().expect("the output open was told to fail");
+
+        assert_eq!(
+            backend.stream_log(Direction::Input).stops(),
+            1,
+            "the input stream built before the failure must be stopped, not leaked"
+        );
+        assert_eq!(backend.stream_log(Direction::Output).stops(), 0);
+        assert!(
+            backend.output_data.lock().unwrap().is_none(),
+            "a refused open must not have kept the callbacks it was handed"
+        );
+
+        // What `crate::app::run` does with that error, and the notice a user actually sees.
+        host.report(crate::error_codes::DEVICE_OPEN_FAILED, error.to_string());
+        let notices = host.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(
+            notices[0].code.id,
+            crate::error_codes::DEVICE_OPEN_FAILED.id
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FR-IO-070's third clause, as far as anything in this build can reach it: after the loss,
+    /// picking up another device.
+    ///
+    /// **This is the restart-mediated substitute, not the clause as written**, and the tag above
+    /// says so. No device-selection surface exists in either shell (issue #26), so what a user can
+    /// actually do after the notice is close Namir and launch it again — at which point
+    /// `device_state::select_device` finds the remembered device gone and degrades to another one,
+    /// reporting `REMEMBERED_DEVICE_UNAVAILABLE` (FR-IO-080). Asserted here rather than assumed,
+    /// because it is the only continuation path the product has and nothing else tests it against
+    /// a device that was lost *while in use*.
+    #[test]
+    fn after_a_loss_the_next_launch_selects_another_device() {
+        let lost = "Speakers (AudioBox 22VSL)";
+        let remaining = [
+            crate::audio_io::DeviceInfo {
+                name: "Speakers (Realtek)".to_string(),
+                is_default: true,
+            },
+            crate::audio_io::DeviceInfo {
+                name: "Headphones".to_string(),
+                is_default: false,
+            },
+        ];
+
+        let selection = crate::device_state::select_device(&remaining, Some(lost))
+            .expect("another device is present, so the session has somewhere to go");
+        assert_eq!(selection.device.name, "Speakers (Realtek)");
+        assert_eq!(
+            selection.fell_back_from.as_deref(),
+            Some(lost),
+            "the substitution has to be reportable, not silent"
+        );
     }
 
     /// A host with no streams behind it (`crate::app`'s `open_window_without_audio`) never calls
