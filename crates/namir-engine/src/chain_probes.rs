@@ -23,6 +23,7 @@ use crate::chain::Chain;
 use crate::param::ParamChange;
 use crate::prepare::PrepareContext;
 use crate::probe::{self, BLOCK, SR};
+use crate::rt_harness::audio_section;
 use crate::stage::{Stage, StagePrep};
 use crate::stage_io::StageIo;
 use crate::stages::{self, build_default_chain};
@@ -827,5 +828,238 @@ fn bypass_compensation_tracks_the_latency_a_resampled_model_adds_at_runtime() {
         "bypassed output minus input delayed by the {reported} samples the chain reports peaked \
          at {peak_residual:e}, above the -120 dBFS null floor {null_floor:e}: the compensation is \
          not tracking a latency that changed after `prepare_crosscutting` ran"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Issue #30 — the sub-block split the CLAP processor performs at every automation offset.
+// ---------------------------------------------------------------------------------------------
+
+/// The block size both runs of the split probe declare to [`PrepareContext`] — so every stage's
+/// scratch, and the IR convolver's whole partition schedule, are sized identically in both. Only
+/// the *division* of those frames into `Chain::process` calls differs, which is exactly what the
+/// split under test is.
+const SPLIT_BLOCK: usize = 512;
+
+/// The offsets a block is cut at, cycled one per block. Deliberately the set
+/// `namir-clap/tests/clap_host_automation.rs` places its automation event at, including both
+/// boundaries a splitter can get wrong — `1`, one frame before the rest, and `SPLIT_BLOCK - 1`,
+/// one frame after it — plus a mid-block value and offsets that are multiples of nothing in
+/// particular.
+///
+/// `0` is not among them: `namir-clap/src/audio.rs` skips a zero-length leading segment, so a
+/// block cut at 0 is not cut at all and would contribute a block identical to the reference run's.
+const SPLIT_OFFSETS: [usize; 5] = [1, 37, 256, 300, SPLIT_BLOCK - 1];
+
+/// Runs `input` through `chain` in [`SPLIT_BLOCK`]-frame blocks, each divided into **two**
+/// `Chain::process` calls at `SPLIT_OFFSETS[i % 5]` — the shape `namir-clap/src/audio.rs`'s event
+/// split produces for a block carrying one automation point.
+///
+/// Deliberately not a [`probe`] helper: that module's own doc comment asks a generator with one
+/// caller to stay next to that caller until it has two. Like [`probe::run`], only `Chain::process`
+/// is inside [`audio_section`], so every run doubles as NFR-RT-010 evidence that the split path
+/// allocates nothing.
+fn run_split(chain: &mut Chain, input: &[Vec<f32>], frames: usize) -> Vec<Vec<f32>> {
+    let mut out: Vec<Vec<f32>> = input.iter().map(|_| Vec::with_capacity(frames)).collect();
+    let mut scratch: Vec<Vec<f32>> = input.iter().map(|_| vec![0.0f32; SPLIT_BLOCK]).collect();
+
+    let mut offset = 0;
+    let mut index = 0;
+    while offset < frames {
+        let whole = SPLIT_BLOCK.min(frames - offset);
+        let cut = SPLIT_OFFSETS[index % SPLIT_OFFSETS.len()].min(whole);
+        for n in [cut, whole - cut] {
+            if n == 0 {
+                continue;
+            }
+            for (channel, buf) in input.iter().zip(scratch.iter_mut()) {
+                buf[..n].copy_from_slice(&channel[offset..offset + n]);
+            }
+            {
+                let mut refs: Vec<&mut [f32]> = scratch.iter_mut().map(|b| &mut b[..n]).collect();
+                let mut io = StageIo::new(&mut refs, n);
+                audio_section(|| chain.process(&mut io));
+            }
+            for (buf, channel) in scratch.iter().zip(out.iter_mut()) {
+                channel.extend_from_slice(&buf[..n]);
+            }
+            offset += n;
+        }
+        index += 1;
+    }
+    out
+}
+
+/// Frames of settling run through both chains, in whole [`SPLIT_BLOCK`] blocks, before either is
+/// measured. **Load-bearing, and not a way of avoiding an inconvenient result** — see
+/// [`splitting_a_block_the_way_host_automation_does_changes_nothing`]'s own doc comment for the
+/// transient this excludes and for why it is a different question from the one that test asks.
+/// 8 192 frames is 171 ms at 48 kHz, an order of magnitude past the 20 ms handover crossfade and
+/// the 15 ms per-stage bypass blend that make it up.
+const SPLIT_SETTLE_FRAMES: usize = 8_192;
+
+/// The loaded, settled chain both runs of the split probe drive, built the product way.
+fn split_probe_chain(ctx: &PrepareContext) -> Chain {
+    let mut chain = build_default_chain(ctx).unwrap();
+    // Well below the probe's own level, so the gate is open throughout and its envelope never
+    // becomes the thing being compared.
+    probe::set_param(&mut chain, gate::THRESHOLD_DB.id, -70.0);
+    // A model *declaring* 44.1 kHz in a 48 kHz engine: the one configuration that engages
+    // `stages/nam.rs`'s `SlotResampler`, which is the machinery issue #30 named.
+    probe::load_nam(
+        &mut chain,
+        probe::nam_model(WaveNetShape::Nano, 43, 44_100),
+        ctx,
+    );
+    // A real IR, so `namir-ir`'s partitioned convolver — whose partition schedule is staggered in
+    // multiples of the *declared* block size — is inside the comparison rather than passed through.
+    probe::load_ir(&mut chain, probe::mono_ir(7, 2_048, SR, SPLIT_BLOCK), ctx);
+    let settle = probe::duplicated(
+        &probe::sine(SPLIT_SETTLE_FRAMES, 440.0, SR, 0.05),
+        ctx.channel_config().output_channels() as usize,
+    );
+    let _ = probe::run(&mut chain, &settle, SPLIT_BLOCK);
+    chain
+}
+
+/// **Issue #30's own caveat, asserted.** `namir-clap/src/audio.rs` now splits every block at each
+/// automation event's `header().time()` (M14), so from the engine's side a host that automates
+/// anything is a host that hands the same frames over in a *different division*. The issue named
+/// the risk that carries — sub-blocks "must not reintroduce the starvation M9b just fixed",
+/// `SlotResampler`'s output-FIFO priming being what makes its delay a property of the stream
+/// rather than of the block-size history — and nothing checked it.
+///
+/// Nothing could have. `namir-clap/tests/clap_host_block_sizes.rs` drives FR-CLAP-070's randomised
+/// schedule through the real vtable but with **nothing loaded**, so neither the resampler nor the
+/// convolver is in that comparison at all; `stages/nam.rs`'s own
+/// `resampled_path_runs_many_varying_blocks_without_allocating_or_panicking` asserts finiteness,
+/// which is what its own name says. This is the gap between the two, at the configuration where
+/// both pieces of machinery are live.
+///
+/// The assertion is that the division is *invisible*: one run in whole [`SPLIT_BLOCK`] blocks, one
+/// with every block cut in two at a [`SPLIT_OFFSETS`] offset, **no parameter changed in either**,
+/// compared sample for sample. Both chains are built from the same seeds and settled identically,
+/// so the comparison isolates the division and nothing else.
+///
+/// **Measured: 0 on both channels** — the two runs agree bitwise. The bound is nonetheless stated
+/// as [`SPLIT_TOLERANCE`] rather than `==`, for the reason `clap_host_block_sizes.rs` gives for
+/// the same choice: the first stage whose summation order legitimately depends on the block length
+/// would fail an equality assertion for something that is not a defect. A starved resampler
+/// splices whole samples of silence and lands three orders above the bound; the observed maximum
+/// is carried into the failure message so a drift from 0 is legible rather than absorbed.
+///
+/// # The transient this deliberately does not measure, and why it is a different question
+///
+/// [`SPLIT_SETTLE_FRAMES`] is not padding. Inside the ~20 ms after a resource is installed, this
+/// chain's output *does* depend on the block division: measured at 1.3e-2 (Nam) and 7.2e-2 (Ir)
+/// against settled peaks of ~1.2e-1 and ~5.1e-1, decaying to 1.9e-4 and 9.3e-4 over the
+/// following 4 000 frames. That is **not** the split's doing and not new — it reproduces exactly under
+/// [`probe::run`] alone at 512 against 256, 128 and 64 frames, with no sub-block anywhere — and
+/// its mechanism is upstream of this file. On a *first* load, both stages' output stays
+/// **bit-exactly the dry input** for the whole 960-sample equal-power handover crossfade, and the
+/// wet signal first appears at the start of the block the fade completes in: measured at frame
+/// 512, 768, 896 and 959 for block sizes 512, 256, 64 and 1, identically for Nam and for Ir. So
+/// what a first load actually sounds like is the 15 ms per-stage bypass blend starting at a
+/// block-quantised instant, with the equal-power fade masked behind it. Recorded here because
+/// this is the probe that found it; it belongs to the handover path (`stages/nam.rs`,
+/// `stages/ir.rs`), not to issue #30, and is reported rather than fixed here.
+#[test]
+fn splitting_a_block_the_way_host_automation_does_changes_nothing() {
+    const FRAMES: usize = 16_384;
+    /// Two orders above f32 accumulation over this signal and three below any real
+    /// block-dependency defect — see this test's own doc comment.
+    const SPLIT_TOLERANCE: f32 = 1e-6;
+
+    let ctx = probe::ctx_at(SR, SPLIT_BLOCK, ChannelConfig::Stereo);
+    let signal = probe::chirp(FRAMES, 200.0, 6_000.0, SR, 0.05);
+    let input = probe::duplicated(&signal, 2);
+
+    let mut whole_chain = split_probe_chain(&ctx);
+    let whole = probe::run(&mut whole_chain, &input, SPLIT_BLOCK);
+    let reported = whole_chain.latency_samples();
+
+    let mut split_chain = split_probe_chain(&ctx);
+    let split = run_split(&mut split_chain, &input, FRAMES);
+
+    assert!(
+        reported > 0,
+        "the resampler never engaged, so this probe drove the one path it was written for as a \
+         plain passthrough"
+    );
+    assert_eq!(
+        split_chain.latency_samples(),
+        reported,
+        "the two runs report different latencies, so they are not the same chain"
+    );
+
+    for (channel, (whole, split)) in whole.iter().zip(split.iter()).enumerate() {
+        assert_eq!(
+            whole.len(),
+            FRAMES,
+            "channel {channel}: short reference run"
+        );
+        assert_eq!(split.len(), FRAMES, "channel {channel}: short split run");
+
+        // Non-vacuous: two silent buffers would compare equal and prove nothing.
+        let level = probe::peak(whole);
+        assert!(
+            level > 1e-3,
+            "channel {channel}: the reference run produced no signal ({level:e}) to compare \
+             against"
+        );
+
+        let (at, difference) = whole
+            .iter()
+            .zip(split.iter())
+            .map(|(a, b)| (a - b).abs())
+            .enumerate()
+            .fold(
+                (0usize, 0.0f32),
+                |acc, (i, d)| {
+                    if d > acc.1 { (i, d) } else { acc }
+                },
+            );
+        assert!(
+            difference <= SPLIT_TOLERANCE,
+            "channel {channel}: cutting each block in two moved the output by {difference:e} at \
+             frame {at}, against a peak of {level:e}. The division of a block into `process` \
+             calls is host-driven — every automation event splits one — so a stage sensitive to \
+             it renders differently depending on what the user automates"
+        );
+    }
+}
+
+/// The negative control for the probe above, which would otherwise be satisfiable by a comparison
+/// too blunt to see anything.
+///
+/// The same two runs, with the split run compared against the reference **shifted by one sample** —
+/// the smallest displacement a starved resampler produces, and well inside the 32 to 63 spliced
+/// samples M9b actually measured. If the comparison could not tell an aligned signal from a
+/// one-sample-shifted one, the bound above would hold on a chain that had lost samples.
+#[test]
+fn the_split_probe_would_notice_a_single_spliced_sample() {
+    const FRAMES: usize = 4_096;
+
+    let ctx = probe::ctx_at(SR, SPLIT_BLOCK, ChannelConfig::Stereo);
+    let signal = probe::chirp(FRAMES, 200.0, 6_000.0, SR, 0.05);
+    let input = probe::duplicated(&signal, 2);
+
+    let mut whole_chain = split_probe_chain(&ctx);
+    let whole = probe::run(&mut whole_chain, &input, SPLIT_BLOCK);
+
+    let mut split_chain = split_probe_chain(&ctx);
+    let split = run_split(&mut split_chain, &input, FRAMES);
+
+    let shifted = whole[0]
+        .iter()
+        .zip(split[0].iter().skip(1))
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    let level = probe::peak(&whole[0]);
+    assert!(
+        shifted > level * 0.01,
+        "shifting the comparison by one sample moves it only {shifted:e} against a peak of \
+         {level:e}, so the equality the probe above asserts cannot tell an aligned run from one \
+         that spliced a sample of silence into the stream"
     );
 }
