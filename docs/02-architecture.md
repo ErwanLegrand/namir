@@ -3718,6 +3718,36 @@ No text above is rewritten and no decision changes: this note is the correction,
 clause 4, its Rationale and changelog 0.19 are all read subject to it. FR-NAM-030's closing
 milestone is unchanged at **M10**, where both annotations point.
 
+*Consequence (added M15, 2026-08-29, from issue #27 — the gate now reads a compound `Verify:`
+method as the set of codes it states).* Until M15 `xtask traceability` kept only the **first** code
+of a method, so a requirement stating two was covered by satisfying either one. FR-STATE-040
+(`M plus S`) read **Done** on its manual document alone while the `S` half had no artifact in the
+tree at all. The parser now reads every code — and the method text is the `*Verify:*` line **plus
+its continuation lines**, which is load-bearing rather than tidy: NFR-RT-010's second code sits on a
+wrapped line and was invisible to a line-at-a-time reader.
+
+**What a tag asserts on a compound method.** `build_report` resolves each code against the evidence
+class that code names — a `docs/manual-tests/` document for `M`, a source annotation for
+`U`/`I`/`G`/`B`/`S`, nothing for `Process` — and requires **all** of them. So on a compound method a
+plain `// trace:` asserts the *source-class* half in full, exactly as D-18.6 leaves the `M` half's
+traced artifact with the manual document; neither half alone covers the requirement, and
+`check_partial_verify_code` refuses a `trace-partial:` only when **no** code could resolve through a
+source annotation, which is what lets such a requirement record a gap at all.
+
+*The grammar is deliberately narrow, and two requirements turn on it.* A clause contributes a code
+only where it *opens* with one, so NFR-PERF-010's `B, as a CI regression gate` and NFR-RT-020's
+`S plus code review` stay **single**-code. Roadmap §15 item 21 listed both as compound; reading them
+that way would invent codes the FRS never wrote. Eight Musts state a genuinely compound method:
+FR-CHAIN-020, FR-IN-020, FR-STATE-040, FR-CLAP-090, FR-CLAP-130, FR-ERR-030, FR-ERR-070 and
+NFR-RT-010.
+
+*One demotion is the mechanism working, and is left standing.* FR-IN-020 (`U for the measurement;
+M for the display`) became uncovered, because no `docs/manual-tests/fr-in-020-*.md` exists — which
+that requirement's own `uncovered:` field had already said in prose. The tool now agrees with the
+tag's author rather than contradicting them, and the gap closes when someone can run the script:
+it needs a human at a screen and a peak-hold surface `namir_ui::MeterReading` does not yet carry.
+
+
 **Decision D-23.2 (added M9's P0 decision pass, 2026-08-08)** — A **Must** requirement's status in
 `03-implementation-roadmap.md` §14 is adjudicated against **that requirement's own text and its own
 `*Verify:*` method** — never against whether an implementation exists, and never against `xtask
