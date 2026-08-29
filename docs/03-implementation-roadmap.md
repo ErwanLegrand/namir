@@ -3079,7 +3079,16 @@ that happens to depend on them first.
     FR-CLAP-100 stays `**UNRESOLVED**` and unmet on two of three platforms through M14. One stale
     detail found while writing this and recorded rather than fixed: the requirement's ledger entry
     still books it to **M9b**, a milestone that has run, so whoever takes the decision re-books it.
-21. ~~**`xtask traceability` keeps only the first code of a compound `Verify:` method, and for one
+21. **Closed 2026-08-29 (issue #27), both halves built.** `xtask traceability` reads the whole
+    code set (D-23.1's M15 consequence note has the rule and the demotions); `namir-state`'s
+    `schema` module and `cargo run -p xtask -- schema` are FR-STATE-040's missing `S` artifact.
+    Two corrections to the item as written below: the count is **eight** compound Musts, not six —
+    it missed FR-CHAIN-020, FR-IN-020, FR-ERR-070 and NFR-RT-010 — and **two of the six it does
+    list are not compound at all**, NFR-PERF-010's `B, as a CI regression gate` and NFR-RT-020's
+    `S plus code review` being a single code with a qualifier. Still owed: a CI step running
+    `xtask schema`, with the README line `xtask ci-commands` requires in the same commit.
+
+    ~~**`xtask traceability` keeps only the first code of a compound `Verify:` method, and for one
     requirement that silently hides an unexecuted half.** Raised 2026-08-12 at M9b, found while
     building FR-ERR-030's static check. **Six** Musts state a compound method: FR-STATE-040
     (`M plus S (schema check)`), FR-CLAP-090 (`I plus B`), FR-CLAP-130 (`S plus I`), FR-ERR-030
