@@ -61,7 +61,19 @@ const MAX_DRAIN_BATCHES: usize = 8;
 
 pub(crate) struct ClapUiHost {
     inner: Arc<SharedInner>,
+    /// A clone of the live engine's telemetry reader, or `None` before the first `activate()`.
+    ///
+    /// **Re-fetched, not captured** (issue #95). This used to be handed in at editor-open and
+    /// never looked at again, which broke the meters in two ordinary situations: a host that opens
+    /// the editor before the first `activate()` — common, and the plugin's own `get_size`/
+    /// `set_parent` sequence happens on the main thread with no audio configured yet — got `None`
+    /// and read -inf for the editor's whole life; and every deactivate/reactivate cycle
+    /// (including the one the plugin itself asks for when its latency changes) installs a *fresh*
+    /// ring, leaving a captured clone draining a retired one for ever.
     telemetry: Option<TelemetryReader>,
+    /// The [`SharedInner::telemetry_generation`] the clone above came from. When the shared
+    /// counter has moved past it, the clone is stale — see [`ClapUiHost::rebind_telemetry_if_stale`].
+    telemetry_generation: u64,
     /// The last reading [`ClapUiHost::drain_meters`] actually saw, held so that a GUI frame which
     /// drains no telemetry shows the previous value rather than dropping to silence.
     ///
@@ -79,13 +91,35 @@ pub(crate) struct ClapUiHost {
 }
 
 impl ClapUiHost {
-    pub(crate) fn new(inner: Arc<SharedInner>, telemetry: Option<TelemetryReader>) -> Self {
+    /// Builds the bridge for one editor window. Takes no telemetry reader: whichever one is live
+    /// is fetched on demand, including the case where none exists yet (issue #95).
+    pub(crate) fn new(inner: Arc<SharedInner>) -> Self {
         Self {
             inner,
-            telemetry,
+            telemetry: None,
+            // `SharedInner`'s counter starts at 0 too and is bumped by every
+            // `set_telemetry_reader`, so "0 and no reader" is exactly the state of an instance
+            // that has never been activated -- and any activation, past or future, moves it.
+            telemetry_generation: 0,
             input_peak_db: f32::NEG_INFINITY,
             output_peak_db: f32::NEG_INFINITY,
         }
+    }
+
+    /// Re-clones the telemetry reader when the engine behind it has been replaced.
+    ///
+    /// The held peaks are reset with it: they describe a ring that no longer exists, and holding
+    /// them would leave the meters frozen at whatever the retired engine's last block happened to
+    /// be until the new one publishes — reading -inf for a moment after a restart is the truth.
+    fn rebind_telemetry_if_stale(&mut self) {
+        let generation = self.inner.telemetry_generation();
+        if generation == self.telemetry_generation {
+            return;
+        }
+        self.telemetry_generation = generation;
+        self.telemetry = self.inner.telemetry_reader();
+        self.input_peak_db = f32::NEG_INFINITY;
+        self.output_peak_db = f32::NEG_INFINITY;
     }
 
     /// Reads whatever the engine has published since the last GUI frame and replaces the held
@@ -98,6 +132,7 @@ impl ClapUiHost {
     /// unconditional so that a frame which drained nothing holds the previous reading instead of
     /// flashing to silence; that is also why the fields cannot simply be reset at the top.
     fn drain_meters(&mut self) {
+        self.rebind_telemetry_if_stale();
         let Some(reader) = self.telemetry.as_mut() else {
             return;
         };
@@ -145,6 +180,9 @@ impl UiHost for ClapUiHost {
             loaded_model_name: self.inner.nam_ref().map(|r| r.display_name),
             loaded_ir_name: self.inner.ir_ref().map(|r| r.display_name),
             library: self.inner.library_snapshot(),
+            // FR-STATE-030's preset list. Enumerated off-thread and cached — see
+            // `SharedInner::presets_snapshot`; a GUI frame never reads a directory.
+            presets: self.inner.presets_snapshot(),
             // FR-IO-020's indicator is `None` here, and permanently: a CLAP plugin never opens an
             // audio device — the host owns it, and hands this plugin buffers it has already
             // captured — so there is no share mode this crate could report without inventing one.
@@ -163,10 +201,22 @@ impl UiHost for ClapUiHost {
                     self.set_param(key, default);
                 }
             }
-            UiIntent::LibraryQueryChanged(_query) => {
-                // FR-UI-060's filtering is computed inside `namir-ui` itself from the raw index
-                // this host already hands it every frame (`library_view`'s own module doc
-                // comment); the query text has nothing for a `UiHost` to act on.
+            UiIntent::SavePreset { name } => {
+                worker_jobs::spawn_save_preset(Arc::clone(&self.inner), name);
+                // Left out of the `mark_dirty` below with `RecallPreset`, and for the mirror-image
+                // reason: a save is what *clears* the dirty flag, and the job that writes the file
+                // is the one that clears it once the bytes are actually on disk.
+                return;
+            }
+            UiIntent::RecallPreset { path } => {
+                worker_jobs::spawn_recall_preset(Arc::clone(&self.inner), path);
+                // **The carve-out**: a recall makes this instance *match* what was last
+                // recalled, which is the definition of not-dirty (`UiSnapshot::unsaved_changes`).
+                // Marking it dirty here would also race the job that marks it clean, so the
+                // flag is left entirely to `adopt_document_bytes`, exactly as it is for a
+                // host-driven `state` load. `SavePreset` is left out for the same reason from
+                // the other direction.
+                return;
             }
             UiIntent::LoadLibraryEntry(path) => {
                 worker_jobs::spawn_load_library_entry(Arc::clone(&self.inner), path);
@@ -181,7 +231,12 @@ impl UiHost for ClapUiHost {
 
 impl ClapUiHost {
     fn set_param(&self, key: &'static str, value: f32) {
-        self.inner.params.set_by_key(key, value);
+        // `set_by_key_from_gui`, not `set_by_key`: this is the one path in this crate a user
+        // gesture *inside the plugin's own editor* takes, so the change is also queued for
+        // delivery to the host as automation (issue #94 — see
+        // `crate::params_ext::emit_gui_param_changes`). Host-originated writes deliberately use
+        // the unmarked setter, or the plugin would echo the host's automation back at it.
+        self.inner.params.set_by_key_from_gui(key, value);
         let Some(descriptor) = REGISTRY.iter().find(|d| d.key == key) else {
             return;
         };
@@ -210,20 +265,31 @@ mod tests {
     use namir_params::stages::trim;
 
     fn host() -> ClapUiHost {
-        ClapUiHost::new(Arc::new(SharedInner::new()), None)
+        ClapUiHost::new(Arc::new(SharedInner::new()))
     }
 
     /// A host wired to a real telemetry ring, plus the producer end to publish into it.
     ///
-    /// Every test above this point passes `None` for the reader, which is exactly why the ratchet
-    /// below survived from M6 to M13: `drain_meters` returned at its first line in every test that
+    /// Every test above this point had no reader at all, which is exactly why the ratchet below
+    /// survived from M6 to M13: `drain_meters` returned at its first line in every test that
     /// existed, so the only meter code in this crate was never executed by the suite at all.
+    ///
+    /// The reader is installed **through `SharedInner`**, the way `crate::audio`'s `activate` does
+    /// it, rather than handed to the constructor — since issue #95 that is the only way it can be
+    /// installed, and it is what lets the two tests below drive the transitions the old
+    /// captured-once reader could not survive.
     fn host_with_telemetry() -> (ClapUiHost, namir_engine::TelemetryProducer) {
+        let inner = Arc::new(SharedInner::new());
+        let producer = install_ring(&inner);
+        (ClapUiHost::new(inner), producer)
+    }
+
+    /// Installs a fresh telemetry ring on `inner`, exactly as an `activate()` would, and returns
+    /// the producer end.
+    fn install_ring(inner: &Arc<SharedInner>) -> namir_engine::TelemetryProducer {
         let (producer, reader) = namir_engine::telemetry_ring(256);
-        (
-            ClapUiHost::new(Arc::new(SharedInner::new()), Some(reader)),
-            producer,
-        )
+        inner.set_telemetry_reader(Some(reader));
+        producer
     }
 
     fn publish(producer: &mut namir_engine::TelemetryProducer, id: u32, value: f32) {
@@ -296,6 +362,125 @@ mod tests {
         let mut h = host();
         assert_eq!(h.snapshot().output_meter.peak_db, f32::NEG_INFINITY);
         assert_eq!(h.snapshot().input_meter.peak_db, f32::NEG_INFINITY);
+    }
+
+    /// **Issue #95, first half.** A host is entitled to open the editor before it ever activates
+    /// the plugin — and the plugin's own `gui` sequence (`create`, `get_size`, `set_parent`) is
+    /// all `[main-thread]` work with no audio configuration in sight, so this is the ordinary
+    /// order, not an exotic one. The reader captured at editor-open was `None` then, and the
+    /// meters read -inf for the editor's entire life.
+    #[test]
+    fn an_editor_opened_before_the_first_activation_still_gets_meters() {
+        let inner = Arc::new(SharedInner::new());
+        let mut h = ClapUiHost::new(Arc::clone(&inner));
+
+        // The editor is already rendering frames, and there is nothing to show yet.
+        assert_eq!(h.snapshot().output_meter.peak_db, f32::NEG_INFINITY);
+
+        // ...and now the host activates the plugin, which installs a ring.
+        let mut producer = install_ring(&inner);
+        publish(&mut producer, telemetry_output_peak_id(0), -7.5);
+
+        assert_eq!(
+            h.snapshot().output_meter.peak_db,
+            -7.5,
+            "an editor opened before the first activate() must pick up the ring that activation \
+             installs, not stay bound to the absence it saw at set_parent time"
+        );
+    }
+
+    /// **Issue #95, second half.** Every deactivate/reactivate cycle installs a *fresh* ring
+    /// (`crate::audio`'s `activate` builds a whole new engine), including the cycle the plugin
+    /// itself asks for when its latency changes. A reader cloned once at editor-open goes on
+    /// draining the retired ring, so the meters freeze at whatever the old engine last published.
+    #[test]
+    fn a_reactivation_rebinds_the_meters_to_the_new_ring() {
+        let inner = Arc::new(SharedInner::new());
+        let mut h = ClapUiHost::new(Arc::clone(&inner));
+
+        let mut first = install_ring(&inner);
+        publish(&mut first, telemetry_output_peak_id(0), -6.0);
+        assert_eq!(h.snapshot().output_meter.peak_db, -6.0);
+
+        // deactivate(): the engine, and its ring, are gone.
+        inner.set_telemetry_reader(None);
+        assert_eq!(
+            h.snapshot().output_meter.peak_db,
+            f32::NEG_INFINITY,
+            "with no engine there is no signal, and holding the retired ring's last reading would \
+             show a meter that is simply wrong"
+        );
+
+        // activate(): a new engine, a new ring.
+        let mut second = install_ring(&inner);
+        publish(&mut second, telemetry_output_peak_id(0), -21.0);
+        assert_eq!(
+            h.snapshot().output_meter.peak_db,
+            -21.0,
+            "the meters must follow the live engine across a restart -- publishing into the ring \
+             the new activation installed must move them"
+        );
+
+        // The retired ring is genuinely no longer read.
+        publish(&mut first, telemetry_output_peak_id(0), -1.0);
+        assert_eq!(
+            h.snapshot().output_meter.peak_db,
+            -21.0,
+            "a publish into the retired ring must not move the meters"
+        );
+    }
+
+    /// **Issue #94.** A knob turned in the plugin's own editor is queued for delivery to the host
+    /// as automation; nothing else that writes the mirror is.
+    #[test]
+    fn a_gui_param_change_is_queued_for_the_host_but_host_automation_is_not() {
+        let mut h = host();
+        assert!(!h.inner.params.has_gui_pending());
+
+        h.dispatch(UiIntent::SetParam {
+            key: trim::GAIN_DB.key,
+            value: 3.0,
+        });
+        assert!(
+            h.inner.params.has_gui_pending(),
+            "a GUI-originated change must be queued for the host, or automation written from the \
+             editor is silently lost"
+        );
+        h.inner.params.take_gui_pending();
+
+        // The path host automation takes (`crate::audio`'s `apply_direct_and_mirror`) writes the
+        // same mirror and must *not* queue anything, or the plugin echoes the host back at itself.
+        h.inner.params.set_by_id(trim::GAIN_DB.id.0, 4.0);
+        assert!(
+            !h.inner.params.has_gui_pending(),
+            "a host-originated change must not be reported back to the host"
+        );
+    }
+
+    /// A reset gesture is a user gesture too, and reaches the host the same way.
+    #[test]
+    fn a_reset_to_default_is_queued_for_the_host_as_well() {
+        let mut h = host();
+        h.dispatch(UiIntent::ResetParamToDefault {
+            key: trim::GAIN_DB.key,
+        });
+        assert!(h.inner.params.has_gui_pending());
+    }
+
+    /// FR-STATE-030: recalling a preset makes this instance *match* what was recalled, so it must
+    /// not be left looking like it has unsaved changes.
+    #[test]
+    fn recalling_a_preset_does_not_mark_the_instance_dirty() {
+        let mut h = host();
+        assert!(!h.inner.is_dirty());
+        h.dispatch(UiIntent::RecallPreset {
+            path: std::path::PathBuf::from("no-such-preset.namirpreset"),
+        });
+        assert!(
+            !h.inner.is_dirty(),
+            "a recall is the definition of not-dirty; the job that adopts the document owns the \
+             flag from here"
+        );
     }
 
     #[test]

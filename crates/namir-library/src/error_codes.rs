@@ -23,6 +23,30 @@ pub const FILE_UNREADABLE: ErrorCode = ErrorCode::new(
      rescan; otherwise check you have permission to read it.",
 );
 
+/// NFR-SEC-020 (issue #70): a path that is not a regular file was refused without being opened.
+/// A FIFO or a character device named `cab.wav` reports `len() == 0`, so a size check alone waves
+/// it through, and the read that follows blocks forever (a FIFO with no writer) or never ends
+/// (`/dev/zero`). Refusing by file type is the check that has to come first.
+pub const FILE_NOT_REGULAR: ErrorCode = ErrorCode::new(
+    "library.scan.file_not_regular",
+    Severity::Warning,
+    "Something with a model or IR name is not an ordinary file, so it was skipped ({detail}).",
+    "Only ordinary files are indexed. If this should be a model or an impulse response, replace \
+     the device, pipe or folder at that path with the file itself and rescan.",
+);
+
+/// Issue #73: a directory symlink was not followed because its target had already been walked in
+/// this same scan — the visited-target set that makes a symlink loop terminate. Not an error: the
+/// files are indexed under the spelling the scan reached first.
+pub const SYMLINK_NOT_FOLLOWED: ErrorCode = ErrorCode::new(
+    "library.scan.symlink_not_followed",
+    Severity::Warning,
+    "A shortcut was not followed because it leads somewhere this scan has already been \
+     ({detail}).",
+    "Nothing is missing: whatever it points at is already in the library under the path the scan \
+     reached first. Remove the duplicate shortcut if you would rather not see this again.",
+);
+
 /// NFR-SEC-020: a file exceeded [`crate::MAX_INDEXED_FILE_BYTES`]. Still indexed (browsable) with
 /// no extracted metadata — see [`crate::entry::LibraryEntry::hash`]'s doc comment.
 pub const FILE_TOO_LARGE: ErrorCode = ErrorCode::new(
@@ -80,6 +104,8 @@ mod tests {
     const ALL: &[ErrorCode] = &[
         DIR_UNREADABLE,
         FILE_UNREADABLE,
+        FILE_NOT_REGULAR,
+        SYMLINK_NOT_FOLLOWED,
         FILE_TOO_LARGE,
         INDEX_CORRUPT,
         INDEX_SAVE_FAILED,

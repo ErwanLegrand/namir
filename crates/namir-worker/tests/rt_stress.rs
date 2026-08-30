@@ -84,6 +84,31 @@ const BLOCK: usize = 64;
 /// --workspace`'s wall time.
 const RUN_FOR: Duration = Duration::from_secs(2);
 
+/// The longest this test will keep the audio loop running while waiting for the three axes to
+/// produce the work assertion 5 below requires.
+///
+/// [`RUN_FOR`] is a *minimum*, not a budget. The properties this test asserts -- no allocation on
+/// the audio thread, no dropout window, no uncatalogued error -- are about what happens while the
+/// axes run, not about how much they achieve per second, and 2 s of wall clock is a proxy for
+/// "enough of each axis happened" that only holds while a block costs what it costs on an
+/// ordinary build.
+///
+/// Under `cargo llvm-cov`'s `-C instrument-coverage` it does not hold: every counter is a real
+/// memory write, so the per-element loops this workspace runs at load time (`namir-nam`'s
+/// finiteness sweep over every weight, the activation-parameter bound) and per sample (the gate's
+/// windowed-maximum detector, the meter's non-finite guards) cost orders more than they do
+/// natively. Measured on one machine: this test completes 24 loads / 32 recalls / 248 scans in
+/// `RUN_FOR` natively and **0 / 0 / 0** instrumented, while asserting exactly the same properties.
+/// A fixed wall-clock threshold therefore fails on the instrumented build for a reason that says
+/// nothing about the code under test -- the same class of mistake as regressing NFR-PERF-010's
+/// budget against a shared CI runner, which this project already refuses to do.
+///
+/// So the loop below runs for at least `RUN_FOR` and then keeps going until each axis has produced
+/// what assertion 5 asks of it, up to this cap. Nothing is weakened: on an ordinary build the
+/// extra condition is already satisfied when `RUN_FOR` elapses and the run is unchanged, and a
+/// genuine stall still fails, on the same assertions with the same messages, after this cap.
+const RUN_AT_MOST: Duration = Duration::from_secs(90);
+
 /// FR-NAM-070's own dropout threshold, reused rather than re-invented -- see this file's module
 /// doc comment.
 const DROPOUT_PEAK_THRESHOLD: f32 = 1e-4;
@@ -324,7 +349,17 @@ fn nfr_rt_010_three_axes_run_concurrently_with_zero_audio_thread_allocation() {
     let block_period = Duration::from_secs_f64(BLOCK as f64 / SR as f64);
 
     let run_started = Instant::now();
-    while run_started.elapsed() < RUN_FOR {
+    // See [`RUN_AT_MOST`]: `RUN_FOR` is the minimum, and the run extends only while an axis still
+    // owes assertion 5 the work it is about to be asked for.
+    let axes_owe_work = |loads: &AtomicUsize, recalls: &AtomicUsize, scans: &AtomicUsize| {
+        loads.load(Ordering::Relaxed) < 3
+            || recalls.load(Ordering::Relaxed) < 3
+            || scans.load(Ordering::Relaxed) < 1
+    };
+    while run_started.elapsed() < RUN_FOR
+        || (run_started.elapsed() < RUN_AT_MOST
+            && axes_owe_work(&loads_completed, &recalls_completed, &scans_completed))
+    {
         for s in buf.iter_mut() {
             *s = 0.5 * phase.sin();
             phase += step;

@@ -29,6 +29,7 @@ const MANIFEST: &[&str] = &[
     "unreleased-v1/unknown-fields.namirpreset",
     "unreleased-v1/future-version.namirpreset",
     "unreleased-v1/legacy-global-section.namirpreset",
+    "unreleased-v1/references.namirpreset",
 ];
 
 fn corpus_dir() -> PathBuf {
@@ -147,6 +148,157 @@ fn legacy_global_section_restores_bypass_and_ceiling() {
     assert!(state.global_bypass());
     assert_eq!(state.output_ceiling_db(), -6.0);
     assert_eq!(state.params.get("trim.gain_db"), Some(2.0));
+}
+
+/// Section 7 of `docs/04-state-and-preset-format.md`, read from hand-authored bytes rather than
+/// from anything this crate's own writer produced: both reference slots, every documented field
+/// of each, and FR-STATE-080's `embedded` object. Until this fixture existed, `references` was
+/// exercised only by writer-to-reader round trips inside this crate — the exact weakness this
+/// file's module doc names as its own reason to exist, since a reader that is accidentally
+/// *stricter* than the documented format still agrees with the writer that shares its
+/// assumptions.
+///
+/// `nam` carries §9's worked example verbatim (its `embedded.data`, its `display_name`, and a
+/// foreign-platform `absolute`); `ir` is the same shape with no `embedded`, so the optional field
+/// is exercised present *and* absent from on-disk bytes. `nam`'s `hash` is the real BLAKE3 hash of
+/// the embedded payload, which is what makes P7's "identity is the content hash" checkable here
+/// rather than merely a well-formed hex string.
+#[test]
+fn references_restore_every_documented_field_of_both_slots() {
+    let bytes = read_corpus_file("unreleased-v1/references.namirpreset");
+    let (state, warnings) = namir_state::State::read(&bytes).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    let nam = state.nam.expect("references.nam is present in the fixture");
+    assert_eq!(
+        nam.hash.to_string(),
+        "dc57749e025523f24f989853b68405829607c4c84942579df0c3368694a531e3"
+    );
+    assert_eq!(
+        nam.library_relative.as_ref().map(|p| p.as_str()),
+        Some("marshall/plexi.nam")
+    );
+    // §7.1: `absolute` is verbatim and opaque -- a Windows-authored path is carried through this
+    // Linux/macOS-or-Windows reader unparsed, backslashes and drive letter intact.
+    assert_eq!(
+        nam.absolute.as_deref(),
+        Some("C:\\Users\\erwan\\Models\\plexi.nam")
+    );
+    assert_eq!(nam.display_name, "plexi.nam");
+    let embedded = nam.embedded.expect("the nam slot carries an embedded copy");
+    assert_eq!(embedded.media_type, "application/vnd.namir.nam+json");
+    assert_eq!(
+        embedded.data,
+        br#"{"fake":"minimal nam-shaped json for corpus seeding"}"#
+    );
+    // P7: the recorded identity really is the content hash of the bytes carried alongside it.
+    assert_eq!(nam.hash, namir_core::ContentHash::of(&embedded.data));
+
+    let ir = state.ir.expect("references.ir is present in the fixture");
+    assert_eq!(
+        ir.hash.to_string(),
+        "175b38765489b554a27a588061510a764a62f844dae9dfca6710eeda59055d13"
+    );
+    assert_eq!(
+        ir.library_relative.as_ref().map(|p| p.as_str()),
+        Some("cabs/1960a.wav")
+    );
+    assert_eq!(
+        ir.absolute.as_deref(),
+        Some("/home/erwan/irs/cabs/1960a.wav")
+    );
+    assert_eq!(ir.display_name, "1960a.wav");
+    assert!(
+        ir.embedded.is_none(),
+        "`embedded` is optional -- the ir slot must load without one"
+    );
+}
+
+/// The other direction of the same claim: what this build *writes* for a reference is
+/// byte-for-byte the shape the hand-authored fixture holds. A reader-only tolerance (accepting a
+/// field the writer never emits, or emitting one §7 does not document) would pass
+/// [`references_restore_every_documented_field_of_both_slots`] and fail here.
+#[test]
+fn writing_the_references_fixture_back_reproduces_its_documented_section() {
+    let bytes = read_corpus_file("unreleased-v1/references.namirpreset");
+    let (state, _warnings) = namir_state::State::read(&bytes).unwrap();
+
+    let on_disk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let written: serde_json::Value = serde_json::from_slice(&state.write()).unwrap();
+    assert_eq!(written["references"], on_disk["references"]);
+}
+
+/// Issue #113 / §7.4's four-step resolution order, driven end to end against the hand-authored
+/// fixture rather than against a `FileRef` a test built in memory. The fixture's `nam` slot
+/// carries all three external hints *and* an embedded copy; resolved on a machine that has none
+/// of the three (no such library root, no such absolute path, nothing in the index — which is
+/// precisely §7.2's "a preset shared with someone whose library is configured differently, or no
+/// library at all"), the embedded copy is what makes it resolvable. Its `ir` slot, identical but
+/// for having no embed, is the control: it reports missing, with the name and hash FR-STATE-070
+/// says the user must be shown.
+#[test]
+fn the_embedded_copy_resolves_a_reference_no_configured_path_can_find() {
+    let bytes = read_corpus_file("unreleased-v1/references.namirpreset");
+    let (state, _warnings) = namir_state::State::read(&bytes).unwrap();
+
+    let nam = state.nam.expect("references.nam is present in the fixture");
+    match namir_state::resolve(&nam, &FindsNothing) {
+        namir_state::Resolution::Embedded(embedded) => {
+            // P7: what the fallback hands back really is the bytes the reference identifies.
+            assert_eq!(namir_core::ContentHash::of(&embedded.data), nam.hash);
+        }
+        other => panic!("expected the embedded fallback, got {other:?}"),
+    }
+
+    let ir = state.ir.expect("references.ir is present in the fixture");
+    match namir_state::resolve(&ir, &FindsNothing) {
+        namir_state::Resolution::Missing(missing) => {
+            assert_eq!(missing.display_name, "1960a.wav");
+            assert_eq!(missing.hash, ir.hash);
+        }
+        other => panic!("the ir slot carries no embed and must be missing, got {other:?}"),
+    }
+}
+
+/// A resolver on a machine that has none of the fixture's files — the UC-3 recipient.
+struct FindsNothing;
+
+impl namir_state::FileResolver for FindsNothing {
+    fn resolve_library_relative(&self, _rel: &namir_state::RelPath) -> Option<PathBuf> {
+        None
+    }
+    fn resolve_absolute(&self, _absolute: &str) -> Option<PathBuf> {
+        None
+    }
+    fn resolve_by_hash(&self, _hash: namir_core::ContentHash) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// Issue #112 against hand-authored bytes: unloading the model and saving over the document it
+/// came from must actually remove `references.nam`. §7's "absent means nothing of that kind is
+/// loaded" is the only way this format can express an empty slot, so a save that cannot write it
+/// cannot express the user's own gesture — the model comes back on the next load.
+#[test]
+fn unloading_a_reference_and_saving_over_the_fixture_removes_its_slot() {
+    let bytes = read_corpus_file("unreleased-v1/references.namirpreset");
+    let original = namir_state::Document::parse(&bytes).unwrap();
+    let (mut state, _warnings) = namir_state::State::read(&bytes).unwrap();
+    assert!(state.nam.is_some() && state.ir.is_some());
+
+    state.nam = None; // the user unloads the model
+    let saved = state.write_onto(&original).to_pretty_bytes();
+
+    let saved_json: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert!(
+        saved_json["references"].get("nam").is_none(),
+        "the cleared slot must be gone from the written bytes: {}",
+        saved_json["references"]
+    );
+    let (reloaded, warnings) = namir_state::State::read(&saved).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(reloaded.nam, None);
+    assert_eq!(reloaded.ir, state.ir, "the untouched slot survives intact");
 }
 
 /// A document from a build newer than this one (`format_version: 2`, greater than

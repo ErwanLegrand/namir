@@ -81,7 +81,8 @@ better of the two outcomes that comment anticipated.
 
 ## Result
 
-**PASS**, for the claim this test exists to check: **real, third-party LSTM `.nam` exports parse and
+**Result: PASS.** For the claim this test exists to check: **real, third-party LSTM `.nam`
+exports parse and
 run end-to-end through the plugin path in a real host.** That claim had never been tested before this
 run, and it is the half of FR-NAM-020 the automated suite structurally cannot reach.
 
@@ -191,7 +192,8 @@ value.
 
 ### Result
 
-**PASS**, for the claim this section exists to check: **for the seven real LSTM models tested,
+**Result: PASS.** For the claim this section exists to check: **for the seven real LSTM models
+tested,
 spanning `num_layers` 1-4 and a spread of `hidden_size`, `namir-nam`'s LSTM inference matches
 `NeuralAmpModelerCore`'s own reference render to well inside FR-NAM-030's -90 dB floor** -- the
 worst of the seven margins is still 24.28 dB of headroom (`LSTM-4-001`), and the rest cluster

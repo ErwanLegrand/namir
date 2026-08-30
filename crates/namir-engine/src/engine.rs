@@ -80,13 +80,21 @@ const TELEMETRY_DEFERRED_BLOCKS: u32 = ParamsId::from_key("telemetry.engine.defe
 /// worker is not draining (D-8.1's degradation case, made observable rather than silent).
 const TELEMETRY_RETIRE_BACKLOG: u32 = ParamsId::from_key("telemetry.engine.retire_backlog").0;
 
+/// Telemetry: blocks refused because the [`StageIo`] did not match the [`PrepareContext`] the
+/// chain was prepared with (issue #60). Any nonzero value is a driver bug — the host handed a
+/// block bigger than the maximum it declared, or a channel count the chain was never prepared
+/// for — and the alternative to refusing was a panic inside a stage, on the audio thread.
+const TELEMETRY_REJECTED_BLOCKS: u32 = ParamsId::from_key("telemetry.engine.rejected_blocks").0;
+
 /// Ring capacities, fixed at preparation (D-7.2: "pre-allocated at preparation").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RingCapacities {
     /// Inbound command ring. Generous: a burst of UI parameter moves must not stall the producer.
     pub commands: usize,
     /// D-8.1's return ring. Only needs depth for a few in-flight handovers; each consumes at most
-    /// two slots.
+    /// two slots — and [`split`] raises anything below that to
+    /// [`RETIRE_HEADROOM_PER_OFFER`](self::RETIRE_HEADROOM_PER_OFFER), because a return ring
+    /// shallower than one offer's headroom can never satisfy the drain gate (issue #57).
     pub retire: usize,
     /// D-7.3's telemetry ring. Rounded up to a power of two by [`telemetry_ring`].
     pub telemetry: usize,
@@ -121,6 +129,8 @@ pub struct AudioEngine {
     /// is never handed an offer when it has nowhere to park what that offer displaces.
     retire_backlog: bool,
     deferred_blocks: u64,
+    /// See [`TELEMETRY_REJECTED_BLOCKS`].
+    rejected_blocks: u64,
 }
 
 /// The worker thread's half.
@@ -146,7 +156,20 @@ pub struct WorkerEndpoint {
 /// **Not RT-safe** — this is where every ring allocation happens, once.
 pub fn split(chain: Chain, caps: RingCapacities) -> (AudioEngine, WorkerEndpoint) {
     let (command_tx, command_rx) = ring::<Command>(caps.commands);
-    let (retire_tx, retire_rx) = ring::<Resource>(caps.retire);
+    // **Raised, not trusted (issue #57).** [`Self::drain_commands`]'s gate refuses to consume an
+    // offer unless the return ring has `RETIRE_HEADROOM_PER_OFFER` free slots. A ring whose whole
+    // *capacity* is below that figure can never satisfy the gate, so the first Load or Unload to
+    // arrive is left in the command ring and never popped — and because the gate returns rather
+    // than skipping, every parameter change and reset queued behind it is stalled too, for the
+    // life of the engine. That is not the graceful degradation D-8.1's own clause describes (a
+    // ring that *fills* still drains again when the worker recovers); it is a permanent
+    // head-of-line block from which nothing recovers, caused by a capacity choice made once, off
+    // the audio thread, with no error path anywhere.
+    //
+    // Raising it here rather than returning an error keeps `split`'s infallible signature, which
+    // `namir-app` and `namir-clap` both call directly; a caller that asked for a ring too small to
+    // work gets a working one, and the figure it asked for was never observable from outside.
+    let (retire_tx, retire_rx) = ring::<Resource>(caps.retire.max(RETIRE_HEADROOM_PER_OFFER));
     let (telemetry_tx, telemetry_rx) = telemetry_ring(caps.telemetry);
     (
         AudioEngine {
@@ -161,6 +184,7 @@ pub fn split(chain: Chain, caps: RingCapacities) -> (AudioEngine, WorkerEndpoint
             stalled_offer: None,
             retire_backlog: false,
             deferred_blocks: 0,
+            rejected_blocks: 0,
         },
         WorkerEndpoint {
             commands: command_tx,
@@ -189,12 +213,48 @@ impl AudioEngine {
     /// Wait-free throughout (NFR-RT-020): every ring operation is a bounded number of atomic
     /// loads and stores, with no loop whose exit depends on another thread making progress.
     pub fn process(&mut self, io: &mut StageIo<'_>) {
+        if !self.io_matches_preparation(io) {
+            // Refused whole (issue #60). `io` is left exactly as the caller handed it in, which
+            // for an in-place buffer is unity-gain passthrough — audible, but the engine's job
+            // here is not to crash the host. Telemetry carries the count; see
+            // `io_matches_preparation` for why this is a check rather than a `debug_assert`.
+            self.rejected_blocks += 1;
+            self.publish_telemetry();
+            return;
+        }
         self.retry_stalled_offer();
         self.drain_commands();
         self.collect_retired();
         self.chain.process(io);
         self.collect_retired();
         self.publish_telemetry();
+    }
+
+    /// Whether `io` is within what the chain was prepared for: at most `max_block_size` frames,
+    /// and exactly the prepared channel count.
+    ///
+    /// **Why this is here at all (issue #60).** `stage_io.rs` puts the obligation on "whatever
+    /// drives `Chain::process`" — and this *is* that driver, while `namir-clap/src/audio.rs`
+    /// passes the host's own `frames_count` straight through. Nothing enforced it, and both ways
+    /// of violating it are a panic on the audio thread rather than a wrong sound: an over-long
+    /// block indexes past the per-stage dry-capture scratch (`nam.rs`, `gate.rs`, `ir.rs`), and a
+    /// channel count below the prepared one indexes past `io`'s own channel list (`eq.rs`).
+    ///
+    /// **A check, not a `debug_assert`.** D-16.3's rule for the audio thread is to degrade rather
+    /// than panic, and a `debug_assert` degrades in exactly the wrong direction — it is loud in
+    /// the test build, where the caller is a test that could simply be fixed, and absent in the
+    /// release build a host actually runs. Refusing the block behaves identically in both profiles
+    /// and is therefore also testable in both.
+    ///
+    /// Returns `true` unconditionally for a chain that never had `prepare_crosscutting` called on
+    /// it (`Chain::prepared_for` is `None`): that path is documented test/scaffolding-only, has no
+    /// recorded context to check against, and behaved this way before this check existed.
+    fn io_matches_preparation(&self, io: &StageIo<'_>) -> bool {
+        let Some(ctx) = self.chain.prepared_for() else {
+            return true;
+        };
+        io.frames() <= ctx.max_block_size()
+            && io.channel_count() == ctx.channel_config().output_channels() as usize
     }
 
     /// Applies one parameter change immediately, **bypassing the command ring entirely**.
@@ -242,6 +302,13 @@ impl AudioEngine {
         self.retire_backlog
     }
 
+    /// Blocks refused because the [`StageIo`] did not match the chain's [`PrepareContext`]. Any
+    /// nonzero value is a driver bug — see [`Self::io_matches_preparation`]. Also published as
+    /// telemetry.
+    pub fn rejected_blocks(&self) -> u64 {
+        self.rejected_blocks
+    }
+
     fn retry_stalled_offer(&mut self) {
         let Some(resource) = self.stalled_offer.take() else {
             return;
@@ -284,6 +351,18 @@ impl AudioEngine {
         }
         let mut nam_offered = false;
         let mut ir_offered = false;
+        // **A running reservation, not a fresh `slots()` read per offer (issue #62).**
+        // `RETIRE_HEADROOM_PER_OFFER` is documented as headroom *per offer*, but both stages used
+        // to test the same pre-drain snapshot: a block carrying one Nam offer and one Ir offer
+        // could commit to four potential retirements having verified only two free slots. It
+        // degraded safely — the second retirement lands in the stage's own pen and defers — but
+        // the invariant the constant states simply did not hold. Every accepted offer now consumes
+        // its own headroom, so what the gate checks is what the comment claims.
+        //
+        // `slots()` is still re-read each time rather than snapshotted: the worker only ever
+        // *frees* slots, so a later read can be larger but never smaller, and re-reading lets a
+        // second offer through in the same block if the worker drained in between.
+        let mut reserved = 0usize;
 
         for _ in 0..MAX_COMMANDS_PER_BLOCK {
             let Some(kind) = self.commands.peek().map(Command::kind) else {
@@ -300,11 +379,12 @@ impl AudioEngine {
                     CommandKind::LoadNam | CommandKind::UnloadNam => nam_offered,
                     _ => ir_offered,
                 };
-                if already || self.retire_backlog || self.retire.slots() < RETIRE_HEADROOM_PER_OFFER
-                {
+                let needed = reserved + RETIRE_HEADROOM_PER_OFFER;
+                if already || self.retire_backlog || self.retire.slots() < needed {
                     self.deferred_blocks += 1;
                     return;
                 }
+                reserved = needed;
                 match kind {
                     CommandKind::LoadNam | CommandKind::UnloadNam => nam_offered = true,
                     _ => ir_offered = true,
@@ -315,8 +395,13 @@ impl AudioEngine {
             };
             self.apply_command(command);
         }
-        // Hit the per-block cap; whatever is left waits for the next block.
-        self.deferred_blocks += 1;
+        // Hit the per-block cap. Only a *deferral* if something is actually left behind (issue
+        // #63): a drain whose 64th pop emptied the ring stopped because there was nothing more to
+        // do, not early, and counting it made the one telemetry signal that says "a control may
+        // have stopped responding" fire on a perfectly healthy burst of exactly 64 commands.
+        if self.commands.peek().is_some() {
+            self.deferred_blocks += 1;
+        }
     }
 
     fn apply_command(&mut self, command: Command) {
@@ -365,6 +450,7 @@ impl AudioEngine {
             telemetry_scratch,
             deferred_blocks,
             retire_backlog,
+            rejected_blocks,
             ..
         } = self;
         let mut sink = TelemetrySink::new(telemetry_scratch);
@@ -376,6 +462,10 @@ impl AudioEngine {
         sink.push(TelemetryEntry {
             id: TELEMETRY_RETIRE_BACKLOG,
             value: if *retire_backlog { 1.0 } else { 0.0 },
+        });
+        sink.push(TelemetryEntry {
+            id: TELEMETRY_REJECTED_BLOCKS,
+            value: *rejected_blocks as f32,
         });
         for entry in sink.entries() {
             telemetry.push(entry);
@@ -748,24 +838,42 @@ mod tests {
     /// **D-8.1's degradation clause, exercised rather than asserted:** "If the worker dies, the
     /// ring fills and memory is retained but audio continues. Degradation, not failure (P8)."
     ///
-    /// A one-deep return ring that is never drained, with several handovers submitted. Audio must
+    /// A shallow return ring that is never drained, with several handovers submitted. Audio must
     /// keep flowing, finite, with no allocation — and, the load-bearing part, **no resource
-    /// dropped on the audio thread**, which the `Arc` strong counts prove directly.
+    /// dropped on the audio thread**.
+    ///
+    /// # What this test used to be, and why it proved nothing (issue #57)
+    ///
+    /// It asked for `retire: 1`, which is below [`RETIRE_HEADROOM_PER_OFFER`]. The drain gate
+    /// therefore refused the very first `Load` and every command behind it, forever, so **no model
+    /// was ever installed** — there was no handover to degrade, and the run was indistinguishable
+    /// from an idle engine. Its two assertions could not see that: `retire_backlog() ||
+    /// deferred_blocks() > 0` passed on the second disjunct alone (which a permanently-blocked
+    /// gate raises on every block), and `Arc::strong_count(m) >= 1` is tautological, because the
+    /// test itself holds each `Arc` for the whole of its own body.
+    ///
+    /// Three things changed. The capacity is now `RETIRE_HEADROOM_PER_OFFER`, the shallowest ring
+    /// that can carry a handover at all. A model is asserted to have *actually installed*, by
+    /// comparing the audio against an otherwise-identical engine that was never sent one. And the
+    /// strong-count assertion asks for `>= 2`: one reference is the test's own, so the second is
+    /// the engine still holding the slot — installed, parked in a stage's pen, or sitting in the
+    /// return ring. That is the assertion that fails if the audio thread ever drops one.
     #[test]
     fn a_never_drained_return_ring_retains_memory_and_audio_continues() {
+        const BLOCKS: usize = 400;
         let c = ctx();
         let (mut engine, mut worker) = split(
             crate::stages::build_default_chain(&c).unwrap(),
             RingCapacities {
                 commands: 16,
-                retire: 1,
+                retire: RETIRE_HEADROOM_PER_OFFER,
                 telemetry: 16,
             },
         );
 
         let models: Vec<_> = (0..4).map(|i| model(100 + i)).collect();
         let mut submitted = 0usize;
-        let out = run_sine(&mut engine, 400, 220.0, |b| {
+        let out = run_sine(&mut engine, BLOCKS, 220.0, |b| {
             if b % 60 == 10 && submitted < models.len() {
                 // May be refused once the command ring backs up; that is the point.
                 let _ = worker
@@ -781,23 +889,244 @@ mod tests {
                 "sample {i} was not finite under back-pressure"
             );
         }
+
+        // **A model actually installed.** Without this the whole test is satisfiable by an engine
+        // that refused every command it was ever sent, which is exactly what it used to be.
+        let (mut idle_engine, _idle_worker) = build_default_engine(&c).unwrap();
+        let idle = run_sine(&mut idle_engine, BLOCKS, 220.0, |_| {});
+        let difference = out
+            .iter()
+            .zip(&idle)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
         assert!(
-            engine.retire_backlog() || engine.deferred_blocks() > 0,
-            "a one-deep, never-drained return ring should have produced observable back-pressure"
+            difference > 1e-3,
+            "the run is indistinguishable from one where nothing was ever loaded (peak difference \
+             {difference}): no handover happened, so nothing was degraded"
         );
-        // Nothing was freed by the audio thread: every model this test still holds is either
-        // still installed, parked, or sitting in the ring — never dropped.
-        for m in &models {
+
+        // Real, observable back-pressure -- and specifically the gate stalling, not the per-block
+        // command cap: only four commands are ever submitted, far below MAX_COMMANDS_PER_BLOCK.
+        assert!(
+            engine.deferred_blocks() > 0,
+            "a two-deep, never-drained return ring should have stalled the drain"
+        );
+
+        // Nothing was freed by the audio thread: every model this test handed over is still
+        // reachable from the engine -- installed, parked in a stage's pen, held in the return
+        // ring, or still sitting in the command ring -- so each carries the test's own reference
+        // plus at least one more.
+        for (i, m) in models.iter().take(submitted).enumerate() {
             assert!(
-                Arc::strong_count(m) >= 1,
-                "a model was freed while the test still held a reference"
+                Arc::strong_count(m) >= 2,
+                "model {i} is held only by the test ({} references): the audio thread dropped the \
+                 slot instead of retaining it",
+                Arc::strong_count(m)
             );
         }
 
-        // Draining the worker end releases the backlog and normal service resumes.
+        // Draining the worker end releases the backlog and normal service resumes: a command that
+        // was stuck behind the gate gets consumed.
+        let stuck = worker.commands.slots();
         while worker.retire.try_pop().is_some() {}
         let after = run_sine(&mut engine, 60, 220.0, |_| {});
         assert!(after.iter().all(|s| s.is_finite()));
+        assert!(
+            worker.commands.slots() > stuck,
+            "draining the return ring must let the stalled drain make progress again"
+        );
+    }
+
+    /// **Issue #57's other half: `split` used to trust `caps.retire`.** Any value below
+    /// [`RETIRE_HEADROOM_PER_OFFER`] makes `self.retire.slots() < RETIRE_HEADROOM_PER_OFFER`
+    /// permanently true, so the drain gate returns on the first `Load`/`Unload` and never pops
+    /// it — head-of-line blocking that silently kills every parameter change and reset queued
+    /// behind it, for the life of the engine.
+    ///
+    /// Committed red-first: before the fix the ceiling change queued behind the load never
+    /// arrives, and the block comes out unclamped at 0.8.
+    #[test]
+    fn a_retire_capacity_below_one_offers_headroom_does_not_stall_the_drain() {
+        let c = ctx();
+        let (mut engine, mut worker) = split(
+            crate::stages::build_default_chain(&c).unwrap(),
+            RingCapacities {
+                commands: 16,
+                retire: 1,
+                telemetry: 16,
+            },
+        );
+
+        let empty = worker.commands.slots();
+        submit(&mut worker, Command::load_nam(model(9), &c));
+        submit(
+            &mut worker,
+            Command::Param(ParamChange {
+                id: ParamId(namir_params::global::OUTPUT_CEILING_DB.id.0),
+                value: -20.0,
+            }),
+        );
+
+        let mut buf = [0.8f32; BLOCK];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, BLOCK);
+        audio_section(|| engine.process(&mut io));
+
+        let ceiling = namir_core::db_to_linear(-20.0);
+        for s in io.channel(0) {
+            assert!(
+                s.abs() <= ceiling + 1e-4,
+                "sample {s} exceeded the -20 dB ceiling: the parameter change queued behind the \
+                 load never drained"
+            );
+        }
+        assert_eq!(
+            worker.commands.slots(),
+            empty,
+            "both commands should have drained, leaving the ring empty"
+        );
+    }
+
+    /// **Issue #62.** [`RETIRE_HEADROOM_PER_OFFER`] is documented as headroom *per offer*, but
+    /// both stages used to test the same pre-drain `slots()` snapshot, so a block carrying one Nam
+    /// offer and one Ir offer could commit to four potential retirements having verified only two
+    /// free slots.
+    ///
+    /// A three-slot ring makes the difference observable: one offer fits (2 ≤ 3), two do not
+    /// (4 > 3). Committed red-first — before the fix both commands drain in the first block.
+    #[test]
+    fn a_second_offer_in_the_same_block_reserves_its_own_retire_headroom() {
+        let c = ctx();
+        let (mut engine, mut worker) = split(
+            crate::stages::build_default_chain(&c).unwrap(),
+            RingCapacities {
+                commands: 16,
+                retire: RETIRE_HEADROOM_PER_OFFER + 1,
+                telemetry: 16,
+            },
+        );
+
+        submit(&mut worker, Command::load_nam(model(21), &c));
+        submit(&mut worker, Command::load_ir(ir(22), &c));
+        let before = worker.commands.slots();
+
+        run_sine(&mut engine, 1, 220.0, |_| {});
+        assert_eq!(
+            worker.commands.slots() - before,
+            1,
+            "one block verified {RETIRE_HEADROOM_PER_OFFER} free slots and accepted two offers, \
+             each of which may retire that many"
+        );
+        assert!(engine.deferred_blocks() > 0);
+
+        // The reservation is per block, not sticky: the next block takes the second offer.
+        run_sine(&mut engine, 1, 220.0, |_| {});
+        assert_eq!(
+            worker.commands.slots() - before,
+            2,
+            "the second offer should go through on the following block"
+        );
+    }
+
+    /// **Issue #63.** `deferred_blocks` was incremented unconditionally after the
+    /// [`MAX_COMMANDS_PER_BLOCK`] loop, including when the 64th pop emptied the ring — so the one
+    /// telemetry signal that says "a control may have stopped responding" fired on a perfectly
+    /// healthy burst of exactly 64 commands.
+    ///
+    /// Committed red-first: before the fix the first assertion reads 1.
+    #[test]
+    fn a_drain_that_exactly_empties_the_ring_is_not_a_deferral() {
+        let c = ctx();
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        let empty = worker.commands.slots();
+        for i in 0..MAX_COMMANDS_PER_BLOCK as u32 {
+            submit(
+                &mut worker,
+                Command::Param(ParamChange {
+                    id: ParamId(i),
+                    value: 0.0,
+                }),
+            );
+        }
+        run_sine(&mut engine, 1, 220.0, |_| {});
+        assert_eq!(
+            worker.commands.slots(),
+            empty,
+            "the whole burst should have drained"
+        );
+        assert_eq!(
+            engine.deferred_blocks(),
+            0,
+            "a drain that consumed every queued command did not stop early"
+        );
+
+        // One more than the cap *is* a deferral, so the counter still means something.
+        let (mut engine, mut worker) = build_default_engine(&c).unwrap();
+        for i in 0..MAX_COMMANDS_PER_BLOCK as u32 + 1 {
+            submit(
+                &mut worker,
+                Command::Param(ParamChange {
+                    id: ParamId(i),
+                    value: 0.0,
+                }),
+            );
+        }
+        run_sine(&mut engine, 1, 220.0, |_| {});
+        assert_eq!(engine.deferred_blocks(), 1);
+    }
+
+    /// **Issue #60: `AudioEngine::process` accepted any [`StageIo`] at all.** A block longer than
+    /// the `PrepareContext`'s `max_block_size` indexes past every stage's dry-capture scratch —
+    /// `nam.rs`, `gate.rs` and `ir.rs` all slice `self.dry[ch][..n]` — which is a panic on the
+    /// audio thread, from a figure `namir-clap/src/audio.rs` passes straight through from the
+    /// host.
+    ///
+    /// Committed red-first: before the fix this test does not fail an assertion, it panics with a
+    /// slice range error inside `NamStage::process`.
+    #[test]
+    fn a_block_longer_than_the_prepared_maximum_is_refused_rather_than_panicking() {
+        let c = ctx(); // max_block_size == BLOCK.
+        let (mut engine, _worker) = build_default_engine(&c).unwrap();
+
+        let mut buf = [0.25f32; BLOCK * 2];
+        let mut channels: [&mut [f32]; 1] = [&mut buf];
+        let mut io = StageIo::new(&mut channels, BLOCK * 2);
+        audio_section(|| engine.process(&mut io));
+
+        assert_eq!(engine.rejected_blocks(), 1);
+        for s in io.channel(0) {
+            assert_eq!(
+                *s, 0.25,
+                "a refused block must be left exactly as the caller handed it in"
+            );
+        }
+
+        // A block *within* the maximum is still processed normally, so the guard is a bound rather
+        // than a blanket refusal.
+        let mut ok_buf = [0.25f32; BLOCK];
+        let mut ok_channels: [&mut [f32]; 1] = [&mut ok_buf];
+        let mut ok_io = StageIo::new(&mut ok_channels, BLOCK);
+        audio_section(|| engine.process(&mut ok_io));
+        assert_eq!(engine.rejected_blocks(), 1);
+    }
+
+    /// Issue #60's other limb: a channel count the chain was never prepared for. Below the
+    /// prepared count `eq.rs` indexes past `io`'s own channel list; above it, every stage's
+    /// `self.dry[ch]` is short. Both are panics on the audio thread.
+    #[test]
+    fn a_block_with_the_wrong_channel_count_is_refused_rather_than_panicking() {
+        let c = ctx(); // Mono.
+        let (mut engine, _worker) = build_default_engine(&c).unwrap();
+
+        let mut left = [0.25f32; BLOCK];
+        let mut right = [0.5f32; BLOCK];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, BLOCK);
+        audio_section(|| engine.process(&mut io));
+
+        assert_eq!(engine.rejected_blocks(), 1);
+        assert_eq!(io.channel(0)[0], 0.25);
+        assert_eq!(io.channel(1)[0], 0.5);
     }
 
     /// The per-block command drain is bounded — NFR-RT-040 ("worst-case per-block processing time

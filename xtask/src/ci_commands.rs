@@ -32,6 +32,20 @@
 //! covered because `ci.yml` also runs the plain form, not because this check would have caught it.
 //! An addition that only weakens is a thing a reader of `ci.yml` has to notice.
 //!
+//! **`cargo deny check` is the one narrowing case that is not left to a reader** (M15 review). Its
+//! extra argument is not a flag at all — it *selects a sub-check*, so `cargo deny check licenses`
+//! runs strictly **less** than the documented bare `cargo deny check`, which runs all four of
+//! advisories, bans, licenses and sources. The token-prefix rule certified the narrow invocation as
+//! exercising the broad one, and the consequence was concrete rather than theoretical: `ci.yml` ran
+//! `licenses`, `sources` and `bans` and never `advisories`, and `deny.toml` has no `[advisories]`
+//! section, so a RUSTSEC advisory could enter `Cargo.lock` with this gate reporting agreement and
+//! the README's own annotation calling itself an "advisory ... audit". Requiring an exact match
+//! everywhere was rejected — it would break `cargo build --workspace` against CI's
+//! `--all-targets` form, which is a genuine extension — so the narrowing is named where it happens:
+//! [`is_exercised_by`] refuses to satisfy a bare `cargo deny check` with a sub-check invocation,
+//! and [`check_documented_are_run`] satisfies it from the **union** of the sub-checks `ci.yml`
+//! runs, reporting by name any of [`DENY_SUBCHECKS`] that no step runs.
+//!
 //! **Limb 2 is limited to `xtask` subcommands, deliberately.** Requiring *every* `cargo` command in
 //! `ci.yml` to appear in the README would demand that the README document a coverage run, three
 //! cross-build targets and two benchmark invocations, which is not what NFR-BUILD-020 asks of a
@@ -66,6 +80,14 @@ pub const README_PATH: &str = "README.md";
 /// stands for rather than exempted, so the mapping is visible and the extension limb applies to it
 /// like any other invocation.
 const DENY_ACTION: &str = "EmbarkStudios/cargo-deny-action";
+
+/// Every sub-check a bare `cargo deny check` runs, which is what `README.md` documents.
+///
+/// `cargo deny`'s own default when `check` is given no argument. Named here rather than inferred,
+/// because the whole point is that a documented bare `check` is only exercised when CI's
+/// invocations *between them* cover all four — and the one that was missing until M15,
+/// `advisories`, is the one whose absence nothing else in the repository would have shown.
+pub const DENY_SUBCHECKS: [&str; 4] = ["advisories", "bans", "licenses", "sources"];
 
 /// Commands the README documents that no GitHub-hosted runner can execute, each with the reason it
 /// is here. An exemption list rather than a silent skip: this is precisely the residue
@@ -139,10 +161,24 @@ pub fn workflow_commands(doc: &Yaml) -> Result<Vec<String>, String> {
     Ok(commands)
 }
 
+/// Whether the command line is exactly `cargo deny check`, whose extra arguments select a
+/// sub-check and therefore *narrow* it rather than extending it.
+pub fn is_bare_deny_check(command: &str) -> bool {
+    command.split_whitespace().collect::<Vec<_>>() == ["cargo", "deny", "check"]
+}
+
 /// Whether `ci` runs `documented`: the same command, or the same command with extra trailing
 /// arguments. Token-wise, never by substring — `cargo test --workspace` must not be satisfied by
 /// `cargo test --workspace-does-not-exist`, and a prefix test on the raw strings would say it is.
+///
+/// One exception, and it is inside the predicate rather than at a call site so that no caller can
+/// forget it: a bare `cargo deny check` is **not** exercised by `cargo deny check <sub-check>`.
+/// Those trailing tokens select one of [`DENY_SUBCHECKS`] and run less than the documented command,
+/// not more. [`check_documented_are_run`] is where the union of them is judged instead.
 pub fn is_exercised_by(documented: &str, ci: &str) -> bool {
+    if is_bare_deny_check(documented) && !is_bare_deny_check(ci) {
+        return false;
+    }
     let mut documented_tokens = documented.split_whitespace();
     let mut ci_tokens = ci.split_whitespace();
     loop {
@@ -171,22 +207,64 @@ pub fn xtask_subcommand(command: &str) -> Option<&str> {
     tokens.get(separator + 1).copied()
 }
 
-/// Limb 1: every documented command is run by CI, or is in [`UNEXERCISABLE`] with its reason.
-pub fn check_documented_are_run(documented: &[String], ci: &[String]) -> Vec<String> {
-    documented
+/// The sub-checks of [`DENY_SUBCHECKS`] that no invocation in `ci` runs, empty when a bare
+/// `cargo deny check` covers all four at once.
+///
+/// One invocation may name several (`cargo deny check bans sources` is legal), so the answer is
+/// the union over every `cargo deny check ...` line, not a per-line comparison.
+pub fn missing_deny_subchecks(ci: &[String]) -> Vec<&'static str> {
+    if ci.iter().any(|run| is_bare_deny_check(run)) {
+        return Vec::new();
+    }
+    DENY_SUBCHECKS
         .iter()
-        .filter(|command| {
-            !UNEXERCISABLE
-                .iter()
-                .any(|(exempt, _)| exempt == &command.as_str())
-                && !ci.iter().any(|run| is_exercised_by(command, run))
-        })
-        .map(|command| {
-            format!(
-                "README.md documents `{command}`, which no step in {WORKFLOW_PATH} runs. {REMEDY}"
-            )
+        .copied()
+        .filter(|sub| {
+            !ci.iter().any(|run| {
+                let tokens: Vec<&str> = run.split_whitespace().collect();
+                tokens.len() > 3
+                    && tokens[..3] == ["cargo", "deny", "check"]
+                    && tokens[3..].contains(sub)
+            })
         })
         .collect()
+}
+
+/// Limb 1: every documented command is run by CI, or is in [`UNEXERCISABLE`] with its reason.
+///
+/// `cargo deny check` is judged by the union rule above rather than by [`is_exercised_by`] — see
+/// this module's header for why its sub-check arguments narrow the command instead of extending
+/// it, and what that hid until M15.
+pub fn check_documented_are_run(documented: &[String], ci: &[String]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for command in documented {
+        if UNEXERCISABLE
+            .iter()
+            .any(|(exempt, _)| exempt == &command.as_str())
+        {
+            continue;
+        }
+        if is_bare_deny_check(command) {
+            let missing = missing_deny_subchecks(ci);
+            if !missing.is_empty() {
+                violations.push(format!(
+                    "README.md documents `{command}`, which runs all of {}, but no step in \
+                     {WORKFLOW_PATH} runs: {}. A `cargo deny check <sub-check>` step narrows the \
+                     documented command rather than extending it, so the documented one is only \
+                     exercised when the steps between them cover every sub-check. {REMEDY}",
+                    DENY_SUBCHECKS.join(", "),
+                    missing.join(", ")
+                ));
+            }
+            continue;
+        }
+        if !ci.iter().any(|run| is_exercised_by(command, run)) {
+            violations.push(format!(
+                "README.md documents `{command}`, which no step in {WORKFLOW_PATH} runs. {REMEDY}"
+            ));
+        }
+    }
+    violations
 }
 
 /// Limb 2: every `xtask` subcommand CI runs is documented in the README.
@@ -402,7 +480,79 @@ jobs:
         .unwrap();
         let commands = workflow_commands(&doc).unwrap();
         assert_eq!(commands, vec!["cargo deny check licenses".to_string()]);
-        assert!(check_documented_are_run(&["cargo deny check".to_string()], &commands).is_empty());
+    }
+
+    /// M15 review, note (a). The assertion above this one used to continue "...and that satisfies
+    /// the documented `cargo deny check`", which was the defect: `check licenses` runs one of the
+    /// four sub-checks the bare command runs, so certifying it as exercising the bare command let
+    /// `ci.yml` skip `advisories` — with `deny.toml` carrying no `[advisories]` section — while
+    /// this gate reported the two files in agreement.
+    #[test]
+    fn a_sub_check_alone_does_not_exercise_the_bare_cargo_deny_check() {
+        let violations = check_documented_are_run(
+            &["cargo deny check".to_string()],
+            &[
+                "cargo deny check licenses".to_string(),
+                "cargo deny check sources".to_string(),
+                "cargo deny check bans".to_string(),
+            ],
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(
+            violations[0].contains("runs: advisories"),
+            "{violations:#?}"
+        );
+        assert_eq!(
+            missing_deny_subchecks(&[
+                "cargo deny check licenses".to_string(),
+                "cargo deny check sources".to_string(),
+                "cargo deny check bans".to_string(),
+            ]),
+            vec!["advisories"],
+            "only the sub-check nothing runs is named"
+        );
+    }
+
+    /// And the union is what satisfies it: four steps between them, in any order, and one step
+    /// naming two sub-checks counts for both.
+    #[test]
+    fn the_union_of_the_sub_checks_exercises_the_bare_cargo_deny_check() {
+        for ci in [
+            vec![
+                "cargo deny check advisories".to_string(),
+                "cargo deny check bans".to_string(),
+                "cargo deny check licenses".to_string(),
+                "cargo deny check sources".to_string(),
+            ],
+            vec![
+                "cargo deny check bans sources".to_string(),
+                "cargo deny check advisories licenses".to_string(),
+            ],
+            vec!["cargo deny check".to_string()],
+        ] {
+            assert!(
+                check_documented_are_run(&["cargo deny check".to_string()], &ci).is_empty(),
+                "{ci:#?}"
+            );
+            assert!(missing_deny_subchecks(&ci).is_empty(), "{ci:#?}");
+        }
+    }
+
+    /// The narrowing rule lives inside [`is_exercised_by`] so no caller can forget it, and it is
+    /// narrow itself: an ordinary extending flag is still an extension.
+    #[test]
+    fn a_narrowing_argument_is_refused_where_an_extending_one_is_not() {
+        assert!(!is_exercised_by(
+            "cargo deny check",
+            "cargo deny check bans"
+        ));
+        assert!(is_exercised_by("cargo deny check", "cargo deny check"));
+        assert!(is_exercised_by(
+            "cargo build --workspace",
+            "cargo build --workspace --all-targets"
+        ));
+        assert!(is_bare_deny_check("cargo deny check"));
+        assert!(!is_bare_deny_check("cargo deny check advisories"));
     }
 
     /// M14 Phase 5: NFR-BUILD-020's second half against the real pair of files. Its first half —

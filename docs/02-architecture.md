@@ -1334,6 +1334,33 @@ FR-LIB-070's "never crash Namir or the host" spirit (an emptied library is a dat
 not a crash, but the requirement's intent is the same: a missing file must degrade gracefully, not
 propagate as false information).
 
+*Consequence (added M15, 2026-08-28, from issues #65-#73).* This decision's suppression rule was
+built as one flag: a scan either saw the whole tree or it did not. That is right for cancellation
+and wrong for a directory the scanner reached and could not read, because clearing `complete` for
+the whole tree suppresses removals everywhere — one ACL-restricted folder would leave a genuinely
+deleted file elsewhere in the index forever. The rule is now two mechanisms: `complete` keeps its
+cancellation meaning, and a separate list of unreadable prefixes filters removals *under those
+prefixes only*, so the index degrades exactly where sight failed and nowhere else. A directory
+listing that fails partway, and a child whose `file_type`/`metadata` cannot be read, both feed the
+same list rather than discarding their siblings.
+
+*Consequence (added M15, 2026-08-28, from issue #67).* The settling window above is described
+against the scan's completion time. That protected only files examined in the final seconds of a
+scan: a file edited during a long scan, after its own examination, could be invisible until some
+later edit moved its mtime again. The index now records the scan's **start**, and the test is
+one-sided (`mtime >= prior_start - 2 s`), which covers every examination time in that scan since
+`start <= t` for all of them. The on-disk key was renamed with a serde alias, so an index written
+by an earlier build still loads.
+
+*Consequence (added M15, 2026-08-28, from issue #73).* The scanner did not traverse directory
+symlinks, and got loop safety for free as a result. That was never a decision — it fell out of
+asking `file_type()` and nothing else — and it left a user whose library is a symlinked collection,
+an ordinary arrangement on Linux and macOS, with an empty library and no warning. Symlinks are now
+followed, and the loop safety that shape supplied implicitly is an explicit guard: each canonical
+directory target is followed at most once, and the skipped second spelling is reported rather than
+dropped, and protected from removal, since those files are still on disk.
+
+
 **Decision D-12.3 (AQ-3 resolved — added M5)** — The index is stored as a single pretty-printed
 JSON document, written whole and replaced atomically (temp file, `sync_all`, `std::fs::rename` over
 the destination — which replaces an existing file on both Unix and Windows, so no
@@ -1369,6 +1396,22 @@ an embedded B-tree store's build-script and cross-compilation risk (both new cra
 `aarch64-linux-android`/`aarch64-apple-ios`, NFR-PORT-030) for a 5 MB rebuildable cache on a **Must**
 is a weaker case than that one was, and D-17.1 already set the precedent for how this project
 weighs that trade.
+
+*Consequence (added M15, 2026-08-28, from issues #68 and #69).* "Degrades to a full rescan" is true
+of entries and false of favourites: a rescan repopulates what it finds on disk, and a favourite mark
+exists nowhere on disk. The corruption policy was therefore destroying hand-curated, unrecoverable
+data under a warning that promised a rebuild. Favourites still ride inside the index document, and
+are additionally mirrored to a sidecar written with the same stage-and-rename discipline. Precedence
+is one-directional and deliberate: **the index document is authoritative whenever it loads**, so a
+stale sidecar can never resurrect a mark the user removed; the sidecar is read only when the
+document could not be. A sidecar write failure is not a save failure — the marks are also in the
+index that just landed, and reporting a failure for a successful save is the opposite of P8.
+
+Separately, the atomic replacement above staged through a fixed, predictable file name beside the
+destination. Two Namir processes — an ordinary arrangement, the standalone app and a plugin
+instance in a DAW — therefore staged onto each other. The staging name now carries the process id
+and a per-process counter, still beside the destination so the rename stays within one filesystem.
+
 
 **Decision D-12.4 (for RD-1)** — A library entry carries an `origin` field from the outset —
 `Local` in 1.0, extensible to a remote source later. Tone3000 integration then adds a variant
@@ -1453,6 +1496,30 @@ any audio thread** — recorded so it is not mistaken for wired-in, the same dis
 draws for the denormal guard. See that module's own doc comment for exactly when and how a future
 caller should invoke it, and §17's dependency register for the one new dependency it takes
 (`libc`, Linux/macOS only) and why.
+
+*Consequence (added M15, 2026-08-28, from issues #75, #76 and #81).* Two corrections to what this
+crate's thread-priority half actually promises. First, "elevation" was implemented as the policy's
+**maximum** priority, which on Linux is `SCHED_FIFO` 99 — where `watchdog/N` and `migration/N` live,
+and above the 50 that threaded IRQ handlers take. A runaway audio thread at 99 outranks everything
+capable of preempting it. The target is now `min + 10` (11 on Linux), expressed relative to the
+policy minimum because the two Unix ranges (1..=99 on Linux, 15..=47 on Darwin) do not overlap in
+meaning. Second, `SCHED_FIFO` is not how Darwin schedules audio: CoreAudio-grade threads are
+promoted with `thread_policy_set(..., THREAD_TIME_CONSTRAINT_POLICY, ...)`, a period/computation/
+constraint deadline contract no POSIX priority number expresses. What this module does on macOS
+raises the thread within the timeshare band and reports `Elevated`, a success materially weaker
+than the Windows and Linux paths. That is recorded rather than implemented — macOS is a secondary,
+non-1.0 target and no CI machine available to this project can exercise a Mach binding — and when
+macOS becomes supported the outcome enum will need a way to say "raised, but without a deadline
+guarantee".
+
+The "not yet called from any audio thread" note above is also out of date: both shells now call it.
+The outcome is `#[must_use]` and carries `diagnostic() -> Option<ErrorCode>` returning a catalogued
+code with no allocation, because the call happens *inside* the audio callback — a thread can only
+raise its own priority — where `namir-app`'s `stream.rs` and `namir-clap`'s `audio.rs` are both on
+`xtask rt-logging`'s audio-thread module list and may not name the logger, and a `format!` would
+trip D-7.5's allocation harness. The `Copy` outcome is carried off the audio thread and recorded
+from the UI thread.
+
 
 **Decision D-13.3** — The CLAP plugin installs to the **CLAP-specified search paths only**, and the
 per-user path is the default.
@@ -1748,6 +1815,35 @@ identifier, a severity, and a user-facing message template.
 *Consequence:* FR-ERR-020 requires every user-visible error to map to a catalogue entry, verified
 statically. The catalogue is the single source for that check and for the user documentation.
 
+*Consequence (added M14, 2026-08-28) — an entry has **four** fields, and its template has a defined
+substitution vocabulary.* The decision above names three (identifier, severity, message template),
+and the tree has carried a fourth since M14's W10 without this decision saying so; recorded here
+rather than left to be rediscovered from the type.
+
+The fourth is `remedy: &'static str` — what the user can do — added because FR-UI-070's third clause
+("an error shall state ... what the user can do") was met by **none** of the catalogue's entries
+when a human ran `docs/manual-tests/fr-ui-070-non-modal-error-notices.md` on 2026-08-27 (issue #41).
+It is a field rather than a trailing sentence in the template for two reasons that are the same
+reason twice: nothing mechanical can tell a remedy sentence from any other sentence, so the clause
+would go back to being met by review alone — which is how it came to be met nowhere — and the UI
+cannot style or omit half of one string. All 74 entries carry one, and two checks enforce it from
+opposite sides: `xtask error-catalogue` rejects an empty literal at the source line, and
+`namir_core::assert_unique_ids` rejects an empty value in a crate's enumerated `ALL` slice.
+
+The message template's `{placeholder}` notation was decorative until the same pass: **nothing in the
+tree substituted anything**, and a template reading `The {direction} device "{device}"` reached a
+real screen with the braces in it (issue #15). `ErrorCode::render` now fills exactly one token,
+`{detail}`, from the one free-text string every error producer in the tree already carries; a
+template with no token gets the detail appended in parentheses instead. A named-field map was
+rejected — it would have threaded names through five crates to reach the same sentence, and several
+named slots plus an appended detail is what makes a notice say everything twice. `xtask
+error-catalogue` refuses any other `{...}` in a template, so the notation is now implemented rather
+than aspirational, at one token wide.
+
+This does not disturb D-16.2 below: `render` allocates, and the audio thread never reaches it —
+it never holds an `ErrorCode` at all, reporting through the telemetry ring as numbers that the
+non-RT side maps to entries.
+
 **Decision D-16.2** — The audio thread emits **numeric fault codes** through the telemetry ring.
 All formatting, allocation and logging happen on the UI or worker side.
 
@@ -1978,6 +2074,40 @@ over a file another process holds open is **inferred, not measured**: Rust's `Fi
 The writer must therefore treat a failed rename as an ordinary outcome — keep the current handle,
 retry the size check on the next record — never an `unwrap`. The 12 MiB ceiling can consequently be
 exceeded transiently by a losing process; it cannot be exceeded indefinitely.
+
+*Consequence (added M15, 2026-08-30, from PR #145's review finding 11 — the paragraph above was
+optimistic on both of its claims, and both are now measured).* Two things it states are false of the
+code it describes. "The writer must therefore treat a failed rename as an ordinary outcome — keep
+the current handle, retry the size check on the next record" described a design that was never
+built: `rotate()` dropped the handle *before* attempting either rename. And "cannot be exceeded
+indefinitely" understated the failure: with each writer's byte counter tracking only its own
+appends, neither counter measured the file, so the cap fired late by the other process's whole
+contribution, and once one process renamed `namir.log` the other kept appending into the renamed
+generation until a later rotation renamed a third generation over a file still being written.
+Measured with two writers over one path, 400 records: **85 of 400 records survived**, with holes
+mid-history, and the largest generation reached **8,270,888 bytes against a 4 MiB cap**.
+
+`FileTarget` now holds three paths and no state: each admitted record opens the path, reads the
+length of the file it opened, rotates if the line would carry that length past the cap, writes, and
+closes; `rotate` re-stats immediately before the renames and abandons the rotation if the file has
+shrunk, meaning another writer got there first. The cap becomes a property of the file rather than
+of one writer's tally. Same measurement after: **148 of 400 records, contiguous**, no generation
+past the cap. Cost is 4.4 µs per record, and none of the workspace's twelve `record` call sites is
+in a loop or reachable from the audio thread.
+
+*Rejected:* per-process files, which contradict this decision's own three-file artifact set and the
+12 MiB arithmetic derived from it, and would need a pruning policy nobody has designed; and an
+advisory lock (`File::lock`, stable well below this workspace's MSRV), which to be correct must sit
+on a file whose name never changes — a fourth file where `clause_3` asserts exactly three — and
+would let a diagnostic writer block on another process's stuck rotation.
+
+*What is still open, stated rather than implied:* the window between the pre-rename stat and the
+rename is not closed, so two writers crossing the cap within microseconds rotate twice in a row —
+one generation retired early, nothing destroyed. A record whose write is in flight when another
+process renames lands in the renamed generation. The ceiling holds to within one oversized
+in-flight record per writer. Separately, this decision's "inferred, not measured" note about
+`fs::rename` over a file another process holds open is now **measured**: the test asserts it, so
+Windows CI exercises it on every run.
 
 *Honest limitation — UTC only.* `std` carries no timezone database, so local time is unavailable
 without the dependency D-16.4 declined. Timestamps are UTC and labelled `Z`; a mislabelled local
@@ -2761,6 +2891,50 @@ consequence's original text anticipated. **M9b inherits that as a named blocker 
 discovering it**: a harness that wants the host-side halves of `audio-ports`/`params`/`state`/
 `latency` must first make `xtask attribution` resolve dependency kind per shipped path rather than
 per unified-resolve node, or observe those extensions another way.
+
+*Consequence (added M15, 2026-08-28, from issue #34 — a manual-test document now has to say whether
+it was run, and `xtask traceability` reads that rather than the file name).* This decision makes a
+`Verify: M` Must's manual document its **entire** traced artifact, and `check_partial_verify_code`
+refuses a `// trace-partial:` naming such a Must — so between "no document" and "fully covered"
+there was no disposition the tool could express, and a document existing was the whole of the test.
+It credited `**Result: NOT EXECUTED**` and `**Result: FAIL**` exactly as it credited a clean pass:
+the gate printed `clean -- all 130 Must requirements are covered` while six of those Musts' scripts
+recorded no pass at all. The *Rejected — teaching `xtask traceability` to accept a manual-test
+document as coverage for `Verify: I`* argument above already named the mechanism in as many words
+("it cannot check whether a document's claim to have been executed is true"); it was true of the
+`M` arm too, where the document is not a proposal but the standing rule.
+
+**The verdict convention.** Every file under `docs/manual-tests/` — not only the ones a `Verify: M`
+Must resolves to — must carry at least one **verdict line**: a line beginning `**Result:` whose
+first words are one of exactly four upper-case tokens, `PASS`, `FAIL`, `PARTIAL` or `NOT EXECUTED`,
+followed by whatever prose the author wants. Only `PASS` credits a requirement. Where a document
+carries several verdict lines the least favourable wins, so a later run recording one executed step
+cannot promote a script that is otherwise unexecuted. The convention is documented for its authors
+in `docs/manual-tests/README.md`; `VERDICT_TOKENS` in `xtask/src/traceability.rs` is the only
+definition the tool reads.
+
+*Why a missing or malformed verdict is a hard error, not a gap.* A document with no verdict line, a
+verdict line opening with something other than a token, or a `PASS` contradicted by its own sentence
+aborts the whole `traceability` run, upstream of `--write`, of `--allow-uncovered` and of every
+exit-status term — the same standing D-23.1's malformed annotations have, for the same reason: it is
+a bad **input**, not a coverage gap. Left as a gap it would be relaxable by a flag; left as a credit
+it would be the defect this note closes. The pre-M15 parser downgraded a self-contradicting `PASS`
+silently, which got the outcome right and told the author nothing about which half of their sentence
+won.
+
+*Why the check covers supplementary documents too.* For any code other than `M` the document is
+supplementary evidence and the gate never reads its verdict for coverage — but its executed-ness is
+exactly as easy to misread by a human, and the `Verify:` code of a requirement is not frozen (FRS
+§1.5 freezes identifiers, as the *Rejected — amending the `Verify` code* argument above records).
+Eight of the twenty-six live documents carried no verdict line when this landed, five of them
+supplementary documents for Musts. Only `README.md` is exempt, by exact name, because it is the
+convention rather than a run.
+
+*What this does not change.* No requirement became less met, and no verdict was promoted to keep a
+build green: the six Musts this makes visible — FR-IO-030, FR-IO-050, FR-UI-030, FR-UI-040,
+FR-UI-050 and FR-UI-070 — were already in exactly this state, recorded in their own documents in
+plain English. D-18.5's split is untouched: they are uncovered Musts, which is the half
+`--allow-uncovered` relaxes and which becomes required at the flip.
 
 ---
 
@@ -3578,6 +3752,36 @@ No text above is rewritten and no decision changes: this note is the correction,
 clause 4, its Rationale and changelog 0.19 are all read subject to it. FR-NAM-030's closing
 milestone is unchanged at **M10**, where both annotations point.
 
+*Consequence (added M15, 2026-08-29, from issue #27 — the gate now reads a compound `Verify:`
+method as the set of codes it states).* Until M15 `xtask traceability` kept only the **first** code
+of a method, so a requirement stating two was covered by satisfying either one. FR-STATE-040
+(`M plus S`) read **Done** on its manual document alone while the `S` half had no artifact in the
+tree at all. The parser now reads every code — and the method text is the `*Verify:*` line **plus
+its continuation lines**, which is load-bearing rather than tidy: NFR-RT-010's second code sits on a
+wrapped line and was invisible to a line-at-a-time reader.
+
+**What a tag asserts on a compound method.** `build_report` resolves each code against the evidence
+class that code names — a `docs/manual-tests/` document for `M`, a source annotation for
+`U`/`I`/`G`/`B`/`S`, nothing for `Process` — and requires **all** of them. So on a compound method a
+plain `// trace:` asserts the *source-class* half in full, exactly as D-18.6 leaves the `M` half's
+traced artifact with the manual document; neither half alone covers the requirement, and
+`check_partial_verify_code` refuses a `trace-partial:` only when **no** code could resolve through a
+source annotation, which is what lets such a requirement record a gap at all.
+
+*The grammar is deliberately narrow, and two requirements turn on it.* A clause contributes a code
+only where it *opens* with one, so NFR-PERF-010's `B, as a CI regression gate` and NFR-RT-020's
+`S plus code review` stay **single**-code. Roadmap §15 item 21 listed both as compound; reading them
+that way would invent codes the FRS never wrote. Eight Musts state a genuinely compound method:
+FR-CHAIN-020, FR-IN-020, FR-STATE-040, FR-CLAP-090, FR-CLAP-130, FR-ERR-030, FR-ERR-070 and
+NFR-RT-010.
+
+*One demotion is the mechanism working, and is left standing.* FR-IN-020 (`U for the measurement;
+M for the display`) became uncovered, because no `docs/manual-tests/fr-in-020-*.md` exists — which
+that requirement's own `uncovered:` field had already said in prose. The tool now agrees with the
+tag's author rather than contradicting them, and the gap closes when someone can run the script:
+it needs a human at a screen and a peak-hold surface `namir_ui::MeterReading` does not yet carry.
+
+
 **Decision D-23.2 (added M9's P0 decision pass, 2026-08-08)** — A **Must** requirement's status in
 `03-implementation-roadmap.md` §14 is adjudicated against **that requirement's own text and its own
 `*Verify:*` method** — never against whether an implementation exists, and never against `xtask
@@ -3713,3 +3917,5 @@ drift was findable.
 | 0.32 | 2026-08-12 | **FR-NAM-060 measured for the first time, and both of Namir's resamplers failed it as configured.** D-9.3 has always said the resampling configuration is "verified by a direct measurement test, not by trusting the library's defaults"; nothing had ever measured either site, and the defaults were wrong in the same way at both. `rubato` places an antialiasing filter's cutoff at a fraction of the lower Nyquist that *depends on the filter's length*, so an under-length filter loses passband rather than merely widening its transition. The NAM stage's `FftFixedInOut` pair measured **-15 dB at 20 kHz** for a 48 kHz model at a 192 kHz engine rate (-5.6 dB for a 44.1 kHz model at 96 kHz), because its FFT — and therefore its filter — was a flat 256 *engine* frames, which is 64 frames in the model's domain at that ratio. `namir-ir`'s `resample_mono`, a `SincFixedIn` at `sinc_len = 256`, measured **-17.7 dB** of stopband attenuation at 192 -> 48 kHz against the 100 dB bar FR-IR-030 imports, a windowed sinc's transition band extending past the lower Nyquist where it aliases. Both are fixed by configuration alone, the first branch of the three the milestone allowed: `MIN_RESAMPLE_FFT_FRAMES` sizes each FFT to >= 256 frames **in the lower rate's domain**, and the IR path moves from `rubato`'s sinc family to the same FFT resampler. Measured after: **ripple <= 2e-5 dB and stopband attenuation >= 129 dB** across ten engine/model pairs and nine IR source/engine pairs, both directions and the round trip, against 0.1 dB and 100 dB. Nothing changes at a 48 kHz engine rate, including against a 44.1 kHz model, where the old and new sizing rules coincide; what the fix costs is latency at engine rates *above* the model rate, now a constant ~5.3 ms internal block rather than a constant 256 frames. The instrument is `namir_fixtures::resample_response`, shared by both crates so one yardstick measures both, calibrated against an identity converter, an analytic one-pole low-pass, and a deliberately under-configured resampler it must fail. **Neither requirement closes completely**: "0.1 dB up to 20 kHz **or the Nyquist frequency, whichever is lower**" is unsatisfiable by any resampler once the lower rate drops below ~40 kHz, which `SampleRate::new` permits, so both tags are `trace-partial:` and the clause is referred to the 1.0 exit gate as an FRS question rather than a coverage gap. |
 | 0.33 | 2026-08-12 | **M14 Phase 0: two risk rows answered in place, no decision rewritten, no code.** **R-13's stated test has fired and its reinterpretation is now written down at the row itself**, which is the point of the exercise — the partial count went **56 -> 68** against a row that said a count not falling by M12 means the mechanism is being used as a bypass. The arithmetic is recorded there: the twenty *uncovered* Musts M9a left are now zero, M9b converted twelve of them and then demoted two of its own plain tags on finding they over-claimed, and M14's A2 pass demoted two more. Every movement made the ledger weaker and truer, which is the opposite of the failure the row predicted — so the count is **demoted from a test to an indicator**, the uncovered count and the per-milestone re-reading of `uncovered:` fields are named as the replacement tests, and **the row stays open at Medium** rather than being declared mitigated, because no cheap mechanical discriminator between the two kinds of partial has been designed. **R-11 (signing) is recorded as still open and explicitly not decided** — issue #23 turns on whether 1.0 is a public release, which is an owner's question, and the signed CI path is unbuilt either way. **R-9 is unchanged and stays reopened.** Eighteen `*Consequence*` notes land in the FRS rather than here (see `01-functional-requirements.md` change log 0.8): the sub-40 kHz clause at FR-NAM-060/FR-IR-030, FR-CHAIN-070's Should dropped, NFR-PORT-030's method kept as a door-open check, FR-STATE-040's compound method, seven accepted limitations and five items recorded as still open. **No decision in this document is amended and no new D-number is added** — Phase 0 was a disposition pass over existing decisions, and where one is affected the note sits at the requirement it governs. |
 | 0.34 | 2026-08-12 | **M14 Phase 4b: A2 is compared against `NeuralAmpModelerCore` for the first time, and the comparison holds.** Two generated A2 fixtures (`a2_full.nam`, `a2_lite.nam`, seed 30, D-19.1) rendered through the pinned reference build (`3cde95c`, `-DNAM_USE_INLINE_GEMM -DNAM_ENABLE_A2_FAST=OFF`, built outside the repository) over the same `input_10s.wav` the two existing goldens use, asserted in-process: **A2-Full -132.58 dB, A2-Lite -126.46 dB**. `FR-NAM-030` and `FR-NAM-150` are promoted from `trace-partial:` to plain `trace:` **by closing their `uncovered:` fields, not by promoting the tags** — the golden set now spans all three configurations this crate runs, and FR-NAM-150's probe clause is met by the 10-second signal rather than by `a2_fixtures.rs`'s 4 000-sample probe, which was *shorter* than A2's 6 346-sample receptive field and is raised to 20 000 in the same pass. The golden bar tightens from -85 dB to FR-NAM-030's own **-90 dB**, because a plain tag cannot be carried by an assertion looser than the requirement it claims to verify; all four fixtures clear it by ≥36 dB, and the headroom that spends is recorded at the constant (M10's `Standard`-shape cross-check sat at -90.3 to -90.9 dB). **FR-NAM-110's method is performed for the first time**: `crates/namir-nam/tests/latency.rs` drives an impulse through every architecture, differences it against the model's own zero-input response, and cross-correlates — the previous evidence was two tests reading an accessor whose body is the literal `0` and asserting it equalled `0`, which would have passed unchanged had inference introduced delay. Its tag stays `trace-partial:`, narrowed to the residue in `namir-engine` (`NamStage`'s `SlotResampler` latency, asserted only as `> 0`) and re-booked M8 → M14. **R-9 is narrowed, not retired**, severity High → Medium: the silent-wrong-weight-order failure it was raised about is now excluded by a real-reference comparison, and this pass also resolves the contradiction in its own reopening text — M10's recorded "A2 Full and A2 Lite at -90.31 dB each" cannot have been an A2 measurement, since the two shapes measure -132.58 and -126.46. What stays open is stated rather than absorbed: no genuine trainer-produced A2 export has ever been loaded, so a *shared* misreading of the schema between generator, parser and reference target is invisible to every test in the tree; and upstream's default `NAM_ENABLE_A2_FAST=ON` path is not what these renders exercise — a rationale for excluding it is now recorded at `golden_reference.rs`'s header where before there was none, which is not the same as a measurement, and none was taken. Partial count 68 → 66. |
+| 0.35 | 2026-08-28 | **A manual-test document now has to say whether it was run, and the traceability gate reads that instead of the file name (issue #34).** D-18.6 gains a `*Consequence (added M15, 2026-08-28)*` note holding the verdict convention: every file under `docs/manual-tests/` carries a line beginning `**Result:` opening with one of `PASS`, `FAIL`, `PARTIAL` or `NOT EXECUTED`; only `PASS` credits a requirement; the worst line in a document wins; and a missing, tokenless or self-contradicting verdict is a **hard error** that aborts the run upstream of `--write`, `--allow-uncovered` and every exit-status term, on D-23.1's malformed-annotation footing — a bad input, not a coverage gap. `docs/manual-tests/README.md` is added as the authors' copy of the rule and is the one file exempt from it. Eight live documents carried no verdict line and were given one recording what their own prose already said; two carried a verdict line no token opened (`fr-ui-010`'s self-contradicting `PASS`, corrected to `PARTIAL`, and `fr-io-070`'s second line). No verdict was promoted and no requirement became more met: the six Musts left uncovered — FR-IO-030, FR-IO-050, FR-UI-030, FR-UI-040, FR-UI-050 and FR-UI-070 — are the same six their documents already recorded as NOT EXECUTED, PARTIAL or FAIL. |
+| 0.36 | 2026-08-28 | **A pass over the open issue tracker; five decisions gain consequence notes recording where their stated behaviour had drifted from the built one.** **D-12.1** twice: its removal-suppression rule was one flag, right for cancellation and wrong for an unreadable directory, since clearing `complete` tree-wide would leave a genuinely deleted file elsewhere in the index forever — unreadable prefixes now suppress removals under themselves only; and its settling window, described against scan *completion*, protected only files examined in a scan's final seconds and is re-anchored to the scan's start. A third note records that the scanner now follows directory symlinks: not following them was never a decision, it fell out of asking `file_type()`, and it left a user with a symlinked collection holding an empty library — the loop safety that shape supplied implicitly is now an explicit canonical-target guard. **D-12.3**: "degrades to a full rescan" is true of entries and false of favourites, which exist nowhere on disk, so the corruption policy was destroying hand-curated data under a warning promising a rebuild; favourites gain a sidecar with the index document authoritative whenever it loads, so a stale sidecar cannot resurrect a removed mark. Its staging file also carried a fixed name, so two Namir processes staged onto each other. **D-13.2**: elevation was implemented at the policy maximum, which on Linux is `SCHED_FIFO` 99 — where `watchdog/N` and `migration/N` live, above the 50 threaded IRQ handlers take — so a runaway audio thread outranked everything able to preempt it; now `min + 10`. The same note records that `SCHED_FIFO` is not Darwin's mechanism at all (CoreAudio-grade threads take `THREAD_TIME_CONSTRAINT_POLICY`, a deadline contract no priority number expresses), recorded rather than implemented, and retires that decision's "not yet called from any audio thread" line. **D-16.1** gains its own note, written by the notice work: it still described three catalogue fields while the tree has carried a fourth (`remedy`) and a one-token substitution vocabulary since M14 W10. |

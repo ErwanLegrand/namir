@@ -9,6 +9,8 @@
 
 #![allow(unsafe_code)]
 
+use core::marker::PhantomData;
+
 /// MXCSR bit 15 (FTZ, flush-to-zero: a subnormal *result* is replaced by zero) and bit 6 (DAZ,
 /// denormals-are-zero: a subnormal *input* is treated as zero before the operation runs). Both
 /// are needed together: FTZ alone still takes the slow microcode path for subnormal inputs
@@ -30,9 +32,24 @@ const FZ_MASK: u64 = 1 << 24;
 /// On an architecture this crate doesn't have a denormal-control implementation for, the guard
 /// still constructs and drops cleanly; it just doesn't change anything (NFR-PORT-030 must not be
 /// precluded by this guard failing to compile on, say, a 32-bit ARM target).
+///
+/// **Bind it.** `DenormalGuard::new();` written as a bare statement engages and restores the mode
+/// inside the one expression — a complete no-op whose only symptom is NFR-RT-030 quietly failing
+/// again, with no test able to see it. Hence the `#[must_use]`.
+///
+/// **Deliberately neither `Send` nor `Sync`**, enforced by the `PhantomData<*const ()>` field.
+/// MXCSR (x86_64) and FPCR (AArch64) are *per-thread* CPU state: the OS saves and restores them
+/// across a context switch, so a guard constructed on thread A and dropped on thread B would
+/// write A's captured mode onto B — clobbering B's mode and leaving A's engaged for the rest of
+/// that thread's life. This is the same hazard `std::sync::MutexGuard` is `!Send` to prevent, and
+/// the compiler is the only thing that can catch it, since the misuse is silent at runtime.
 #[cfg(target_arch = "x86_64")]
+#[must_use = "the guard restores the FPU mode on drop; binding it is the point"]
 pub struct DenormalGuard {
     previous_mxcsr: u32,
+    /// Makes the guard `!Send`/`!Sync` — see this struct's doc comment. Zero-sized: the guard is
+    /// still exactly one `u32` at runtime.
+    _not_send: PhantomData<*const ()>,
 }
 
 /// Puts the FPU into flush-to-zero / denormals-are-zero mode for as long as it's alive, restoring
@@ -43,9 +60,24 @@ pub struct DenormalGuard {
 /// On an architecture this crate doesn't have a denormal-control implementation for, the guard
 /// still constructs and drops cleanly; it just doesn't change anything (NFR-PORT-030 must not be
 /// precluded by this guard failing to compile on, say, a 32-bit ARM target).
+///
+/// **Bind it.** `DenormalGuard::new();` written as a bare statement engages and restores the mode
+/// inside the one expression — a complete no-op whose only symptom is NFR-RT-030 quietly failing
+/// again, with no test able to see it. Hence the `#[must_use]`.
+///
+/// **Deliberately neither `Send` nor `Sync`**, enforced by the `PhantomData<*const ()>` field.
+/// MXCSR (x86_64) and FPCR (AArch64) are *per-thread* CPU state: the OS saves and restores them
+/// across a context switch, so a guard constructed on thread A and dropped on thread B would
+/// write A's captured mode onto B — clobbering B's mode and leaving A's engaged for the rest of
+/// that thread's life. This is the same hazard `std::sync::MutexGuard` is `!Send` to prevent, and
+/// the compiler is the only thing that can catch it, since the misuse is silent at runtime.
 #[cfg(target_arch = "aarch64")]
+#[must_use = "the guard restores the FPU mode on drop; binding it is the point"]
 pub struct DenormalGuard {
     previous_fpcr: u64,
+    /// Makes the guard `!Send`/`!Sync` — see this struct's doc comment. Zero-sized: the guard is
+    /// still exactly one `u64` at runtime.
+    _not_send: PhantomData<*const ()>,
 }
 
 /// Puts the FPU into flush-to-zero / denormals-are-zero mode for as long as it's alive, restoring
@@ -56,8 +88,24 @@ pub struct DenormalGuard {
 /// On an architecture this crate doesn't have a denormal-control implementation for, the guard
 /// still constructs and drops cleanly; it just doesn't change anything (NFR-PORT-030 must not be
 /// precluded by this guard failing to compile on, say, a 32-bit ARM target).
+///
+/// **Bind it.** `DenormalGuard::new();` written as a bare statement engages and restores the mode
+/// inside the one expression — a complete no-op whose only symptom is NFR-RT-030 quietly failing
+/// again, with no test able to see it. Hence the `#[must_use]`.
+///
+/// **Deliberately neither `Send` nor `Sync`**, enforced by the `PhantomData<*const ()>` field.
+/// MXCSR (x86_64) and FPCR (AArch64) are *per-thread* CPU state: the OS saves and restores them
+/// across a context switch, so a guard constructed on thread A and dropped on thread B would
+/// write A's captured mode onto B — clobbering B's mode and leaving A's engaged for the rest of
+/// that thread's life. This is the same hazard `std::sync::MutexGuard` is `!Send` to prevent, and
+/// the compiler is the only thing that can catch it, since the misuse is silent at runtime.
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub struct DenormalGuard;
+#[must_use = "the guard restores the FPU mode on drop; binding it is the point"]
+pub struct DenormalGuard {
+    /// Makes the guard `!Send`/`!Sync` on this target too, so a caller that compiles for one
+    /// architecture compiles for all of them — see this struct's doc comment.
+    _not_send: PhantomData<*const ()>,
+}
 
 /// `core::arch::x86_64::_mm_getcsr`/`_mm_setcsr` exist but are deprecated as of this workspace's
 /// toolchain: the intrinsic form carries no memory clobber, so the compiler is free to reorder
@@ -73,6 +121,9 @@ fn read_mxcsr() -> u32 {
     // whole duration, not observed through any other reference while this call runs. No memory
     // besides that one `u32` is touched, and the register being read (MXCSR) is FPU control
     // state, not addressable memory, so this cannot violate Rust's memory-safety guarantees.
+    // `preserves_flags` is accurate here and only here in this module's x86_64 half: `stmxcsr`
+    // reads MXCSR and modifies nothing the option covers — unlike `ldmxcsr`, which is why
+    // `write_mxcsr` below does not claim it.
     unsafe {
         core::arch::asm!(
             "stmxcsr [{0}]",
@@ -83,18 +134,34 @@ fn read_mxcsr() -> u32 {
     value
 }
 
+/// The write half of the pair above.
+///
+/// **Deliberately without `preserves_flags`, and that is the whole difference from
+/// [`read_mxcsr`].** The Rust Reference's list of state `options(preserves_flags)` promises the
+/// compiler is untouched includes, on x86, "the floating-point exception flags in `MXCSR` (`PE`,
+/// `UE`, `OE`, `ZE`, `DE`, `IE`)". `ldmxcsr` loads the *whole* 32-bit register — control bits and
+/// those six sticky status bits alike — and the value being loaded here was captured by a
+/// `stmxcsr` at some earlier point, so any exception flag raised by floating-point work in
+/// between is cleared by the load. That is precisely the state the option promises is preserved,
+/// so declaring it here would be a false promise to LLVM (a miscompile hazard, not a lint), even
+/// though `ldmxcsr` leaves `EFLAGS` itself alone. `stmxcsr` only *reads* `MXCSR`, so it keeps the
+/// option. The AArch64 blocks in this module keep it for the analogous reason: the AArch64 rule
+/// covers `NZCV` and `FPSR`, and `msr fpcr` writes neither.
 #[cfg(target_arch = "x86_64")]
 fn write_mxcsr(value: u32) {
     // SAFETY: `ldmxcsr` loads the 4-byte MXCSR value from the address given by `{0}`, which is
     // `&value as *const u32` — a valid, aligned, readable place for the instruction's duration.
     // The instruction only ever reads memory here (never writes it), matching the `readonly`
     // option below, and the register it loads (MXCSR) is FPU control state, not memory, so this
-    // cannot violate Rust's memory-safety guarantees.
+    // cannot violate Rust's memory-safety guarantees. `preserves_flags` is *not* claimed: loading
+    // MXCSR overwrites the sticky FP exception flags that option covers — see this function's own
+    // doc comment. `nostack` and `readonly` are both accurate: the instruction touches no stack
+    // slot and writes no memory.
     unsafe {
         core::arch::asm!(
             "ldmxcsr [{0}]",
             in(reg) &value as *const u32,
-            options(nostack, preserves_flags, readonly),
+            options(nostack, readonly),
         );
     }
 }
@@ -105,7 +172,10 @@ impl DenormalGuard {
     pub fn new() -> Self {
         let previous_mxcsr = read_mxcsr();
         write_mxcsr(previous_mxcsr | FTZ_DAZ_MASK);
-        Self { previous_mxcsr }
+        Self {
+            previous_mxcsr,
+            _not_send: PhantomData,
+        }
     }
 }
 
@@ -136,7 +206,10 @@ impl DenormalGuard {
                 options(nomem, nostack, preserves_flags),
             );
         }
-        Self { previous_fpcr }
+        Self {
+            previous_fpcr,
+            _not_send: PhantomData,
+        }
     }
 }
 
@@ -145,7 +218,9 @@ impl DenormalGuard {
     /// No-op on an architecture this crate has no denormal-control implementation for; see this
     /// struct's doc comment for why that must not preclude building here at all.
     pub fn new() -> Self {
-        Self
+        Self {
+            _not_send: PhantomData,
+        }
     }
 }
 
@@ -190,6 +265,59 @@ mod tests {
     fn constructs_and_drops_cleanly() {
         let guard = DenormalGuard::new();
         drop(guard);
+    }
+
+    /// The guard captures *per-thread* CPU state (MXCSR/FPCR), so sending one across a thread
+    /// boundary would restore thread A's mode onto thread B. `PhantomData<*const ()>` is what
+    /// makes that a compile error; this asserts the property is actually present, since deleting
+    /// the marker field would otherwise change nothing any other test can observe.
+    ///
+    /// `Probe::<T>::IS_SEND` resolves to the inherent `impl<T: Send>` when `T: Send` holds and
+    /// falls back to the blanket trait const when it does not — the standard stable way to ask
+    /// the compiler an auto-trait question inside a running test rather than a `compile_fail`
+    /// doctest that could pass for an unrelated reason. `CONTROL` proves the probe can say
+    /// `true`, so a `false` below is the marker doing its job and not a broken probe.
+    #[test]
+    fn guard_is_neither_send_nor_sync() {
+        struct Probe<T>(PhantomData<T>);
+        trait NotSend {
+            const IS_SEND: bool = false;
+        }
+        impl<T> NotSend for Probe<T> {}
+        impl<T: Send> Probe<T> {
+            const IS_SEND: bool = true;
+        }
+        // A second wrapper, because one type cannot carry two inherent consts under different
+        // bounds without them colliding on a type that satisfies both.
+        struct SyncProbe<T>(PhantomData<T>);
+        trait NotSync {
+            const IS_SYNC: bool = false;
+        }
+        impl<T> NotSync for SyncProbe<T> {}
+        impl<T: Sync> SyncProbe<T> {
+            const IS_SYNC: bool = true;
+        }
+
+        struct Control(#[allow(dead_code)] u32);
+
+        // `const {}` because the answers are compile-time facts and clippy rightly refuses a
+        // runtime `assert!` on one. A regression here is therefore a compile error in this test
+        // target rather than a red test -- louder, and in the same spirit as the rest of this
+        // crate's static guarantees.
+        const {
+            assert!(
+                <Probe<Control>>::IS_SEND && <SyncProbe<Control>>::IS_SYNC,
+                "the probe itself is broken: a plain u32 wrapper must read as Send + Sync"
+            );
+            assert!(
+                !<Probe<DenormalGuard>>::IS_SEND,
+                "DenormalGuard must not be Send: it restores per-thread FPU state on drop"
+            );
+            assert!(
+                !<SyncProbe<DenormalGuard>>::IS_SYNC,
+                "DenormalGuard must not be Sync: it guards per-thread FPU state"
+            );
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

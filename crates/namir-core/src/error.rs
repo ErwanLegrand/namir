@@ -157,17 +157,46 @@ impl ErrorCode {
     }
 }
 
-/// A crate-time check that a catalogue slice has no duplicate or empty identifiers, and that every
-/// entry offers the user a remedy (FR-UI-070's third clause). Each crate that defines `ErrorCode`
-/// consts calls this from its own tests over its own catalogue.
+/// A crate-time check over one crate's error catalogue: no empty or duplicate identifiers, one
+/// shared namespace across the slice, and a remedy on every entry (FR-UI-070's third clause).
+/// Every crate that ships a catalogue calls this from its own tests over it — all ten
+/// `error_codes.rs` modules in the tree, which is what makes FR-ERR-020's first conjunct one
+/// invariant rather than a per-crate approximation of one. (`namir-ui`'s `ui.*` codes are test
+/// fixtures, not a catalogue; `namir-core`'s own are the fixtures for this function.)
 ///
 /// The remedy assertion duplicates `xtask error-catalogue`'s deliberately: that check is
 /// line-based and sees only what a source line spells out, while this one runs against the real
 /// `const` values a crate actually enumerates.
+///
+/// # The namespace check, and what a caller still has to assert itself (issue #130)
+///
+/// Every id in the tree is `<crate namespace>.<area>.<what happened>`, and this checks the part it
+/// can see: that each id *has* a leading namespace segment, and that all of them agree on it. What
+/// it cannot check is which namespace — a catalogue that is uniformly wrong (`libary.` throughout)
+/// is internally consistent. `namir-library`, `namir-state` and `namir-worker` each additionally
+/// assert the literal string in their own tests, and that assertion is theirs to make: only the
+/// calling crate knows its own name. The two checks are complementary, not duplicates, which is
+/// the shape issue #130 asked for — this helper used to check neither, and the doc above it
+/// claimed a uniformity three crates were quietly hand-rolling around.
 pub fn assert_unique_ids(codes: &[ErrorCode]) {
     let mut seen = std::collections::HashSet::new();
+    let mut namespace: Option<&str> = None;
     for code in codes {
         assert!(!code.id.is_empty(), "ErrorCode with an empty id");
+        let found = namespace_of(code.id).unwrap_or_else(|| {
+            panic!(
+                "the error code {:?} has no namespace segment -- an id is \
+                 <namespace>.<area>.<what happened>",
+                code.id
+            )
+        });
+        let expected = *namespace.get_or_insert(found);
+        assert_eq!(
+            found, expected,
+            "the error code {:?} is in namespace {found:?}, but this catalogue's namespace is \
+             {expected:?} -- one catalogue is one crate's",
+            code.id
+        );
         assert!(
             seen.insert(code.id),
             "duplicate ErrorCode id: {:?}",
@@ -190,6 +219,13 @@ pub fn assert_unique_ids(codes: &[ErrorCode]) {
             code.message_template
         );
     }
+}
+
+/// The leading namespace segment of an id — everything before its first `.` — or `None` if the id
+/// has no `.`, or nothing before or after it. See [`assert_unique_ids`].
+fn namespace_of(id: &str) -> Option<&str> {
+    let (namespace, rest) = id.split_once('.')?;
+    (!namespace.is_empty() && !rest.is_empty()).then_some(namespace)
 }
 
 /// Whether `template` contains a `{...}` token that is not [`DETAIL_PLACEHOLDER`].
@@ -260,6 +296,31 @@ mod tests {
         const NO_REMEDY: ErrorCode =
             ErrorCode::new("core.example.no_remedy", Severity::Info, "Something.", "  ");
         assert_unique_ids(&[NO_REMEDY]);
+    }
+
+    /// Issue #130: the helper's own uniformity claim, checked. Every catalogue in the tree is one
+    /// crate's, and every id in it opens with that crate's namespace segment; a slice mixing two
+    /// namespaces is either two catalogues passed as one or a typo in an id, and both are defects
+    /// the crate's own `catalogue_ids_are_unique` test is the last place to catch.
+    #[test]
+    #[should_panic(expected = "namespace")]
+    fn a_catalogue_mixing_two_namespaces_fails() {
+        const OTHER: ErrorCode = ErrorCode::new(
+            "elsewhere.example.other",
+            Severity::Info,
+            "Something.",
+            "Nothing.",
+        );
+        assert_unique_ids(&[A, OTHER]);
+    }
+
+    /// The same check's other half: an id with no namespace segment at all cannot be attributed to
+    /// a crate by anything reading the catalogue.
+    #[test]
+    #[should_panic(expected = "namespace")]
+    fn an_id_with_no_namespace_segment_fails() {
+        const BARE: ErrorCode = ErrorCode::new("oops", Severity::Info, "Something.", "Nothing.");
+        assert_unique_ids(&[BARE]);
     }
 
     /// Issue #15: the eight literal tokens a human transcribed off a real screen were all of this

@@ -13,10 +13,11 @@
 //! One valid WAV (a short mono 16-bit-PCM delta impulse, encoded via
 //! `namir_fixtures::ir::to_mono_wav_bytes` -- the same generator `namir-ir`'s own correctness
 //! tests already trust) plus its [`namir_fixtures::mutate::seeded_corpus`] variants. That mutator
-//! is JSON-aware for two of its four kinds (`DropField`/`CorruptNumber`) and falls back to a byte
-//! flip on non-JSON input (its own doc comment) -- WAV bytes always take that fallback path for
-//! those two, which is expected and still yields four distinct near-valid variants overall
-//! (`ByteFlip`/`Truncate` operate on raw bytes regardless of format).
+//! is JSON-aware for four of its six kinds (`DropField`/`CorruptNumber`/`NullField`/
+//! `RetypeField`) and falls back to a byte flip on non-JSON input (its own doc comment) -- WAV
+//! bytes always take that fallback path for those four, which is expected and still yields six
+//! distinct near-valid variants overall (`ByteFlip`/`Truncate` operate on raw bytes regardless of
+//! format).
 //!
 //! Usage: `cargo run -p namir-ir --example generate_ir_fuzz_corpus`
 

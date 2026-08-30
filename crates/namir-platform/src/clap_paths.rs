@@ -99,14 +99,30 @@ fn clap_install_dir_from(
         ClapInstallScope::SystemWide => Some(PathBuf::from("/usr/lib/clap")),
     };
 
+    // On a target that is neither Windows nor `unix`, D-13.3's table has no row and every one of
+    // this function's inputs goes unread -- which `unused_variables` reports and CI's `-D
+    // warnings` turns into a build failure, on precisely the "must not be precluded" target this
+    // fallback exists for (this module's doc comment; NFR-PORT-030). Consuming both by reference
+    // is the narrowest fix: it leaves the parameters' names, types and documentation intact for
+    // the other three arms, and unlike `#[allow(unused_variables)]` on the function it cannot
+    // hide a genuinely unread parameter in an arm that *should* read one. Android and iOS are
+    // both `unix`, so no currently-plausible target reaches this line.
     #[cfg(not(any(target_os = "windows", unix)))]
-    let result: Option<PathBuf> = None;
+    let result: Option<PathBuf> = {
+        let _ = (&scope, &getenv);
+        None
+    };
 
     result
 }
 
 #[cfg(test)]
 mod tests {
+    // Every test below lives in a per-OS submodule, so on a target with no row in the table above
+    // this import has no user and `-D warnings` would fail the test build -- the same defect
+    // `clap_install_dir_from`'s own fallback arm carries, one target away. Scoped to the
+    // import and to that target, so it cannot hide an unused import anywhere real.
+    #[cfg_attr(not(any(target_os = "windows", unix)), allow(unused_imports))]
     use super::*;
 
     #[cfg(target_os = "windows")]

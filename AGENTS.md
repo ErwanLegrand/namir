@@ -201,7 +201,7 @@ Cargo.toml comments), `rtrb` for both SPSC rings, and — decided at M9's P0 pas
 `clack-host` as a `namir-clap` **dev**-dependency for the in-process CLAP host harness, adopted
 precisely because `clack-extensions`' own `__doc_utils.rs` instantiates a plugin through
 `PluginEntry::load_from_clack` with no `unsafe` at all. Checked this pass: the only `unsafe` blocks
-anywhere under `crates/` are one in `gui.rs`, five in `denormal.rs` and five in
+anywhere under `crates/` are one in `gui.rs`, five in `denormal.rs` and six in
 `thread_priority.rs` — plus that file's `unsafe extern "system"` declaration block, which edition
 2024 requires of any `extern` block — and none at all in any bench or integration test, where there
 should be none. Any new `unsafe` block outside those three files is a bug, not a style choice —
@@ -303,7 +303,14 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   method asks for. The only `NeuralAmpModelerCore` comparison in the
   tree is S-1's, under `spikes/`, excluded from the workspace and not runnable under `cargo test`.
   The tool reported the requirement plainly covered from M3 until M9a's sweep demoted both sites to
-  `trace-partial:`. Read D-23.1 (`docs/02-architecture.md` §23) for the full rule before tagging
+  `trace-partial:`. **That illustration is itself now out of date, and is kept because the reasoning
+  it teaches is the point.** M14 Phase 4b (changelog 0.34) rendered two generated A2 fixtures through
+  the pinned reference build and asserted the comparison in-process, so FR-NAM-030's tags live in
+  `crates/namir-nam/tests/golden_reference.rs` and are plain — closed by building the missing
+  evidence, not by promoting a tag. So the sentence above about S-1 being the only
+  `NeuralAmpModelerCore` comparison in the tree no longer holds. What has *not* changed is the shape
+  of the lesson: no trainer-produced A2 export has ever been loaded, so a misreading of the schema
+  shared between generator, parser and reference target is still invisible to every test here. Read D-23.1 (`docs/02-architecture.md` §23) for the full rule before tagging
   anything non-obvious.
 - **Expect `trace-partial:` to be the common case, not a rarity.** M9a swept every Must against
   D-23.1's two questions and demoted 54 tags from plain `trace:` in one comment-only pass — no test

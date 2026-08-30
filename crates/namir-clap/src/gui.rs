@@ -165,10 +165,11 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
             previous.close();
         }
 
-        let host = ClapUiHost::new(
-            std::sync::Arc::clone(&self.shared.inner),
-            self.shared.inner.telemetry_reader(),
-        );
+        // No telemetry reader is passed: `ClapUiHost` fetches whichever one is live, on every
+        // frame that needs it, precisely because there may be none yet at editor-open time and
+        // because the one that exists now is retired by the next deactivate/reactivate cycle
+        // (issue #95).
+        let host = ClapUiHost::new(std::sync::Arc::clone(&self.shared.inner));
         self.window = Some(namir_ui::open_parented(&handle, "Namir", host));
 
         Ok(())
@@ -189,8 +190,54 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
         })
     }
 
-    fn set_size(&mut self, _size: GuiSize) -> Result<(), PluginError> {
-        Ok(())
+    /// **Issue #98: the refusal is reported, not disguised as success.**
+    ///
+    /// `can_resize()` below is `false` and [`Self::get_size`] returns the same fixed
+    /// [`GUI_WIDTH`]x[`GUI_HEIGHT`] whatever a host asks for, so this can only ever *decline*.
+    /// CLAP's own `clap_plugin_gui.set_size` is a `bool`-returning call whose contract is "returns
+    /// true if the size is (was) accepted"; returning `Ok` for a request nothing acted on tells a
+    /// host it may size its parent window to a figure the editor never adopted, and leaves the
+    /// editor clipped or adrift in dead space with nothing reporting why.
+    ///
+    /// The exact current size is accepted, because that request genuinely is satisfied — with
+    /// nothing to do. A host that echoes `get_size` back (the documented opening sequence has one
+    /// call `set_size` when it "remembers previous session's size") must not be told the plugin
+    /// cannot hold the size it just reported.
+    ///
+    /// **The refusal does not currently reach the host, and that is upstream, not here.**
+    /// `clack-extensions` 0.1.1's `set_size` trampoline (`src/gui/plugin.rs:403-412`) is
+    /// `PluginWrapper::handle(plugin, |p| Ok(p.main_thread().as_mut().set_size(size))).is_some()`
+    /// — it wraps the plugin's whole `Result` as the *success value* and then reports whether the
+    /// call panicked, so an `Err` returned here becomes `true` at the C ABI. Every neighbouring
+    /// method in that same file gets this right (`set_scale`, `show`, `hide` are all
+    /// `Ok(...is_ok())`), so this is a defect in one function rather than the crate's convention.
+    /// [`accepts_size`] is factored out so the decision this plugin makes is testable and correct
+    /// on the day the answer starts being transmitted, and
+    /// `tests/clap_host_gui.rs` carries a live record of the swallowing.
+    ///
+    /// **Upstream status (issue #144, as of 2026-08-30): not reported.** A search of
+    /// `prokopyl/clack` for `set_size` returns nothing, so there is no upstream ticket to track
+    /// and no released version to move to — crates.io publishes only 0.1.0 and 0.1.1. The fix is
+    /// one line in that trampoline (`Ok(...is_ok())`, as its siblings already read). Nor is the
+    /// version *pinned*: `Cargo.toml` declares `"0.1.1"`, i.e. `^0.1.1`, and it is the committed
+    /// `Cargo.lock` that holds it — so a `cargo update` that picks up a fixed 0.1.2 is what
+    /// retires this, and the host-harness test named above is what says so.
+    ///
+    /// **Why refuse rather than become resizable.** FR-CLAP-110 (host-driven resize) is a *Should*
+    /// this round declares out of scope (see this crate's `lib.rs`), and the fixed 960x640 is a
+    /// deliberate, sufficient size: it is comfortably above FR-UI-080's 800x600 floor, and issue
+    /// #42's fix — bounding the notice list vertically — was specifically taken so the editor works
+    /// *at* that size rather than needing to grow. A real resize would have to reach
+    /// `namir_ui::open_parented`'s `baseview` window and re-lay-out the egui frame, which is
+    /// `namir-ui` work and a `namir-ui` decision; nothing in this crate can honestly do it today,
+    /// and saying so is the whole of what this fix is.
+    fn set_size(&mut self, size: GuiSize) -> Result<(), PluginError> {
+        if accepts_size(size) {
+            return Ok(());
+        }
+        Err(PluginError::Message(
+            "this editor is a fixed size (can_resize() is false)",
+        ))
     }
 
     fn can_resize(&mut self) -> bool {
@@ -203,5 +250,45 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
 
     fn hide(&mut self) -> Result<(), PluginError> {
         Ok(())
+    }
+}
+
+/// Whether the editor can adopt `size` — the whole of [`PluginGuiImpl::set_size`]'s decision, split
+/// out so it is reachable from a test (constructing a `NamirMainThread` needs a live
+/// `HostMainThreadHandle`, which only a real instantiation produces) and so the one-line answer is
+/// stated once. See `set_size`'s doc comment for why the answer is what it is, and for why a host
+/// currently cannot hear it.
+fn accepts_size(size: GuiSize) -> bool {
+    size.width == GUI_WIDTH && size.height == GUI_HEIGHT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #98: a fixed-size editor accepts exactly the size it has, and refuses every other —
+    /// rather than reporting success for a request that changed nothing.
+    #[test]
+    fn only_the_size_the_editor_actually_has_is_accepted() {
+        assert!(accepts_size(GuiSize {
+            width: GUI_WIDTH,
+            height: GUI_HEIGHT
+        }));
+        for refused in [
+            (800, 600),
+            (1920, 1080),
+            (GUI_WIDTH, 480),
+            (1280, GUI_HEIGHT),
+            (0, 0),
+        ] {
+            assert!(
+                !accepts_size(GuiSize {
+                    width: refused.0,
+                    height: refused.1
+                }),
+                "{refused:?} is not a size get_size() will ever report, so accepting it would be \
+                 a lie a host then sizes its parent window from"
+            );
+        }
     }
 }

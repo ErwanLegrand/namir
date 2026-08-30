@@ -118,9 +118,13 @@ impl ContentHasher {
     }
 
     /// Feeds more bytes in. Callable any number of times, in any chunk size.
-    pub fn update(&mut self, bytes: &[u8]) -> &mut Self {
+    ///
+    /// Returns nothing rather than `&mut Self` (issue #131): the builder-chaining signature
+    /// advertises `hasher.update(bytes).finish()`, which cannot compile here — [`Self::finish`]
+    /// takes `self` by value and this type is not `Copy`, so that expression tries to move out of
+    /// a borrow. Every call site had to discard the value anyway.
+    pub fn update(&mut self, bytes: &[u8]) {
         self.0.update(bytes);
-        self
     }
 
     /// Finalises the hash. Consumes `self` because BLAKE3's finalisation, unlike its update step,
@@ -238,5 +242,18 @@ mod tests {
     #[test]
     fn content_hasher_of_no_input_matches_of_empty_slice() {
         assert_eq!(ContentHasher::new().finish(), ContentHash::of(b""));
+    }
+
+    /// Issue #131: `update` returns nothing, and the signature says so. It used to return
+    /// `&mut Self` — the builder-chaining shape — while `finish` takes `self` by value and
+    /// `ContentHasher` is not `Copy`, so `hasher.update(bytes).finish()`, the one expression that
+    /// return value existed to enable, could never compile. The `let ()` binding below is the
+    /// assertion: it type-checks against a unit return and against nothing else.
+    #[test]
+    fn update_returns_nothing_since_the_type_cannot_be_chained() {
+        let mut hasher = ContentHasher::new();
+        let () = hasher.update(b"na");
+        let () = hasher.update(b"mir");
+        assert_eq!(hasher.finish(), ContentHash::of(b"namir"));
     }
 }

@@ -47,13 +47,18 @@ pub const UNSUPPORTED_HEAD_CONFIG: ErrorCode = ErrorCode::new(
      default settings produces one.",
 );
 
-/// A layer array's `activation` string is not one of `Tanh`, `ReLU`, `Sigmoid`, `Identity`.
+/// A layer array's `activation` names something outside the vocabulary `wavenet.rs`'s
+/// `Activation` implements: `Tanh`, `ReLU`, `Sigmoid`, `Identity`, `LeakyReLU`, `SiLU`,
+/// `Hardswish`, `Softsign`, `LeakyHardtanh` (either casing, matching the reference's own
+/// `type_map`) and `PReLU`. M10 grew that set from A1's first four to these ten; this doc comment
+/// and the remedy below said four until issue #51.
 pub const UNSUPPORTED_ACTIVATION: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_activation",
     Severity::Error,
     "This model uses an activation function that is not supported.",
-    "Load a model whose layers use Tanh, ReLU, Sigmoid or Identity -- the four Namir implements. \
-     Re-export from the trainer with a standard activation.",
+    "Load a model whose layers use Tanh, ReLU, Sigmoid, Identity, LeakyReLU, SiLU, Hardswish, \
+     Softsign, LeakyHardtanh or PReLU -- the ten Namir implements. Re-export from the trainer \
+     with a standard activation.",
 );
 
 /// `config.layers` is empty — there is no WaveNet stack to build at all.
@@ -139,7 +144,18 @@ pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode::new(
 /// FiLM conditioning at any of the eight `*_film` sites, an active `head1x1`, an inactive
 /// `layer1x1`, gating (`gating_mode` other than `"none"` or the legacy `gated: true`), a `groups_*`
 /// value other than 1, or a `slimmable` container. `detail` names the offending key — that naming
-/// is FR-NAM-140's own requirement text, not a courtesy. **Distinct from `MALFORMED_JSON` by
+/// is FR-NAM-140's own requirement text, not a courtesy.
+///
+/// Also the model's *output* width, added with issue #46: the last layer array's head width (A1's
+/// `head_size`, A2's `head.out_channels`) must be 1. That is the same scope limit
+/// `config.in_channels != 1` above already carries at the input end — Namir is a mono-in,
+/// mono-out amp simulator — and it belongs to this code for the same reason `in_channels` does:
+/// the reference implementation derives its output channel count from exactly that field
+/// (`wave_net_output_channels`), so a wider value is a real, supported multi-output model this
+/// build does not implement, not a damaged file. Left unchecked it was one of the two files that
+/// loaded cleanly and then panicked *on the audio thread* inside
+/// `wavenet::PreparedWaveNet::process_block`; the other, `layers[0].input_size != 1`, is
+/// `INCONSISTENT_CONFIGURATION` below rather than this code, and that entry says why. **Distinct from `MALFORMED_JSON` by
 /// construction**: reaching this code means `serde` already accepted the document as a `NamFile`,
 /// so "not valid JSON" was never a true statement about it. This is FR-NAM-140's *configuration*
 /// clause; `UNSUPPORTED_ARCHITECTURE` above remains its *architecture* clause.
@@ -151,6 +167,21 @@ pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode::new(
      from the trainer with default settings avoids all of them.",
 );
 
+/// A weight, the `head_scale`, or an activation parameter is not a finite number (infinite or
+/// NaN). `serde_json` accepts `1e40` — in `f64` range, out of `f32` range — and hands back
+/// `f32::INFINITY` with no error at all, so nothing before this check distinguishes such a file
+/// from a good one. Rejecting it at load is not cosmetic: a non-finite weight propagates through
+/// inference to a non-finite output on the **audio thread**, where FR-CHAIN-080/090's non-finite
+/// guard then mutes the block — permanent silence plus a fault counter, and no message naming the
+/// cause, which is exactly what FR-NAM-040 requires the load to have produced instead.
+pub const NON_FINITE_VALUE: ErrorCode = ErrorCode::new(
+    "nam.load.non_finite_value",
+    Severity::Error,
+    "This model contains a weight or parameter that is not a finite number.",
+    "The file is damaged, or was exported by a trainer run that diverged. Re-export or download \
+     the model again; a model with an infinite or NaN weight can only ever produce silence.",
+);
+
 /// The file is well-formed and every feature it uses is one this build supports, but its declared
 /// configuration contradicts itself: both or neither of `kernel_size`/`kernel_sizes` present; a
 /// `kernel_sizes` or per-layer `activation` array whose length disagrees with `dilations`; both or
@@ -159,6 +190,13 @@ pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode::new(
 /// file that is simply self-contradictory, not one that names a real, unimplemented feature. Not
 /// required by FR-NAM-140's own text — added for message truthfulness, recorded here rather than
 /// left implicit so a reviewer doesn't have to rediscover the reasoning.
+///
+/// Issue #47 adds one more member: `layers[0].input_size != 1`. The first layer array's
+/// `input_size` is the width feeding its rechannel, and the signal fed to it is the model's own
+/// input, whose width is `config.in_channels` — already pinned to 1 by
+/// `UNSUPPORTED_CONFIGURATION` above. So this is a file disagreeing with itself about how wide
+/// its own input is, not a multi-input model Namir is declining to play: a real one declares
+/// `in_channels` as well, and is rejected above, by name, as the unsupported feature it is.
 pub const INCONSISTENT_CONFIGURATION: ErrorCode = ErrorCode::new(
     "nam.load.inconsistent_configuration",
     Severity::Error,
@@ -206,6 +244,7 @@ const ALL: &[ErrorCode] = &[
     UNSUPPORTED_LSTM_CHANNELS,
     UNSUPPORTED_CONFIGURATION,
     INCONSISTENT_CONFIGURATION,
+    NON_FINITE_VALUE,
 ];
 
 #[cfg(test)]

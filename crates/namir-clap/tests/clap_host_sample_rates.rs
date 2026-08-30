@@ -322,7 +322,7 @@ mod loaded {
 
     use clack_extensions::latency::PluginLatency;
     use clack_extensions::state::PluginState;
-    use clack_host::prelude::PluginInstance;
+    use clack_host::prelude::{PluginInstance, StartedPluginAudioProcessor};
     use namir_core::ContentHash;
     use namir_fixtures::nam::{WaveNetShape, generate};
     use namir_state::{Document, EmbeddedRef, FileRef, State};
@@ -376,6 +376,34 @@ mod loaded {
     /// Slept between landing polls, so the worker actually gets to run on a small box.
     const LANDING_POLL: Duration = Duration::from_millis(10);
 
+    /// Audio time a run of steady blocks must span before the chain counts as settled, in
+    /// milliseconds. **Rate-independent by construction, and that is the point.** A crossfade
+    /// changes the level monotonically across its own 20 ms, so at 192 kHz it spans some fifteen
+    /// 256-frame blocks and consecutive blocks inside it differ by only a few percent -- a
+    /// block-against-previous-block test would call that steady. A run required to span three
+    /// crossfades' worth of audio cannot sit inside one, whatever the rate, because it necessarily
+    /// contains the whole excursion.
+    const SETTLE_SPAN_MS: f64 = 60.0;
+
+    /// Ceiling on the settle gate, in blocks. Reaching it means the output never stopped moving,
+    /// which the panic says.
+    const SETTLE_LIMIT: usize = 512;
+
+    /// How far the loudest and quietest block in a candidate run may differ, as a fraction, and
+    /// still count as steady.
+    ///
+    /// **The gate reads each block's peak, not its RMS, and that choice is what makes this number
+    /// meaningful.** A block is not a whole number of 1 kHz cycles at any of these rates, and at
+    /// the top of [`RATES`] it is barely more than one -- 256 frames at 191 100 Hz is 1.34 cycles
+    /// -- so a *settled* tone's per-block RMS still swings between 0.1453 and 0.1606, i.e. **10.5%**,
+    /// purely from where the window happens to cut the waveform. That is a quarter of the +3 dB
+    /// (41%) excursion this gate exists to catch, which leaves no honest threshold between them.
+    /// Peak has no such term: every block at every rate here spans at least one full period of the
+    /// chain's output, which is periodic at the probe frequency however hard the model distorts it,
+    /// so a settled peak repeats to within the sampling grid's own ~0.01%. 5% is far above that and
+    /// far below 41%.
+    const SETTLE_TOLERANCE: f64 = 0.05;
+
     /// The rate set. Both endpoints, the six standard rates, and two values off every grid.
     const RATES: [f64; 8] = [
         44_100.0, 45_100.0, 48_000.0, 88_200.0, 96_000.0, 176_400.0, 191_100.0, 192_000.0,
@@ -418,6 +446,68 @@ mod loaded {
         peak: f32,
         /// The latency the plugin reported once the model was installed and warm.
         latency: u32,
+    }
+
+    /// Pumps the probe tone until the chain's own output stops moving, so the measurement window
+    /// that follows contains no handover.
+    ///
+    /// **Why the latency poll above is not enough (issue #145's finding 7).** Every activation
+    /// after the first dispatches *two* `spawn_recall` jobs -- `crate::audio`'s activate-time
+    /// replay and `state_ext`'s own at the end of `load` -- and the landing poll breaks on the
+    /// first nonzero latency, which only proves that *one* of them finished. The second installs
+    /// the same model at the same latency, so no latency reading can tell it apart from the first;
+    /// the only thing that changes when it lands is the audio. On a slow runner it landed inside
+    /// the warm-up or the measurement window and FR-NAM-070's equal-power crossfade averaged into
+    /// the reading: -1.76 dB when it straddled the window's start (the macOS CI failure, RMS
+    /// 0.12507376), and up to +3 dB when it sat wholly inside, since the two sides of that fade
+    /// are the *same* model. No engine change can bring either inside [`RMS_TOLERANCE_DB`] --
+    /// equal-power is what FR-NAM-070 mandates -- so the gate is what has to get stricter.
+    ///
+    /// Blocks are separated by a [`LANDING_POLL`] so the worker pool actually gets scheduled
+    /// between them on a small box; the crossfade itself only advances as blocks are processed.
+    fn settle(
+        processor: &mut StartedPluginAudioProcessor<TestHost>,
+        bufs: &mut StereoBuffers,
+        rate: f64,
+    ) {
+        let span_blocks = ((SETTLE_SPAN_MS / 1000.0 * rate) / f64::from(BLOCK)).ceil() as usize;
+        let mut run: Vec<f64> = Vec::with_capacity(span_blocks + 1);
+
+        for index in 0..SETTLE_LIMIT {
+            for channel in 0..CHANNELS {
+                fill_sine(
+                    &mut bufs.input_mut(channel)[..BLOCK as usize],
+                    SINE_FREQ_HZ,
+                    rate,
+                    AMPLITUDE,
+                    index as u64 * u64::from(BLOCK),
+                );
+            }
+            audio_section(|| bufs.process_block(processor, BLOCK))
+                .unwrap_or_else(|e| panic!("a settling block at {rate} Hz must process: {e}"));
+
+            let block_peak = f64::from(peak(&bufs.output(0)[..BLOCK as usize]));
+
+            run.push(block_peak);
+            let low = run.iter().copied().fold(f64::INFINITY, f64::min);
+            let high = run.iter().copied().fold(0.0_f64, f64::max);
+            if low <= 0.0 || high - low > low * SETTLE_TOLERANCE {
+                // This block does not belong to the run the earlier ones were forming. Restart
+                // from it rather than from nothing -- it is itself a candidate first block.
+                run.clear();
+                run.push(block_peak);
+            }
+            if run.len() >= span_blocks {
+                return;
+            }
+            std::thread::sleep(LANDING_POLL);
+        }
+
+        panic!(
+            "at {rate} Hz the chain never held a steady level for {SETTLE_SPAN_MS} ms within \
+             {SETTLE_LIMIT} blocks -- a handover is still running, so any measurement taken now \
+             would average a crossfade rather than the settled chain"
+        );
     }
 
     /// Activates `instance` at `rate`, loads a model declared at a rate that is *not* `rate`, waits
@@ -468,6 +558,8 @@ mod loaded {
              plugin still reports zero latency after {LANDING_LIMIT} blocks, so D-9.2's \
              SlotResampler was never built and this rate proves nothing"
         );
+
+        settle(&mut processor, bufs, rate);
 
         let warmup_frames = (WARMUP_MS / 1000.0 * rate).ceil() as u64;
         let measure_frames = (MEASURE_MS / 1000.0 * rate).ceil() as u64;

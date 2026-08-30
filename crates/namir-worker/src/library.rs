@@ -85,6 +85,25 @@ impl ScanHandle {
     }
 }
 
+/// A `'static` handle onto one index file's deferred load — see [`LibraryService::loader`].
+///
+/// Deliberately carries nothing else: it is not a second way to read the index, only a way to wait
+/// for the one the service already owns.
+#[derive(Clone)]
+pub struct IndexLoader {
+    shared: Arc<SharedIndex>,
+}
+
+impl IndexLoader {
+    /// [`LibraryService::ensure_loaded`], from a caller that holds no `LibraryService`.
+    ///
+    /// **Blocks**, for as long as reading and parsing the index file takes. Never call it on an
+    /// audio thread or on a plugin's instantiation path; a worker-pool job is what it is for.
+    pub fn ensure_loaded(&self) {
+        self.shared.ensure_loaded();
+    }
+}
+
 /// How one [`LibraryService::start_scan`] run ended.
 #[derive(Debug, Clone)]
 pub struct ScanOutcome {
@@ -281,6 +300,22 @@ impl LibraryService {
         )
     }
 
+    /// A cheap, `'static` handle onto this service's deferred load, for a caller that must block
+    /// for the index but may not hold the lock its own shell keeps the [`LibraryService`] behind.
+    ///
+    /// `namir-clap` is that caller (#145): its `SharedInner` holds the service in a `Mutex` the
+    /// GUI thread takes every frame for [`Self::snapshot`], so calling [`Self::ensure_loaded`]
+    /// through that lock would stall the editor for the whole parse — ~161 ms at FR-LIB-020's
+    /// 10 000 entries, which is precisely the frame stall M14 took off the instantiation path.
+    /// Taking this handle costs one `Arc` clone under that lock; the block then happens outside
+    /// it. Clone it freely: every handle for one index path names the same load, so a second
+    /// caller waits for the first rather than parsing again.
+    pub fn loader(&self) -> IndexLoader {
+        IndexLoader {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     /// Blocks until this process has the index file's contents, parsing it here if the loader
     /// thread has not got to it (or could not be spawned).
     ///
@@ -376,11 +411,12 @@ impl LibraryService {
     ///
     /// **Isolated per D-16.3**, inherited rather than reimplemented: the scan closure runs
     /// through [`ThreadPool::spawn`], so a panic inside it is caught at the job boundary exactly
-    /// as any other job this crate submits. `scanning` is still cleared in that case (the pool's
-    /// `catch_unwind` runs the closure's remainder up to the panic point only, so this method
-    /// relies on `ThreadPool`'s isolation rather than its own — a panic mid-scan leaves this
-    /// service's `scanning` flag stuck `true` and no further scan startable, which is D-16.3's
-    /// documented containment boundary, not a gap this method papers over).
+    /// as any other job this crate submits. `scanning` is cleared in that case too, by
+    /// [`ScanFlag`]'s `Drop` rather than by the `store` at the end of the job body — the pool's
+    /// `catch_unwind` runs the closure only up to the panic point, so a flag cleared by a
+    /// statement past that point would stay `true` and refuse every later scan for the life of
+    /// the process (issue #109). Containment is D-16.3's boundary; losing the library's
+    /// rescannability to it was not, and this method no longer does.
     pub fn start_scan(
         &self,
         pool: &ThreadPool,
@@ -397,7 +433,9 @@ impl LibraryService {
 
         let roots = self.roots.clone();
         let shared = Arc::clone(&self.shared);
-        let scanning = Arc::clone(&self.scanning);
+        // Moved into the job and held for its whole duration, so that an unwind from anywhere
+        // inside still clears the flag; released explicitly before `on_complete` below.
+        let scanning = ScanFlag(Arc::clone(&self.scanning));
 
         pool.spawn(move || {
             // **Inside the job, and the `prior` snapshot is taken after it** (M14). The load is
@@ -453,8 +491,9 @@ impl LibraryService {
             shared.publish(new_index, save_error.is_none());
 
             // Cleared before on_complete, not after: a caller that starts a new scan from inside
-            // its own on_complete callback must see is_scanning() == false by then.
-            scanning.store(false, Ordering::Release);
+            // its own on_complete callback must see is_scanning() == false by then. Dropping the
+            // guard early is what does it; the guard itself is only the unwinding path's backstop.
+            drop(scanning);
 
             on_complete(ScanOutcome {
                 complete,
@@ -466,6 +505,21 @@ impl LibraryService {
         });
 
         Some(handle)
+    }
+}
+
+/// Owns the "a scan is running" bit for the duration of one scan job and clears it on drop.
+///
+/// A plain `store(false)` at the end of the job body is not equivalent: the pool contains a
+/// panicking job at its own boundary (D-16.3), so a statement past the panic point never runs and
+/// the flag would stay `true` — [`LibraryService::start_scan`] would then refuse every later scan
+/// for the life of the process, silently, since the only trace of the panic is a log record
+/// (issue #109). `Drop` runs during the unwind, so containment no longer costs the flag.
+struct ScanFlag(Arc<AtomicBool>);
+
+impl Drop for ScanFlag {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -770,6 +824,56 @@ mod tests {
         recv(&rx);
         assert!(!service.is_scanning());
         drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **Issue #109.** A panic inside the scan job -- injected here through the caller's own
+    /// `on_progress`, which `start_scan` calls from the pool thread and which is the one part of
+    /// the job body a test can make fail without a fault-injection seam -- must not leave
+    /// `scanning` stuck `true`. D-16.3 contains the panic at the job boundary; containment must
+    /// not also cost this service every later scan for the life of the process, which is what a
+    /// clear-at-the-end `store(false)` past the panic point did.
+    ///
+    /// The second job is the synchronisation: the pool has one thread and runs its queue in
+    /// order, so its arrival proves the panicked job has already unwound (and therefore that the
+    /// flag's guard has already dropped) without polling the flag this test is asserting on.
+    #[test]
+    fn a_panicked_scan_releases_the_scanning_flag_and_a_later_scan_still_starts() {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        let root = temp_dir("panicked-scan");
+        write_nam(&root, "a.nam");
+        let (service, _) = LibraryService::open(root.join("index.json"), vec![root.clone()]);
+
+        let pool = ThreadPool::with_threads(1);
+        service
+            .start_scan(
+                &pool,
+                |_| panic!("a scan progress callback failing on purpose"),
+                |_| {},
+            )
+            .expect("the first scan should start");
+
+        let (drained_tx, drained_rx) = mpsc::channel();
+        pool.spawn(move || drained_tx.send(()).unwrap());
+        drained_rx
+            .recv_timeout(SCAN_BUDGET)
+            .expect("the pool must keep serving after a scan job panics");
+        std::panic::set_hook(previous);
+
+        assert!(
+            !service.is_scanning(),
+            "a panicked scan must not leave the scanning flag set"
+        );
+
+        let (tx, rx) = mpsc::channel();
+        service
+            .start_scan(&pool, |_| {}, move |outcome| tx.send(outcome).unwrap())
+            .expect("a scan must still be startable after an earlier one panicked");
+        recv(&rx);
+        assert!(!service.is_scanning());
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

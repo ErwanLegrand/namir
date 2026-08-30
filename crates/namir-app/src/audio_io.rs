@@ -200,11 +200,149 @@ pub enum ExclusiveModeOutcome {
     Unsupported,
 }
 
+/// How many bytes of a backend's own error message [`InlineDetail`] keeps.
+///
+/// Comfortably longer than the longest real message this project has transcribed off a screen —
+/// the 2026-08-27 WASAPI unplug arrived as
+/// `OS Error -2004287450 (FormatMessageW() returned error 317)`, 57 bytes — with room to spare for
+/// a more verbose driver, and deliberately under `clippy::large_enum_variant`'s 200-byte
+/// variant-size threshold, so [`StreamFailure`] carries it inline without an `allow` and without
+/// the `Box` that lint would otherwise want (a `Box` here would be a heap allocation on the error
+/// callback thread, which is the entire thing this type exists to avoid).
+pub const STREAM_FAILURE_DETAIL_BYTES: usize = 160;
+
+/// A fixed-capacity, heap-free string: [`StreamFailure::Other`]'s message, and the reason
+/// [`StreamFailure`] is `Copy` (issue #88).
+///
+/// # Why this exists rather than a `String`
+///
+/// `StreamFailure` is built inside `cpal`'s **error callback**, which every backend invokes on the
+/// stream's own thread — `crate::worker`'s own `AppEvent::StreamFailure` doc says so in as many
+/// words — so building one is audio-thread work under NFR-RT-010/FR-ERR-030, and
+/// `cpal::Error::to_string()` was a heap allocation there. Writing the same characters into an
+/// inline buffer allocates nothing, and it makes the value `Copy`, which is what lets a failure
+/// report cross to the UI thread through a pre-allocated `rtrb` ring: pushing a `String` into a
+/// **full** ring hands the value back, and dropping it would be a *de*allocation on the same
+/// thread.
+///
+/// # What it gives up
+///
+/// A message longer than [`STREAM_FAILURE_DETAIL_BYTES`] is truncated at a character boundary
+/// rather than reallocated. Diagnostics lose the tail of an unusually long driver message; they
+/// would otherwise lose nothing at all, because the callback is not allowed to allocate one.
+///
+/// This bounds *Namir's* work, not the backend's: a `Display` impl that itself allocates while
+/// rendering (Windows's `FormatMessageW` path inside `cpal` is the known one) still does so. That
+/// is upstream of this boundary and outside this crate's reach — what changed is that this crate
+/// no longer adds an allocation of its own on top of it.
+#[derive(Clone, Copy)]
+pub struct InlineDetail {
+    bytes: [u8; STREAM_FAILURE_DETAIL_BYTES],
+    len: usize,
+}
+
+impl InlineDetail {
+    /// An empty detail.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            bytes: [0; STREAM_FAILURE_DETAIL_BYTES],
+            len: 0,
+        }
+    }
+
+    /// Renders `value` into a fresh detail, truncating at a character boundary if it does not fit.
+    /// Allocation-free on this crate's own account — see the type's doc comment for the one thing
+    /// that qualifies.
+    #[must_use]
+    pub fn from_display(value: &impl std::fmt::Display) -> Self {
+        use std::fmt::Write as _;
+        let mut this = Self::new();
+        // `write_str` below never reports failure (it truncates instead), so this cannot error.
+        let _ = write!(&mut this, "{value}");
+        this
+    }
+
+    /// The bytes written so far, as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        // Only ever written whole `char`s at a time, so this is always valid UTF-8; `unwrap_or`
+        // rather than `expect` because a panic here would be inside a stream error report, which
+        // is the last place that helps anyone.
+        std::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+    }
+
+    /// Whether the capacity is exhausted, i.e. a further write would be dropped. `true` is the
+    /// signal that what [`Self::as_str`] returns may be a prefix of the backend's real message.
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        self.len + 4 > STREAM_FAILURE_DETAIL_BYTES
+    }
+}
+
+impl Default for InlineDetail {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Write for InlineDetail {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for ch in s.chars() {
+            let mut encoded = [0u8; 4];
+            let encoded = ch.encode_utf8(&mut encoded).as_bytes();
+            if self.len + encoded.len() > STREAM_FAILURE_DETAIL_BYTES {
+                // Truncate rather than error: a `fmt::Error` would abort the whole render and
+                // leave a *partial* message with no indication why, which is worse than a
+                // deliberate prefix. `is_full` is how a caller can tell.
+                return Ok(());
+            }
+            self.bytes[self.len..self.len + encoded.len()].copy_from_slice(encoded);
+            self.len += encoded.len();
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for InlineDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Renders as the string it holds, not as a byte array — a 256-element `[u8; N]` in a `Debug` log
+/// line would bury every other field of whatever contains it.
+impl std::fmt::Debug for InlineDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+/// Compared by content, not by the unwritten tail of the buffer.
+impl PartialEq for InlineDetail {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for InlineDetail {}
+
+impl From<&str> for InlineDetail {
+    fn from(value: &str) -> Self {
+        Self::from_display(&value)
+    }
+}
+
 /// A Namir-owned classification of a stream failure, replacing `cpal::ErrorKind` at this crate's
 /// boundary (D-13.1). `Xrun` is `cpal`'s own detected dropout (not every backend reports it — see
 /// [`crate::xrun`] for the ring-underrun-based detector this crate also runs, which does not
 /// depend on backend support). `DeviceLost` is FR-IO-070's device-removal case.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **`Copy`, and every byte of it inline (issue #88).** This value is constructed on `cpal`'s
+/// error-callback thread and travels to the UI thread through a pre-allocated ring; both ends of
+/// that are audio-thread constraints, and a `String` payload would have broken them at both. See
+/// [`InlineDetail`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamFailure {
     /// The device was disconnected or otherwise stopped being reachable (`cpal`'s
     /// `ErrorKind::DeviceNotAvailable`/`HostUnavailable`).
@@ -212,7 +350,7 @@ pub enum StreamFailure {
     /// `cpal` itself detected a buffer underrun/overrun (`ErrorKind::Xrun`).
     Xrun,
     /// Anything else, carrying `cpal`'s own message for diagnostics (FR-ERR-050).
-    Other(String),
+    Other(InlineDetail),
 }
 
 /// `Display`, added M14 (issue #44), because the `Debug` rendering was reaching a user's screen:
@@ -225,7 +363,7 @@ impl std::fmt::Display for StreamFailure {
         match self {
             Self::DeviceLost => f.write_str("the device is no longer available"),
             Self::Xrun => f.write_str("the audio buffer under- or overran"),
-            Self::Other(message) => f.write_str(message),
+            Self::Other(message) => f.write_str(message.as_str()),
         }
     }
 }
@@ -280,8 +418,31 @@ const DEVICE_LOSS_MARKERS: &[&str] = &[
 /// [`DEVICE_LOSS_MARKERS`] for the observed case that made this necessary.
 #[must_use]
 pub fn classifies_as_device_loss(message: &str) -> bool {
-    let lowered = message.to_ascii_lowercase();
-    DEVICE_LOSS_MARKERS.iter().any(|m| lowered.contains(m))
+    // Case-folded per byte rather than through `to_ascii_lowercase()` (issue #88): this predicate
+    // runs inside `to_stream_failure`, which runs inside `cpal`'s error callback on the stream's
+    // own thread, and lowering the whole message first was a heap allocation there. Every marker
+    // above is already lowercase, so an ASCII-insensitive substring search over the original bytes
+    // answers the same question with no buffer at all.
+    DEVICE_LOSS_MARKERS
+        .iter()
+        .any(|m| contains_ignore_ascii_case(message, m))
+}
+
+/// Whether `haystack` contains `needle`, comparing ASCII letters case-insensitively and
+/// allocating nothing. Non-ASCII bytes compare exactly, which is what every marker in
+/// [`DEVICE_LOSS_MARKERS`] needs (they are all ASCII) and is the conservative answer for anything
+/// else.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    (0..=haystack.len() - needle.len())
+        .any(|start| haystack[start..start + needle.len()].eq_ignore_ascii_case(needle))
 }
 
 /// Why an [`AudioBackend`] operation failed.
@@ -441,7 +602,7 @@ mod cpal_impl {
     use super::convert;
     use super::{
         AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CpalBackend, DeviceInfo,
-        ExclusiveModeOutcome, HostInfo, ShareMode, StreamFailure, StreamParams,
+        ExclusiveModeOutcome, HostInfo, InlineDetail, ShareMode, StreamFailure, StreamParams,
         SupportedConfigRange,
     };
 
@@ -600,15 +761,40 @@ mod cpal_impl {
     /// carrying WASAPI's `AUDCLNT_E_RESOURCES_INVALIDATED`. So the message is read before giving
     /// up on it — see [`super::classifies_as_device_loss`] for the marker list, the transcript it
     /// came from, and what this recovery does and does not claim.
-    fn to_stream_failure(error: cpal::Error) -> StreamFailure {
+    ///
+    /// **`StreamInvalidated` is matched too, added for issue #24, and it is what should have
+    /// caught that unplug in the first place.** M14 read the transcript's *message* and concluded
+    /// `cpal` had not classified the condition; the fork's own source says otherwise. Its WASAPI
+    /// `From<windows::core::Error>` maps `AUDCLNT_E_RESOURCES_INVALIDATED` — the exact code the
+    /// unplug produced — onto [`cpal::ErrorKind::StreamInvalidated`], which this `match` did not
+    /// name, so the failure reached the `_` arm and was rescued only because that message happened
+    /// to carry the raw OS number.
+    ///
+    /// Two reasons to match the kind rather than leave the substring to do it. The kind is what the
+    /// backend actually *said*, so it survives a reworded message — the failure mode
+    /// [`super::DEVICE_LOSS_MARKERS`]' own doc admits it cannot survive. And there is a case the
+    /// substring provably cannot reach: the fork's `default_device_change_error` returns a bare
+    /// `ErrorKind::StreamInvalidated` with no message at all, whose `Display` is the kind's own
+    /// prose ("The stream configuration is no longer valid and must be rebuilt.") — no OS number,
+    /// no marker, and therefore a device loss reported as a generic
+    /// [`crate::error_codes::STREAM_FAILED`] until this arm existed.
+    ///
+    /// What is deliberately *not* folded in here: `ErrorKind::DeviceChanged`, which the fork
+    /// documents as "the stream remains active and no rebuild is required" — a reroute is not a
+    /// loss, and reporting it as one would stop a stream that is still working (see
+    /// [`crate::host::AppHost`], which stops the streams on exactly this classification).
+    pub(super) fn to_stream_failure(error: cpal::Error) -> StreamFailure {
         match error.kind() {
-            cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::HostUnavailable => {
-                StreamFailure::DeviceLost
-            }
+            cpal::ErrorKind::DeviceNotAvailable
+            | cpal::ErrorKind::HostUnavailable
+            | cpal::ErrorKind::StreamInvalidated => StreamFailure::DeviceLost,
             cpal::ErrorKind::Xrun => StreamFailure::Xrun,
             _ => {
-                let message = error.to_string();
-                if super::classifies_as_device_loss(&message) {
+                // `InlineDetail::from_display`, not `error.to_string()` (issue #88): this runs on
+                // the stream's own error-callback thread, where NFR-RT-010 forbids a heap
+                // allocation.
+                let message = InlineDetail::from_display(&error);
+                if super::classifies_as_device_loss(message.as_str()) {
                     StreamFailure::DeviceLost
                 } else {
                     StreamFailure::Other(message)
@@ -1073,7 +1259,7 @@ mod cpal_impl {
 mod tests {
     use super::cpal_impl::{
         acceptable_formats, exclusive_outcome, preferred_format, scratch_samples,
-        to_supported_configs, wasapi_options,
+        to_stream_failure, to_supported_configs, wasapi_options,
     };
     use super::*;
 
@@ -1149,6 +1335,55 @@ mod tests {
         }
     }
 
+    /// **Issue #24: the classification is widened at the `ErrorKind` it should have read all
+    /// along.** The M14 recovery above reads the backend's *message*, and it only rescued the
+    /// 2026-08-27 unplug because that message happened to carry the raw OS number. The fork itself
+    /// says what the condition was: `crates/.../cpal/src/host/wasapi/mod.rs` maps
+    /// `AUDCLNT_E_RESOURCES_INVALIDATED` — the exact code that unplug produced — onto
+    /// [`cpal::ErrorKind::StreamInvalidated`], which `to_stream_failure` did not match, so the
+    /// failure fell through to the `_` arm and was saved by a substring.
+    ///
+    /// The case the substring cannot save is in the same file: `default_device_change_error`
+    /// returns `ErrorKind::StreamInvalidated` with **no message at all**, so `Display` renders the
+    /// kind's own prose ("The stream configuration is no longer valid and must be rebuilt.") — no
+    /// OS number, no marker, and until this test a reported-as-`STREAM_FAILED` device loss.
+    #[test]
+    fn a_stream_invalidated_by_the_backend_is_a_device_loss() {
+        for error in [
+            cpal::Error::new(cpal::ErrorKind::StreamInvalidated),
+            cpal::Error::with_message(
+                cpal::ErrorKind::StreamInvalidated,
+                "OS Error -2004287450 (FormatMessageW() returned error 317)",
+            ),
+        ] {
+            assert_eq!(
+                to_stream_failure(error.clone()),
+                StreamFailure::DeviceLost,
+                "{error}"
+            );
+        }
+    }
+
+    /// The two arms that were already right, kept beside the new one so a future edit to the
+    /// `match` has to keep all three: an xrun is an xrun, and an error that names no device and is
+    /// classified as nothing in particular stays [`StreamFailure::Other`] rather than being
+    /// promoted.
+    #[test]
+    fn the_other_stream_failure_classifications_are_unchanged() {
+        assert_eq!(
+            to_stream_failure(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable)),
+            StreamFailure::DeviceLost
+        );
+        assert_eq!(
+            to_stream_failure(cpal::Error::new(cpal::ErrorKind::Xrun)),
+            StreamFailure::Xrun
+        );
+        assert!(matches!(
+            to_stream_failure(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig)),
+            StreamFailure::Other(_)
+        ));
+    }
+
     /// The safe direction: an error that says nothing about a device stays unclassified, so it is
     /// reported as a stream failure rather than as an invented device removal. This is exactly
     /// what the pre-M14 code could not do, since it chose from the stream's direction alone.
@@ -1163,11 +1398,97 @@ mod tests {
         }
     }
 
+    /// **Issue #88: building a failure detail allocates nothing.** `to_stream_failure` runs inside
+    /// `cpal`'s error callback, on the stream's own thread, and used to call
+    /// `cpal::Error::to_string()` there. `cpal::Error` cannot be constructed from outside `cpal`,
+    /// so what is driven here is the same [`InlineDetail::from_display`] call it now makes, over a
+    /// `Display` impl of this crate's own.
+    #[test]
+    fn building_a_stream_failure_detail_allocates_nothing() {
+        struct Formatted(i64);
+        impl std::fmt::Display for Formatted {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "OS Error {} (FormatMessageW() returned error 317)",
+                    self.0
+                )
+            }
+        }
+
+        let mut built = InlineDetail::new();
+        crate::rt_harness::audio_section(|| {
+            built = InlineDetail::from_display(&Formatted(-2_004_287_450));
+        });
+        assert_eq!(
+            built.as_str(),
+            "OS Error -2004287450 (FormatMessageW() returned error 317)"
+        );
+        assert!(!built.is_full());
+    }
+
+    /// The other half of the same callback: classification. `classifies_as_device_loss` used to
+    /// lower-case the whole message into a fresh `String` before searching it.
+    #[test]
+    fn classifying_a_device_loss_allocates_nothing() {
+        let observed = "OS Error -2004287450 (FormatMessageW() returned error 317)";
+        let mut classified = false;
+        crate::rt_harness::audio_section(|| {
+            classified = classifies_as_device_loss(observed);
+        });
+        assert!(classified);
+    }
+
+    /// The allocation-free search must still be case-insensitive, which is the property the
+    /// removed `to_ascii_lowercase()` was providing: every marker is written lowercase, and real
+    /// backend messages are not.
+    #[test]
+    fn the_device_loss_markers_still_match_regardless_of_case() {
+        for message in [
+            "The Device Was Disconnected",
+            "AUDIO ENDPOINT UNPLUGGED",
+            "DeviceNotAvailable",
+            "0X88890004",
+        ] {
+            assert!(classifies_as_device_loss(message), "{message}");
+        }
+    }
+
+    /// A message longer than the inline capacity is cut, not grown — and cut at a character
+    /// boundary, so what survives is still valid UTF-8 rather than half a code point. Driven with
+    /// a multi-byte character straddling the limit, which is the only way to get that wrong.
+    #[test]
+    fn an_over_long_detail_truncates_at_a_character_boundary() {
+        // Each 'é' is two bytes, so the capacity is reached mid-character on an odd boundary.
+        let long: String = std::iter::repeat_n('é', STREAM_FAILURE_DETAIL_BYTES).collect();
+        let detail = InlineDetail::from(long.as_str());
+        assert!(detail.is_full());
+        assert!(detail.as_str().len() <= STREAM_FAILURE_DETAIL_BYTES);
+        assert!(
+            detail.as_str().chars().all(|c| c == 'é'),
+            "truncation split a character: {:?}",
+            detail.as_str()
+        );
+        assert!(long.starts_with(detail.as_str()));
+    }
+
+    /// A detail that fits is stored and compared by content, not by the unwritten tail of its
+    /// buffer -- two details built from the same text are equal however they were built.
+    #[test]
+    fn details_compare_by_content_not_by_buffer() {
+        assert_eq!(
+            InlineDetail::from("abc"),
+            InlineDetail::from_display(&"abc")
+        );
+        assert_ne!(InlineDetail::from("abc"), InlineDetail::from("abd"));
+        assert_eq!(InlineDetail::default().as_str(), "");
+    }
+
     /// Issue #44's rendering half: no `Debug` shape may reach a user-facing string. `Other`'s
     /// message is written through, without the variant name and quotes `format!("{:?}")` adds.
     #[test]
     fn stream_failure_displays_without_its_debug_variant_name() {
-        let failure = StreamFailure::Other("OS Error -1 (something)".to_string());
+        let failure = StreamFailure::Other(InlineDetail::from("OS Error -1 (something)"));
         assert_eq!(failure.to_string(), "OS Error -1 (something)");
         assert!(!failure.to_string().contains("Other("));
         assert_eq!(

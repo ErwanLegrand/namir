@@ -89,14 +89,26 @@ fn config_dir_from(getenv: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf>
         .map(|xdg| PathBuf::from(xdg).join("namir"))
         .or_else(|| getenv("HOME").map(|home| PathBuf::from(home).join(".config/namir")));
 
+    // Same fallback, same reason, same fix as `clap_paths.rs`'s -- see that arm's comment: on a
+    // target that is neither Windows nor `unix` this function's one parameter goes unread, and
+    // `unused_variables` under CI's `-D warnings` would fail the build on exactly the target the
+    // fallback exists to keep building (NFR-PORT-030).
     #[cfg(not(any(target_os = "windows", unix)))]
-    let result: Option<PathBuf> = None;
+    let result: Option<PathBuf> = {
+        let _ = &getenv;
+        None
+    };
 
     result
 }
 
 #[cfg(test)]
 mod tests {
+    // Every test below lives in a per-OS submodule, so on a target with no row in the table above
+    // this import has no user and `-D warnings` would fail the test build -- the same defect
+    // `config_dir_from`'s own fallback arm carries, one target away. Scoped to the
+    // import and to that target, so it cannot hide an unused import anywhere real.
+    #[cfg_attr(not(any(target_os = "windows", unix)), allow(unused_imports))]
     use super::*;
 
     #[cfg(target_os = "windows")]

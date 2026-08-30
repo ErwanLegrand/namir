@@ -47,21 +47,59 @@ impl Meter {
 
     /// Updates peak, average, peak-hold and clip state from `buf`. Read-only over `buf` — a
     /// meter observes, it does not shape the signal.
+    ///
+    /// # Why the level updates are guarded (issue #129)
+    ///
+    /// A meter is a *follower*: every reading is a function of its own previous value, so a single
+    /// value with no level to it does not produce one wrong frame, it produces wrong frames for
+    /// ever. That is what a non-finite sample used to do here. `NaN > self.peak` is false, so the
+    /// release branch computed `peak + coeff * (NaN - peak)` = NaN, and NaN compares false against
+    /// everything after it, so no later sample — however loud — could ever move `peak` again.
+    ///
+    /// `namir-core`'s `linear_to_db` fix for the same issue does not mask this and was never meant
+    /// to: it maps a NaN amplitude to the floor, which is the *readable* rendering of a poisoned
+    /// meter and the reason the failure was invisible. A meter frozen at −600 dB reads as dead
+    /// silence, which is precisely the condition a user consults a meter to rule out.
+    ///
+    /// So a sample that is not finite contributes to none of the three level readings; the follower
+    /// simply keeps releasing, and the next real sample moves it again. Two things this guard
+    /// deliberately does **not** do:
+    ///
+    /// - It does not touch the clip latch. That latch states "a sample reached or exceeded full
+    ///   scale", and an infinite one did (`inf >= 1.0`); a NaN did not. Both keep the behaviour
+    ///   they had, so the one visible trace a blown-up sample leaves in a meter survives the fix.
+    /// - It does not report the fault. Containing a non-finite sample is FR-CHAIN-080's job —
+    ///   `namir_engine::Chain` silences the whole block and increments a counter the UI can read —
+    ///   and a DSP primitive with no error channel inventing a second one would be the worse
+    ///   design. This is only about not being poisoned by what the chain is already reporting.
+    ///
+    /// The average is guarded on its *result* rather than on `x`, because the same poisoning is
+    /// reachable from a perfectly finite sample: `x * x` overflows to infinity above a magnitude of
+    /// ~1.8e19, and `inf + coeff * (x2 - inf)` is NaN on the next sample.
+    ///
+    /// **RT-safe:** the guards are branches on values already in registers — no allocation, no
+    /// call, and the loop bound is still `buf.len()`.
     pub fn process(&mut self, buf: &[f32]) {
         for &x in buf {
             let abs_x = x.abs();
 
-            // Fast attack (instantaneous jump to a new higher sample), slow exponential release.
-            if abs_x > self.peak {
-                self.peak = abs_x;
-            } else {
-                self.peak += self.release_coeff * (abs_x - self.peak);
-            }
+            if abs_x.is_finite() {
+                // Fast attack (instantaneous jump to a new higher sample), slow exponential
+                // release.
+                if abs_x > self.peak {
+                    self.peak = abs_x;
+                } else {
+                    self.peak += self.release_coeff * (abs_x - self.peak);
+                }
 
-            self.avg_sq += self.release_coeff * (x * x - self.avg_sq);
+                let avg_sq = self.avg_sq + self.release_coeff * (x * x - self.avg_sq);
+                if avg_sq.is_finite() {
+                    self.avg_sq = avg_sq;
+                }
 
-            if self.peak > self.peak_hold {
-                self.peak_hold = self.peak;
+                if self.peak > self.peak_hold {
+                    self.peak_hold = self.peak;
+                }
             }
 
             if abs_x >= 1.0 {
@@ -211,6 +249,84 @@ mod tests {
             meter.average_db(),
             meter.peak_db()
         );
+    }
+
+    /// Issue #129's second half, the one `namir-core`'s `linear_to_db` fix does **not** mask: a
+    /// single non-finite sample used to poison `peak` (and `avg_sq`) permanently. `NaN > peak` is
+    /// false, so the release branch computed `peak + coeff * (NaN - peak)` = NaN, and every
+    /// subsequent sample kept it NaN; `linear_to_db(NaN)` is the floor, so the meter read **dead
+    /// silence forever** — the worst shape a wrong meter can take, since silence is exactly what a
+    /// user checks a meter to rule out.
+    ///
+    /// Committed red-first: before the guard, `peak_db()` after the recovery tone is the -600 dB
+    /// floor rather than a reading near the tone's own level.
+    #[test]
+    fn one_nan_sample_does_not_poison_the_meter_for_ever() {
+        let floor = linear_to_db(0.0);
+        for poison in [f32::NAN, -f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut meter = Meter::new(sr(48_000));
+            meter.process(&[0.5f32; 64]);
+            let before = meter.peak_db();
+            assert!(before > floor + 100.0, "{poison}: setup did not register");
+
+            meter.process(&[poison]);
+            assert!(
+                meter.peak_db().is_finite() && meter.average_db().is_finite(),
+                "{poison}: reading went non-finite immediately"
+            );
+
+            // A full second of real signal after the bad sample: a meter that recovers reads the
+            // tone, a poisoned one reads the floor no matter what it is fed.
+            meter.process(&[0.5f32; 48_000]);
+            assert!(
+                (meter.peak_db() - before).abs() < 1.0,
+                "{poison}: after one bad sample the meter reads {} dB against the {before} dB the \
+                 same signal read before it",
+                meter.peak_db()
+            );
+            assert!(
+                meter.average_db() > floor + 100.0,
+                "{poison}: the average stayed poisoned at {} dB",
+                meter.average_db()
+            );
+            assert!(
+                meter.peak_hold_db() > floor + 100.0,
+                "{poison}: the peak-hold stayed poisoned at {} dB",
+                meter.peak_hold_db()
+            );
+        }
+    }
+
+    /// The same poisoning reachable from a **finite** sample: `x * x` overflows to infinity for any
+    /// magnitude above ~1.8e19, so `avg_sq` went infinite and the very next sample turned it into
+    /// `inf + coeff * (x2 - inf)` = NaN. A guard that only reads `x.is_finite()` leaves this open,
+    /// which is why the average commits its update only when the result is itself finite.
+    #[test]
+    fn a_huge_finite_sample_does_not_poison_the_average() {
+        let mut meter = Meter::new(sr(48_000));
+        meter.process(&[1e30f32]);
+        meter.process(&[0.5f32; 48_000]);
+        assert!(
+            meter.average_db().is_finite() && meter.average_db() > linear_to_db(0.0) + 100.0,
+            "the average reads {} dB after one 1e30 sample",
+            meter.average_db()
+        );
+    }
+
+    /// The clip latch is deliberately *not* part of the guard: it states "any sample reached or
+    /// exceeded full scale", and an infinite one did. Pinned so the guard above cannot quietly
+    /// take the one visible trace a blown-up sample leaves in a meter. (A NaN latches nothing —
+    /// `NaN >= 1.0` is false — which is also unchanged, and is FR-CHAIN-080's fault to report,
+    /// not this primitive's.)
+    #[test]
+    fn an_infinite_sample_still_latches_the_clip_indicator() {
+        let mut meter = Meter::new(sr(48_000));
+        meter.process(&[f32::INFINITY]);
+        assert!(meter.clipped());
+
+        let mut meter = Meter::new(sr(48_000));
+        meter.process(&[f32::NEG_INFINITY]);
+        assert!(meter.clipped());
     }
 
     #[test]

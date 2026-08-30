@@ -51,16 +51,23 @@
 
 use std::collections::HashMap;
 
-/// One `Must`-priority requirement parsed from the FRS, paired with its `*Verify:*` code
-/// (`U`/`I`/`G`/`B`/`S`/`M` per FRS §1.5) and the number of the FRS heading in force at its own
-/// line (`"4"`, `"5.1"`, ...; empty when no numbered heading preceded it). D-23.2 derives §14's
-/// Must-count denominators from that section number, so it is parsed here rather than guessed
-/// from the id's area token -- `## 4. Product configurations` carries no `(CFG)` suffix where
-/// every `### 5.x`/`### 6.x` heading does.
+/// One `Must`-priority requirement parsed from the FRS, paired with its `*Verify:*` codes
+/// (`U`/`I`/`G`/`B`/`S`/`M` per FRS §1.5, plus `P` for that section's `Process`) and the number of
+/// the FRS heading in force at its own line (`"4"`, `"5.1"`, ...; empty when no numbered heading
+/// preceded it). D-23.2 derives §14's Must-count denominators from that section number, so it is
+/// parsed here rather than guessed from the id's area token -- `## 4. Product configurations`
+/// carries no `(CFG)` suffix where every `### 5.x`/`### 6.x` heading does.
+///
+/// `verify` is a **set**, in the order the FRS states it, and never empty (issue #27). A method
+/// may state more than one code -- `M plus S (schema check)`, `U per stage; I for click-freedom`,
+/// `S — ... — plus I under a stress test` -- and every code it states has to resolve before the
+/// requirement is covered. Keeping only the first, which this module did until issue #27, is what
+/// let FR-STATE-040 read fully covered from a manual document while the schema check its method
+/// also names existed nowhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
     pub id: String,
-    pub verify: char,
+    pub verify: Vec<char>,
     pub section: String,
 }
 
@@ -70,6 +77,16 @@ pub struct Requirement {
 /// not treated as a parse boundary). A requirement line with no `*Verify:*` found before either
 /// the next requirement or end of file is a malformed-FRS error, surfaced rather than silently
 /// dropped, since a silently-skipped requirement would defeat the whole point of this check.
+///
+/// **The forward scan stops at the next requirement of *any* priority** ([`extract_requirement`]),
+/// not at the next Must. It stopped at the next Must until M15, which made the error above
+/// unreachable across a run of non-Must neighbours: a Must whose `*Verify:*` line was missing,
+/// misspelt (`*Verify*`, `*Verify :*`) or demoted to prose scanned straight through the following
+/// `(Should)`/`(Could)` requirements and adopted the first method it found -- silently recording
+/// that neighbour's code as the Must's own. Since 31 Shoulds and 3 Coulds are interleaved with the
+/// 130 Musts, that is not a hypothetical: the bar `docs/03-test-plan.md` states for the Must would
+/// have been whatever the Should asked for, and nothing anywhere would have said so. Inheriting a
+/// method is never right, so the boundary is every requirement line.
 pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, String> {
     let lines: Vec<&str> = frs_text.lines().collect();
     let mut out = Vec::new();
@@ -82,13 +99,32 @@ pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, Strin
         }
         if let Some(id) = extract_must_id(lines[i]) {
             let mut verify = None;
+            let mut next_requirement = None;
             let mut j = i + 1;
             while j < lines.len() {
-                if extract_must_id(lines[j]).is_some() {
+                if let Some((next_id, priority)) = extract_requirement(lines[j]) {
+                    next_requirement = Some(format!("{next_id} ({priority})"));
                     break;
                 }
-                if let Some(v) = extract_verify_code(lines[j]) {
-                    verify = Some(v);
+                if let Some(head) = verify_line_text(lines[j]) {
+                    // The method may wrap across lines, and NFR-RT-010's second code is on a
+                    // wrapped one -- so the text this parses is the marker's line plus every
+                    // continuation, not the marker's line alone.
+                    let mut text = head.to_string();
+                    let mut k = j + 1;
+                    while k < lines.len() && is_verify_continuation(lines[k]) {
+                        text.push(' ');
+                        text.push_str(lines[k].trim());
+                        k += 1;
+                    }
+                    let codes = parse_verify_codes(&text);
+                    if codes.is_empty() {
+                        return Err(format!(
+                            "the *Verify:* line for {id} states no recognisable code -- expected \
+                             one or more of U/I/G/B/S/M/Process, found `{text}`"
+                        ));
+                    }
+                    verify = Some(codes);
                     break;
                 }
                 j += 1;
@@ -103,10 +139,14 @@ pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, Strin
                     section: current_section.clone(),
                 }),
                 None => {
+                    let stopped_at = next_requirement
+                        .map_or_else(|| "the end of the file".to_string(), |r| format!("**{r}**"));
                     return Err(format!(
-                        "no *Verify:* line found for {id} before the next requirement or end of \
-                         file -- the FRS is malformed, or this parser's assumptions about its \
-                         layout no longer hold"
+                        "no *Verify:* line found for {id} before {stopped_at} -- the FRS is \
+                         malformed (a missing or misspelt `*Verify:*` marker), or this parser's \
+                         assumptions about its layout no longer hold. The scan stops at the next \
+                         requirement of any priority precisely so a Must cannot inherit a \
+                         following Should's or Could's method"
                     ));
                 }
             }
@@ -117,20 +157,34 @@ pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, Strin
     Ok(out)
 }
 
-/// `"**FR-CHAIN-010 (Must)** — ..."` -> `Some("FR-CHAIN-010")`. `None` for `(Should)`/`(Could)`/
-/// `(Won't)` lines, and for anything not starting with a bolded `FR-`/`NFR-` id.
-fn extract_must_id(line: &str) -> Option<String> {
+/// `"**FR-CHAIN-010 (Must)** — ..."` -> `Some(("FR-CHAIN-010", "Must"))`, and
+/// `"**FR-CFG-040 (Should)** — ..."` -> `Some(("FR-CFG-040", "Should"))`. `None` for anything not
+/// starting with a bolded `FR-`/`NFR-` id and its priority.
+///
+/// Priority-blind on purpose: this is the boundary [`parse_must_requirements`]'s forward scan
+/// stops at, and a Must must not adopt a neighbour's `*Verify:*` whatever that neighbour's
+/// priority is. [`extract_must_id`] is the Must-only filter over it.
+fn extract_requirement(line: &str) -> Option<(String, String)> {
     let rest = line.strip_prefix("**")?;
     let end = rest.find("**")?;
     let inside = &rest[..end];
     let (id_part, tag_part) = inside.split_once(" (")?;
-    if tag_part.trim_end_matches(')') != "Must" {
-        return None;
-    }
     if !(id_part.starts_with("FR-") || id_part.starts_with("NFR-")) {
         return None;
     }
-    Some(id_part.to_string())
+    Some((
+        id_part.to_string(),
+        tag_part.trim_end_matches(')').to_string(),
+    ))
+}
+
+/// `"**FR-CHAIN-010 (Must)** — ..."` -> `Some("FR-CHAIN-010")`. `None` for `(Should)`/`(Could)`/
+/// `(Won't)` lines, and for anything not starting with a bolded `FR-`/`NFR-` id.
+fn extract_must_id(line: &str) -> Option<String> {
+    match extract_requirement(line) {
+        Some((id, priority)) if priority == "Must" => Some(id),
+        _ => None,
+    }
 }
 
 /// `"## 4. Product configurations"` -> `Some("4")`, `"### 5.1 Signal chain (CHAIN)"` ->
@@ -168,15 +222,132 @@ fn heading_section_number(line: &str) -> Option<String> {
     Some(run.to_string())
 }
 
-/// `"*Verify:* U — measure ..."` -> `Some('U')`.
-fn extract_verify_code(line: &str) -> Option<char> {
+/// The method text of a `*Verify:*` line, if the line carries one.
+///
+/// A line that merely *names* the marker in prose is not one, and the FRS has several ("It does
+/// not touch the `*Verify:*` line above, which stands ..."): the text after the marker must open
+/// with a code token, which a backtick or an em dash does not.
+fn verify_line_text(line: &str) -> Option<&str> {
     const MARKER: &str = "*Verify:*";
     let idx = line.find(MARKER)?;
-    line[idx + MARKER.len()..]
-        .trim_start()
+    let text = line[idx + MARKER.len()..].trim_start();
+    clause_code(text)?;
+    Some(text)
+}
+
+/// Whether `line` continues the `*Verify:*` method text above it.
+///
+/// The FRS wraps a long method across lines, and **NFR-RT-010's second code sits on one of them**:
+/// `*Verify:* S — an allocation-detecting harness fails any test that allocates on the audio
+/// thread —` / `plus I under a stress test with concurrent model loading, preset recall and
+/// library scanning.` Reading only the marker's own line -- which is what this module did until
+/// issue #27 -- loses that `I` in exactly the way the issue describes, so the continuation is part
+/// of the method, not prose after it.
+///
+/// A continuation is any non-blank line that does not open a new block: a heading (`#`), or an
+/// italic paragraph (`*Rationale:*`, `*Consequence ...*`, and `**FR-... (Must)**`, all of which
+/// open with `*`). Every real continuation in the FRS today opens with an ordinary word.
+fn is_verify_continuation(line: &str) -> bool {
+    !line.trim().is_empty() && !line.starts_with('*') && !line.starts_with('#')
+}
+
+/// Every `*Verify:*` code a method states, in the order it states them, deduplicated. Never empty
+/// for a text [`verify_line_text`] accepted.
+///
+/// **This returns a set because eight of the FRS's 130 Musts state a compound method** and this
+/// module kept only the first code of one until issue #27 -- so `docs/03-test-plan.md` stated a
+/// weaker bar than the FRS for every one of them, and FR-STATE-040 (`M plus S (schema check)`)
+/// read fully covered on its manual document alone while the `S` half was executed by nothing.
+///
+/// The grammar is deliberately narrow. The method text is split on `;` and on the word `plus`
+/// ([`split_verify_clauses`]), and a clause contributes a code only when it **opens** with one:
+/// a bare `U`/`I`/`G`/`B`/`S`/`M`, or the word `Process`. A clause opening with anything else is a
+/// qualifier on the code before it, not a second method -- NFR-PERF-010's "B, as a CI regression
+/// gate" states one code, and NFR-RT-020's "S plus code review" states one code plus a review
+/// obligation that is not a `Verify:` code at all. That second case is a real limit worth stating
+/// rather than hiding: the FRS spells review `Process`, and this parser reads codes, never prose,
+/// so "code review" is recorded nowhere. Nothing mechanical would change if it were -- `Process`
+/// is by definition verified by review and commit order, with no artifact a build can inspect --
+/// but the plan's `Verify` column would say so, and today it does not.
+fn parse_verify_codes(text: &str) -> Vec<char> {
+    let mut out = Vec::new();
+    for clause in split_verify_clauses(text) {
+        if let Some(code) = clause_code(clause)
+            && !out.contains(&code)
+        {
+            out.push(code);
+        }
+    }
+    out
+}
+
+/// The clauses of a method text: the text split on `;` and on the standalone word `plus`, which
+/// are the two connectives the FRS actually uses to join one method to another (`U per stage; I
+/// for click-freedom`, `M plus S (schema check)`). A comma is deliberately **not** a separator:
+/// NFR-PERF-010's "B, as a CI regression gate" is one method with a qualifier, and splitting on
+/// commas would invite every such qualifier to be read as a clause and rejected one word at a
+/// time.
+fn split_verify_clauses(text: &str) -> Vec<&str> {
+    const PLUS: &str = "plus";
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut resume = 0;
+    for (i, c) in text.char_indices() {
+        if i < resume {
+            continue;
+        }
+        if c == ';' {
+            out.push(&text[start..i]);
+            start = i + 1;
+        } else if text[i..].starts_with(PLUS) && is_whole_word(text, i, PLUS.len()) {
+            out.push(&text[start..i]);
+            start = i + PLUS.len();
+            resume = start;
+        }
+    }
+    out.push(&text[start..]);
+    out
+}
+
+/// Whether the `len`-byte run at `at` is a whole word: not a suffix of `surplus`, not a prefix of
+/// `plush`.
+fn is_whole_word(text: &str, at: usize, len: usize) -> bool {
+    let before_ok = text[..at]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_alphanumeric());
+    let after_ok = text[at + len..]
         .chars()
         .next()
-        .filter(|c| c.is_ascii_alphabetic())
+        .is_none_or(|c| !c.is_alphanumeric());
+    before_ok && after_ok
+}
+
+/// The `*Verify:*` code a clause opens with, if any. `Process` is folded to `'P'`, the single
+/// character the rest of this module keys on (and which no `*Verify:*` line in the FRS spells --
+/// [`check_partial_verify_code`] restores the FRS's own spelling when it has to name it).
+fn clause_code(clause: &str) -> Option<char> {
+    let token = clause.split_whitespace().next()?;
+    let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    match token {
+        "U" | "I" | "G" | "B" | "S" | "M" => token.chars().next(),
+        "Process" => Some('P'),
+        _ => None,
+    }
+}
+
+/// The `Verify` column of the generated plan, and of every message that names a requirement's
+/// method: the codes joined with `+`. A single-code requirement renders exactly as it did before
+/// issue #27 (`U`), so only the eight compound rows move.
+pub fn render_verify_codes(codes: &[char]) -> String {
+    let mut out = String::new();
+    for code in codes {
+        if !out.is_empty() {
+            out.push('+');
+        }
+        out.push(*code);
+    }
+    out
 }
 
 /// Both comment-prefix spellings a `trace:` annotation may use: `// trace:` in `.rs` source,
@@ -614,23 +785,33 @@ pub fn manual_test_prefix(id: &str) -> String {
 /// resolves by its own method either way and nothing their author wrote is lost. A `trace-partial:`
 /// is different in kind: its `uncovered:` field is mandatory, names a gap and a due date, and exists
 /// for no purpose other than to be rendered.
-pub fn check_partial_verify_code(id: &str, verify: char, line: usize) -> Result<(), String> {
+pub fn check_partial_verify_code(id: &str, verify: &[char], line: usize) -> Result<(), String> {
+    if resolves_through_partials(verify) {
+        return Ok(());
+    }
     let (code, reason) = match verify {
-        // The FRS spells this code `Process`, not `P`; `extract_verify_code` keeps only the first
+        // The FRS spells this code `Process`, not `P`; `parse_verify_codes` folds it to one
         // character, so the spelling is restored here rather than printing a letter no `*Verify:*`
         // line in the FRS actually carries.
-        'M' => (
-            "M",
+        ['M'] => (
+            "M".to_string(),
             "a `Verify: M` Must is verified by a written manual-test script under \
              docs/manual-tests/, which no source or configuration file is or can be part of -- \
              record the unspanned member in that document instead",
         ),
-        'P' => (
-            "Process",
+        ['P'] => (
+            "Process".to_string(),
             "a `Verify: Process` Must is verified by review and commit order, with no artifact a \
              build can inspect, so there is nothing for a partial to be partial about",
         ),
-        _ => return Ok(()),
+        // Only reachable for a compound method made of `M` and `Process` alone, which the FRS
+        // does not carry today. Refused for the union of both reasons rather than left to the
+        // arms above, which would panic-by-omission on a method the FRS is free to grow.
+        _ => (
+            render_verify_codes(verify).replace('P', "Process"),
+            "every code this method states is verified off this repository's source -- a manual \
+             script, or review and commit order -- so no source annotation can be part of it",
+        ),
     };
     Err(format!(
         "{line}: `trace-partial: {id}` names a `Verify: {code}` requirement -- D-23.1 asserts \
@@ -652,11 +833,14 @@ pub struct PartialHit {
 /// source-file hits. `source_hits`/`manual_hits` are `id -> [crate name]` / `id -> filename` for
 /// requirements that *are* covered, kept for `render_test_plan`; `partial_hits` is the same for
 /// requirements covered only in part (D-23.1); `manual_unexecuted` is `id -> (filename, the
-/// document's own verdict)` for a `Verify: M` Must whose script exists but has not been run
-/// (issue #34); `missing` is every Must id this run found no coverage for at all, the
-/// `manual_unexecuted` ids included.
+/// document's own verdict)` for a Must stating `M` whose script exists but has not been run
+/// (issue #34); `missing` is every Must this run found no coverage for at all, the
+/// `manual_unexecuted` ids included; and `missing_codes` is `id -> the codes of that Must's own
+/// method which resolved to nothing`, which for a compound method is what says *which half* is
+/// missing (issue #27) -- keyed by exactly the ids in `missing`, and absent for every other.
 pub struct Report {
     pub missing: Vec<Requirement>,
+    pub missing_codes: HashMap<String, Vec<char>>,
     pub manual_hits: HashMap<String, String>,
     pub manual_unexecuted: HashMap<String, (String, String)>,
     pub source_hits: HashMap<String, Vec<String>>,
@@ -684,17 +868,23 @@ pub struct Report {
 /// a document whose result is not known, and an unknown result must not be a pass at a 1.0 gate.
 ///
 /// A line that opens `PASS` but goes on to say some part was not executed is **not** a pass here
-/// (`fr-ui-010-standalone-window-renders.md` is the live instance: "PASS for steps 1–2 (executed).
-/// Step 3 requires a human with a display — not executed this session"). The document's author
-/// wrote both halves; taking the headline word alone would discard the half that matters.
+/// (`fr-ui-010-standalone-window-renders.md` was the live instance until M15: "PASS for steps 1–2
+/// (executed). Step 3 requires a human with a display — not executed this session"). The
+/// document's author wrote both halves; taking the headline word alone would discard the half that matters. As
+/// of M15 that shape is a **hard error** rather than a silent downgrade — see
+/// [`parse_manual_verdict`] — because the verdict token is what the gate reads and a token
+/// contradicted by its own sentence is a malformed verdict, not a verdict to interpret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManualVerdict {
     /// The script was run and passed, with no clause reported unexecuted.
     Pass,
-    /// A verdict was found and it is not a clean pass — `NOT EXECUTED`, `PARTIAL`, `FAIL`, or a
-    /// `PASS` qualified by an unexecuted step. Carries the verdict text as written.
+    /// A verdict was found and it is not a clean pass — `NOT EXECUTED`, `PARTIAL` or `FAIL`.
+    /// Carries the verdict text as written.
     NotAPass(String),
-    /// No line this parser recognises as a verdict. Carries a fixed explanation rather than a
+    /// The document's verdict could not be read at all: no verdict line, or one this parser
+    /// refuses. Produced only by [`manual_test_verdict`]'s lenient wrapper — a real run never
+    /// reaches it, because [`check_manual_verdict`] aborts first — and it exists so that even a
+    /// bypassed validation cannot end in a *credit*. Carries a fixed explanation rather than a
     /// quotation, there being nothing to quote.
     Unreadable,
 }
@@ -740,22 +930,117 @@ const VERDICT_MARKER: &str = "**Result";
 /// the whole-file matching M13 removed from [`declared_requirement_ids`]'s neighbouring arm: the
 /// lines read are still only those *beginning* with [`VERDICT_MARKER`], never prose that mentions
 /// a result in passing.
+///
+/// **The lenient wrapper.** This never fails: a verdict [`parse_manual_verdict`] refuses becomes
+/// [`ManualVerdict::Unreadable`], which credits nothing. The strict form is what the gate calls
+/// (through [`check_manual_verdict`]), one file at a time, upstream of every exit-status term; this
+/// one exists so that [`build_report`] -- which has no file name to name in an error and is called
+/// directly by tests with arbitrary text -- still cannot turn a malformed verdict into a credit.
 pub fn manual_test_verdict(content: &str) -> ManualVerdict {
-    content
-        .lines()
-        .map(str::trim_start)
-        .filter(|line| line.starts_with(VERDICT_MARKER))
-        .map(classify_verdict_line)
-        .reduce(ManualVerdict::worse_of)
-        .unwrap_or(ManualVerdict::Unreadable)
+    parse_manual_verdict(content).unwrap_or(ManualVerdict::Unreadable)
+}
+
+/// The four verdict tokens a manual-test document's verdict line may open with (M15, issue #34).
+///
+/// Upper case, exactly as written here. The convention is documented for its authors in
+/// `docs/manual-tests/README.md` and in `docs/02-architecture.md` D-18.6's
+/// *Consequence (added M15, 2026-08-28)* note; this array is the only definition the tool reads.
+pub const VERDICT_TOKENS: [&str; 4] = ["PASS", "FAIL", "PARTIAL", "NOT EXECUTED"];
+
+/// Files under `docs/manual-tests/` that are not manual-test scripts and so carry no verdict.
+/// Exactly one today: the README that documents the convention itself. Matched by exact file name,
+/// so the exemption cannot be widened by a naming accident.
+const VERDICT_EXEMPT_FILES: [&str; 1] = ["README.md"];
+
+/// The gate's own entry point: `Ok(())` if `file_name`'s document carries a well-formed verdict,
+/// `Err(<why>)` if it does not (issue #34, M15).
+///
+/// **Refusing is chosen over inferring**, and for the same reason [`scan_annotations`] refuses a
+/// malformed annotation rather than dropping it: a document whose verdict cannot be read is a bad
+/// *input*, not a coverage gap, so it must abort the run rather than move a coverage count that
+/// `--allow-uncovered` can then relax. Silently treating it as uncovered would be softer than the
+/// tree deserves in one direction and unexplained in the other -- the author would learn that their
+/// requirement had gone red, but not that the cause was a missing four-word line.
+///
+/// Every file the loader reads is checked, not only the ones a `Verify: M` Must resolves to. Two
+/// reasons. A document written for a `Verify: I`/`G`/`B`/`S` requirement is D-18.6 supplementary
+/// evidence whose own executed-ness is exactly as easy to misread as a traced one's -- five of the
+/// eight documents that carried no verdict line at all when this check was written were of that
+/// kind, and four of those five are Musts. And the set is not static: a `Verify:` code can change,
+/// at which point a document that never had to state a verdict would start crediting a Must.
+pub fn check_manual_verdict(file_name: &str, content: &str) -> Result<(), String> {
+    if VERDICT_EXEMPT_FILES.contains(&file_name) {
+        return Ok(());
+    }
+    parse_manual_verdict(content).map(|_| ())
+}
+
+/// Reads `content`'s verdict strictly: the worst of its verdict lines, or an error naming what is
+/// wrong with the document.
+///
+/// The three refusals, each of them a document that cannot be believed rather than a document
+/// recording bad news:
+///
+/// 1. **No verdict line at all.** Eight of the twenty-six live documents were in this state when
+///    this was written, several of them recording "not executed" in prose their own heading made
+///    perfectly clear to a human and invisible to the gate.
+/// 2. **A verdict line opening with something other than a [`VERDICT_TOKENS`] token.** The token is
+///    the machine-readable half of the convention; without it the gate would be back to reading
+///    English, which is how `**Result: step 2 EXECUTED ... and it fails its naming clause**` came
+///    to exist and would have to be adjudicated.
+/// 3. **A `PASS` token contradicted by its own sentence** (`NOT EXECUTED`/`NOT RUN` later on the
+///    same line). The pre-M15 parser downgraded this to `NotAPass` silently, which was right about
+///    the outcome and wrong about the cause: the author owes the document a `PARTIAL`, and being
+///    told so is how the next reader of that line learns which half won.
+pub fn parse_manual_verdict(content: &str) -> Result<ManualVerdict, String> {
+    let mut verdict: Option<ManualVerdict> = None;
+    for line in content.lines().map(str::trim_start) {
+        if !line.starts_with(VERDICT_MARKER) {
+            continue;
+        }
+        let one = classify_verdict_line(line)?;
+        verdict = Some(match verdict {
+            None => one,
+            Some(seen) => seen.worse_of(one),
+        });
+    }
+    verdict.ok_or_else(|| {
+        format!(
+            "carries no verdict line -- a manual-test document must have a line beginning \
+             `{VERDICT_MARKER}:` whose first words are one of {}, so the gate reads what the run \
+             recorded rather than that the file exists (issue #34). See \
+             docs/manual-tests/README.md",
+            joined_tokens()
+        )
+    })
+}
+
+/// `PASS, FAIL, PARTIAL or NOT EXECUTED`, for the error messages.
+fn joined_tokens() -> String {
+    let (last, rest) = VERDICT_TOKENS.split_last().expect("tokens are non-empty");
+    format!("{} or {last}", rest.join(", "))
 }
 
 /// One `**Result` line's own verdict, with no view of the rest of the document.
-fn classify_verdict_line(line: &str) -> ManualVerdict {
+fn classify_verdict_line(line: &str) -> Result<ManualVerdict, String> {
+    // Both real spellings reduce to the same body: `**Result: PASS.** ...` and `**Result:** PASS.`
+    // The stripped set is the punctuation the marker can be dressed in, never a word.
     let body = line
         .trim_start_matches(VERDICT_MARKER)
-        .trim_start_matches(':')
-        .trim();
+        .trim_start_matches(|c: char| c == ':' || c == '*' || c.is_whitespace());
+
+    let Some(token) = VERDICT_TOKENS
+        .iter()
+        .find(|token| opens_with_token(body, token))
+    else {
+        return Err(format!(
+            "verdict line `{}` does not open with a verdict token -- write one of {} (upper case) \
+             immediately after `{VERDICT_MARKER}:`, then say the rest in prose. See \
+             docs/manual-tests/README.md",
+            truncate_for_message(line),
+            joined_tokens()
+        ));
+    };
 
     // Two different spans, deliberately.
     //
@@ -763,21 +1048,43 @@ fn classify_verdict_line(line: &str) -> ManualVerdict {
     // that is the verdict the author set apart, and the prose that follows it on the same physical
     // line is the start of a paragraph, not part of the verdict.
     //
-    // What is *classified* is the whole line, because a qualifier can sit outside the bold run
-    // ("**Result: PASS.** Step 3 was not executed"), and reading only the emphasised half would
-    // discard exactly the clause that decides the question.
+    // What is *checked* for a self-contradiction is the whole line, because a qualifier can sit
+    // outside the bold run ("**Result: PASS.** Step 3 was not executed"), and reading only the
+    // emphasised half would discard exactly the clause that decides the question.
     let quoted = body.split("**").next().unwrap_or(body).trim();
-    if quoted.is_empty() {
-        return ManualVerdict::Unreadable;
+    if *token != "PASS" {
+        return Ok(ManualVerdict::NotAPass(quoted.to_string()));
     }
 
     let upper = body.to_uppercase();
-    let qualified = upper.contains("NOT EXECUTED") || upper.contains("NOT RUN");
-    if upper.starts_with("PASS") && !qualified {
-        ManualVerdict::Pass
-    } else {
-        ManualVerdict::NotAPass(quoted.to_string())
+    if upper.contains("NOT EXECUTED") || upper.contains("NOT RUN") {
+        return Err(format!(
+            "verdict line `{}` opens `PASS` and then records something not executed -- the token \
+             is what the gate reads, so a verdict that contradicts itself is refused rather than \
+             quietly downgraded. Write `PARTIAL` and keep the sentence. See \
+             docs/manual-tests/README.md",
+            truncate_for_message(line)
+        ));
     }
+    Ok(ManualVerdict::Pass)
+}
+
+/// Whether `body` opens with `token` as a whole word: the token must be followed by the end of the
+/// line or by something that is not a letter or digit, so `PARTIALLY` is not `PARTIAL` and
+/// `PASSABLE` is not `PASS`.
+fn opens_with_token(body: &str, token: &str) -> bool {
+    body.strip_prefix(token)
+        .is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+}
+
+/// A verdict line, cut to something an error message can carry on one screen.
+fn truncate_for_message(line: &str) -> String {
+    const LIMIT: usize = 72;
+    if line.chars().count() <= LIMIT {
+        return line.to_string();
+    }
+    let head: String = line.chars().take(LIMIT).collect();
+    format!("{head}...")
 }
 
 /// The plan cell and the reason line for a `Verify: M` Must whose document does not record a pass.
@@ -786,9 +1093,12 @@ fn manual_verdict_reason(verdict: &ManualVerdict) -> Option<String> {
     match verdict {
         ManualVerdict::Pass => None,
         ManualVerdict::NotAPass(text) => Some(format!("records `{text}`")),
+        // Unreachable in a real run: `check_manual_verdict` aborts the whole gate on a document
+        // this state comes from. Kept because a `build_report` call that skipped that check must
+        // still not credit the requirement.
         ManualVerdict::Unreadable => Some(format!(
-            "carries no line beginning `{VERDICT_MARKER}`, so its result is unknown -- which is \
-             not a pass"
+            "carries no readable line beginning `{VERDICT_MARKER}`, so its result is unknown -- \
+             which is not a pass"
         )),
     }
 }
@@ -878,8 +1188,15 @@ pub fn build_report(
     // invariant is stated here rather than re-checked here because this function has no line or
     // file to name in an error, and a coverage reconciler is the wrong place to diagnose a
     // malformed input.
+    let mut missing_codes: HashMap<String, Vec<char>> = HashMap::new();
+
     for req in requirements {
-        if req.verify == 'M' {
+        // Each *class* of evidence a method names is looked up on its own, and every class it
+        // names must resolve (issue #27). Before that change this was an `if`/`else if` chain on
+        // one code, so a compound method's second class was never looked up at all.
+        let mut unresolved: Vec<char> = Vec::new();
+
+        if needs_manual_document(&req.verify) {
             let prefix = format!("{}-", manual_test_prefix(&req.id));
             match manual_test_docs.iter().find(|(name, content)| {
                 name.to_lowercase().starts_with(&prefix)
@@ -896,26 +1213,36 @@ pub fn build_report(
                     }
                     Some(reason) => {
                         manual_unexecuted.insert(req.id.clone(), (file.clone(), reason));
-                        missing.push(req.clone());
+                        unresolved.push('M');
                     }
                 },
-                None => missing.push(req.clone()),
+                None => unresolved.push('M'),
             }
-        } else if req.verify == 'P' {
-            // Process-verified: by definition, verified by review/commit order, not by any
-            // artifact this check can inspect. Nothing to look up; never "missing".
-        } else if !source_hits.contains_key(&req.id) && !partial_hits.contains_key(&req.id) {
+        }
+
+        // `Verify: Process` is by definition verified by review and commit order, not by any
+        // artifact this check can inspect. Nothing to look up; never "missing".
+        if resolves_through_partials(&req.verify)
+            && !source_hits.contains_key(&req.id)
+            && !partial_hits.contains_key(&req.id)
+        {
             // D-23.1: a `trace-partial` counts as coverage for the ordinary run. It must --
             // FR-NAM-030 is knowingly half-met until M10 Phase 4, and a gate that cannot go green
             // is the red-check-nobody-can-act-on problem M7 marked this check informational over.
             // The teeth are elsewhere: D-18.5's zero-uncovered half becomes required at M13's
             // close-out, and D-23.2 rules that a Partial is not Done for M8's exit checklist.
+            unresolved.extend(req.verify.iter().filter(|c| !matches!(c, 'M' | 'P')));
+        }
+
+        if !unresolved.is_empty() {
             missing.push(req.clone());
+            missing_codes.insert(req.id.clone(), unresolved);
         }
     }
 
     Report {
         missing,
+        missing_codes,
         manual_hits,
         manual_unexecuted,
         source_hits: source_hits.clone(),
@@ -923,14 +1250,27 @@ pub fn build_report(
     }
 }
 
-/// The `Verify:` codes whose plan row resolves *through* `partial_hits`: every code except `M`,
-/// whose evidence is a manual-test document, and `Process`, which has no build-inspectable artifact
-/// at all (see [`check_partial_verify_code`] for why those two are refused rather than rendered).
+/// Whether a requirement's plan row resolves *through* `partial_hits` -- equivalently, whether
+/// **any** code it states is one an annotated artifact in this repository can carry. Every code
+/// except `M`, whose evidence is a manual-test document, and `Process`, which has no
+/// build-inspectable artifact at all (see [`check_partial_verify_code`] for why a partial naming
+/// only those is refused rather than rendered).
 ///
-/// Written once and read by both [`render_test_plan`]'s dispatch and [`partial_row_ids`], so the
-/// rows the plan carries and the number R-13 prints cannot come from two different conditions.
-fn resolves_through_partials(verify: char) -> bool {
-    !matches!(verify, 'M' | 'P')
+/// `any`, not `all`, and that is the whole of what issue #27 changes here: FR-STATE-040's `M plus
+/// S` states one code of each kind, so it is both traced by a manual document *and* owed a source
+/// annotation, and a `trace-partial:` naming it is legitimate where a partial on a bare `Verify: M`
+/// is not.
+///
+/// Written once and read by [`render_test_plan`]'s dispatch, [`build_report`] and
+/// [`partial_row_ids`], so the rows the plan carries and the number R-13 prints cannot come from
+/// two different conditions.
+pub fn resolves_through_partials(verify: &[char]) -> bool {
+    verify.iter().any(|c| !matches!(c, 'M' | 'P'))
+}
+
+/// Whether a requirement states a code whose evidence is a manual-test document (D-18.6).
+fn needs_manual_document(verify: &[char]) -> bool {
+    verify.contains(&'M')
 }
 
 /// The ids [`render_test_plan`] emits a **PARTIAL** row for, sorted as the plan sorts them.
@@ -953,7 +1293,7 @@ pub fn partial_row_ids(requirements: &[Requirement], report: &Report) -> Vec<Str
     let mut ids: Vec<String> = requirements
         .iter()
         .filter(|req| {
-            resolves_through_partials(req.verify) && report.partial_hits.contains_key(&req.id)
+            resolves_through_partials(&req.verify) && report.partial_hits.contains_key(&req.id)
         })
         .map(|req| req.id.clone())
         .collect();
@@ -973,6 +1313,9 @@ pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String
          Do not hand-edit -- regenerate instead. Maps every Must-priority requirement to how it is \
          verified: a manual-test document (`Verify: M`) or the crate(s) whose test source carries a \
          `trace:` annotation or matching test-function name for it (`Verify: U/I/G/B/S`). A \
+         method stating more than one code (`M+S`, `U+I`) is **compound**: every code it states \
+         has to resolve, and the cell carries one entry per class of evidence, joined with `+` in \
+         the order the FRS states them (issue #27). A \
          `Verify: M` row resolves only when its document's own `**Result:` line records a clean \
          pass -- a document recording `NOT EXECUTED`, a partial or a qualified pass, and a \
          document carrying no verdict line at all, leave the requirement UNRESOLVED with the \
@@ -990,40 +1333,58 @@ pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String
          |---|---|---|\n",
     );
 
-    // Same dispatch, same invariant as `build_report`'s: the `'M'`/`'P'` arms never reach
-    // `partial_hits`, and `check_partial_verify_code` is what makes that lossless.
+    // Same dispatch, same invariant as `build_report`'s: one cell per *class* of evidence the
+    // method names, joined in the order the FRS states the codes. A single-code requirement
+    // renders exactly what it rendered before issue #27; a compound one renders both halves, so a
+    // half that resolved to nothing is visible as `**UNRESOLVED**` beside the half that did.
     for req in &sorted {
-        let covered_by = if resolves_through_partials(req.verify)
-            && let Some(partials) = report.partial_hits.get(&req.id)
-        {
-            // A partial wins over a plain tag on the same id. The two assert contradictory things
-            // (whole requirement vs. named unmet clause) and D-23.1 settles neither; rendering the
-            // gap is the honest direction, and no such case exists in this tree today.
-            render_partial(partials, report.source_hits.get(&req.id))
-        } else if req.verify == 'M' {
-            match (
-                report.manual_hits.get(&req.id),
-                report.manual_unexecuted.get(&req.id),
-            ) {
-                (Some(f), _) => format!("`docs/manual-tests/{f}`"),
-                // Issue #34: the document is named even though it does not resolve the
-                // requirement -- the reader needs to know a script exists and what it says about
-                // itself, which is strictly more than "**UNRESOLVED**" alone can tell them.
-                (None, Some((file, reason))) => {
-                    format!("**UNRESOLVED** — `docs/manual-tests/{file}` {reason}")
+        let mut pieces: Vec<String> = Vec::new();
+        let mut source_done = false;
+        for code in &req.verify {
+            let piece = match code {
+                'M' => match (
+                    report.manual_hits.get(&req.id),
+                    report.manual_unexecuted.get(&req.id),
+                ) {
+                    (Some(f), _) => format!("`docs/manual-tests/{f}`"),
+                    // Issue #34: the document is named even though it does not resolve the
+                    // requirement -- the reader needs to know a script exists and what it says
+                    // about itself, which is strictly more than "**UNRESOLVED**" alone can tell
+                    // them.
+                    (None, Some((file, reason))) => {
+                        format!("**UNRESOLVED** — `docs/manual-tests/{file}` {reason}")
+                    }
+                    (None, None) => "**UNRESOLVED**".to_string(),
+                },
+                'P' => "process (review + commit order, not build-inspectable)".to_string(),
+                _ => {
+                    // Every source-class code a method states shares one artifact lookup: a
+                    // `trace:` tag names a requirement, never one code of it. Rendered once, at
+                    // the position of the first such code.
+                    if source_done {
+                        continue;
+                    }
+                    source_done = true;
+                    if let Some(partials) = report.partial_hits.get(&req.id) {
+                        // A partial wins over a plain tag on the same id. The two assert
+                        // contradictory things (whole requirement vs. named unmet clause) and
+                        // D-23.1 settles neither; rendering the gap is the honest direction, and
+                        // no such case exists in this tree today.
+                        render_partial(partials, report.source_hits.get(&req.id))
+                    } else if let Some(crates) = report.source_hits.get(&req.id) {
+                        backticked_components(crates)
+                    } else {
+                        "**UNRESOLVED**".to_string()
+                    }
                 }
-                (None, None) => "**UNRESOLVED**".to_string(),
-            }
-        } else if req.verify == 'P' {
-            "process (review + commit order, not build-inspectable)".to_string()
-        } else if let Some(crates) = report.source_hits.get(&req.id) {
-            backticked_components(crates)
-        } else {
-            "**UNRESOLVED**".to_string()
-        };
+            };
+            pieces.push(piece);
+        }
         out.push_str(&format!(
             "| {} | {} | {} |\n",
-            req.id, req.verify, covered_by
+            req.id,
+            render_verify_codes(&req.verify),
+            pieces.join(" + ")
         ));
     }
 
@@ -1489,7 +1850,7 @@ mod tests {
             reqs,
             vec![Requirement {
                 id: "FR-CHAIN-090".into(),
-                verify: 'U',
+                verify: vec!['U'],
                 section: String::new(),
             }]
         );
@@ -1514,18 +1875,104 @@ mod tests {
             reqs,
             vec![Requirement {
                 id: "FR-CHAIN-060".into(),
-                verify: 'I',
+                verify: vec!['I'],
                 section: String::new(),
             }]
         );
     }
 
+    /// Issue #27: this test asserted `reqs[0].verify == 'U'` until M15 -- it pinned the defect,
+    /// with the FRS's own FR-CHAIN-020 text as its fixture. Every code a compound method states is
+    /// kept now, in the order stated.
     #[test]
-    fn takes_the_first_code_when_verify_lists_more_than_one() {
+    fn keeps_every_code_when_verify_lists_more_than_one() {
         let frs = "**FR-CHAIN-020 (Must)** — text.\n\
                    *Verify:* U per stage; I for click-freedom.\n";
         let reqs = parse_must_requirements(frs).unwrap();
-        assert_eq!(reqs[0].verify, 'U');
+        assert_eq!(reqs[0].verify, vec!['U', 'I']);
+    }
+
+    /// The other connective, and the FRS's own FR-STATE-040 text: `plus` rather than `;`, with the
+    /// second code carrying a parenthesised gloss.
+    #[test]
+    fn reads_a_plus_joined_compound_method() {
+        let frs = "**FR-STATE-040 (Must)** — text.\n\
+                   *Verify:* M plus S (schema check).\n";
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(reqs[0].verify, vec!['M', 'S']);
+    }
+
+    /// NFR-RT-010's shape: the second code is on a **wrapped** line, which is why the method text
+    /// is the marker's line plus its continuations rather than the marker's line alone.
+    #[test]
+    fn reads_a_code_stated_on_a_continuation_line() {
+        let frs = "**NFR-RT-010 (Must)** — text.\n\
+                   *Verify:* S — an allocation-detecting harness fails any test that allocates —\n\
+                   plus I under a stress test with concurrent model loading.\n";
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(reqs[0].verify, vec!['S', 'I']);
+    }
+
+    /// The continuation stops at the next block. An appended `*Consequence ...*` paragraph is
+    /// prose about the requirement, not more of its method, and FR-IO-010's `*Verify:* M.` is
+    /// followed directly by one with no blank line between them.
+    #[test]
+    fn a_following_italic_paragraph_is_not_part_of_the_method() {
+        let frs = "**FR-IO-010 (Must)** — text.\n\
+                   *Verify:* M.\n\
+                   *Consequence (added M8-planning)* — I am prose, not a second code.\n";
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(reqs[0].verify, vec!['M']);
+    }
+
+    /// A qualifier is not a second method. NFR-PERF-010's "B, as a CI regression gate" and
+    /// NFR-RT-020's "S plus code review" are the FRS's two live cases, and both state one code:
+    /// a comma is not a separator at all, and a `plus` clause opening with a word rather than a
+    /// code contributes nothing. The issue that prompted this change listed both as compound; they
+    /// are not, and reading them as compound would have invented a code the FRS never wrote.
+    #[test]
+    fn a_qualifier_clause_is_not_a_second_code() {
+        for (text, expected) in [
+            ("*Verify:* B, as a CI regression gate.", vec!['B']),
+            ("*Verify:* S plus code review.", vec!['S']),
+            (
+                "*Verify:* U per control against a synthesised burst.",
+                vec!['U'],
+            ),
+        ] {
+            let frs = format!("**FR-X-010 (Must)** — text.\n{text}\n");
+            let reqs = parse_must_requirements(&frs).unwrap();
+            assert_eq!(reqs[0].verify, expected, "{text}");
+        }
+    }
+
+    /// `Process` is folded to one character, as it was before issue #27 -- the FRS spells the code
+    /// in full and nothing else in this module does.
+    #[test]
+    fn process_is_folded_to_one_character() {
+        let frs = "**NFR-QUAL-020 (Must)** — text.\n\
+                   *Verify:* Process — enforced by review, evidenced by commit order.\n";
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(reqs[0].verify, vec!['P']);
+    }
+
+    /// A line that merely names the marker in prose is not a `*Verify:*` line, and the FRS carries
+    /// several. Before the requirement's real method, such a line must not be mistaken for it.
+    #[test]
+    fn a_prose_mention_of_the_marker_is_not_a_verify_line() {
+        let frs = "**FR-X-010 (Must)** — text.\n\
+                   This note does not touch the `*Verify:*` line above.\n\
+                   *Verify:* G.\n";
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(reqs[0].verify, vec!['G']);
+    }
+
+    /// The `Verify` column, and every message that names a method: single codes render exactly as
+    /// they did before issue #27, so only the compound rows move in the generated plan.
+    #[test]
+    fn verify_codes_render_joined_with_a_plus() {
+        assert_eq!(render_verify_codes(&['U']), "U");
+        assert_eq!(render_verify_codes(&['M', 'S']), "M+S");
     }
 
     #[test]
@@ -1535,6 +1982,72 @@ mod tests {
                    *Verify:* U.\n";
         let err = parse_must_requirements(frs).unwrap_err();
         assert!(err.contains("FR-X-010"));
+    }
+
+    /// The gap the M15 review found: the forward scan broke on the next **Must**, so a Must with
+    /// no method line of its own read straight through the `(Should)` between them and adopted
+    /// **its** `*Verify:*`. `FR-X-010` here would have been recorded as `Verify: B` -- a code the
+    /// FRS never wrote for it -- and `docs/03-test-plan.md` would have stated that bar with
+    /// nothing anywhere saying where it came from. Inheritance is never the right answer, so this
+    /// is an error.
+    #[test]
+    fn a_must_does_not_inherit_a_following_shoulds_verify_line() {
+        let frs = "**FR-X-010 (Must)** — text whose *Verify* marker was misspelt.\n\
+                   *Verify* U — no colon, so this line is not a method line.\n\
+                   **FR-X-020 (Should)** — a neighbour that does have one.\n\
+                   *Verify:* B.\n";
+        let err = parse_must_requirements(frs).unwrap_err();
+        assert!(err.contains("FR-X-010"), "{err}");
+        assert!(err.contains("FR-X-020 (Should)"), "{err}");
+    }
+
+    /// The same for a `(Could)`, and for the end of the file with no neighbour at all -- the two
+    /// other ways the scan can terminate. The message names what it stopped at in each case.
+    #[test]
+    fn the_scan_stops_at_a_could_and_at_the_end_of_the_file() {
+        let after_could = parse_must_requirements(
+            "**FR-X-010 (Must)** — no method line.\n\
+             **FR-X-020 (Could)** — a neighbour that has one.\n\
+             *Verify:* U.\n",
+        )
+        .unwrap_err();
+        assert!(after_could.contains("FR-X-020 (Could)"), "{after_could}");
+
+        let at_eof = parse_must_requirements(
+            "**FR-X-010 (Must)** — no method line, and nothing after it.\n",
+        )
+        .unwrap_err();
+        assert!(at_eof.contains("the end of the file"), "{at_eof}");
+    }
+
+    /// And the property the boundary must not break: a Should sitting between a Must and its own
+    /// `*Verify:*` line does not exist in the FRS, but a Should *after* a complete Must is
+    /// everywhere in it. The Must keeps its own method and the Should is still ignored.
+    #[test]
+    fn a_should_after_a_complete_must_changes_nothing() {
+        let frs = "**FR-X-010 (Must)** — text.\n\
+                   *Verify:* G.\n\
+                   **FR-X-020 (Should)** — a neighbour.\n\
+                   *Verify:* B.\n\
+                   **FR-X-030 (Must)** — text.\n\
+                   *Verify:* S.\n";
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(reqs.len(), 2, "{reqs:#?}");
+        assert_eq!(reqs[0].verify, vec!['G']);
+        assert_eq!(reqs[1].verify, vec!['S']);
+    }
+
+    /// The real FRS parses under the stricter boundary: no Must in it depends on inheriting a
+    /// neighbour's method, which is the empirical half of the claim above.
+    #[test]
+    fn every_must_in_the_real_frs_states_its_own_verify_line() {
+        let frs = include_str!("../../docs/01-functional-requirements.md");
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(
+            reqs.len(),
+            130,
+            "the FRS's Must count moved; update this figure"
+        );
     }
 
     fn ids(source: &str) -> Vec<String> {
@@ -1888,42 +2401,80 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_qualified_by_an_unexecuted_step_is_not_a_pass() {
-        // `fr-ui-010-standalone-window-renders.md`'s own verdict. Reading the headline word alone
-        // would discard the half of the sentence that matters, which is the direction of error
-        // this check exists to refuse.
-        assert!(matches!(
-            manual_test_verdict(&manual_doc(
-                "**Result: PASS for steps 1–2 (executed). Step 3 requires a human with a display \
-                 — not executed this session.**"
-            )),
-            ManualVerdict::NotAPass(_)
-        ));
+    fn a_pass_qualified_by_an_unexecuted_step_is_refused_outright() {
+        // `fr-ui-010-standalone-window-renders.md`'s own verdict until M15, when the token
+        // convention made this shape a hard error and the document was corrected to `PARTIAL`.
+        // Reading the headline word alone would discard the half of the sentence that matters;
+        // downgrading it silently, as the pre-M15 parser did, gets the outcome right and tells the
+        // author nothing about which half won.
+        let doc = manual_doc(
+            "**Result: PASS for steps 1–2 (executed). Step 3 requires a human with a display \
+             — not executed this session.**",
+        );
+        let err = parse_manual_verdict(&doc).expect_err("a self-contradicting PASS is refused");
+        assert!(err.contains("contradicts itself"), "{err}");
+        // And the lenient wrapper still cannot turn it into a credit.
+        assert_eq!(manual_test_verdict(&doc), ManualVerdict::Unreadable);
     }
 
     #[test]
-    fn a_document_with_no_verdict_line_is_unreadable_never_a_pass() {
-        // Eight of the twenty-six live documents are in this state. Silence is not a pass.
+    fn a_document_with_no_verdict_line_is_refused_never_a_pass() {
+        // Eight of the twenty-six live documents were in this state when the check was written.
+        // Silence is not a pass -- and since M15 it is not a quiet gap either.
+        for content in [
+            // No outcome section at all.
+            "# A script with no outcome section\n\nSteps: 1, 2, 3.\n",
+            // A mid-paragraph mention: the marker must begin its line, like every other marker
+            // this module reads.
+            "The **Result: PASS.** claim below is prose, not a verdict.\n",
+        ] {
+            let err = parse_manual_verdict(content).expect_err("no verdict line");
+            assert!(err.contains("carries no verdict line"), "{err}");
+            assert_eq!(manual_test_verdict(content), ManualVerdict::Unreadable);
+        }
+    }
+
+    #[test]
+    fn a_verdict_line_without_one_of_the_four_tokens_is_refused() {
+        // `fr-io-070-device-removal.md`'s second verdict line until M15: a real, carefully-written
+        // sentence that no parser should have to adjudicate. The token is the machine-readable
+        // half of the convention, and its absence is a malformed input.
+        for line in [
+            "**Result: step 2 EXECUTED 2026-08-27, and it fails its naming clause.**",
+            // A marker with nothing after it.
+            "**Result:**",
+            // Lower case is not the token: the convention says upper case, so that a document
+            // saying `pass` in passing cannot become a verdict.
+            "**Result: pass, all six steps.**",
+            // A longer word that merely starts with a token is not that token.
+            "**Result: PASSABLE, with reservations.**",
+        ] {
+            let doc = manual_doc(line);
+            let err = parse_manual_verdict(&doc).expect_err("no verdict token");
+            assert!(err.contains("does not open with a verdict token"), "{err}");
+            assert_eq!(manual_test_verdict(&doc), ManualVerdict::Unreadable);
+        }
+        // The other real spelling, with the colon inside the bold run, is accepted.
         assert_eq!(
-            manual_test_verdict("# A script with no outcome section\n\nSteps: 1, 2, 3.\n"),
-            ManualVerdict::Unreadable
+            manual_test_verdict(&manual_doc("**Result:** PASS, all six steps.")),
+            ManualVerdict::Pass
         );
-        // Nor is a marker with nothing after it.
-        assert_eq!(
-            manual_test_verdict("**Result:**\n"),
-            ManualVerdict::Unreadable
-        );
-        // A qualifier outside the bold run still decides the verdict, even though only the bold
-        // run is quoted back.
-        assert_eq!(
-            manual_test_verdict("**Result: PASS.** Step 3 was not executed this session.\n"),
-            ManualVerdict::NotAPass("PASS.".to_string())
-        );
-        // Nor a mid-paragraph mention: the marker must begin its line, like every other marker
-        // this module reads.
-        assert_eq!(
-            manual_test_verdict("The **Result: PASS.** claim below is prose, not a verdict.\n"),
-            ManualVerdict::Unreadable
+    }
+
+    #[test]
+    fn the_readme_is_the_one_file_exempt_from_carrying_a_verdict() {
+        // It documents the convention rather than recording a run; every other file in the
+        // directory is checked, whatever `Verify:` code its requirement carries, because a
+        // supplementary document's executed-ness is exactly as easy to misread as a traced one's.
+        let convention = "# Manual-test documents\n\nWrite `**Result: PASS.**` when it passes.\n";
+        assert!(check_manual_verdict("README.md", convention).is_ok());
+        assert!(check_manual_verdict("fr-chain-010-signal-chain.md", convention).is_err());
+        assert!(
+            check_manual_verdict(
+                "fr-chain-010-signal-chain.md",
+                &manual_doc("**Result: PASS.**")
+            )
+            .is_ok()
         );
     }
 
@@ -1937,21 +2488,20 @@ mod tests {
         // The shape the live tree has: conservative line first. Unchanged by this rule.
         assert_eq!(
             manual_test_verdict(
-                "**Result: NOT EXECUTED against a real failable device.**\n\n                 **Result: step 2 EXECUTED and passing.**\n"
+                "**Result: NOT EXECUTED against a real failable device.**\n\n                 **Result: PARTIAL.** Step 2 executed and passing.\n"
             ),
             ManualVerdict::NotAPass("NOT EXECUTED against a real failable device.".to_string())
         );
         // The shape that would have been credited: pass first, disqualification second.
         assert_eq!(
             manual_test_verdict(
-                "**Result: PASS, all six steps.**\n\n                 **Result: steps 7-9 NOT EXECUTED -- no second interface available.**\n"
+                "**Result: PASS, all six steps.**\n\n                 **Result: NOT EXECUTED** -- steps 7-9, no second interface available.\n"
             ),
-            ManualVerdict::NotAPass(
-                "steps 7-9 NOT EXECUTED -- no second interface available.".to_string()
-            )
+            ManualVerdict::NotAPass("NOT EXECUTED".to_string())
         );
-        // An unreadable line beats a pass elsewhere: a line the parser cannot make sense of is not
-        // evidence, and crediting the document on a different one discards it in silence.
+        // A refused line anywhere in the document beats a pass elsewhere: since M15 the whole
+        // document is refused rather than credited on its other line, and the lenient wrapper's
+        // fallback is `Unreadable`, never a credit.
         assert_eq!(
             manual_test_verdict("**Result: PASS, all six steps.**\n\n**Result:**\n"),
             ManualVerdict::Unreadable
@@ -1969,7 +2519,7 @@ mod tests {
     fn build_report_leaves_a_manual_must_uncovered_when_its_document_records_no_pass() {
         let reqs = vec![Requirement {
             id: "FR-CHAIN-010".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: "5.1".into(),
         }];
         let docs = vec![(
@@ -2001,7 +2551,7 @@ mod tests {
         // fixture is malformed in some other way.
         let reqs = vec![Requirement {
             id: "FR-CHAIN-010".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: "5.1".into(),
         }];
         let docs = vec![(
@@ -2017,24 +2567,27 @@ mod tests {
     fn a_verdictless_document_leaves_its_requirement_uncovered_and_says_why() {
         let reqs = vec![Requirement {
             id: "FR-CHAIN-010".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: "5.1".into(),
         }];
         let docs = vec![(
             "fr-chain-010-signal-chain.md".to_string(),
             "# A script with no outcome section\n".to_string(),
         )];
+        // The defensive path, and the reason `ManualVerdict::Unreadable` still exists after M15:
+        // a real run cannot get here (`check_manual_verdict` aborts on this document first), and a
+        // `build_report` call that skipped that check must still fall to uncovered, never a credit.
         let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
         assert_eq!(report.missing.len(), 1);
         let (_, reason) = report.manual_unexecuted.get("FR-CHAIN-010").unwrap();
-        assert!(reason.contains("no line beginning"), "{reason}");
+        assert!(reason.contains("no readable line beginning"), "{reason}");
     }
 
     #[test]
     fn build_report_flags_a_must_requirement_with_no_coverage() {
         let reqs = vec![Requirement {
             id: "FR-X-010".into(),
-            verify: 'U',
+            verify: vec!['U'],
             section: String::new(),
         }];
         let report = build_report(&reqs, &[], &HashMap::new(), &HashMap::new());
@@ -2046,7 +2599,7 @@ mod tests {
     fn build_report_resolves_a_manual_verified_requirement_by_filename() {
         let reqs = vec![Requirement {
             id: "FR-IO-020".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: String::new(),
         }];
         let docs = vec![(
@@ -2068,7 +2621,7 @@ mod tests {
         // already has, and the one legitimate multi-requirement document in the tree.
         let reqs = vec![Requirement {
             id: "FR-IO-040".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: String::new(),
         }];
         let docs = vec![(
@@ -2092,7 +2645,7 @@ mod tests {
         // sentence; it is simply not a claim to verify FR-UI-020.
         let reqs = vec![Requirement {
             id: "FR-UI-020".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: String::new(),
         }];
         let docs = vec![(
@@ -2139,7 +2692,7 @@ mod tests {
     fn build_report_treats_process_verified_as_always_covered() {
         let reqs = vec![Requirement {
             id: "NFR-QUAL-020".into(),
-            verify: 'P',
+            verify: vec!['P'],
             section: String::new(),
         }];
         let report = build_report(&reqs, &[], &HashMap::new(), &HashMap::new());
@@ -2150,7 +2703,7 @@ mod tests {
     fn build_report_resolves_a_source_verified_requirement() {
         let reqs = vec![Requirement {
             id: "FR-NAM-070".into(),
-            verify: 'I',
+            verify: vec!['I'],
             section: String::new(),
         }];
         let mut hits = HashMap::new();
@@ -2177,7 +2730,7 @@ mod tests {
         // rule that a Partial is not Done -- not this gate.
         let reqs = vec![Requirement {
             id: "FR-LIB-020".into(),
-            verify: 'I',
+            verify: vec!['I'],
             section: String::new(),
         }];
         let partials = one_partial("FR-LIB-020", "namir-worker", FR_LIB_020_UNCOVERED);
@@ -2191,7 +2744,7 @@ mod tests {
         // FR-IO-020 by its manual-test document without ever consulting `partial_hits`. Refused
         // rather than rendered: the requirement's own `Verify:` method is a written script, and no
         // source annotation is one.
-        let err = check_partial_verify_code("FR-IO-020", 'M', 7).unwrap_err();
+        let err = check_partial_verify_code("FR-IO-020", &['M'], 7).unwrap_err();
         assert!(err.starts_with("7: "), "{err}");
         assert!(err.contains("FR-IO-020"), "{err}");
         assert!(err.contains("`Verify: M`"), "{err}");
@@ -2202,7 +2755,7 @@ mod tests {
     fn a_partial_naming_a_process_verified_requirement_is_a_hard_error() {
         // Reported with the FRS's own spelling of the code, `Process` -- the parser keeps only the
         // first character, and `Verify: P` is a code no FRS line carries.
-        let err = check_partial_verify_code("NFR-QUAL-020", 'P', 3).unwrap_err();
+        let err = check_partial_verify_code("NFR-QUAL-020", &['P'], 3).unwrap_err();
         assert!(err.starts_with("3: "), "{err}");
         assert!(err.contains("`Verify: Process`"), "{err}");
         assert!(!err.contains("`Verify: P`"), "{err}");
@@ -2214,17 +2767,28 @@ mod tests {
         // worked example, is `Verify: I`.
         for verify in ['U', 'I', 'G', 'B', 'S'] {
             assert!(
-                check_partial_verify_code("FR-LIB-020", verify, 1).is_ok(),
+                check_partial_verify_code("FR-LIB-020", &[verify], 1).is_ok(),
                 "Verify: {verify}"
             );
         }
+    }
+
+    /// Issue #27's own case, and the reason the guard asks whether **any** code resolves through a
+    /// source annotation rather than whether the first one does. FR-STATE-040's `M plus S` is owed
+    /// a source annotation for its `S` half, so a partial naming it is legitimate -- refusing it,
+    /// which is what the single-code guard did, left the requirement with no way to record the gap
+    /// at all.
+    #[test]
+    fn a_partial_naming_a_compound_method_with_a_source_half_is_accepted() {
+        assert!(check_partial_verify_code("FR-STATE-040", &['M', 'S'], 1).is_ok());
+        assert!(check_partial_verify_code("FR-IN-020", &['U', 'M'], 1).is_ok());
     }
 
     #[test]
     fn render_test_plan_marks_unresolved_requirements_explicitly() {
         let reqs = vec![Requirement {
             id: "FR-X-010".into(),
-            verify: 'U',
+            verify: vec!['U'],
             section: String::new(),
         }];
         let report = build_report(&reqs, &[], &HashMap::new(), &HashMap::new());
@@ -2237,7 +2801,7 @@ mod tests {
     fn render_test_plan_marks_a_partial_and_carries_its_uncovered_text_verbatim() {
         let reqs = vec![Requirement {
             id: "FR-LIB-020".into(),
-            verify: 'I',
+            verify: vec!['I'],
             section: String::new(),
         }];
         let partials = one_partial("FR-LIB-020", "namir-worker", FR_LIB_020_UNCOVERED);
@@ -2256,7 +2820,7 @@ mod tests {
     fn render_test_plan_escapes_a_pipe_inside_the_uncovered_text() {
         let reqs = vec![Requirement {
             id: "FR-LIB-020".into(),
-            verify: 'I',
+            verify: vec!['I'],
             section: String::new(),
         }];
         let partials = one_partial(
@@ -2288,17 +2852,17 @@ mod tests {
         let reqs = vec![
             Requirement {
                 id: "FR-LIB-020".into(),
-                verify: 'I',
+                verify: vec!['I'],
                 section: "5.10".into(),
             },
             Requirement {
                 id: "FR-IO-020".into(),
-                verify: 'M',
+                verify: vec!['M'],
                 section: "5.13".into(),
             },
             Requirement {
                 id: "NFR-QUAL-020".into(),
-                verify: 'P',
+                verify: vec!['P'],
                 section: "6.4".into(),
             },
         ];
@@ -2350,7 +2914,7 @@ mod tests {
     fn req(id: &str, section: &str) -> Requirement {
         Requirement {
             id: id.into(),
-            verify: 'U',
+            verify: vec!['U'],
             section: section.into(),
         }
     }
@@ -2671,7 +3235,7 @@ mod tests {
     fn render_test_plan_appends_the_section_block_after_the_requirement_table() {
         let reqs = vec![Requirement {
             id: "FR-CFG-010".into(),
-            verify: 'S',
+            verify: vec!['S'],
             section: "4".into(),
         }];
         let report = build_report(&reqs, &[], &HashMap::new(), &HashMap::new());

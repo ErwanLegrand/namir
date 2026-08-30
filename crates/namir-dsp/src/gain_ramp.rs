@@ -36,16 +36,34 @@ pub struct GainRamp {
 }
 
 impl GainRamp {
-    /// Starts at unity gain (1.0 linear, 0 dB). `time_constant_ms` is clamped to
+    /// Starts settled at unity gain (1.0 linear, 0 dB). `time_constant_ms` is clamped to
     /// `MIN_TIME_CONSTANT_MS`; see `RECOMMENDED_TIME_CONSTANT_MS`'s doc for the FR-PARAM-040
     /// constraint that should drive the caller's choice of value.
+    ///
+    /// A caller whose parameter does not default to 0 dB wants [`GainRamp::new_at_db`] instead —
+    /// see its doc for why `new` followed by `set_target_db` is not the same thing.
     pub fn new(sample_rate: SampleRate, time_constant_ms: f32) -> Self {
+        Self::new_at_db(sample_rate, time_constant_ms, 0.0)
+    }
+
+    /// Starts **settled at** `db` rather than ramping to it: both the current and the target gain
+    /// are `db`, so the very first sample out is already at the intended level.
+    ///
+    /// This exists because `new` followed by `set_target_db(db)` is *not* that (issue #127). It
+    /// leaves `current` at unity and `target` at `db`, so the first ~25 ms of audio after every
+    /// start, sample-rate change or re-prepare is a ramp from 0 dB down to the parameter's actual
+    /// default. That is silent today only because the three parameters smoothed this way
+    /// (`trim.gain_db`, `out.gain_db`, `ir.level_db`) all happen to default to 0.0 dB, where the
+    /// ramp has nowhere to travel; change any one of those defaults and the artefact appears with
+    /// nothing failing. Constructing at the value removes the trap rather than documenting it.
+    pub fn new_at_db(sample_rate: SampleRate, time_constant_ms: f32, db: f32) -> Self {
         let time_constant_ms = time_constant_ms.max(MIN_TIME_CONSTANT_MS);
         let tau_samples = (time_constant_ms as f64 / 1000.0) * sample_rate.hz_f64();
         let coeff = (1.0 - (-1.0 / tau_samples).exp()) as f32;
+        let gain = db_to_linear(db);
         Self {
-            current: 1.0,
-            target: 1.0,
+            current: gain,
+            target: gain,
             coeff,
         }
     }
@@ -180,6 +198,43 @@ mod tests {
             stepped_db > reference_db + 10.0,
             "an unsmoothed step measured {stepped_db:.1} dB, barely above the reference's \
              {reference_db:.1} dB — the instrument is not discriminating"
+        );
+    }
+
+    /// **Issue #127.** `new_at_db` starts settled, so nothing ramps; the `new` + `set_target_db`
+    /// pair every current call site uses does not, and the contrast is the point of the type.
+    ///
+    /// The non-unity default is deliberate: at the 0.0 dB the three shipped call sites happen to
+    /// use today, both constructions are identical and this test would pass without the fix.
+    #[test]
+    fn constructing_at_a_level_settles_there_instead_of_ramping_from_unity() {
+        let default_db = -24.0f32;
+        let expected = db_to_linear(default_db);
+
+        let mut settled = GainRamp::new_at_db(sr(48_000), RECOMMENDED_TIME_CONSTANT_MS, default_db);
+        assert!(
+            (settled.current_db() - default_db).abs() < 1e-4,
+            "current_db={} before processing a single sample",
+            settled.current_db()
+        );
+        let mut buf = [1.0f32; 512];
+        settled.process(&mut buf);
+        for (i, s) in buf.iter().enumerate() {
+            assert!(
+                (s - expected).abs() <= expected * 1e-3,
+                "sample {i} came out at {s}, not the {expected} the ramp was constructed at"
+            );
+        }
+
+        // The falsifier: the same intent expressed as `new` + `set_target_db` audibly ramps.
+        let mut ramping = GainRamp::new(sr(48_000), RECOMMENDED_TIME_CONSTANT_MS);
+        ramping.set_target_db(default_db);
+        let mut buf = [1.0f32; 512];
+        ramping.process(&mut buf);
+        assert!(
+            buf[0] > expected * 10.0,
+            "constructing at unity and retargeting should start near 0 dB, got {}",
+            buf[0]
         );
     }
 

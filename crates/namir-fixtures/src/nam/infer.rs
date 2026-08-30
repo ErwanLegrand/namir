@@ -98,9 +98,13 @@ fn dilated_conv(
     out
 }
 
+/// `crate::detmath::tanh_f32`, not `f32::tanh`: this activation runs inside the calibration pass
+/// whose result is written into a checked-in `.nam` fixture, and the platform libm's `tanhf` is
+/// not bit-identical across platforms (see `detmath`'s module doc for the CI failure that showed
+/// it). Rounding a `f64`-computed value once is also the more accurate of the two.
 fn tanh_inplace(x: &mut [f32]) {
     for v in x.iter_mut() {
-        *v = v.tanh();
+        *v = crate::detmath::tanh_f32(*v);
     }
 }
 

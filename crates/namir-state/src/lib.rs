@@ -20,13 +20,21 @@
 //! - FR-STATE-020 — [`ParamValues`]'s complete-array-over-`REGISTRY` shape, so an absent
 //!   parameter's default cannot fail to apply.
 //! - FR-STATE-040 — the JSON format itself: pretty-printed, sorted, and, via [`reference::RelPath`],
-//!   free of platform-specific path syntax in what it stores.
+//!   free of platform-specific path syntax in what it stores; plus, since M15, the **schema check**
+//!   the second half of that requirement's compound `*Verify:*` method names — [`schema`], a
+//!   validator for §§3–7 of `docs/04-state-and-preset-format.md` written independently of this
+//!   crate's own reader (issue #27).
 //! - FR-STATE-070 — [`resolve::candidates`]/[`resolve::FileResolver`]/[`resolve::resolve`]: the
-//!   three-step resolution order as data plus the port a resolving crate implements. This crate
-//!   never resolves a reference against a real filesystem itself — see [`resolve`]'s module doc
-//!   comment for why the algorithm and the filesystem access it needs are deliberately kept apart.
-//! - FR-STATE-080 — [`reference::FileRef::embedded`], read and written (M5's Should-scope
-//!   decision).
+//!   three-step resolution order as data plus the port a resolving crate implements, and — since
+//!   issue #113 — §7.4 of `docs/04-state-and-preset-format.md`'s fourth step, the embedded copy,
+//!   as [`resolve`]'s terminal fallback. This crate never resolves a reference against a real
+//!   filesystem itself — see [`resolve`]'s module doc comment for why the algorithm and the
+//!   filesystem access it needs are deliberately kept apart, and why the fourth step is not a
+//!   [`resolve::Candidate`].
+//! - FR-STATE-080 — [`reference::FileRef::embedded`], read, written and resolved through (M5's
+//!   Should-scope decision). Writing it is bounded on the way out by [`State::try_write`] /
+//!   [`Document::try_to_pretty_bytes`], so an embed too large for a document is refused at the
+//!   save rather than at the next load (issue #115).
 //! - D-11.2 — tolerant, versioned deserialisation; see [`document`], [`params`] and [`migrate`].
 //!
 //! Out of scope, deliberately, for this crate:
@@ -45,6 +53,7 @@ mod migrate;
 mod params;
 mod reference;
 mod resolve;
+mod schema;
 mod state;
 
 pub use document::{Document, FORMAT_VERSION, MAX_DOCUMENT_BYTES};
@@ -54,5 +63,8 @@ pub use reference::{EmbeddedRef, FileRef, MAX_EMBEDDED_BYTES, RelPath, RelPathEr
 pub use resolve::{
     Candidate, FileResolver, MissingFile, Resolution, ResolvedFile, ResolvedVia, candidates,
     resolve,
+};
+pub use schema::{
+    EMBEDDED_FIELDS, FILE_REFERENCE_FIELDS, SchemaViolation, Severity, validate, validate_bytes,
 };
 pub use state::State;

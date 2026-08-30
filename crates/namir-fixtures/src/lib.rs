@@ -3,6 +3,8 @@
 //! D-19.1 mandates: everything in it is deterministic from a seed, nothing reaches for OS
 //! randomness, and nothing here is captured audio.
 //!
+//! - [`detmath`] — bit-reproducible `sin`/`tanh`/`exp`, so a generated `.nam` fixture's bytes do
+//!   not depend on which platform's libm generated it.
 //! - [`nam`] — WaveNet `.nam` fixtures (parity + performance rows).
 //! - [`ir`] — convolution correctness fixtures (delta / delayed delta / decaying noise /
 //!   designed minimum-phase).
@@ -27,6 +29,7 @@
 // `namir-clap`'s golden input vector and preset, and `namir-ui`'s brand-mark blob.
 // trace: NFR-LIC-050
 
+pub mod detmath;
 pub mod ir;
 pub mod library;
 pub mod mutate;
