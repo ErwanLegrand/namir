@@ -29,3 +29,6 @@ trace.etl
 # running the validator against it. A ~7 MB cdylib copy, reproducible from a build; running that
 # job locally leaves one behind.
 staging/
+
+# Written by the headless-window smoke step (.github/workflows/ci.yml) when run by hand.
+smoke.log
