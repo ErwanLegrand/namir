@@ -68,9 +68,29 @@ namir-worker = { path = "../namir-worker", version = "0.1.0" }
 namir-ui = { path = "../namir-ui", version = "0.1.0" }
 
 # D-14.2's decision, S-4-validated (`docs/02-architecture.md` §19: clap-validator 15/15, loads
-# and runs in Reaper, GUI extension confirmed). Exact versions pinned to what
-# `spikes/s4-clack-clap`'s own `Cargo.lock` resolved to, matching that spike's own comment on
-# pre-1.0 API churn (R-2, retired but "managed by exact version pinning").
+# and runs in Reaper, GUI extension confirmed). The versions below are the ones
+# `spikes/s4-clack-clap`'s own `Cargo.lock` resolved to, taken deliberately because of that
+# spike's comment on pre-1.0 API churn (R-2, retired but "managed by exact version pinning").
+#
+# **These requirements are not exact pins, and this comment claimed they were until issue #144.**
+# `"0.1.1"` is the caret requirement `^0.1.1`: a published 0.1.2 would be taken by `cargo update`
+# with nothing here changing. What actually holds the version is the committed `Cargo.lock`.
+# Making them `=0.1.1` is a real option and the owner's open call (#144's third next step) --
+# noted here rather than taken.
+#
+# **So a clack version bump is a re-check, not a routine update.** Two workarounds in this crate
+# exist only because clack 0.1.1 is wrong, both documented at their sites and both written to go
+# red when the version moves:
+#  - `src/gui.rs`'s `set_size` refusal, which 0.1.1's plugin-side trampoline reports to the host
+#    as success. `tests/clap_host_gui.rs`'s
+#    `a_refused_set_size_changes_nothing_and_clack_0_1_1_swallows_the_refusal` asserts the
+#    swallowing through the real vtable, so a fixed clack fails it. Behind the non-default
+#    `host-ext-tests` feature, which CI runs as a required step.
+#  - `src/params_ext.rs`'s gesture assertions, which read `UnknownEvent::as_event` because
+#    0.1.1's `CoreEventSpace::from_unknown` cannot decode the two gesture types
+#    (prokopyl/clack#97; the fix, prokopyl/clack#99, is unmerged and targets 0.2, so it reaches
+#    no 0.1.1 dependent). `clack_0_1_1_cannot_decode_a_gesture_event_through_core_event_space`
+#    in that module asserts the decoder gap itself, so a fixed clack fails it too.
 clack-plugin = "0.1.1"
 clack-extensions = { version = "0.1.1", features = [
     "clack-plugin",
@@ -163,8 +183,9 @@ assert_no_alloc = { version = "1.1.2", default-features = false, features = [
 # (see `clack-extensions` 0.1.1's own `src/__doc_utils.rs:114-146`, which does exactly that).
 #
 # **Dev-dependency only -- never linked into a release build**, on the same terms as
-# `assert_no_alloc` in `namir-engine` (§17). Pinned to exactly the 0.1.1 line `clack-plugin` and
-# `clack-extensions` above are pinned to, per R-2's dated M9a note: the pre-1.0 churn residual is
+# `assert_no_alloc` in `namir-engine` (§17). Held at the same 0.1.1 the shipped `clack-plugin` and
+# `clack-extensions` above are held at -- by the lockfile, not by the requirement, exactly as those
+# two are (see their comment, and #144) -- per R-2's dated M9a note: the pre-1.0 churn residual is
 # reopened here only on a dev-only surface, and only at the version the shipped side already uses.
 #
 # Features mirror `clack-extensions` 0.1.1's own dev-dependency on this crate (its

@@ -211,10 +211,17 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
     /// call panicked, so an `Err` returned here becomes `true` at the C ABI. Every neighbouring
     /// method in that same file gets this right (`set_scale`, `show`, `hide` are all
     /// `Ok(...is_ok())`), so this is a defect in one function rather than the crate's convention.
-    /// The version is pinned exactly (D-14.2/R-2), so the fix is upstream's or a later pin's;
     /// [`accepts_size`] is factored out so the decision this plugin makes is testable and correct
     /// on the day the answer starts being transmitted, and
     /// `tests/clap_host_gui.rs` carries a live record of the swallowing.
+    ///
+    /// **Upstream status (issue #144, as of 2026-08-30): not reported.** A search of
+    /// `prokopyl/clack` for `set_size` returns nothing, so there is no upstream ticket to track
+    /// and no released version to move to — crates.io publishes only 0.1.0 and 0.1.1. The fix is
+    /// one line in that trampoline (`Ok(...is_ok())`, as its siblings already read). Nor is the
+    /// version *pinned*: `Cargo.toml` declares `"0.1.1"`, i.e. `^0.1.1`, and it is the committed
+    /// `Cargo.lock` that holds it — so a `cargo update` that picks up a fixed 0.1.2 is what
+    /// retires this, and the host-harness test named above is what says so.
     ///
     /// **Why refuse rather than become resizable.** FR-CLAP-110 (host-driven resize) is a *Should*
     /// this round declares out of scope (see this crate's `lib.rs`), and the fixed 960x640 is a
