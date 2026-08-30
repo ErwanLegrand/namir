@@ -15,6 +15,8 @@
 //! Everything shared with the stage-level probes — the signals, the runner, the fixture loaders,
 //! the estimators — lives in [`crate::probe`] and is not duplicated here.
 
+use std::sync::Arc;
+
 use namir_core::{ChannelConfig, db_to_linear};
 use namir_fixtures::nam::WaveNetShape;
 use namir_params::stages::{eq, gate, ir, nam, out, trim};
@@ -1275,4 +1277,186 @@ fn a_first_load_is_audible_inside_its_own_fade_at_every_block_size() {
              audible jitters by up to a whole block, ~85 ms at 4096 frames"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Issue #145 finding 7 — a handover into a rate-mismatched model, and the silence its resampler
+// is primed with.
+// ---------------------------------------------------------------------------------------------
+
+/// The declared rate that engages D-9.2's `SlotResampler` in a 48 kHz engine, and therefore the
+/// only configuration in which a slot's own pipeline latency is nonzero.
+const MISMATCHED_MODEL_RATE: u32 = 44_100;
+
+/// Frames run to settle a handover before anything is measured: past the 960-frame equal-power
+/// fade, its 640-frame priming hold, and every gain ramp in the chain.
+const HANDOVER_SETTLE_FRAMES: usize = 4_096;
+
+/// Builds the probe chain both limbs below use: a real default chain with the gate held open, so
+/// the only thing that moves the output level is the handover under test.
+fn handover_probe_chain(ctx: &PrepareContext) -> Chain {
+    let mut chain = build_default_chain(ctx).unwrap();
+    probe::set_param(&mut chain, gate::THRESHOLD_DB.id, -70.0);
+    chain
+}
+
+/// **Issue #145 finding 7, and the defect behind PR #145's red `clap_host_sample_rates` job.**
+/// A handover *into* a rate-mismatched model must not crossfade against the silence that model's
+/// resampler is primed with.
+///
+/// # The mechanism
+///
+/// `SlotResampler::new` puts one engine block of silence in the incoming slot's output FIFO —
+/// deliberately, and load-bearing since M9b: it is what makes the slot's actual delay equal the
+/// 640 samples it reports. The consequence nothing had measured is that the slot's first 640
+/// outputs *are* that silence, so an equal-power fade started at the install spends its first two
+/// thirds blending against nothing: `outgoing * cos(theta)` alone, reaching `cos(60 deg)` = 0.5
+/// at frame 640. A −6 dB, 13 ms sag in the middle of every handover into a resampled model,
+/// which is FR-NAM-070's "shall not ... glitch" clause failing on precisely the path D-9.2's
+/// resampler exists for.
+///
+/// # Why the same model on both sides
+///
+/// Because it makes the correct answer exact rather than approximate. FR-NAM-070 specifies an
+/// **equal-power** crossfade; between two identical, sample-aligned signals that law gives
+/// `level * (cos(theta) + sin(theta))`, which is `>= level` everywhere on `[0, pi/2]` and peaks
+/// at `sqrt(2)`. So the envelope of a reload of the same model may rise, and may not fall — no
+/// tolerance-chasing, and no dependence on how two different models happen to compare in level.
+/// It is also exactly what `crates/namir-clap/tests/clap_host_sample_rates.rs`'s loaded sweep
+/// does (its activation replay and its own `state_ext::load` both recall the same document), which
+/// is how this reached CI: with the sag inside that test's 960-frame measurement window its RMS
+/// came out 1.76 dB low.
+///
+/// Committed red-first. Before the fix the envelope of a same-model reload runs
+/// `0.1743 0.1743 ... 0.0993 → 0.1454` — a monotone sag to 0.5x over 640 frames ended by a 47%
+/// single-block jump when the incoming slot's real output finally arrives. Measured as the worst
+/// 64-frame window peak against the settled level: **−4.89 dB before, +0.00 dB after** (the
+/// instantaneous minimum is the `cos(60 deg)` the mechanism predicts, −6.0 dB at frame 640; the
+/// window this metric quantises to straddles it).
+/// **Carries no trace tag**, deliberately: FR-NAM-070 already resolves through
+/// `engine.rs`'s `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`, and
+/// this is regression evidence for one defect on that path rather than a second reading of the
+/// requirement — a tag here would add a resolution site and move the generated plan without
+/// changing what is actually verified.
+#[test]
+fn a_handover_into_a_resampled_model_never_fades_against_its_priming_silence() {
+    const FRAMES: usize = 8_192;
+    const BLOCK_N: usize = 256;
+    /// The window the fade and its priming hold occupy, generously: 640 + 960 frames plus a
+    /// block of margin, rounded up.
+    const FADE_WINDOW: usize = 2_048;
+    /// Envelope resolution. 64 frames is 1.3 cycles of the 1 kHz probe, so a window's peak is its
+    /// envelope, and 30 windows span the fade.
+    const ENVELOPE_WINDOW: usize = 64;
+    /// How far under the settled level the envelope may sit. An equal-power blend of a signal
+    /// with itself cannot go under it at all; this is float and gain-ramp slack, two orders
+    /// tighter than the 6 dB the defect produces.
+    const SAG_TOLERANCE_DB: f32 = 0.2;
+
+    let ctx = probe::ctx_at(SR, BLOCK_N, ChannelConfig::Mono);
+    let signal = probe::sine(FRAMES, 1_000.0, SR, 0.25);
+    let input = probe::duplicated(&signal, 1);
+    let model = probe::nam_model(WaveNetShape::Nano, 11, MISMATCHED_MODEL_RATE);
+
+    let mut chain = handover_probe_chain(&ctx);
+    probe::load_nam(&mut chain, Arc::clone(&model), &ctx);
+    let settling = probe::duplicated(&signal[..HANDOVER_SETTLE_FRAMES], 1);
+    probe::run(&mut chain, &settling, BLOCK_N);
+    assert!(
+        chain.latency_samples() > 0,
+        "the first model never engaged D-9.2's resampler, so this probe is measuring a handover \
+         with no priming silence in it and proves nothing"
+    );
+
+    // The same model again, installed on the first block of the measured run: a replacement
+    // handover, both of whose sides carry the identical 640-sample delay.
+    let out = probe::run_with(&mut chain, &input, BLOCK_N, |i, chain| {
+        if i == 0 {
+            probe::load_nam(chain, Arc::clone(&model), &ctx);
+        }
+    });
+    let rendered = &out[0];
+
+    let settled = probe::peak(&rendered[FRAMES - HANDOVER_SETTLE_FRAMES..]);
+    assert!(
+        settled > 1e-3,
+        "the settled level is {settled:e}, so there is no signal here to detect a sag in"
+    );
+    let worst = probe::min_window_peak(&rendered[..FADE_WINDOW], ENVELOPE_WINDOW);
+    let sag_db = 20.0 * (worst / settled).log10();
+    assert!(
+        sag_db >= -SAG_TOLERANCE_DB,
+        "reloading the same rate-mismatched model dipped the output envelope to {worst:e} \
+         against a settled {settled:e} ({sag_db:+.2} dB) inside its own handover. An equal-power \
+         fade between a signal and itself cannot go below that level at all, so what the fade is \
+         blending against for the first 640 frames is the incoming SlotResampler's priming \
+         silence, not its output"
+    );
+}
+
+/// Finding 7's other half, stated as an equality rather than a level: until the incoming slot has
+/// produced a real sample there is nothing to fade *to*, so the stage's output must be its dry
+/// input **bit for bit** — the outgoing side alone, which is what `theta == 0` already evaluates
+/// to.
+///
+/// A first load, so the outgoing side is a pure dry passthrough and "the outgoing side alone" is
+/// something a baseline chain with nothing loaded reproduces exactly. The two runs are built from
+/// the same seeds and driven with the same input, so the first frame at which they differ is the
+/// first frame at which the model contributed anything.
+///
+/// **Not in tension with [`a_first_load_is_audible_inside_its_own_fade_at_every_block_size`]**,
+/// which asserts the opposite bound — divergence within 8 frames — because that probe loads a
+/// model declaring the *engine's own* rate and says so: with no `SlotResampler` there is no
+/// pipeline to prime, this hold is zero frames long, and issue #141's onset is unchanged. The two
+/// together say the fade starts as early as it can and no earlier.
+///
+/// Committed red-first: before the fix the two runs diverge at **frame 2**, 638 frames before the
+/// incoming slot can produce anything (frames 0 and 1 agree only because `cos(theta)` is still 1.0
+/// to the bit that early). The model's contribution there is a scaling of the dry signal by
+/// `cos(theta)` — an attenuation dressed up as a fade.
+#[test]
+fn a_resampled_first_load_is_the_dry_signal_until_its_pipeline_has_primed() {
+    const FRAMES: usize = 8_192;
+    const BLOCK_N: usize = 256;
+    /// How soon after the hold the wet signal must appear. The same bound, and the same
+    /// reasoning, as [`ONSET_TOLERANCE_FRAMES`]: one frame is what the fix produces.
+    const ONSET_TOLERANCE_FRAMES: usize = 8;
+
+    let ctx = probe::ctx_at(SR, BLOCK_N, ChannelConfig::Mono);
+    let signal = probe::sine(FRAMES, 220.0, SR, 0.25);
+    let input = probe::duplicated(&signal, 1);
+    let model = probe::nam_model(WaveNetShape::Nano, 11, MISMATCHED_MODEL_RATE);
+
+    let mut baseline_chain = handover_probe_chain(&ctx);
+    let baseline = probe::run(&mut baseline_chain, &input, BLOCK_N);
+
+    let mut loaded_chain = handover_probe_chain(&ctx);
+    let loaded = probe::run_with(&mut loaded_chain, &input, BLOCK_N, |i, chain| {
+        if i == 0 {
+            probe::load_nam(chain, Arc::clone(&model), &ctx);
+        }
+    });
+
+    // Read once the handover has settled: `NamStage::latency_samples` reports the *outgoing* slot
+    // for the whole fade, so this is the figure only after `active` has flipped onto the model.
+    let hold = loaded_chain.latency_samples() as usize;
+    assert!(
+        hold > 0,
+        "the model never engaged D-9.2's resampler, so there is no priming hold to measure"
+    );
+
+    let onset = first_divergence(&baseline[0], &loaded[0])
+        .expect("the loaded run never diverged from the baseline at all");
+    assert!(
+        onset >= hold,
+        "a model whose pipeline cannot produce a real sample for {hold} frames changed the \
+         output at frame {onset}. What it contributed there was the incoming SlotResampler's \
+         priming silence, faded in at cos(theta) against the dry signal"
+    );
+    assert!(
+        onset <= hold + ONSET_TOLERANCE_FRAMES,
+        "the wet signal first appears at frame {onset}, {} frames after the {hold}-frame hold \
+         its own pipeline needs — the fade is starting later than it can",
+        onset - hold
+    );
 }
