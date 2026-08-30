@@ -12,9 +12,11 @@
 //! ```
 //!
 //! * **Default** — one line per device: the endpoint name, whether it is the host default, and
-//!   whether it would grant exclusive mode at `<sample-rate-hz>` (48000 unless given). This is the
-//!   form the FR-UI-070 and FR-IO-020 scripts want, because both need a device *name* and one
-//!   needs a device that **refuses** exclusive mode.
+//!   whether it would grant exclusive mode at `<sample-rate-hz>` (48000 unless given), **at the
+//!   channel count `namir_app::app::run` would actually open that endpoint with** (see
+//!   [`app_channel_count`]: 1 for a mono capture endpoint, not the 2 this listing hard-coded until
+//!   that function existed). This is the form the FR-UI-070 and FR-IO-020 scripts want, because
+//!   both need a device *name* and one needs a device that **refuses** exclusive mode.
 //! * **`--verbose`** — additionally prints every configuration the device reports and sweeps
 //!   [`PROBE_RATES_HZ`] for exclusive-mode support at every channel count reported. Run this on
 //!   the reference machine before `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`: it
@@ -125,32 +127,66 @@ fn report(
     println!("  {direction} devices ({}):", devices.len());
     for device in devices {
         let default = if device.is_default { " [default]" } else { "" };
-        let exclusive = match backend.supports_exclusive(host, device, probe_params(rate, 2)) {
+        // Enumerated for every device now, not only under `--verbose`: the concise line's probe
+        // needs a channel count, and the only honest one is the count `namir_app::app::run` would
+        // negotiate for this endpoint (below).
+        let configs = match direction {
+            "input" => backend.input_configs(host, device),
+            _ => backend.output_configs(host, device),
+        };
+        let configs = match configs {
+            Ok(configs) => configs,
+            Err(e) => {
+                // Exactly what `app::run` does with this failure -- it calls
+                // `configs_of(..).unwrap_or_default()` -- so the negotiation below falls through to
+                // the same one-channel answer the app would open with. The error is still
+                // printed: a device whose formats cannot be read is worth seeing in a manual run.
+                println!("      configs error: {e}");
+                Vec::new()
+            }
+        };
+        let channels = app_channel_count(direction, &configs, rate);
+        let exclusive = match backend.supports_exclusive(host, device, probe_params(rate, channels))
+        {
             ExclusiveModeOutcome::Engaged => "exclusive ok",
             ExclusiveModeOutcome::Unsupported => "shared-only",
         };
         println!(
-            "    \"{}\"{default}  -- {exclusive} at {rate} Hz",
+            "    \"{}\"{default}  -- {exclusive} at {rate} Hz, {channels} ch",
             device.name
         );
 
         if !verbose {
             continue;
         }
-        let configs = match direction {
-            "input" => backend.input_configs(host, device),
-            _ => backend.output_configs(host, device),
-        };
-        match configs {
-            Ok(configs) => {
-                for c in &configs {
-                    print_config(c);
-                }
-                print_exclusive_sweep(backend, host, device, &configs);
-            }
-            Err(e) => println!("      configs error: {e}"),
+        for c in &configs {
+            print_config(c);
         }
+        print_exclusive_sweep(backend, host, device, &configs);
     }
+}
+
+/// The channel count [`namir_app::app::run`] would open this endpoint with at `rate` — the whole
+/// point of the concise listing's probe, which asked with a hard-coded `2` until this pass.
+///
+/// **Why that was wrong and not merely approximate.** `app::run` negotiates each direction's
+/// channel count from that device's own reported configurations
+/// ([`namir_app::device_state::negotiate_channels`]), asking for the smallest count that meets the
+/// engine's minimum: **1** for the capture side, **2** for playback. A mono capture endpoint — an
+/// instrument input, which is the device this product is for — is therefore opened at one channel
+/// by the application and was probed at two by this example, and a device that grants exclusive
+/// mode at one channel and refuses it at two was reported `shared-only`. That output is what
+/// `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` tells its reader to trust when choosing
+/// a device, so the error propagated into a manual run's conclusions.
+///
+/// Calls `negotiate_channels` rather than restating its rule, and mirrors `app::run`'s own
+/// `.unwrap_or(1)` for the case where no reported configuration covers `rate` — the two must agree
+/// by construction, since agreeing is the only property this function has.
+fn app_channel_count(direction: &str, configs: &[SupportedConfigRange], rate: u32) -> u16 {
+    // `app::run`'s two literals: 1 for the input's mono capture read, 2 for the stereo output
+    // write. Named here rather than inlined so the asymmetry is legible at the call site.
+    let minimum = if direction == "input" { 1 } else { 2 };
+    namir_app::device_state::negotiate_channels(configs, rate, minimum).unwrap_or(1)
 }
 
 /// What the probe asks with: the backend's own default buffer size, and `ShareMode::Exclusive`

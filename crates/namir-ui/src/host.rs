@@ -244,6 +244,21 @@ pub enum UiIntent {
     /// name that is illegal as a filename, or one that would overwrite an existing preset, is the
     /// host's to reject (and to report through a [`UiNotice`]), since only the host knows the
     /// filesystem it is about to write to.
+    ///
+    /// **What "reject an overwrite" has to mean here, since no dialog is available.** This crate
+    /// cannot open one -- D-5.1 puts `namir-platform` out of its reach -- and NFR-PORT-030's "no
+    /// blocking dialog on the path of any audio-affecting operation" rules a modal out of the row
+    /// that also carries the recall control. So a host cannot ask "replace it?" and wait, and this
+    /// intent deliberately carries no `overwrite` flag for it to answer with. The obligation is
+    /// instead: the **first** `SavePreset` naming a preset that already exists writes nothing and
+    /// reports a [`UiNotice`]; the **same name dispatched again** is the confirmation, and writes.
+    /// That keeps a destructive save deliberate with no modal, no second intent and no view state,
+    /// which is also what lets one view serve both products.
+    ///
+    /// The obligation was documented long before either host met it: until it was built in
+    /// `namir-app`'s `AppHost`, typing the name of an existing preset destroyed it with no
+    /// confirmation, no notice and no undo. `namir-clap`'s `ClapUiHost` still saves on the first
+    /// press -- a real gap against this paragraph, stated here rather than left to be rediscovered.
     SavePreset {
         /// The preset's name, as typed.
         name: String,
