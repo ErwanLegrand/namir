@@ -76,7 +76,7 @@ mod support;
 
 #[cfg(feature = "host-ext-tests")]
 mod host_ext {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     use clack_extensions::latency::PluginLatency;
@@ -180,13 +180,43 @@ mod host_ext {
         }
     }
 
-    /// The bytes a host hands to `clap_plugin_state.load`. Built through the real
-    /// `State`/`Document` writers, so the base64 encoding is the format's own rather than this
-    /// file's (`namir-clap` has no `base64` dependency, and should not gain one for a test).
-    fn state_document_bytes(model: &[u8]) -> Vec<u8> {
+    /// The same reference as [`embedded_nam_reference`], but resolvable only through
+    /// FR-STATE-070's *second* candidate — an absolute path on disk, with nothing embedded to fall
+    /// back to. Used by the one test that needs the model to be able to *stop* resolving (issue
+    /// #145's finding 8): an embedded copy travels with the document and can never go missing.
+    fn external_nam_reference(model: &[u8], path: &Path) -> FileRef {
+        FileRef {
+            hash: ContentHash::of(model),
+            library_relative: None,
+            absolute: Some(path.to_string_lossy().into_owned()),
+            display_name: "fr-clap-040-external-44k1.nam".to_string(),
+            embedded: None,
+        }
+    }
+
+    /// The bytes a host hands to `clap_plugin_state.load`, for a document naming `nam` and nothing
+    /// else. Built through the real `State`/`Document` writers, so the base64 encoding is the
+    /// format's own rather than this file's (`namir-clap` has no `base64` dependency, and should
+    /// not gain one for a test).
+    fn state_document_for(nam: FileRef) -> Vec<u8> {
         let mut state = State::defaults();
-        state.nam = Some(embedded_nam_reference(model));
+        state.nam = Some(nam);
         state.write_onto(&Document::empty()).to_pretty_bytes()
+    }
+
+    fn state_document_bytes(model: &[u8]) -> Vec<u8> {
+        state_document_for(embedded_nam_reference(model))
+    }
+
+    /// A directory of this test binary's own, named for `label` and for the process, so two tests
+    /// (or two concurrent runs) never share one. Nothing here is under any library root — the
+    /// reference below is resolved by absolute path.
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("namir-clap-latency-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the temporary directory must be creatable");
+        dir
     }
 
     /// A resolver that finds nothing — every external candidate misses, exactly as it does inside
@@ -424,6 +454,158 @@ mod host_ext {
         );
 
         drop(instance); // `clap_plugin.destroy`
+    }
+
+    /// **Issue #145's finding 8: a carried figure that the replay no longer produces.**
+    ///
+    /// `SharedInner::carried_latency` (issue #93) lets an activation keep reporting the figure the
+    /// host already has, on the reasoning that the replay this activation dispatches will converge
+    /// on it again. That reasoning is a *prediction*, and it can be wrong: the model the figure was
+    /// measured against can be gone by the time the replay looks for it. Nothing then moves the
+    /// engine's own reading — it is `0` before the replay and `0` after it — so the audio thread's
+    /// change detection, which compares against that reading and nothing else, stays silent, and
+    /// the host goes on compensating for a delay the chain does not have, for the rest of the
+    /// session.
+    ///
+    /// The reproduction is the reviewer's own scenario, with the model on disk rather than embedded
+    /// in the document (an embedded copy cannot go missing, which is exactly the property that
+    /// makes it useless here): converge on the 44.1 kHz model's latency, honour the restart the
+    /// plugin asks for, delete the file while the plugin is inactive, and reactivate. The reference
+    /// is untouched, so `carried_latency`'s two conditions are both still met and the stale figure
+    /// is carried onto a chain that will never produce it.
+    ///
+    /// Asserted the way `a_rate_mismatched_model_asks_for_one_restart_and_then_settles` asserts its
+    /// own bound: the correction must arrive, and it must also *terminate* — the restart it asks
+    /// for must be the last one.
+    #[test]
+    fn a_carried_latency_figure_is_corrected_when_the_replay_can_no_longer_produce_it() {
+        /// Blocks processed after the correction has landed, to give a plugin that is still
+        /// churning a chance to ask for another restart before this test concludes it has settled.
+        const SETTLE_BLOCKS: usize = 64;
+
+        let model = model_json_bytes();
+        let expected = engine_latency_for(&model);
+        assert!(
+            expected > 0,
+            "a {MODEL_RATE_HZ} Hz model in a {DEFAULT_SAMPLE_RATE} Hz engine must engage D-9.2's \
+             resampler; with zero there is no carried figure for this test to correct"
+        );
+
+        let dir = temp_dir("carried");
+        let path = dir.join("fr-clap-040-external-44k1.nam");
+        std::fs::write(&path, &model).expect("the model file must be writable");
+        let document = state_document_for(external_nam_reference(&model, &path));
+
+        let (_entry, mut instance) = instantiate_default();
+        let latency = require_plugin_extension::<PluginLatency>(&mut instance);
+        let state = require_plugin_extension::<PluginState>(&mut instance);
+
+        let mut processor = activate_default(&mut instance)
+            .start_processing()
+            .expect("processing must start");
+        let mut bufs = StereoBuffers::default_size();
+        let tone = sine_1k(bufs.max_frames(), DEFAULT_SAMPLE_RATE, AMPLITUDE);
+        bufs.fill_input(|_channel, frame| tone[frame]);
+
+        // The same warm-up the test above runs, and for the same reason: the first `process()` of
+        // an instance may request a callback for D-13.2's thread-priority outcome.
+        for _ in 0..4 {
+            audio_section(|| bufs.process_block(&mut processor, BLOCK))
+                .expect("a warm-up block must process");
+        }
+        instance.access_shared_handler(|shared| shared.reset_request_counts());
+
+        // -- The model loads from its file, and the host is told what it costs ----------------
+        let mut reader = document.as_slice();
+        state
+            .load(&mut main_thread_handle(&mut instance), &mut reader)
+            .expect("the host-driven state load must succeed");
+        process_until(&mut bufs, &mut processor, LIMB_TIMEOUT, "load", || {
+            instance.access_shared_handler(|shared| shared.callback_requests()) > 0
+        });
+        assert_eq!(
+            latency.get(&mut main_thread_handle(&mut instance)),
+            expected,
+            "the model must load through its absolute-path candidate -- with nothing embedded, a \
+             miss here means the reference never resolved and the rest of this test is vacuous"
+        );
+        instance.call_on_main_thread_callback();
+        assert_eq!(
+            instance.access_shared_handler(|shared| shared.restart_requests()),
+            1,
+            "the first latency change must produce exactly one restart request"
+        );
+
+        // -- The host honours the restart. The model disappears while it is inactive -----------
+        let stopped = processor.stop_processing();
+        instance.deactivate(stopped);
+        std::fs::remove_file(&path).expect("the model file must be removable");
+        instance.access_shared_handler(|shared| shared.reset_request_counts());
+
+        let mut processor = activate_default(&mut instance)
+            .start_processing()
+            .expect("processing must restart");
+        assert_eq!(
+            latency.get(&mut main_thread_handle(&mut instance)),
+            expected,
+            "issue #93: the activation carries the figure the host already has rather than the \
+             fresh engine's transient zero. That is the starting point of this test, not its bug"
+        );
+
+        // -- The replay finds nothing, so the carried figure is wrong and must be retracted -----
+        process_until(
+            &mut bufs,
+            &mut processor,
+            LIMB_TIMEOUT,
+            "correction",
+            || instance.access_shared_handler(|shared| shared.callback_requests()) > 0,
+        );
+        instance.call_on_main_thread_callback();
+        assert_eq!(
+            latency.get(&mut main_thread_handle(&mut instance)),
+            0,
+            "the model the carried figure was measured against is gone and the chain resamples \
+             nothing, so the plugin must correct the figure downwards -- otherwise the host \
+             compensates {expected} samples for a passthrough chain for the rest of the session"
+        );
+        assert_eq!(
+            instance.access_shared_handler(|shared| shared.restart_requests()),
+            1,
+            "a latency the host has been told is wrong is exactly what a restart request is for"
+        );
+
+        // -- ...and honouring *that* restart asks for no further one ---------------------------
+        let stopped = processor.stop_processing();
+        instance.deactivate(stopped);
+        instance.access_shared_handler(|shared| shared.reset_request_counts());
+        let mut processor = activate_default(&mut instance)
+            .start_processing()
+            .expect("processing must restart a second time");
+        assert_eq!(
+            latency.get(&mut main_thread_handle(&mut instance)),
+            0,
+            "the corrected figure is the one the next activation carries"
+        );
+        for _ in 0..SETTLE_BLOCKS {
+            audio_section(|| bufs.process_block(&mut processor, BLOCK))
+                .expect("a settled block must process");
+            if instance.access_shared_handler(|shared| shared.callback_requests()) > 0 {
+                instance.access_shared_handler(|shared| shared.reset_request_counts());
+                instance.call_on_main_thread_callback();
+            }
+            assert_eq!(
+                instance.access_shared_handler(|shared| shared.restart_requests()),
+                0,
+                "the correction must settle, exactly as issue #93's own fix must: a plugin that \
+                 keeps asking to be restarted for a figure that is already right is the same loop \
+                 from the other side"
+            );
+        }
+
+        let stopped = processor.stop_processing();
+        instance.deactivate(stopped);
+        drop(instance); // `clap_plugin.destroy`
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Processes blocks until `done` returns `true`, returning how many it took.
