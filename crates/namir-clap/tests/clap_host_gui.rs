@@ -427,11 +427,17 @@ fn declining_the_gui_renders_bit_identical_audio_to_opening_it() {
 /// the plugin's `Result` is wrapped as the closure's *success value*, so the boolean the host
 /// receives says only "the call did not panic". `set_scale`, `show` and `hide` in that same file
 /// are all `Ok(...is_ok())`, so this is one function's defect, not the crate's convention — and
-/// this workspace pins clack exactly (D-14.2, R-2), so it is not this crate's to fix.
+/// it is not this crate's to fix.
 ///
-/// The day that pin moves to a version that transmits the answer, this test fails and says so,
-/// which is exactly what a recorded gap is for. What *is* asserted unconditionally is the part
-/// that matters to a host either way: nothing about the editor moved.
+/// **Upstream status (issue #144, as of 2026-08-30): not reported.** Nothing in `prokopyl/clack`
+/// mentions `set_size`, and crates.io has only 0.1.0 and 0.1.1, so there is neither a ticket to
+/// track nor a release to move to. Note also what actually holds the version: `Cargo.toml`'s
+/// `"0.1.1"` is `^0.1.1`, so the trigger is a `Cargo.lock` update, not a manifest edit.
+///
+/// The day that lockfile moves to a version that transmits the answer, the first assertion below
+/// fails and says so, which is exactly what a recorded gap is for. What *is* asserted
+/// unconditionally is the part that matters to a host either way: nothing about the editor
+/// moved.
 #[cfg(feature = "host-ext-tests")]
 #[test]
 fn a_refused_set_size_changes_nothing_and_clack_0_1_1_swallows_the_refusal() {

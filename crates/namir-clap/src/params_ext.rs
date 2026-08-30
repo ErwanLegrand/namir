@@ -340,6 +340,17 @@ mod tests {
     /// decoder rather than in what this plugin emits; checking the header's own `type_id` is both
     /// the accurate assertion and the one that will not silently start passing for the wrong
     /// reason if that decoder is ever fixed.
+    ///
+    /// **Upstream status (issue #144, as of 2026-08-30): reported as
+    /// [prokopyl/clack#97](https://github.com/prokopyl/clack/issues/97)** (opened 2026-08-16,
+    /// open — do not refile). A fix exists in flight as
+    /// [prokopyl/clack#99](https://github.com/prokopyl/clack/pull/99), adding exactly the two
+    /// missing arms, but it is unmerged, unreviewed and targets the 0.2 line, so it reaches no
+    /// 0.1.1 dependent; crates.io publishes only 0.1.0 and 0.1.1.
+    ///
+    /// **This test would not notice a fixed clack** — `as_event` reads the header and keeps
+    /// working either way, which is exactly why it was chosen. Noticing is
+    /// [`clack_0_1_1_cannot_decode_a_gesture_event_through_core_event_space`]'s job, below.
     #[test]
     fn a_gui_originated_change_comes_out_as_a_gesture_wrapped_automation_point() {
         use clack_plugin::events::event_types::{
@@ -385,6 +396,61 @@ mod tests {
             again.is_empty(),
             "a change already reported must not be reported again every block"
         );
+    }
+
+    /// **The tripwire for [prokopyl/clack#97](https://github.com/prokopyl/clack/issues/97), and
+    /// the reason the test above can afford to be quiet about it.**
+    ///
+    /// `clack-common` 0.1.1's `CoreEventSpace::from_unknown` (`src/events/spaces/core.rs:66-84`)
+    /// has no arm for `ParamGestureBeginEvent::TYPE_ID` or `ParamGestureEndEvent::TYPE_ID`, so a
+    /// gesture event this crate emits — well-formed, as the first assertion in the loop below
+    /// re-establishes through `UnknownEvent::as_event` — decodes to `None` through
+    /// `as_core_event()`.
+    /// That is why `emit_gui_param_changes`' own test asserts through `as_event` and why
+    /// `crate::audio`'s input path can only ever match `CoreEventSpace::ParamValue`.
+    ///
+    /// Asserting the *gap itself* is what makes it retire on its own. The `as_event` assertions
+    /// keep passing once the decoder is fixed (issue #144: a `cargo update` to a fixed 0.1.2 is
+    /// all it takes, since `Cargo.toml`'s `"0.1.1"` is `^0.1.1` and the lockfile is what holds
+    /// the version), so without this test nothing anywhere would report that the workaround had
+    /// become unnecessary. When this fails, delete it, and prefer `as_core_event()` at both
+    /// sites.
+    #[test]
+    fn clack_0_1_1_cannot_decode_a_gesture_event_through_core_event_space() {
+        use clack_plugin::events::io::EventBuffer;
+
+        let mirror = crate::param_mirror::ParamMirror::new();
+        mirror.set_by_key_from_gui(namir_params::stages::trim::GAIN_DB.key, 4.5);
+
+        let mut buffer = EventBuffer::with_capacity(8);
+        emit_gui_param_changes(&mirror, &mut buffer.as_output());
+        let events: Vec<&clack_plugin::events::UnknownEvent> = buffer.iter().collect();
+        assert_eq!(events.len(), 3, "begin + value + end");
+
+        // The one event in the trio 0.1.1 does decode, so a failure below is the decoder's two
+        // missing arms and not this test having lost its way to the event stream.
+        assert!(
+            matches!(
+                events[1].as_core_event(),
+                Some(CoreEventSpace::ParamValue(_))
+            ),
+            "the value event decodes through CoreEventSpace in every version"
+        );
+
+        for (name, event) in [("begin", events[0]), ("end", events[2])] {
+            assert!(
+                event.as_event::<ParamGestureBeginEvent>().is_some()
+                    || event.as_event::<ParamGestureEndEvent>().is_some(),
+                "the gesture {name} event is well-formed: the header says what it is"
+            );
+            assert!(
+                event.as_core_event().is_none(),
+                "clack 0.1.1's CoreEventSpace::from_unknown drops gesture events \
+                 (prokopyl/clack#97; fix in flight as prokopyl/clack#99, targeting 0.2). If this \
+                 now decodes, the lockfile has moved to a version that fixes it: delete this test \
+                 and read the gesture {name} event through as_core_event() instead of as_event"
+            );
+        }
     }
 
     /// The other half of the same rule: a change that came *from* the host is not sent back to it.
