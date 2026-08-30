@@ -90,7 +90,12 @@ impl<'a> NamirMainThread<'a> {
     }
 
     fn request_param_flush_if_pending(&mut self) {
-        if !self.shared.inner.params.has_gui_pending() {
+        // A gesture this instance opened and could not close counts as pending work too (issue
+        // #145): the change itself may have reached the host perfectly well, and the only thing
+        // still owed is the `ParamGestureEnd` that `crate::params_ext`'s
+        // `emit_gui_param_changes` will push at the head of its next call. Without this an
+        // inactive plugin with nothing left to report would never ask for that call.
+        if !self.shared.inner.params.has_gui_pending() && !self.shared.inner.gestures.has_open() {
             return;
         }
         if let Some(params) = self.host_params {

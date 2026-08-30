@@ -387,16 +387,27 @@ fn run(ctx: WorkerContext, commands: mpsc::Receiver<AppCommand>, events: mpsc::S
                 // `namir-clap`'s `worker_jobs::spawn_load_library_entry` already had exactly this
                 // shape; this is the same three lines, so the two shells record the same reference
                 // for the same file.
-                let bytes = match std::fs::read(&path) {
+                //
+                // **`read_file_bounded`, not `std::fs::read` (#145).** Reading the bytes here
+                // rather than inside `Instance::load` took this path off `LoadSource::File`, which
+                // was the only route through NFR-SEC-020's ceiling *and* through the `is_file()`
+                // check issue #107 added — so the hash came at the price of both. It does not have
+                // to: the bound belongs to the read, not to the `LoadSource`, and
+                // `namir_worker::read_file_bounded` is `pub` for exactly this caller. Without it a
+                // 4 GB `.wav` under a library root is read whole into memory before a parser
+                // rejects it, and a named pipe at that path blocks this thread — the *only* worker
+                // thread — leaving every later `SaveState`/`ListPresets`/`RescanLibrary` queued
+                // behind it for good.
+                let bytes = match namir_worker::read_file_bounded(&path) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = events.send(AppEvent::LoadFinished {
                             target,
                             source: source_desc,
-                            outcome: LoadOutcomeSummary::Failed(namir_worker::WorkerError::new(
-                                namir_worker::error_codes::FILE_UNREADABLE,
-                                e.to_string(),
-                            )),
+                            // Whole, with its own catalogue id (issue #39): `read_file_bounded`
+                            // already distinguishes unreadable from too-large from not-a-regular-
+                            // file, and flattening the three back into one would undo that.
+                            outcome: LoadOutcomeSummary::Failed(e),
                         });
                         continue;
                     }
@@ -472,7 +483,12 @@ fn run(ctx: WorkerContext, commands: mpsc::Receiver<AppCommand>, events: mpsc::S
                 let _ = events.send(AppEvent::StateSaved { path, error });
             }
             AppCommand::LoadState(path) => {
-                let bytes = match std::fs::read(&path) {
+                // A user-chosen path, so exactly as untrusted as a library entry and read through
+                // the same bounded reader (#145). `namir_state::Document::parse` does enforce
+                // `MAX_DOCUMENT_BYTES`, but only once the whole file is already in memory — which
+                // is the allocation NFR-SEC-020 exists to refuse — and it says nothing at all
+                // about a path that is not a regular file.
+                let bytes = match namir_worker::read_file_bounded(&path) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = events.send(AppEvent::StateLoaded {
@@ -507,5 +523,141 @@ fn run(ctx: WorkerContext, commands: mpsc::Receiver<AppCommand>, events: mpsc::S
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use namir_core::{ChannelConfig, SampleRate};
+    use namir_engine::{PrepareContext, RingCapacities, build_default_chain, split};
+    use namir_worker::{EngineConfig, Instance, MAX_FILE_BYTES, ResourceCache};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "namir-app-worker-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A real worker thread wired to a real (no-hardware) engine — the same construction
+    /// `crate::host`'s own tests use, minus the `AppHost` on top, because these tests drive
+    /// [`AppCommand`]s directly.
+    ///
+    /// The `AudioEngine` is returned rather than dropped: dropping it retires the ring the
+    /// worker's `Instance` submits into, and every load would then report `NotDelivered`.
+    fn spawn_worker(dir: &Path) -> (WorkerHandle, namir_engine::AudioEngine) {
+        let ctx = PrepareContext::new(SampleRate::new(48_000).unwrap(), 64, ChannelConfig::Stereo)
+            .unwrap();
+        let chain = build_default_chain(&ctx).unwrap();
+        let (engine, endpoint) = split(chain, RingCapacities::default());
+        let instance = SharedInstance::new(Instance::new(EngineConfig { ctx }, endpoint));
+        let (library, _warnings) = LibraryService::open_at(dir);
+        let roots = library.roots().to_vec();
+        let handle = WorkerHandle::spawn(WorkerContext {
+            instance,
+            cache: Arc::new(ResourceCache::new()),
+            library: Arc::new(library),
+            pool: ThreadPool::with_threads(1),
+            library_roots: roots,
+            state: Arc::new(Mutex::new(State::defaults())),
+        });
+        (handle, engine)
+    }
+
+    /// Waits for the first event the worker reports that `pick` accepts. The worker thread is
+    /// asynchronous by construction, so a test has to wait for it rather than assume; five seconds
+    /// is far longer than any of these commands takes and short enough to fail rather than hang CI.
+    fn wait_for<T>(worker: &WorkerHandle, mut pick: impl FnMut(&AppEvent) -> Option<T>) -> T {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            for event in worker.drain_events() {
+                if let Some(found) = pick(&event) {
+                    return found;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the worker reported no matching event within the deadline");
+    }
+
+    /// A sparse file one byte past NFR-SEC-020's ceiling. `set_len` rather than writing 256 MiB:
+    /// the bound is checked against the file's *length*, and every filesystem this project targets
+    /// leaves the extension unallocated — the same construction `namir-worker`'s own
+    /// `read_file_bounded` test uses.
+    fn oversized_file(path: &Path) {
+        let file = std::fs::File::create(path).unwrap();
+        file.set_len(MAX_FILE_BYTES as u64 + 1).unwrap();
+    }
+
+    /// **Issue #145, finding 2.** `LoadLibraryEntry` reads the file itself (it needs the bytes'
+    /// `ContentHash` for FR-STATE-060/-070's `FileRef`, which `LoadSource::File` never hands back)
+    /// and that read has to be `namir_worker::read_file_bounded`, not a bare `std::fs::read`.
+    /// With the bare read, a 4 GB `.wav` in a library root was pulled whole into memory and only
+    /// then rejected by a parser; NFR-SEC-020's ceiling has to refuse it before a byte is read.
+    //
+    // Only the byte-ceiling half is asserted here: the non-regular-file half (a FIFO or character
+    // device, which blocks this thread forever and with it every later command queued behind it)
+    // has no portable construction, and D-5.1 confines `#[cfg(unix)]` to `namir-platform`. No
+    // `trace:` tag either -- NFR-SEC-020's ledger entry is not this test's to move.
+    #[test]
+    fn an_oversized_library_entry_is_refused_before_it_is_read() {
+        let dir = temp_dir("oversized_entry");
+        let (worker, _engine) = spawn_worker(&dir);
+        let path = dir.join("Library").join("huge.nam");
+        oversized_file(&path);
+
+        worker.send(AppCommand::LoadLibraryEntry(path));
+        let error = wait_for(&worker, |event| match event {
+            AppEvent::LoadFinished {
+                outcome: LoadOutcomeSummary::Failed(e),
+                ..
+            } => Some(e.clone()),
+            _ => None,
+        });
+
+        assert_eq!(
+            error.code.id,
+            namir_worker::error_codes::FILE_TOO_LARGE.id,
+            "an oversized library entry must be refused by NFR-SEC-020's ceiling, not read \
+             whole into memory and then refused by a parser: got {error}"
+        );
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Issue #145, finding 2**, the preset half: `LoadState` reads a user-chosen path, so it is
+    /// exactly as untrusted as a library entry and goes through the same bounded reader.
+    /// `namir_state::Document::parse` does check `MAX_DOCUMENT_BYTES`, but only *after* the whole
+    /// file is already in memory — which is the allocation NFR-SEC-020 exists to prevent, and is
+    /// no defence at all against a path that is not a regular file.
+    //
+    // Only the byte-ceiling half is asserted here: the non-regular-file half (a FIFO or character
+    // device, which blocks this thread forever and with it every later command queued behind it)
+    // has no portable construction, and D-5.1 confines `#[cfg(unix)]` to `namir-platform`. No
+    // `trace:` tag either -- NFR-SEC-020's ledger entry is not this test's to move.
+    #[test]
+    fn an_oversized_preset_is_refused_before_it_is_read() {
+        let dir = temp_dir("oversized_preset");
+        let (worker, _engine) = spawn_worker(&dir);
+        let path = dir.join("huge.namirpreset");
+        oversized_file(&path);
+
+        worker.send(AppCommand::LoadState(path));
+        let error = wait_for(&worker, |event| match event {
+            AppEvent::StateLoaded { error, .. } => error.clone(),
+            _ => None,
+        });
+
+        assert!(
+            error.contains(namir_worker::error_codes::FILE_TOO_LARGE.id),
+            "an oversized preset must be refused by NFR-SEC-020's ceiling before the read, not \
+             after `Document::parse` has already been handed 256 MiB: got {error}"
+        );
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

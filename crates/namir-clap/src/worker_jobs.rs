@@ -35,13 +35,19 @@ pub(crate) fn spawn_load_library_entry(shared: Arc<SharedInner>, path: PathBuf) 
             }
         };
 
-        let bytes = match std::fs::read(&path) {
+        // **`read_file_bounded`, not `std::fs::read` (#145).** This job reads the bytes itself
+        // because it needs their `ContentHash` for `record_reference` below (FR-STATE-060/-070),
+        // which `LoadSource::File` never hands back -- but `LoadSource::File` was also the only
+        // route through NFR-SEC-020's ceiling and through the `is_file()` check issue #107 added,
+        // so taking the bytes this way silently dropped both. The bound belongs to the read, not
+        // to the `LoadSource`; `namir_worker::read_file_bounded` is `pub` for this caller.
+        let bytes = match namir_worker::read_file_bounded(&path) {
             Ok(b) => b,
+            // Whole, with its own catalogue id: `read_file_bounded` already distinguishes
+            // unreadable from too-large from not-a-regular-file, and collapsing the three back
+            // into `FILE_UNREADABLE` would undo that (issue #39's rule at this boundary).
             Err(e) => {
-                shared.push_notice(
-                    namir_worker::error_codes::FILE_UNREADABLE,
-                    format!("{}: {e}", path.display()),
-                );
+                shared.push_notice(e.code, e.detail);
                 return;
             }
         };
@@ -194,13 +200,16 @@ pub(crate) fn spawn_recall_preset(shared: Arc<SharedInner>, path: PathBuf) {
     let inner = Arc::clone(&shared);
     shared.pool.spawn(move || {
         let shared = inner;
-        let bytes = match std::fs::read(&path) {
+        // Bounded, like every other read either shell makes off a user-chosen path (#145). A
+        // `.namirpreset` path is exactly as untrusted as a library entry: `namir_state::Document::
+        // parse` does enforce `MAX_DOCUMENT_BYTES`, but only once the whole file is already in
+        // memory -- the allocation NFR-SEC-020 exists to refuse -- and it says nothing at all
+        // about a path that is not a regular file, where a bare `std::fs::read` blocks this pool
+        // thread for as long as no writer appears.
+        let bytes = match namir_worker::read_file_bounded(&path) {
             Ok(bytes) => bytes,
             Err(e) => {
-                shared.push_notice(
-                    namir_worker::error_codes::FILE_UNREADABLE,
-                    format!("{}: {e}", path.display()),
-                );
+                shared.push_notice(e.code, e.detail);
                 return;
             }
         };
@@ -237,6 +246,20 @@ pub(crate) fn spawn_recall(shared: Arc<SharedInner>) {
         if state.nam.is_none() && state.ir.is_none() {
             return; // Nothing to replay; the common case for a brand-new instance.
         }
+        // **The index has to be *there* before a resolver is built over it (#145).** M14 deferred
+        // the load, so `library_snapshot()` is an empty `Index` for the first fraction of a second
+        // of an instance's life -- and both callers of this function, a host `state` load and
+        // every `activate`, land inside that window. A resolver over an empty index cannot try
+        // FR-STATE-070's `library_relative` or hash candidates at all, so a preset whose `.nam`
+        // was renamed or moved *inside* the library reported `state.reference.not_found` on
+        // project load, and `namir_ui::push_deduplicated` then made the notice stick. This is the
+        // same block `LibraryService::start_scan` performs inside its own pool job, for the same
+        // reason and with the same cost: once per process, on a thread that is allowed to block.
+        // `namir-app` has always done it (`crate::app`), which made this an FR-CFG-020 divergence
+        // as well.
+        if let Some(loader) = shared.library_loader() {
+            loader.ensure_loaded();
+        }
         let index = shared.library_snapshot().index;
         // **Issue #96: the real roots, off the `LibraryService` this instance already holds.**
         // This was a hardcoded `Vec::new()`, so `LibraryResolver::resolve_library_relative` could
@@ -269,7 +292,17 @@ pub(crate) fn spawn_recall(shared: Arc<SharedInner>) {
     });
 }
 
+/// Which stage the library entry at `path` belongs to, per the index's own recorded
+/// [`namir_library::ItemKind`], or `None` if the library does not know this path.
+///
+/// **Blocks for the deferred index load first (#145)** — see `spawn_recall` above for the full
+/// argument. Without it a double-click in the first moments of an instance's life consulted an
+/// empty index and was reported back to the user as "not a recognised library entry". Called only
+/// from `spawn_load_library_entry`'s pool job, which is allowed to block.
 fn library_target(shared: &SharedInner, path: &Path) -> Option<Target> {
+    if let Some(loader) = shared.library_loader() {
+        loader.ensure_loaded();
+    }
     let index = shared.library_snapshot().index;
     let entry = index.get(path)?;
     Some(match entry.kind {
@@ -349,6 +382,155 @@ mod tests {
         assert!(reference.library_relative.is_none());
         assert!(reference.absolute.is_some());
 
+        let _ = std::fs::remove_dir_all(&config);
+    }
+
+    /// A saved index at the location [`namir_worker::library::LibraryService::open_at`] uses,
+    /// holding `count` entries, the last of which is `path`.
+    ///
+    /// **`count` is FR-LIB-020's own stated scale, and it is load-bearing rather than decorative.**
+    /// M14 made the index load deferred: `LibraryService::open` returns before the file has been
+    /// read, and `snapshot()` hands back an empty `Index` until a loader thread lands. A test that
+    /// wrote a three-entry index would race that thread and pass whether or not the code under
+    /// test blocks for the load. At 10 000 entries the parse is ~161 ms on the reference machine
+    /// (`namir_worker::library`'s own `Stamp` doc comment), against the microseconds between
+    /// `SharedInner::new_at` returning and the assertion below — so "the index was still loading"
+    /// is established by a five-order-of-magnitude margin rather than by hope.
+    fn saved_index_of(config: &Path, count: usize, path: &Path, hash: ContentHash) {
+        let mut index = namir_library::Index::empty();
+        for i in 0..count.saturating_sub(1) {
+            index.upsert(namir_library::LibraryEntry {
+                path: config.join("Library").join(format!("filler-{i}.nam")),
+                kind: namir_library::ItemKind::Nam,
+                size: 2,
+                mtime: namir_library::FileTime::now(),
+                hash: Some(ContentHash::of(format!("filler-{i}").as_bytes())),
+                metadata: namir_library::ItemMetadata::None,
+                origin: namir_library::Origin::Local,
+            });
+        }
+        index.upsert(namir_library::LibraryEntry {
+            path: path.to_path_buf(),
+            kind: namir_library::ItemKind::Nam,
+            size: 2,
+            mtime: namir_library::FileTime::now(),
+            hash: Some(hash),
+            metadata: namir_library::ItemMetadata::None,
+            origin: namir_library::Origin::Local,
+        });
+        let (store, _, _) = namir_library::IndexStore::open(config.join("library-index.json"));
+        store.save_atomic(&index).unwrap();
+    }
+
+    /// FR-LIB-020's scale, and the reason this figure is here rather than inline — see
+    /// [`saved_index_of`].
+    const INDEXED_ENTRIES: usize = 10_000;
+
+    /// A sparse file one byte past NFR-SEC-020's ceiling — `set_len`, not 256 MiB of writes, since
+    /// the bound is checked against the file's length.
+    fn oversized_file(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = std::fs::File::create(path).unwrap();
+        file.set_len(namir_worker::MAX_FILE_BYTES as u64 + 1)
+            .unwrap();
+    }
+
+    /// Waits for this instance to raise a notice, and returns the first one's catalogue id. Every
+    /// job in this module runs on the pool, so a test has to wait rather than assume.
+    fn wait_for_notice(shared: &SharedInner) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Some(notice) = shared.notices().first() {
+                return notice.code.id.to_string();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("this instance raised no notice within the deadline");
+    }
+
+    /// **Issue #145, finding 1.** `library_target` consults the library index from a pool job, and
+    /// M14 made that index arrive asynchronously — so it has to block for the load the way
+    /// `LibraryService::start_scan`'s own job does, rather than reading whatever `snapshot()`
+    /// happens to hold. Without that, a double-click on a library entry in the first fraction of a
+    /// second of an instance's life resolves against an empty index and is reported back as "not a
+    /// recognised library entry".
+    #[test]
+    fn a_library_entry_resolves_while_the_deferred_index_load_is_still_in_flight() {
+        let config = temp_config_dir("deferred_target");
+        let path = config.join("Library").join("jcm800.nam");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{}").unwrap();
+        saved_index_of(&config, INDEXED_ENTRIES, &path, ContentHash::of(b"{}"));
+
+        let shared = SharedInner::new_at(&config);
+        let target = library_target(&shared, &path);
+
+        assert_eq!(
+            target,
+            Some(Target::Nam),
+            "the index has this entry; a job that reads the not-yet-loaded snapshot instead \
+             reports the user's own library file as unrecognised"
+        );
+
+        shared.shutdown_workers();
+        let _ = std::fs::remove_dir_all(&config);
+    }
+
+    /// **Issue #145, finding 2**, the library-entry half. This job reads the file itself — it needs
+    /// the bytes' `ContentHash` for FR-STATE-060/-070's `FileRef`, which `LoadSource::File` never
+    /// hands back — and that read has to be `namir_worker::read_file_bounded`. With a bare
+    /// `std::fs::read` an oversized file is pulled whole into memory and only then refused by a
+    /// parser, which is NFR-SEC-020's ceiling not being applied at all.
+    #[test]
+    fn an_oversized_library_entry_is_refused_before_it_is_read() {
+        let config = temp_config_dir("oversized_entry");
+        let path = config.join("Library").join("huge.nam");
+        oversized_file(&path);
+        saved_index_of(&config, 1, &path, ContentHash::of(b""));
+
+        let shared = Arc::new(SharedInner::new_at(&config));
+        spawn_load_library_entry(Arc::clone(&shared), path);
+
+        assert_eq!(
+            wait_for_notice(&shared),
+            namir_worker::error_codes::FILE_TOO_LARGE.id,
+            "an oversized library entry must be refused by NFR-SEC-020's ceiling, not read whole \
+             into memory and then refused by a parser"
+        );
+        // The pre-fix behaviour raised no notice at all: with no live `Instance` the job took its
+        // "nothing to load into yet" branch and recorded the 256 MiB file as this instance's model
+        // reference, so the next save would have written a preset naming it.
+        assert!(
+            shared.nam_ref().is_none(),
+            "a refused file must not be recorded as this instance's model reference"
+        );
+
+        shared.shutdown_workers();
+        let _ = std::fs::remove_dir_all(&config);
+    }
+
+    /// **Issue #145, finding 2**, the preset half: a `.namirpreset` path the user chose is exactly
+    /// as untrusted as a library entry. `namir_state::Document::parse` does enforce
+    /// `MAX_DOCUMENT_BYTES`, but only once the whole file is already in memory — the allocation
+    /// NFR-SEC-020 exists to refuse — and it says nothing at all about a path that is not a
+    /// regular file.
+    #[test]
+    fn an_oversized_preset_is_refused_before_it_is_read() {
+        let config = temp_config_dir("oversized_preset");
+        let path = config.join("huge.namirpreset");
+        oversized_file(&path);
+
+        let shared = Arc::new(SharedInner::new_at(&config));
+        spawn_recall_preset(Arc::clone(&shared), path);
+
+        assert_eq!(
+            wait_for_notice(&shared),
+            namir_worker::error_codes::FILE_TOO_LARGE.id,
+            "an oversized preset must be refused before the read, not after `Document::parse` has \
+             already been handed 256 MiB"
+        );
+
+        shared.shutdown_workers();
         let _ = std::fs::remove_dir_all(&config);
     }
 }

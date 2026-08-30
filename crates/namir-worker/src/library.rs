@@ -85,6 +85,25 @@ impl ScanHandle {
     }
 }
 
+/// A `'static` handle onto one index file's deferred load — see [`LibraryService::loader`].
+///
+/// Deliberately carries nothing else: it is not a second way to read the index, only a way to wait
+/// for the one the service already owns.
+#[derive(Clone)]
+pub struct IndexLoader {
+    shared: Arc<SharedIndex>,
+}
+
+impl IndexLoader {
+    /// [`LibraryService::ensure_loaded`], from a caller that holds no `LibraryService`.
+    ///
+    /// **Blocks**, for as long as reading and parsing the index file takes. Never call it on an
+    /// audio thread or on a plugin's instantiation path; a worker-pool job is what it is for.
+    pub fn ensure_loaded(&self) {
+        self.shared.ensure_loaded();
+    }
+}
+
 /// How one [`LibraryService::start_scan`] run ended.
 #[derive(Debug, Clone)]
 pub struct ScanOutcome {
@@ -279,6 +298,22 @@ impl LibraryService {
             },
             Vec::new(),
         )
+    }
+
+    /// A cheap, `'static` handle onto this service's deferred load, for a caller that must block
+    /// for the index but may not hold the lock its own shell keeps the [`LibraryService`] behind.
+    ///
+    /// `namir-clap` is that caller (#145): its `SharedInner` holds the service in a `Mutex` the
+    /// GUI thread takes every frame for [`Self::snapshot`], so calling [`Self::ensure_loaded`]
+    /// through that lock would stall the editor for the whole parse — ~161 ms at FR-LIB-020's
+    /// 10 000 entries, which is precisely the frame stall M14 took off the instantiation path.
+    /// Taking this handle costs one `Arc` clone under that lock; the block then happens outside
+    /// it. Clone it freely: every handle for one index path names the same load, so a second
+    /// caller waits for the first rather than parsing again.
+    pub fn loader(&self) -> IndexLoader {
+        IndexLoader {
+            shared: Arc::clone(&self.shared),
+        }
     }
 
     /// Blocks until this process has the index file's contents, parsing it here if the loader

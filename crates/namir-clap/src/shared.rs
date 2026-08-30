@@ -82,11 +82,15 @@ use namir_worker::pool::ThreadPool;
 use namir_worker::{Instance, ResourceCache};
 
 use crate::param_mirror::ParamMirror;
+use crate::params_ext::GestureState;
 
 /// Everything this instance needs that has no reason to be tied to the plugin's `'a` lifetime.
 /// See this module's doc comment.
 pub(crate) struct SharedInner {
     pub(crate) params: ParamMirror,
+    /// Which parameters have a `ParamGestureBegin` outstanding with the host — see
+    /// [`crate::params_ext::GestureState`], which is the whole of the explanation.
+    pub(crate) gestures: GestureState,
     pub(crate) cache: Arc<ResourceCache>,
     pub(crate) pool: ThreadPool,
     pub(crate) instance: Mutex<Option<Instance>>,
@@ -114,6 +118,10 @@ pub(crate) struct SharedInner {
     /// The sample rate `latency_samples` was measured at, or 0 if it has never been measured.
     /// [`Self::carried_latency`] is the only reader; see its doc comment.
     pub(crate) latency_basis_rate: AtomicU32,
+    /// Completed worker-side interactions with this instance's live engine — see
+    /// [`SharedInner::worker_instance_epoch`], which is the only reader and carries the whole
+    /// explanation.
+    worker_instance_epoch: AtomicU32,
     /// Set by the audio thread when `latency_samples` changed since it was last reported to the
     /// host; cleared once `on_main_thread` has acted on it. See `crate::audio`'s module doc
     /// comment for the full FR-CLAP-040 sequencing.
@@ -194,6 +202,7 @@ impl SharedInner {
     fn with_library(library: Option<LibraryService>) -> Self {
         Self {
             params: ParamMirror::new(),
+            gestures: GestureState::new(),
             cache: ResourceCache::shared(),
             pool: ThreadPool::new(),
             instance: Mutex::new(None),
@@ -207,6 +216,7 @@ impl SharedInner {
             latency_samples: AtomicU32::new(0),
             latency_announced: AtomicU32::new(0),
             latency_basis_rate: AtomicU32::new(0),
+            worker_instance_epoch: AtomicU32::new(0),
             latency_dirty: AtomicBool::new(false),
             thread_priority_kind: AtomicU8::new(THREAD_PRIORITY_UNREPORTED),
             thread_priority_os_error: AtomicI64::new(0),
@@ -343,6 +353,26 @@ impl SharedInner {
         lock(&self.notices).clone()
     }
 
+    /// A handle a pool job can block on until this instance's library index has actually been
+    /// read — [`namir_worker::library::LibraryService::loader`], taken under the lock but *used*
+    /// outside it.
+    ///
+    /// **Why any job needs this at all (#145).** M14 made the index load deferred, so
+    /// [`Self::library_snapshot`] hands back an empty `Index` for the first fraction of a second
+    /// of an instance's life. `LibraryService::start_scan` already blocks for the load inside its
+    /// own pool job for exactly that reason; `crate::worker_jobs`' `spawn_recall` and
+    /// `library_target` did not, and a host's `set_state` and every `activate` arrive within
+    /// milliseconds of `SharedInner::new` — so a preset's reference was resolved against nothing
+    /// and FR-STATE-070's hash candidate could never fire. `namir-app` has always called
+    /// `ensure_loaded()` before building its resolver (`crate::app`), so this was a shell-parity
+    /// divergence (FR-CFG-020) as well as a defect.
+    ///
+    /// `None` only when this instance has no library service at all — the same condition
+    /// [`Self::library_roots`] returns an empty list for.
+    pub(crate) fn library_loader(&self) -> Option<namir_worker::library::IndexLoader> {
+        lock(&self.library).as_ref().map(|service| service.loader())
+    }
+
     /// The library as the GUI sees it this frame — and the point at which the deferred load's
     /// warnings are reported (M14, see [`SharedInner::new`]).
     ///
@@ -460,6 +490,14 @@ impl SharedInner {
     /// When either fails the caller adopts the engine's own reading and the ordinary
     /// change-detection path does the rest, at the cost of the one restart it was always going to
     /// cost.
+    ///
+    /// **Both conditions hold at the moment of the activation, and neither is a guarantee about
+    /// the replay's outcome** (issue #145's finding 8). The reference may name a file that has
+    /// since been deleted, or one whose content is now a session-rate model that adds no latency at
+    /// all; the replay then converges on zero and this figure is simply wrong. That is not
+    /// detectable here — it is only knowable once the replay has run — so the correction lives
+    /// where the replay's outcome can be observed: `crate::audio`'s `publish_latency`, which
+    /// carries this figure as a claim and retracts it against [`Self::worker_instance_epoch`].
     pub(crate) fn carried_latency(&self, sample_rate_hz: u32) -> Option<u32> {
         let replay_pending = self.nam_ref().is_some() || self.ir_ref().is_some();
         let basis = self.latency_basis_rate.load(Ordering::Relaxed);
@@ -554,8 +592,50 @@ impl SharedInner {
         lock(&self.instance)
     }
 
+    /// Runs `f` against the live `Instance`, or answers `None` when there is none yet (not an
+    /// error — just "not activated"; see `crate::params_ext`'s main-thread `flush`).
+    ///
+    /// Every call that actually reached an `Instance` bumps [`Self::worker_instance_epoch`] on the
+    /// way out, which is how the audio thread learns that an off-thread interaction with *its*
+    /// engine has finished. See that method's doc comment.
     pub(crate) fn with_instance<R>(&self, f: impl FnOnce(&mut Instance) -> R) -> Option<R> {
-        self.lock_instance().as_mut().map(f)
+        let outcome = self.lock_instance().as_mut().map(f);
+        if outcome.is_some() {
+            // After the guard above has been dropped, so the epoch a reader observes is never
+            // ahead of the lock being free.
+            self.worker_instance_epoch.fetch_add(1, Ordering::Release);
+        }
+        outcome
+    }
+
+    /// How many worker-side interactions with this instance's live engine have *completed*.
+    ///
+    /// **What this is for (issue #145's finding 8).** `crate::audio`'s `activate` may carry the
+    /// previous activation's latency figure across an activation ([`Self::carried_latency`]) on the
+    /// prediction that the replay it dispatches will converge on that figure again. The prediction
+    /// can be wrong — the model may have been deleted or replaced while the plugin was inactive —
+    /// and when it is, *nothing about the engine moves*: it reports zero before the replay and zero
+    /// after it, so a change detector comparing against the engine's own reading has nothing to
+    /// detect and the host is never told the figure it holds is stale.
+    ///
+    /// Telling the two apart needs one fact the audio thread cannot get from the engine: whether
+    /// the replay has finished. This counter is that fact. `crate::worker_jobs::spawn_recall`'s
+    /// last act is a [`Self::with_instance`] call, so an epoch different from the one `activate`
+    /// recorded means the replay has had its turn at the engine and whatever the engine reports now
+    /// is the outcome, not a transient.
+    ///
+    /// **Deliberately coarse, and stated as such.** It counts *every* completed `with_instance`
+    /// call, not only a replay's — a GUI-driven load or a main-thread parameter flush that reached
+    /// a live engine bumps it too. That over-approximates in the safe direction: the worst a
+    /// spurious bump can do is start `crate::audio`'s settle countdown early, and the countdown is
+    /// what absorbs the lag between a command being submitted and the handover crossfade finishing.
+    /// A missed bump would be the dangerous direction, and there is none — the counter only ever
+    /// moves forwards.
+    ///
+    /// Read from the audio thread as one relaxed atomic load per block (and only while a carried
+    /// figure is unconfirmed), which is wait-free and allocation-free.
+    pub(crate) fn worker_instance_epoch(&self) -> u32 {
+        self.worker_instance_epoch.load(Ordering::Acquire)
     }
 
     /// Installs a freshly built `Instance`, replacing whatever was there — every `activate()`
@@ -934,6 +1014,45 @@ mod tests {
             None,
             "at another rate D-9.2's resampler may not be needed at all, so the old figure is not \
              evidence about the new configuration"
+        );
+    }
+
+    /// The counter `crate::audio` uses to know a replay has had its turn at the engine (issue
+    /// #145's finding 8): it moves for a call that reached a live `Instance`, and not for one that
+    /// found none.
+    #[test]
+    fn the_worker_instance_epoch_moves_only_when_a_job_actually_reached_the_engine() {
+        let inner = SharedInner::new();
+        let start = inner.worker_instance_epoch();
+
+        assert_eq!(
+            inner.with_instance(|_| ()),
+            None,
+            "there is no engine before the first activate()"
+        );
+        assert_eq!(
+            inner.worker_instance_epoch(),
+            start,
+            "a job that found no engine has told the audio thread nothing -- there is no audio \
+             thread yet"
+        );
+
+        let ctx = namir_engine::PrepareContext::new(
+            namir_core::SampleRate::new(48_000).expect("48 kHz is a valid sample rate"),
+            64,
+            namir_core::ChannelConfig::Stereo,
+        )
+        .expect("the prepare context must build");
+        let (_engine, endpoint) =
+            namir_engine::build_default_engine(&ctx).expect("the engine must build");
+        inner.install_instance(Instance::new(namir_worker::EngineConfig { ctx }, endpoint));
+
+        assert_eq!(inner.with_instance(|_| 7), Some(7));
+        assert_eq!(
+            inner.worker_instance_epoch(),
+            start + 1,
+            "a completed interaction with the live engine is exactly what the carried-latency \
+             claim in `crate::audio` waits for"
         );
     }
 }
