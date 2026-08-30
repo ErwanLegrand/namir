@@ -46,10 +46,13 @@
 //! the segment's range for exactly this reason — doing either over the whole block would have a
 //! later segment overwrite what an earlier one produced.
 //!
-//! **The click-free half of FR-CLAP-060 is not this module's to close.** `namir_engine::Chain`'s
-//! global bypass is a `bool` flip with no crossfade, where FR-CHAIN-020's *per-stage* bypass fades
-//! over 15 ms; sample-accurate delivery is what makes that step land where the host asked, not what
-//! smooths it. `tests/clap_host_automation.rs` measures the step and books the gap.
+//! **The click-free half of FR-CLAP-060 was not this module's to close, and issue #142 closed it
+//! elsewhere.** `namir_engine::Chain`'s global bypass used to be a `bool` flip with no crossfade,
+//! where FR-CHAIN-020's *per-stage* bypass faded over 15 ms; sample-accurate delivery is what makes
+//! a change land where the host asked, not what smooths it. `Chain` now runs the same 15 ms blend
+//! for its global bypass, so what this module delivers sample-accurately is the fade's *start*, and
+//! `tests/clap_host_automation.rs` measures both halves — the frame the transition begins on, and
+//! the trajectory it takes from there.
 //!
 //! # FR-CLAP-040: latency reporting, and the restart CLAP's own contract requires
 //!

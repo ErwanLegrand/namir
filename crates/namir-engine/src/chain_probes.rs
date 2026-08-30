@@ -820,7 +820,12 @@ fn bypass_compensation_tracks_the_latency_a_resampled_model_adds_at_runtime() {
 
     let switch = BYPASS_AT_BLOCK * BLOCK;
     let null_floor = db_to_linear(-120.0);
-    let peak_residual = (switch..FRAMES)
+    /// Frames of issue #142's bypass crossfade to let pass before comparing. `Chain`'s blend
+    /// settles at about 4 800 frames at 48 kHz; this leaves margin and still leaves 3 072 frames
+    /// to null over. Skipping the transition does not weaken the #58 property this guards: a
+    /// compensation that failed to track the latency change fails the post-settle null too.
+    const SETTLE_FRAMES: usize = 5_120;
+    let peak_residual = (switch + SETTLE_FRAMES..FRAMES)
         .map(|n| (out[0][n] - signal[n - reported]).abs())
         .fold(0.0f32, f32::max);
     assert!(
@@ -891,9 +896,10 @@ fn run_split(chain: &mut Chain, input: &[Vec<f32>], frames: usize) -> Vec<Vec<f3
 }
 
 /// Frames of settling run through both chains, in whole [`SPLIT_BLOCK`] blocks, before either is
-/// measured. **Load-bearing, and not a way of avoiding an inconvenient result** — see
-/// [`splitting_a_block_the_way_host_automation_does_changes_nothing`]'s own doc comment for the
-/// transient this excludes and for why it is a different question from the one that test asks.
+/// measured. It was **load-bearing, and not a way of avoiding an inconvenient result**, until
+/// issue #141 removed the transient it excluded — see
+/// [`splitting_a_block_the_way_host_automation_does_changes_nothing`]'s own doc comment for what
+/// that transient was, and for the post-fix re-measurement that now reads 0e0 with no settling.
 /// 8 192 frames is 171 ms at 48 kHz, an order of magnitude past the 20 ms handover crossfade and
 /// the 15 ms per-stage bypass blend that make it up.
 const SPLIT_SETTLE_FRAMES: usize = 8_192;
@@ -948,21 +954,32 @@ fn split_probe_chain(ctx: &PrepareContext) -> Chain {
 /// splices whole samples of silence and lands three orders above the bound; the observed maximum
 /// is carried into the failure message so a drift from 0 is legible rather than absorbed.
 ///
-/// # The transient this deliberately does not measure, and why it is a different question
+/// # The transient this deliberately does not measure — issue #141, since fixed
 ///
-/// [`SPLIT_SETTLE_FRAMES`] is not padding. Inside the ~20 ms after a resource is installed, this
-/// chain's output *does* depend on the block division: measured at 1.3e-2 (Nam) and 7.2e-2 (Ir)
-/// against settled peaks of ~1.2e-1 and ~5.1e-1, decaying to 1.9e-4 and 9.3e-4 over the
-/// following 4 000 frames. That is **not** the split's doing and not new — it reproduces exactly under
-/// [`probe::run`] alone at 512 against 256, 128 and 64 frames, with no sub-block anywhere — and
-/// its mechanism is upstream of this file. On a *first* load, both stages' output stays
-/// **bit-exactly the dry input** for the whole 960-sample equal-power handover crossfade, and the
-/// wet signal first appears at the start of the block the fade completes in: measured at frame
-/// 512, 768, 896 and 959 for block sizes 512, 256, 64 and 1, identically for Nam and for Ir. So
-/// what a first load actually sounds like is the 15 ms per-stage bypass blend starting at a
-/// block-quantised instant, with the equal-power fade masked behind it. Recorded here because
-/// this is the probe that found it; it belongs to the handover path (`stages/nam.rs`,
-/// `stages/ir.rs`), not to issue #30, and is reported rather than fixed here.
+/// [`SPLIT_SETTLE_FRAMES`] was not padding. Inside the ~20 ms after a resource was installed, this
+/// chain's output *did* depend on the block division: measured at 1.3e-2 (Nam) and 7.2e-2 (Ir)
+/// against settled peaks of ~1.2e-1 and ~5.1e-1, decaying to 1.9e-4 and 9.3e-4 over the following
+/// 4 000 frames. That was **not** the split's doing — it reproduced exactly under [`probe::run`]
+/// alone at 512 against 256, 128 and 64 frames, with no sub-block anywhere — and its mechanism was
+/// upstream of this file, in the handover path both stages share.
+///
+/// It was reported from here as issue #141 and fixed there. On a first load both stages' output
+/// stayed **bit-exactly the dry input** for the whole 960-sample equal-power handover crossfade,
+/// and the wet signal first appeared at the start of the block the fade completed in — frame 512,
+/// 768, 896 and 959 for block sizes 512, 256, 64 and 1, identically for Nam and for Ir — because
+/// the shared bypass blend derived its target from the (empty) outgoing slot and so stayed shut for
+/// exactly the interval the fade occupied. What a first load sounded like was therefore the 15 ms
+/// bypass blend starting at a block-quantised instant, with FR-NAM-070's and FR-IR-060's fade
+/// masked behind it. `stages/nam.rs`'s `begin_crossfade` carries the account;
+/// [`a_first_load_is_audible_inside_its_own_fade_at_every_block_size`] is the assertion.
+///
+/// **Re-measured after that fix, with this probe's own chain and signal: the transient's
+/// block-division dependence is 0e0** — at 512 against 256, 128 and 64, for a Nam-only and an
+/// Ir-only load alike, and for this probe's own whole-versus-split comparison run from frame 0 with
+/// no settling at all (8.6e-3 before the fix, exactly zero after). [`SPLIT_SETTLE_FRAMES`] is
+/// therefore no longer load-bearing for the comparison below; it is kept because a probe that
+/// asserts a settled property should still settle, and because dropping it would silently widen
+/// what this test is claiming.
 #[test]
 fn splitting_a_block_the_way_host_automation_does_changes_nothing() {
     const FRAMES: usize = 16_384;
@@ -1062,4 +1079,200 @@ fn the_split_probe_would_notice_a_single_spliced_sample() {
          {level:e}, so the equality the probe above asserts cannot tell an aligned run from one \
          that spliced a sample of silence into the stream"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Issue #141 — a first load's equal-power fade, and where its onset actually lands.
+// ---------------------------------------------------------------------------------------------
+
+/// The handover crossfade's length in frames at [`SR`]: [`stages::HANDOVER_CROSSFADE_MS`] (20 ms)
+/// at 48 kHz. Written as the same conversion the stages perform rather than as `960`, so a change
+/// to that constant moves this probe with it.
+const FADE_FRAMES: usize = (stages::HANDOVER_CROSSFADE_MS as usize) * (SR as usize) / 1000;
+
+/// The block sizes issue #141's own table was measured at — the point of the test being that the
+/// answer must not depend on which one a host picks. `1` is not a realistic host block size; it is
+/// the limit case that makes a block-quantised onset unmistakable (959 before the fix, against 512
+/// at a 512-frame block).
+const ONSET_BLOCKS: [usize; 4] = [512, 256, 64, 1];
+
+/// The declared block size every run of the onset probe is prepared at, so the IR's partition
+/// schedule and every stage's scratch are identical across [`ONSET_BLOCKS`] and only the division
+/// into `process` calls varies — the same isolation [`SPLIT_BLOCK`] performs for the split probe.
+const ONSET_PREPARED_BLOCK: usize = 512;
+
+/// Which resource a run of [`first_load_onset`] loads. Both stages carry the same handover
+/// machinery and issue #141 measured the same numbers through both, so both are driven — one at a
+/// time, so the frame each becomes audible at is attributable to that stage.
+#[derive(Clone, Copy, Debug)]
+enum FirstLoad {
+    Nam,
+    Ir,
+}
+
+/// Runs `frames` of a probe sine through a default chain in `block`-frame blocks, once with
+/// nothing loaded and once with `what` loaded immediately before the first block, and returns
+/// `(baseline, loaded)`.
+///
+/// The two chains are built identically from the same seeds and driven with the same input, so the
+/// only difference between the two outputs is the resource — which makes "the first frame at which
+/// they differ" exactly "the first frame at which the newly-loaded resource became audible".
+fn first_load_pair(what: FirstLoad, block: usize, frames: usize) -> (Vec<f32>, Vec<f32>) {
+    let ctx = probe::ctx_at(SR, ONSET_PREPARED_BLOCK, ChannelConfig::Mono);
+    let signal = probe::sine(frames, 220.0, SR, 0.25);
+    let input = probe::duplicated(&signal, 1);
+
+    let build = || {
+        let mut chain = build_default_chain(&ctx).unwrap();
+        // Well below the probe's level, so the gate is open from the first block and its envelope
+        // is identical in both runs rather than being the thing that differs.
+        probe::set_param(&mut chain, gate::THRESHOLD_DB.id, -70.0);
+        chain
+    };
+
+    let mut baseline_chain = build();
+    let baseline = probe::run(&mut baseline_chain, &input, block);
+
+    let mut loaded_chain = build();
+    match what {
+        // A model declaring the engine's own rate: D-9.2 bypasses `SlotResampler` entirely, so the
+        // stage adds no latency and the two runs stay sample-aligned. Issue #141 is about *when*
+        // the wet signal appears, and a latency difference between the two runs would confound it.
+        FirstLoad::Nam => probe::load_nam(
+            &mut loaded_chain,
+            probe::nam_model(WaveNetShape::Nano, 11, SR),
+            &ctx,
+        ),
+        FirstLoad::Ir => probe::load_ir(
+            &mut loaded_chain,
+            probe::mono_ir(5, 1_024, SR, ONSET_PREPARED_BLOCK),
+            &ctx,
+        ),
+    }
+    let loaded = probe::run(&mut loaded_chain, &input, block);
+
+    (
+        baseline.into_iter().next().unwrap(),
+        loaded.into_iter().next().unwrap(),
+    )
+}
+
+/// The first frame at which `loaded` differs from `baseline` at all — bit inequality rather than a
+/// threshold, because the question this probe asks is when the wet signal *appears*, and the
+/// equal-power fade's own first samples are legitimately tiny (`sin(pi/2 / 960)` is 1.6e-3 of the
+/// wet signal one sample in). A threshold would answer a different, blurrier question.
+fn first_divergence(baseline: &[f32], loaded: &[f32]) -> Option<usize> {
+    baseline
+        .iter()
+        .zip(loaded.iter())
+        .position(|(a, b)| a.to_bits() != b.to_bits())
+}
+
+/// **Issue #141, asserted.** A first load must become audible inside its own equal-power fade, at
+/// the same frame whatever block size the host happens to be using.
+///
+/// # What was wrong, and what this would have caught
+///
+/// On a first load `slots[active]` is `None`, and both stages derived the shared bypass blend's
+/// target from that slot alone — so the blend stayed shut for the fade's whole duration and
+/// multiplied FR-NAM-070's/FR-IR-060's equal-power crossfade out of existence. Both stages emitted
+/// **bit-exactly the dry input** for all [`FADE_FRAMES`] of the fade, and the model or IR first
+/// became audible at the start of the *block* in which the fade completed. Measured before the fix,
+/// identically for [`FirstLoad::Nam`] and [`FirstLoad::Ir`]:
+///
+/// | block | onset before | onset after |
+/// |---|---|---|
+/// | 512 | 512 | 1 |
+/// | 256 | 768 | 1 |
+/// | 64 | 896 | 1 |
+/// | 1 | 959 | 1 |
+///
+/// So what a user heard was not the specified fade at all but the 15 ms per-stage bypass blend,
+/// starting at a block-quantised instant — up to ~85 ms of jitter at a 4096-frame block, on a path
+/// [`splitting_a_block_the_way_host_automation_does_changes_nothing`] found by accident.
+///
+/// Frame 1 rather than frame 0 is not slack: the fade's first sample has `theta == 0`, so its
+/// `sin` term is exactly zero and its `cos` term is exactly the dry passthrough a `None` outgoing
+/// slot contributes. The two runs are *required* to agree bit-for-bit there, and that is the same
+/// fact that makes the bypass blend's snap click-free.
+///
+/// # The three things asserted, and why each is needed
+///
+/// 1. **The onset is inside the fade, immediately** — `<= ONSET_TOLERANCE_FRAMES`, two orders
+///    inside [`FADE_FRAMES`], for every block size.
+/// 2. **The onset does not depend on the block size** — the defect's whole signature was that it
+///    did. Asserted as equality across [`ONSET_BLOCKS`], not just as a bound each satisfies.
+/// 3. **It is a fade, not a step** — the largest single-sample movement anywhere in the fade is
+///    bounded by what the same signal produces with nothing loaded plus what it produces once the
+///    fade has settled, which is the most an equal-power blend of the two can slew. Without this
+///    the first two assertions would be satisfied by snapping straight to the wet signal, which is
+///    the click FR-CHAIN-020 forbids.
+#[test]
+fn a_first_load_is_audible_inside_its_own_fade_at_every_block_size() {
+    /// How far into the fade the wet signal is allowed to first appear. One sample is what the
+    /// fix produces; the bound is loose enough not to pin an implementation detail and two orders
+    /// tighter than the block-quantised onsets the defect produced.
+    const ONSET_TOLERANCE_FRAMES: usize = 8;
+    /// Long enough to leave a settled window well past the fade to measure the wet signal's own
+    /// slew in.
+    const FRAMES: usize = 8_192;
+    /// Where "settled" starts: several times the 20 ms fade and the 15 ms bypass blend.
+    const SETTLED: usize = 4_096;
+
+    for what in [FirstLoad::Nam, FirstLoad::Ir] {
+        let mut onsets: Vec<(usize, usize)> = Vec::new();
+
+        for block in ONSET_BLOCKS {
+            let (baseline, loaded) = first_load_pair(what, block, FRAMES);
+
+            // Non-vacuity: if loading changed nothing at all, every assertion below is empty.
+            let settled_difference =
+                probe::max_abs_difference(&baseline[SETTLED..], &loaded[SETTLED..]);
+            assert!(
+                settled_difference > 1e-3,
+                "{what:?} at block {block}: loading changed the settled output by only \
+                 {settled_difference:e}, so this probe cannot see a resource become audible at all"
+            );
+
+            let onset = first_divergence(&baseline, &loaded).unwrap_or_else(|| {
+                panic!("{what:?} at block {block}: the loaded run never diverged from the baseline")
+            });
+            assert!(
+                onset <= ONSET_TOLERANCE_FRAMES,
+                "{what:?} at block {block}: the wet signal first appears at frame {onset}, not \
+                 inside the {FADE_FRAMES}-frame equal-power fade that started at frame 0. That is \
+                 issue #141: the fade is masked by a bypass blend that stays shut until it \
+                 completes, so what is heard is a 15 ms blend beginning at a block boundary"
+            );
+            assert_eq!(
+                baseline[0].to_bits(),
+                loaded[0].to_bits(),
+                "{what:?} at block {block}: the fade's first sample must be the dry signal \
+                 bit-for-bit (theta = 0), or the bypass blend's snap is a step"
+            );
+
+            // 3: a fade, not a step.
+            let fade_slew = probe::max_abs_first_difference(&loaded[..FADE_FRAMES]);
+            let dry_slew = probe::max_abs_first_difference(&baseline[..FADE_FRAMES]);
+            let settled_slew = probe::max_abs_first_difference(&loaded[SETTLED..]);
+            let bound = (dry_slew + settled_slew) * 1.05;
+            assert!(
+                fade_slew <= bound,
+                "{what:?} at block {block}: the largest single-sample step inside the fade is \
+                 {fade_slew:e}, above the {bound:e} an equal-power blend of a dry signal slewing \
+                 {dry_slew:e} and a wet one slewing {settled_slew:e} can produce — the onset is a \
+                 step, not a fade"
+            );
+
+            onsets.push((block, onset));
+        }
+
+        let (_, first_onset) = onsets[0];
+        assert!(
+            onsets.iter().all(|&(_, onset)| onset == first_onset),
+            "{what:?}: the frame the wet signal appears at depends on the block size: {onsets:?}. \
+             That dependence is issue #141's audible consequence — the instant a model becomes \
+             audible jitters by up to a whole block, ~85 ms at 4096 frames"
+        );
+    }
 }
