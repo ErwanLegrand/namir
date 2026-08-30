@@ -230,19 +230,25 @@ impl CrossCuttingState {
     /// the first time), so engaging bypass emitted `delay` samples of stale content followed by a
     /// hard discontinuity, and disengaging dropped the same number of samples — a click at both
     /// ends of every transition, which is exactly what FR-CLAP-060 forbids. Feeding it always
-    /// costs one pass over the block on the non-bypassed path (nothing at all when the chain
-    /// reports zero latency, which is the whole of 1.0 with no resampled model loaded) and makes
-    /// the transition sample-accurate in both directions.
+    /// costs one pass over the block on the non-bypassed path and makes the transition
+    /// sample-accurate in both directions.
+    ///
+    /// **Including the blocks on which the chain reports zero latency (issue #145 finding 5).**
+    /// This method used to return early on `delay == 0 && !capture`, on the reasoning that a line
+    /// nothing reads and whose delay is zero can only hand back what it is given. That is true of
+    /// *this* block and false of the next one: zero latency is the whole of 1.0 until a
+    /// rate-mismatched model is installed, so the early return meant the write index had not
+    /// moved all session, and the moment `NamStage` raised its declared latency 0 -> 640
+    /// (FR-CLAP-040) the read index addressed 640 samples of buffer nothing had ever written.
+    /// Engaging bypass inside that 13 ms window fed the crossfade's dry term silence — the
+    /// stale-content dropout issue #59 exists to remove, kept alive behind a shortcut whose own
+    /// doc comment called it free. The line is cheap and the exception was not: there is no
+    /// early return.
     ///
     /// `delay` is read from the chain's *current* `latency_samples()` on every block rather than
     /// cached at preparation, so a model change that alters the reported latency (FR-CLAP-040)
     /// moves the compensation with it — issue #58.
     fn capture_dry(&mut self, io: &mut StageIo<'_>, delay: usize, capture: bool) {
-        if delay == 0 && !capture {
-            // Nothing to record and nothing to hand back: the line can only ever return what it
-            // is given, so skipping it is not a state divergence.
-            return;
-        }
         let frames = io.frames();
         for ((line, dry), channel) in self
             .delay_lines
@@ -642,7 +648,37 @@ impl Chain {
     /// A change that matches neither is broadcast to every stage. RD-2's per-instance parameter
     /// addressing (D-10.2) is future work by design — 1.0's fixed chain has no ambiguity to
     /// resolve, so each stage just ignores ids it doesn't own.
+    ///
+    /// # A non-finite value is refused here, and only here (issue #145 finding 6)
+    ///
+    /// [`ParamChange::value`] is a bare `f32` and the host is what fills it in: `namir-clap`'s
+    /// `audio.rs` hands `ev.value() as f32` straight to
+    /// [`AudioEngine::apply_param_direct`](crate::AudioEngine::apply_param_direct), and both that
+    /// method and the command ring's `Command::Param` arm reach a stage only through this method
+    /// — so this is the *single* boundary every parameter change in the engine crosses, whichever
+    /// thread it came from.
+    ///
+    /// Checking it here rather than at each consumer is deliberate, and the panic is the smaller
+    /// half of the reason. A `NaN` ceiling panics visibly, inside `f32::clamp`, on the audio
+    /// thread (D-16.3 forbids exactly that) — but a `NaN` reaching any *stage* is worse for being
+    /// silent: `db_to_linear(NaN)` is `NaN`, every sample the stage then produces is `NaN`,
+    /// FR-CHAIN-080 contains the fault by silencing the whole block, and it keeps doing so for
+    /// the rest of the session — a stage carrying filter state does not recover even when a valid
+    /// value arrives later, because its own `z` history is `NaN` by then. One `is_finite` at the
+    /// boundary covers both, and covers every parameter added after this one; a clamp at the
+    /// ceiling would have covered the panic alone.
+    ///
+    /// **Refused, not clamped, and silently.** There is no sensible clamp for "NaN dB", so the
+    /// last value the host set validly stays in force, which is the only degradation that leaves
+    /// the chain doing what it was asked to. Silently because this runs on the audio thread and
+    /// FR-ERR-030 leaves no logger there; a host emitting non-finite automation is out of
+    /// contract, not a condition the user can act on.
+    ///
+    /// **RT-safe:** one `f32::is_finite`.
     pub fn apply(&mut self, change: ParamChange) {
+        if !change.value.is_finite() {
+            return;
+        }
         if change.id == GLOBAL_BYPASS_ID {
             // Stepped param value is the index as f32 (`ParamChange`'s own doc comment); index 1
             // is "On" per `GLOBAL_BYPASS`'s descriptor -- the same `>= 0.5` convention
@@ -1290,6 +1326,194 @@ mod tests {
                  stage path"
             );
         }
+    }
+
+    /// **Issue #145 finding 6.** `f32::clamp` asserts `min <= max`, and `-NaN <= NaN` is false, so
+    /// both of this module's clamp sites — `blend`'s wet term and `scan_and_clamp`'s ceiling pass
+    /// — **panic** on a `NaN` `output_ceiling_linear`. `global.output_ceiling_db` is
+    /// host-automatable and arrives as a bare `f32`: `namir-clap`'s `audio.rs` passes
+    /// `ev.value() as f32` straight to `AudioEngine::apply_param_direct` with no finiteness check
+    /// of its own, and `Chain::apply` handed it to `set_output_ceiling_db`, which is a bare
+    /// `db_to_linear`. A host emitting a `NaN` therefore panicked *inside* `process`, on the audio
+    /// thread, which under D-16.3 ("degrade, don't panic") is the one thing this crate may not do.
+    ///
+    /// All three non-finite values, not only `NaN`: `-inf` dB converts to a linear `0.0`, which
+    /// never panics and silences every block instead, which is not better. Both clamp sites, too
+    /// — settled-engaged (`scan_and_clamp`) and mid-crossfade (`blend`) — since a host can
+    /// automate the ceiling and the bypass in the same block.
+    ///
+    /// What "refused" has to mean is the last good value surviving: there is no sensible clamp
+    /// for "NaN dB", and keeping what the user last set is the only degradation that leaves the
+    /// chain doing what it was asked to.
+    ///
+    /// Committed red-first: before the fix the first `process` after the `NaN` panics inside
+    /// `f32::clamp` with "min > max, or either was NaN".
+    #[test]
+    fn a_non_finite_ceiling_is_refused_rather_than_panicking_on_the_audio_thread() {
+        const BLOCK: usize = 64;
+        const CEILING_DB: f32 = -6.0;
+        let ceiling = namir_core::db_to_linear(CEILING_DB);
+        let gain = namir_core::db_to_linear(6.0);
+        let expected = (0.4 * gain).min(ceiling);
+
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let stage = FixedGainPrep { gain_db: 6.0 }.prepare(&ctx()).unwrap();
+            let mut chain = Chain::new(vec![Box::new(stage)]);
+            chain.prepare_crosscutting(&ctx());
+            chain.apply(ParamChange {
+                id: OUTPUT_CEILING_DB_ID,
+                value: CEILING_DB,
+            });
+            chain.apply(ParamChange {
+                id: OUTPUT_CEILING_DB_ID,
+                value: bad,
+            });
+
+            // Settled engaged: `scan_and_clamp`'s ceiling pass.
+            let input = vec![0.4f32; BLOCK * 4];
+            let engaged = run_blocks(&mut chain, &input, BLOCK, |_, _| {});
+            for (n, out) in engaged.iter().enumerate() {
+                assert!(
+                    (out - expected).abs() < 1e-5,
+                    "{bad}: sample {n} is {out}, not the +6 dB stage output clamped to the \
+                     {CEILING_DB} dB ceiling the chain was last *validly* set to -- a refused \
+                     value must leave the last good one in place"
+                );
+            }
+
+            // Mid-crossfade: `blend`'s wet term, the other clamp site. One block after engaging
+            // bypass is well inside the 15 ms fade.
+            chain.set_global_bypass(true);
+            let fading = run_blocks(&mut chain, &input[..BLOCK], BLOCK, |_, _| {});
+            for (n, out) in fading.iter().enumerate() {
+                // Between the clamped wet term (the ceiling) and the dry it is fading toward,
+                // which is the whole range `blend` can produce here.
+                assert!(
+                    out.is_finite() && (0.4 - 1e-5..=ceiling + 1e-5).contains(out),
+                    "{bad}: sample {n} of the crossfade is {out}, outside the blend of a \
+                     {CEILING_DB} dB-clamped wet term and a 0.4 dry one"
+                );
+            }
+            assert_eq!(chain.fault_count(), 0, "{bad}: nothing here is a fault");
+        }
+    }
+
+    /// Finding 6's other half, and the reason the fix is at the boundary rather than at the
+    /// clamp that happened to panic: a non-finite value reaching a *stage* is not merely a
+    /// different panic, it is silent, persistent breakage that no clamp on the ceiling addresses.
+    ///
+    /// `FixedGainStage::apply` does `db_to_linear(change.value)`, which is `NaN` for a `NaN` —
+    /// the same shape every real stage's gain, coefficient and time-constant setter has. Every
+    /// sample it then produces is `NaN`, FR-CHAIN-080 dutifully contains the fault by silencing
+    /// the whole block, and it does so **on every block for the rest of the session**: the
+    /// parameter is not going to un-corrupt itself, and a stage carrying filter state (the EQ's
+    /// biquads) would not recover even when a later valid value arrived, because a biquad's own
+    /// `z` history is `NaN` by then. What the user hears is a plugin that went silent and stays
+    /// silent, with a fault counter climbing once per block and nothing naming the cause.
+    ///
+    /// Committed red-first: before the fix every sample of every block is 0.0 and `fault_count`
+    /// reaches one per block processed.
+    #[test]
+    fn a_non_finite_stage_parameter_never_reaches_the_stage_that_would_be_poisoned_by_it() {
+        const BLOCK: usize = 64;
+        let gain = namir_core::db_to_linear(6.0);
+
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let stage = FixedGainPrep { gain_db: 6.0 }.prepare(&ctx()).unwrap();
+            let mut chain = Chain::new(vec![Box::new(stage)]);
+            chain.prepare_crosscutting(&ctx());
+            chain.apply(ParamChange {
+                id: GAIN_PARAM_ID,
+                value: bad,
+            });
+
+            let input = vec![0.4f32; BLOCK * 4];
+            let out = run_blocks(&mut chain, &input, BLOCK, |_, _| {});
+            for (n, sample) in out.iter().enumerate() {
+                assert!(
+                    (sample - 0.4 * gain).abs() < 1e-5,
+                    "{bad}: sample {n} is {sample}, not the +6 dB the stage was last validly set \
+                     to -- the value reached the stage and poisoned it"
+                );
+            }
+            assert_eq!(
+                chain.fault_count(),
+                0,
+                "{bad}: the chain silenced {} blocks containing a non-finite sample it should \
+                 never have been able to produce",
+                chain.fault_count()
+            );
+        }
+    }
+
+    /// **Issue #59's remaining half.** `capture_dry` returned early on `delay == 0 && !capture`,
+    /// which is every block of a session in which nothing has raised the chain's latency yet —
+    /// the whole of 1.0 until a rate-mismatched model is installed. So the line's write index
+    /// never moved, and the moment `NamStage` raised its declared latency 0 -> 640 (FR-CLAP-040,
+    /// `stages/nam.rs`'s `SlotResampler`) the read index addressed 640 samples of buffer nothing
+    /// had ever written. Engaging bypass inside that window fed the crossfade's dry term silence,
+    /// which is exactly the stale-content dropout #59 was fixed to remove — the early return had
+    /// simply kept a case of it alive behind the zero-latency shortcut the doc comment above
+    /// called free.
+    ///
+    /// A **constant** input, deliberately: with the signal flat, the wet term (a no-op stage) and
+    /// the dry term (that same signal, delayed by any amount) are the same number, so a settled
+    /// output, a fading one and every blend in between are all exactly `LEVEL`. Any departure is
+    /// the line handing back something it was never given. Alignment is the other #58/#59 tests'
+    /// job and needs a signal that varies; content is this one's, and needs one that does not.
+    ///
+    /// Committed red-first: before the fix the output falls to 0.2057 (LEVEL x 0.411, -7.7 dB)
+    /// 640 samples after the transition and then jumps back to 0.5 in a single sample as the
+    /// line's real content finally comes into reach — a 13 ms dip ended by a click.
+    #[test]
+    fn a_latency_rise_leaves_the_line_holding_signal_rather_than_never_written_zeros() {
+        const BLOCK: usize = 64;
+        /// The latency a 44.1 kHz model installed into a 48 kHz engine declares
+        /// (`stages/nam.rs`'s `SlotResampler`), which is the transition this is about.
+        const LATENCY: usize = 640;
+        /// Frames run before the transition. Longer than `LATENCY`, so a line that *was* being
+        /// fed has real content everywhere the read index can reach.
+        const BEFORE: usize = 4 * BLOCK * 8;
+        /// Frames run after it. Past `LATENCY` and past the blend's own settling window.
+        const AFTER: usize = 8_192;
+        const LEVEL: f32 = 0.5;
+
+        let mut chain = Chain::new(vec![Box::new(VariableLatency { latency: 0 })]);
+        chain.prepare_crosscutting(&ctx());
+        assert_eq!(chain.latency_samples(), 0);
+
+        let input = vec![LEVEL; BEFORE + AFTER];
+        let change_at_block = BEFORE / BLOCK;
+        let output = run_blocks(&mut chain, &input, BLOCK, |i, chain| {
+            if i == change_at_block {
+                // Both in the same block, which is the window the defect lives in: the handover
+                // that raises the latency and the bypass engaged within 640 samples of it.
+                chain.apply(ParamChange {
+                    id: LATENCY_PARAM_ID,
+                    value: LATENCY as f32,
+                });
+                chain.set_global_bypass(true);
+            }
+        });
+
+        assert_eq!(chain.latency_samples(), LATENCY as u32);
+        let (at, worst) =
+            output[BEFORE..]
+                .iter()
+                .enumerate()
+                .fold(
+                    (0usize, LEVEL),
+                    |acc, (i, s)| {
+                        if *s < acc.1 { (i, *s) } else { acc }
+                    },
+                );
+        assert!(
+            worst >= LEVEL * (1.0 - 1e-4),
+            "the bypass dry term dropped to {worst} at frame {at} of a constant {LEVEL} signal, \
+             a {:.1} dB dropout: the compensation line is handing back addresses nothing ever \
+             wrote, because it was not fed while the chain reported zero latency",
+            20.0 * (worst / LEVEL).max(f32::MIN_POSITIVE).log10()
+        );
     }
 
     /// **Issue #36.** `process` used to gate the bypass on `cross_cutting.is_some()`

@@ -620,6 +620,34 @@ struct Crossfade {
     /// The fade's total duration in samples, fixed at construction
     /// (`NamStage::crossfade_total_samples`, from [`HANDOVER_CROSSFADE_MS`]).
     total: u32,
+    /// Samples the fade is held at `theta == 0` before it starts, so it never blends against a
+    /// signal the incoming slot has not produced yet — the incoming slot's own
+    /// [`NamSlot::latency_samples`], and therefore `0` for every slot without a
+    /// [`SlotResampler`].
+    ///
+    /// # Why (issue #145's finding 7)
+    ///
+    /// A rate-mismatched slot's [`SlotResampler`] is built with one engine block of silence in
+    /// its output FIFO — deliberately, so its actual delay equals the 640 samples it reports (see
+    /// `SlotResampler::new`'s M9b note). Its first `latency_samples` outputs are therefore
+    /// silence, and an equal-power fade that starts at the install blends *that* silence in:
+    /// `outgoing * cos(theta)` alone for the first 640 of the fade's 960 samples, reaching
+    /// `cos(60 deg)` = 0.5 — a −6 dB, 13 ms level sag in the middle of every handover into a
+    /// rate-mismatched model, which is FR-NAM-070's "shall not ... glitch" clause failing on the
+    /// one path D-9.2's resampler exists for.
+    ///
+    /// Holding `theta` at zero for exactly that many samples is continuous at both ends (the
+    /// fade's own first sample already has `cos(0) == 1`, `sin(0) == 0`, so the hold *is* the
+    /// fade's first sample repeated) and costs nothing on the path that has no resampler, where
+    /// this is `0` and every arithmetic below is what it always was. Both slots still run for
+    /// every sample of the hold — that is what primes the incoming one.
+    ///
+    /// **It stays inside FR-NAM-070's 50 ms ceiling**, which the hold does lengthen: the largest
+    /// latency any 1.0 slot reports is a `SlotResampler`'s, and across the rates
+    /// `clap_host_sample_rates.rs` sweeps that peaks at 2 560 samples (a 44.1 kHz model at a
+    /// 192 kHz engine) = 13.3 ms, so hold plus [`HANDOVER_CROSSFADE_MS`] reaches about 33 ms at
+    /// its worst against the requirement's 50.
+    prime: u32,
 }
 
 /// RT-safe NAM stage: up to two [`NamSlot`]s, equal-power-crossfaded between per FR-NAM-070's
@@ -824,6 +852,11 @@ impl NamStage {
         self.crossfade = Some(Crossfade {
             remaining: self.crossfade_total_samples,
             total: self.crossfade_total_samples,
+            // The slot being faded *into* — `install` has already put it there, and `unload`
+            // leaves it `None`, which is a dry passthrough with no pipeline to prime.
+            prime: self.slots[1 - self.active]
+                .as_ref()
+                .map_or(0, |slot| slot.latency_samples()),
         });
         self.recompute_mix_target();
         if mix_is_unobservable {
@@ -956,6 +989,16 @@ impl NamStage {
             .zip(self.crossfade_outgoing[..n].iter())
             .zip(self.crossfade_incoming[..n].iter())
         {
+            // The incoming slot has not produced a real sample yet, so there is nothing to fade
+            // into: emit the outgoing side alone, which is what `theta == 0` already evaluates
+            // to. See `Crossfade::prime`. Written as its own arm rather than folded into
+            // `progress` so the fade's own arithmetic is untouched on the (far commoner) path
+            // where `prime` is zero from the start.
+            if crossfade.prime > 0 {
+                crossfade.prime -= 1;
+                *o = outgoing;
+                continue;
+            }
             let progress = (total - crossfade.remaining).min(total);
             let theta = (progress as f32 / total as f32) * FRAC_PI_2;
             *o = outgoing * theta.cos() + incoming * theta.sin();
@@ -1932,7 +1975,10 @@ mod tests {
             stage.crossfade,
             Some(Crossfade {
                 remaining: 0,
-                total: stage.crossfade_total_samples
+                total: stage.crossfade_total_samples,
+                // `tiny_model(SR)` declares the engine's own rate, so no `SlotResampler` is built
+                // and there is no pipeline to prime.
+                prime: 0
             }),
             "the fade should have reached zero and deferred its finalization"
         );
