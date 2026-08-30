@@ -17,6 +17,13 @@
 //! its own section comment for why a `OnceLock` global resolved from the real environment cannot
 //! be driven in-process without `unsafe`.
 //!
+//! **Clause eight was added for #145's review finding 11**, and is not one of D-16.5's six: it is
+//! the boundedness clause read against the arrangement the decision's own "two processes share one
+//! file" limitation describes. It drives two independent writers over one path — the honest
+//! in-process stand-in for the standalone application and a DAW running at once — and asserts the
+//! two properties that failed before the fix: no generation past the cap by more than the record
+//! that crossed it, and no record destroyed by another writer's rotation.
+//!
 //! Apart from clause seven, the logger is driven against a caller-supplied temporary path
 //! throughout, never the process-global one: the same "pure logic, wired to the real world only at
 //! the edge" split `paths.rs`'s `config_dir_from` uses. Nothing in *this* process touches the real
@@ -784,6 +791,120 @@ fn clause_7_the_per_user_location_through_the_real_init() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Clause 8 (added for #145's review finding 11) -- two writers against one path.
+//
+// The standalone application and a DAW hosting the plugin write the same `namir.log`, and the
+// process-global mutex covers neither of them against the other. The honest reproduction of that
+// is two processes; what can be driven in-process is two independent `Logger`s over one path,
+// which is the same thing minus the process boundary -- each has its own `SinkState`, and before
+// the fix each had its own open handle and its own byte counter, neither of which could see the
+// other's. What it
+// cannot reproduce is a *rename* racing a *write* at instruction granularity; part (a) drives the
+// rename explicitly instead, from the test thread, which is the ordering that actually loses data.
+// ---------------------------------------------------------------------------------------------
+
+fn clause_8_two_writers_against_one_path() {
+    // (a) A writer must follow the name, not the file it opened. Another process rotating is
+    // exactly this: `namir.log` is renamed away underneath a writer that is mid-session. A writer
+    // holding its handle keeps appending into the renamed generation -- so its records land in a
+    // file that is supposed to be closed history, and the next rotation renames the *live* file
+    // over the one it was writing into.
+    let scratch = Scratch::new("follows-the-name");
+    let logger = Logger::new(Some(scratch.sink()), LevelChoice::at(LogLevel::Info));
+    logger.record(INFO, "before-the-rename");
+    let gen1 = with_suffix(&scratch.sink(), ".1");
+    fs::rename(scratch.sink(), &gen1).expect(
+        "a rename over a file this process holds open must succeed -- Rust opens with \
+         FILE_SHARE_DELETE on Windows, which D-16.5 inferred and this asserts",
+    );
+    logger.record(INFO, "after-the-rename");
+
+    let live = read_lines(&scratch.sink());
+    let rotated = read_lines(&gen1);
+    assert!(
+        live.iter().any(|line| line.contains("after-the-rename")),
+        "a record written after the file was renamed away must land in the file that now bears \
+         the name, not in the renamed generation: live={live:?} rotated={rotated:?}"
+    );
+    assert!(
+        !rotated.iter().any(|line| line.contains("after-the-rename")),
+        "nothing may be appended to a generation another writer has already rotated out: \
+         {rotated:?}"
+    );
+
+    // (b) Two writers, one path: the cap is a property of the file, not of one writer's tally of
+    // its own bytes. ~8.75 MiB alternating between them is two cap crossings and short of the
+    // third, so with two retained generations every record must still be somewhere.
+    let scratch = Scratch::new("two-writers");
+    let first = Logger::new(Some(scratch.sink()), LevelChoice::at(LogLevel::Info));
+    let second = Logger::new(Some(scratch.sink()), LevelChoice::at(LogLevel::Info));
+    let records = 140;
+    for marker in 0..records {
+        let writer = if marker % 2 == 0 { &first } else { &second };
+        writer.record(INFO, &bulk_detail(marker));
+    }
+
+    let mut names: Vec<String> = fs::read_dir(scratch.logs_dir())
+        .expect("read log directory")
+        .map(|entry| {
+            entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "namir.log".to_owned(),
+            "namir.log.1".to_owned(),
+            "namir.log.2".to_owned()
+        ],
+        "two writers may not produce a fourth file either"
+    );
+
+    // No file may be past the cap by more than the one record that crossed it. A per-writer
+    // counter cannot see the other writer's bytes, so it fires late by exactly that contribution
+    // -- here, roughly double the cap.
+    for name in &names {
+        let path = scratch.logs_dir().join(name);
+        let len = fs::metadata(&path).expect("metadata").len();
+        assert!(
+            len <= LOG_MAX_BYTES + BULK_DETAIL_BYTES as u64,
+            "{} is {len} bytes, past the {LOG_MAX_BYTES}-byte cap by more than one record",
+            path.display()
+        );
+    }
+
+    // ...and nothing written was destroyed on the way: two writers rotating one path must not
+    // rename a live file over the file they were themselves writing into.
+    let mut seen: Vec<usize> = Vec::new();
+    for name in &names {
+        for line in read_lines(&scratch.logs_dir().join(name)) {
+            let detail = assert_well_formed(&line);
+            if let Some(rest) = detail.strip_prefix("marker=") {
+                seen.push(
+                    rest.split(';')
+                        .next()
+                        .expect("marker field")
+                        .parse()
+                        .expect("marker is numeric"),
+                );
+            }
+        }
+    }
+    seen.sort_unstable();
+    let missing: Vec<usize> = (0..records).filter(|m| !seen.contains(m)).collect();
+    assert!(
+        missing.is_empty(),
+        "{} of {records} records are in none of the three generations: {missing:?}",
+        missing.len()
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
 // The covering test.
 // ---------------------------------------------------------------------------------------------
 
@@ -801,4 +922,5 @@ fn the_diagnostic_log_is_configurable_and_bounded() {
     clause_5_none_path_is_a_silent_no_op();
     clause_6_the_namir_log_parser();
     clause_7_the_per_user_location_through_the_real_init();
+    clause_8_two_writers_against_one_path();
 }
