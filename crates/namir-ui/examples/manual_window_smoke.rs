@@ -13,6 +13,13 @@
 //! throughout this crate specifically avoid depending on. Run it by hand (`cargo run --example
 //! manual_window_smoke -p namir-ui`) to visually confirm the crate actually paints, as opposed to
 //! merely laying out widgets correctly headlessly.
+//!
+//! Since issue #143 it needs no *physical* display: it opens through
+//! `namir_ui::open_with_srgb_fallback`, so a software X server serves it. Measured, not assumed --
+//! under `Xvfb :99 -screen 0 1280x1024x24` on Mesa 25.2.8/llvmpipe this example panicked with
+//! `Could not fetch framebuffer config: CreationFailed(NoValidFBConfig)` before that change and
+//! renders its 90 frames and exits 0 after it. `DISPLAY=:99 cargo run --example
+//! manual_window_smoke -p namir-ui` is the whole invocation.
 
 use std::path::PathBuf;
 
@@ -119,31 +126,39 @@ fn main() {
         title: "Namir UI -- manual smoke test".to_string(),
         ..Default::default()
     };
-    let mut host = SmokeHost { frames: 0 };
-    let mut view = ViewState::default();
 
-    EguiWindow::open_blocking(
-        settings,
-        (),
-        |_ctx, _cmds, _state| {
-            println!("build: egui context created");
-        },
-        |_output, _viewport, _state| {},
-        move |ui, _cmds, _state| {
-            let snapshot = host.snapshot();
-            let mut intents = Vec::new();
-            namir_ui::render(ui, &mut view, &snapshot, &mut intents);
-            for intent in intents {
-                host.dispatch(intent);
-            }
-            ui.ctx().request_repaint();
+    // Through `namir_ui::open_with_srgb_fallback`, exactly as `namir_ui::open_blocking` and
+    // `open_parented` do, so this example opens under a headless X server too (issue #143) --
+    // which is the whole point of an unattended smoke test. Note what that costs: the closure may
+    // run twice, so the host and view state are built *inside* it rather than moved in from
+    // outside, since the first attempt's copies are dropped with `baseview`'s window thread.
+    namir_ui::open_with_srgb_fallback(settings, |settings| {
+        let mut host = SmokeHost { frames: 0 };
+        let mut view = ViewState::default();
 
-            if host.frames >= FRAMES_BEFORE_CLOSE {
-                println!("rendered {} frames; closing", host.frames);
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        },
-    );
+        EguiWindow::open_blocking(
+            settings,
+            (),
+            |_ctx, _cmds, _state| {
+                println!("build: egui context created");
+            },
+            |_output, _viewport, _state| {},
+            move |ui, _cmds, _state| {
+                let snapshot = host.snapshot();
+                let mut intents = Vec::new();
+                namir_ui::render(ui, &mut view, &snapshot, &mut intents);
+                for intent in intents {
+                    host.dispatch(intent);
+                }
+                ui.ctx().request_repaint();
+
+                if host.frames >= FRAMES_BEFORE_CLOSE {
+                    println!("rendered {} frames; closing", host.frames);
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            },
+        );
+    });
 
     println!("window closed cleanly");
 }
