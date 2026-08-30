@@ -93,20 +93,32 @@ its own — is:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --no-fail-fast
-cargo run -p xtask -- layering       # crate dependency-graph and platform-cfg lint
-cargo run -p xtask -- rt-logging     # no audio-thread module names the logger
-cargo run -p xtask -- params-lock    # params.lock matches the parameter registry
-cargo run -p xtask -- attribution    # THIRD-PARTY-NOTICES.md is current
-cargo run -p xtask -- identity       # brand mark, README and TRADEMARK.md are current
-cargo run -p xtask -- ci-commands    # this file's commands are the ones CI runs
-cargo run -p xtask -- traceability   # requirement coverage and generated test-plan diff
-cargo deny check                     # licence, advisory and dependency-ban audit
+cargo run -p xtask -- layering        # crate dependency-graph and platform-cfg lint
+cargo run -p xtask -- rt-logging      # no audio-thread module names the logger
+cargo run -p xtask -- network-free    # no first-party crate names a socket API
+cargo run -p xtask -- error-catalogue # every error code is a named entry in a catalogue
+cargo run -p xtask -- feature-guard   # no --all-features; host-ext-tests stays non-default
+cargo run -p xtask -- params-lock     # params.lock matches the parameter registry
+cargo run -p xtask -- assets          # every checked-in test asset declares its provenance
+cargo run -p xtask -- attribution     # THIRD-PARTY-NOTICES.md is current
+cargo run -p xtask -- identity        # brand mark, README and TRADEMARK.md are current
+cargo run -p xtask -- schema          # state and preset documents match the format document
+cargo run -p xtask -- ci-commands     # this file's commands are the ones CI runs
+cargo run -p xtask -- traceability    # requirement coverage and generated test-plan diff
+cargo deny check                      # advisory, licence, dependency-ban and source audit
 ```
 
-`params-lock`, `attribution`, `identity` and `traceability` take `--write` to regenerate their
-artifact instead of verifying it. `traceability` also takes `--allow-uncovered`, which is the form
-CI gates on until requirement coverage reaches zero gaps; the plain form runs alongside it as an
-informational step.
+`params-lock`, `attribution`, `assets`, `identity` and `traceability` take `--write` to regenerate
+their artifact instead of verifying it — except that `assets` never writes the provenance column,
+which is a human declaration a tool cannot mint. `traceability` also takes `--allow-uncovered`,
+which is the form CI gates on until requirement coverage reaches zero gaps; the plain form runs
+alongside it as an informational step. `schema` takes zero or more paths and checks the checked-in
+corpus when given none.
+
+`cargo deny check` runs four sub-checks — advisories, bans, licenses and sources — and CI runs each
+of them as its own `cargo-deny-action` step rather than the bare command. `xtask ci-commands`
+requires those steps to cover all four between them, because a `cargo deny check <sub-check>` step
+runs *less* than the command documented here, not more.
 
 A pre-commit hook running the fast half of the gate (`cargo fmt --check` plus
 `cargo check --workspace --all-targets`) is available; opt in once per clone with:

@@ -1238,6 +1238,65 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // --- NFR-LIC-050: every checked-in asset declares its provenance -------------------------
+
+    /// The gate as CI should run it, over the real tree — the shape `rt-logging`, `network-free`,
+    /// `error-catalogue` and `feature-guard` already had and this one did not (M15 review, finding
+    /// 3). `assets.rs`'s own tests all run against a two-file scratch tree, so **nothing executed
+    /// this check against the repository it exists to police**, while
+    /// `crates/namir-fixtures/src/lib.rs` carries a plain `// trace: NFR-LIC-050` asserting it
+    /// does. A captured `.wav` committed under `crates/` renders as `unrecorded`, which fails
+    /// here; before this test and the CI step beside it, it failed nowhere.
+    #[test]
+    fn every_checked_in_asset_in_the_real_tree_declares_its_provenance() {
+        assert!(run_assets(&repo_root(), false));
+    }
+
+    /// The negative control, and deliberately over the **real** manifest rather than a scratch
+    /// one: the file this check reads is `crates/namir-fixtures/assets.lock` as committed, and one
+    /// captured `.wav` dropped in beside the generated fixtures is exactly what NFR-LIC-050 and
+    /// D-19.1 exist to catch. Nothing is written to the tree — the planted asset is added to the
+    /// scan's result, which is the same input `check_or_write` would have built had the file been
+    /// there.
+    #[test]
+    fn a_planted_captured_asset_fails_the_real_manifest() {
+        let root = repo_root();
+        let manifest = std::fs::read_to_string(root.join(assets::ASSET_MANIFEST_PATH)).unwrap();
+        let recorded = assets::parse(&manifest).unwrap();
+        let mut actual = assets::scan(&root, &recorded).unwrap();
+        assert!(
+            assets::violations(&recorded, &actual).is_empty(),
+            "the real tree must start clean"
+        );
+
+        actual.push(assets::AssetEntry {
+            path: "crates/namir-fixtures/assets/captured-cab.wav".to_string(),
+            bytes: 12,
+            hash: namir_core::ContentHash::of(b"RIFF....WAVE").to_string(),
+            provenance: assets::UNRECORDED.to_string(),
+        });
+        let violations = assets::violations(&recorded, &actual);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(
+            violations[0].contains("captured-cab.wav"),
+            "{violations:#?}"
+        );
+        assert!(
+            violations[0].contains("not in the manifest"),
+            "{violations:#?}"
+        );
+    }
+
+    // --- FR-STATE-040's S half: every checked-in state document matches the format document ----
+
+    /// The same shape for `schema`, wired into CI by the same change. Its validator has unit tests
+    /// in `namir-state` and an integration test over the corpus there; what had no artifact was
+    /// the subcommand itself — the build-time face FRS §1.5's `S` names — against the real corpus.
+    #[test]
+    fn every_checked_in_state_document_in_the_real_tree_matches_the_format() {
+        assert!(schema::run(&repo_root(), &[]));
+    }
+
     // --- §22 R-17 (issue #25): the --all-features guard, wired to the real tree -----------------
 
     /// The gate as CI should run it, against the real repository. Doubles as the existence check

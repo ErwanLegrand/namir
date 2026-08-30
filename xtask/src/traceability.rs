@@ -77,6 +77,16 @@ pub struct Requirement {
 /// not treated as a parse boundary). A requirement line with no `*Verify:*` found before either
 /// the next requirement or end of file is a malformed-FRS error, surfaced rather than silently
 /// dropped, since a silently-skipped requirement would defeat the whole point of this check.
+///
+/// **The forward scan stops at the next requirement of *any* priority** ([`extract_requirement`]),
+/// not at the next Must. It stopped at the next Must until M15, which made the error above
+/// unreachable across a run of non-Must neighbours: a Must whose `*Verify:*` line was missing,
+/// misspelt (`*Verify*`, `*Verify :*`) or demoted to prose scanned straight through the following
+/// `(Should)`/`(Could)` requirements and adopted the first method it found -- silently recording
+/// that neighbour's code as the Must's own. Since 31 Shoulds and 3 Coulds are interleaved with the
+/// 130 Musts, that is not a hypothetical: the bar `docs/03-test-plan.md` states for the Must would
+/// have been whatever the Should asked for, and nothing anywhere would have said so. Inheriting a
+/// method is never right, so the boundary is every requirement line.
 pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, String> {
     let lines: Vec<&str> = frs_text.lines().collect();
     let mut out = Vec::new();
@@ -89,9 +99,11 @@ pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, Strin
         }
         if let Some(id) = extract_must_id(lines[i]) {
             let mut verify = None;
+            let mut next_requirement = None;
             let mut j = i + 1;
             while j < lines.len() {
-                if extract_must_id(lines[j]).is_some() {
+                if let Some((next_id, priority)) = extract_requirement(lines[j]) {
+                    next_requirement = Some(format!("{next_id} ({priority})"));
                     break;
                 }
                 if let Some(head) = verify_line_text(lines[j]) {
@@ -127,10 +139,14 @@ pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, Strin
                     section: current_section.clone(),
                 }),
                 None => {
+                    let stopped_at = next_requirement
+                        .map_or_else(|| "the end of the file".to_string(), |r| format!("**{r}**"));
                     return Err(format!(
-                        "no *Verify:* line found for {id} before the next requirement or end of \
-                         file -- the FRS is malformed, or this parser's assumptions about its \
-                         layout no longer hold"
+                        "no *Verify:* line found for {id} before {stopped_at} -- the FRS is \
+                         malformed (a missing or misspelt `*Verify:*` marker), or this parser's \
+                         assumptions about its layout no longer hold. The scan stops at the next \
+                         requirement of any priority precisely so a Must cannot inherit a \
+                         following Should's or Could's method"
                     ));
                 }
             }
@@ -141,20 +157,34 @@ pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, Strin
     Ok(out)
 }
 
-/// `"**FR-CHAIN-010 (Must)** — ..."` -> `Some("FR-CHAIN-010")`. `None` for `(Should)`/`(Could)`/
-/// `(Won't)` lines, and for anything not starting with a bolded `FR-`/`NFR-` id.
-fn extract_must_id(line: &str) -> Option<String> {
+/// `"**FR-CHAIN-010 (Must)** — ..."` -> `Some(("FR-CHAIN-010", "Must"))`, and
+/// `"**FR-CFG-040 (Should)** — ..."` -> `Some(("FR-CFG-040", "Should"))`. `None` for anything not
+/// starting with a bolded `FR-`/`NFR-` id and its priority.
+///
+/// Priority-blind on purpose: this is the boundary [`parse_must_requirements`]'s forward scan
+/// stops at, and a Must must not adopt a neighbour's `*Verify:*` whatever that neighbour's
+/// priority is. [`extract_must_id`] is the Must-only filter over it.
+fn extract_requirement(line: &str) -> Option<(String, String)> {
     let rest = line.strip_prefix("**")?;
     let end = rest.find("**")?;
     let inside = &rest[..end];
     let (id_part, tag_part) = inside.split_once(" (")?;
-    if tag_part.trim_end_matches(')') != "Must" {
-        return None;
-    }
     if !(id_part.starts_with("FR-") || id_part.starts_with("NFR-")) {
         return None;
     }
-    Some(id_part.to_string())
+    Some((
+        id_part.to_string(),
+        tag_part.trim_end_matches(')').to_string(),
+    ))
+}
+
+/// `"**FR-CHAIN-010 (Must)** — ..."` -> `Some("FR-CHAIN-010")`. `None` for `(Should)`/`(Could)`/
+/// `(Won't)` lines, and for anything not starting with a bolded `FR-`/`NFR-` id.
+fn extract_must_id(line: &str) -> Option<String> {
+    match extract_requirement(line) {
+        Some((id, priority)) if priority == "Must" => Some(id),
+        _ => None,
+    }
 }
 
 /// `"## 4. Product configurations"` -> `Some("4")`, `"### 5.1 Signal chain (CHAIN)"` ->
@@ -1952,6 +1982,72 @@ mod tests {
                    *Verify:* U.\n";
         let err = parse_must_requirements(frs).unwrap_err();
         assert!(err.contains("FR-X-010"));
+    }
+
+    /// The gap the M15 review found: the forward scan broke on the next **Must**, so a Must with
+    /// no method line of its own read straight through the `(Should)` between them and adopted
+    /// **its** `*Verify:*`. `FR-X-010` here would have been recorded as `Verify: B` -- a code the
+    /// FRS never wrote for it -- and `docs/03-test-plan.md` would have stated that bar with
+    /// nothing anywhere saying where it came from. Inheritance is never the right answer, so this
+    /// is an error.
+    #[test]
+    fn a_must_does_not_inherit_a_following_shoulds_verify_line() {
+        let frs = "**FR-X-010 (Must)** — text whose *Verify* marker was misspelt.\n\
+                   *Verify* U — no colon, so this line is not a method line.\n\
+                   **FR-X-020 (Should)** — a neighbour that does have one.\n\
+                   *Verify:* B.\n";
+        let err = parse_must_requirements(frs).unwrap_err();
+        assert!(err.contains("FR-X-010"), "{err}");
+        assert!(err.contains("FR-X-020 (Should)"), "{err}");
+    }
+
+    /// The same for a `(Could)`, and for the end of the file with no neighbour at all -- the two
+    /// other ways the scan can terminate. The message names what it stopped at in each case.
+    #[test]
+    fn the_scan_stops_at_a_could_and_at_the_end_of_the_file() {
+        let after_could = parse_must_requirements(
+            "**FR-X-010 (Must)** — no method line.\n\
+             **FR-X-020 (Could)** — a neighbour that has one.\n\
+             *Verify:* U.\n",
+        )
+        .unwrap_err();
+        assert!(after_could.contains("FR-X-020 (Could)"), "{after_could}");
+
+        let at_eof = parse_must_requirements(
+            "**FR-X-010 (Must)** — no method line, and nothing after it.\n",
+        )
+        .unwrap_err();
+        assert!(at_eof.contains("the end of the file"), "{at_eof}");
+    }
+
+    /// And the property the boundary must not break: a Should sitting between a Must and its own
+    /// `*Verify:*` line does not exist in the FRS, but a Should *after* a complete Must is
+    /// everywhere in it. The Must keeps its own method and the Should is still ignored.
+    #[test]
+    fn a_should_after_a_complete_must_changes_nothing() {
+        let frs = "**FR-X-010 (Must)** — text.\n\
+                   *Verify:* G.\n\
+                   **FR-X-020 (Should)** — a neighbour.\n\
+                   *Verify:* B.\n\
+                   **FR-X-030 (Must)** — text.\n\
+                   *Verify:* S.\n";
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(reqs.len(), 2, "{reqs:#?}");
+        assert_eq!(reqs[0].verify, vec!['G']);
+        assert_eq!(reqs[1].verify, vec!['S']);
+    }
+
+    /// The real FRS parses under the stricter boundary: no Must in it depends on inheriting a
+    /// neighbour's method, which is the empirical half of the claim above.
+    #[test]
+    fn every_must_in_the_real_frs_states_its_own_verify_line() {
+        let frs = include_str!("../../docs/01-functional-requirements.md");
+        let reqs = parse_must_requirements(frs).unwrap();
+        assert_eq!(
+            reqs.len(),
+            130,
+            "the FRS's Must count moved; update this figure"
+        );
     }
 
     fn ids(source: &str) -> Vec<String> {
