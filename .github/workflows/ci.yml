@@ -241,6 +241,51 @@ jobs:
         run: cargo run -p xtask -- traceability
         continue-on-error: true
 
+  # M15 (issue #143): does the interface actually open and paint on a machine with no display?
+  #
+  # Every other `namir-ui` test is headless by construction -- they drive `egui::Context::run_ui`
+  # and assert over the shapes `render` painted, which never touches a windowing stack. That is a
+  # deliberate design (the crate's own tests say so) and it leaves one thing unasserted: that a
+  # window opens at all. Until #143 it did not, on any machine without a physical display, and
+  # nothing here would have said so -- `baseview` asked `glXChooseFBConfig` for an sRGB-capable
+  # framebuffer, which a software X server offers on none of its configs, and the open panicked.
+  #
+  # This runs the crate's existing unattended smoke example, which renders a fixed number of frames
+  # and closes itself, against Xvfb. It is the step that makes #143's fallback a thing CI checks
+  # rather than a thing someone verified once.
+  #
+  # Required, not informational: a headless-window check permitted to fail asserts nothing, and the
+  # whole value of #143 is turning "needs a human at a screen" into "runs on every push". It has
+  # NOT been executed on a GitHub-hosted runner -- only under `Xvfb :99 -screen 0 1280x1024x24` on
+  # Mesa 25.2.8/llvmpipe, where the example panicked before #143 and renders its 90 frames and
+  # exits 0 after it. If the runner's GL stack differs, this job is where that surfaces.
+  #
+  # `libgl1-mesa-dri` is the llvmpipe software rasteriser: the runner has no GPU, so without it
+  # there is a GLX server and no driver to render through. The build-time X and ALSA headers are
+  # already satisfied on this image by the build + test job, which compiles the same workspace.
+  headless-window:
+    name: headless window smoke (FR-UI-010, issue #143)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb and a software GL driver
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri
+
+      # `xvfb-run -a` picks a free display rather than hard-coding :99, so this cannot collide with
+      # anything else the runner starts. The screen is 24-bit because `EguiWindowSettings`' default
+      # asks for a 24-bit depth buffer.
+      #
+      # Two panic messages on stderr before it succeeds are expected, not a failure: #143's
+      # fallback learns the framebuffer is unavailable by catching `baseview`'s panic, that library
+      # having no fallible open. The exit status is the assertion.
+      - name: Open and render the interface with no display (issue #143)
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" cargo run -p namir-ui --example manual_window_smoke
+
   # Covers D-18.1's "cargo-deny licence audit" (NFR-LIC-020). deny.toml already exists at the
   # repo root; this job just runs it in CI instead of by hand.
   license-audit:
