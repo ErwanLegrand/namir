@@ -212,16 +212,42 @@ impl State {
     /// [`FileRef`]'s doc comment on why an unrecognised field *inside* a single reference object
     /// is not yet preserved.
     ///
-    /// **The one thing this method deletes:** a `references` slot this state does not carry.
-    /// `merge_section` can only add keys, so `State { nam: None, .. }.write_onto(a document that
-    /// had one)` used to write the old `references.nam` straight back — the user removes a model,
-    /// saves, reloads, and it is back (issue #112; the CLAP save path is literally
-    /// `save() -> write_onto(&last_document())`). §7 of `docs/04-state-and-preset-format.md` says
-    /// "absent means nothing of that kind is loaded", and merging alone has no way to say it. So
-    /// `nam`/`ir` are removed explicitly when this state's own field is `None`. This is not a
-    /// D-11.2 exception: both keys are ones this build fully owns and rewrites on every save, and
-    /// the removal is per-key (`Document::remove_from_section`), so an unrecognised key
-    /// alongside them inside `references` still survives untouched.
+    /// **The one thing this method deletes:** a `references` slot this state does not carry
+    /// **and this build could read in `onto`**. `merge_section` can only add keys, so
+    /// `State { nam: None, .. }.write_onto(a document that had one)` used to write the old
+    /// `references.nam` straight back — the user removes a model, saves, reloads, and it is back
+    /// (issue #112; the CLAP save path is literally `save() -> write_onto(&last_document())`).
+    /// §7 of `docs/04-state-and-preset-format.md` says "absent means nothing of that kind is
+    /// loaded", and merging alone has no way to say it. So `nam`/`ir` are removed explicitly.
+    /// This is not a D-11.2 exception: both keys are ones this build fully owns and rewrites on
+    /// every save, and the removal is per-key (`Document::remove_from_section`), so an
+    /// unrecognised key alongside them inside `references` still survives untouched.
+    ///
+    /// **Why `self.nam.is_none()` is not by itself the condition.** [`Self::from_document`]
+    /// produces `None` for a slot two different ways, and only one of them is a user's decision:
+    /// the slot was genuinely absent or cleared, *or* [`read_reference`] could not parse what was
+    /// there and degraded it to `None` plus a warning (P8) — a reference a hand-editor mangled,
+    /// or one written in a shape only a newer build understands (a future `embedded.encoding`, an
+    /// algorithm-tagged `hash`). Deleting on `is_none()` alone conflates the two and destroys the
+    /// second on the very next save, which is the failure D-11.2's rationale names in as many
+    /// words: "a project saved by a newer Namir and opened by an older one does not silently lose
+    /// settings on the next save". So the removal is conditioned on `onto`'s own slot being one
+    /// this build **can** read: absent (nothing to delete), or a well-formed [`FileRef`] whose
+    /// disappearance from `self` therefore really does mean the user cleared it.
+    ///
+    /// **Why the distinction is recomputed from `onto` rather than carried on [`State`].** A
+    /// third variant on the field, or a set of unreadable keys alongside them, would have to
+    /// survive from the load that observed the defect to the save that must respect it — and on
+    /// the path that matters it cannot. `namir-clap`'s `save()` builds a brand-new `State` out of
+    /// its own parameter mirror and resource slots (`SharedInner::snapshot_state`), never the
+    /// `State` that `load` parsed; anything the reader had recorded on that value is already gone
+    /// by the time `write_onto` runs. `onto` — the retained source document — is the one carrier
+    /// that is still in hand at the point of decision, and it holds the evidence directly, so the
+    /// predicate here is [`FileRef::from_value`] itself rather than a second, driftable notion of
+    /// "well-formed". (It re-parses one reference per cleared slot, an embedded copy's base64
+    /// included; this is a save path that is about to re-encode the whole document anyway, and
+    /// paying it buys the guarantee that this check can never disagree with the reader whose
+    /// behaviour it exists to compensate for.)
     ///
     /// **D-10.4:** if `onto` carries a legacy `global` section (D-11.2 tolerance: this build can
     /// still have read one, via [`Self::from_document`]), it is left exactly as it is here — the
@@ -236,13 +262,29 @@ impl State {
         let mut document = onto.clone();
         document.merge_section("parameters", self.params.to_document_section());
         document.merge_section("references", references_section(&self.nam, &self.ir));
-        if self.nam.is_none() {
+        if self.nam.is_none() && was_readable(onto, "nam") {
             document.remove_from_section("references", "nam");
         }
-        if self.ir.is_none() {
+        if self.ir.is_none() && was_readable(onto, "ir") {
             document.remove_from_section("references", "ir");
         }
         document
+    }
+}
+
+/// Whether `onto`'s `references.<key>` is one this build actually reads — the "the user cleared
+/// it" half of [`State::write_onto`]'s removal condition, as opposed to "we never managed to read
+/// it in the first place". A slot that isn't there at all counts as readable: there is nothing to
+/// lose by removing it, and reporting it unreadable would only make the removal a no-op by a
+/// second route.
+///
+/// Deliberately [`FileRef::from_value`] itself, not a cheaper re-statement of what it accepts:
+/// this predicate is only correct while it agrees exactly with [`read_reference`], which is the
+/// function that turned the slot into the `None` being interpreted here.
+fn was_readable(onto: &Document, key: &str) -> bool {
+    match onto.section("references").and_then(|s| s.get(key)) {
+        Some(value) => FileRef::from_value(value).is_ok(),
+        None => true,
     }
 }
 
@@ -432,6 +474,92 @@ mod tests {
         let (restored, warnings) = State::read(&bytes).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(restored.nam, None);
+    }
+
+    /// The **other** way [`State::from_document`] produces `nam: None`, and the one issue #112's
+    /// fix could not tell apart from a genuine unload: this build could not *read* the reference
+    /// that is there. `read_reference` degrades a reference it cannot parse to `None` plus a
+    /// warning by design (P8), which is exactly what makes a forward-compatible document safe to
+    /// open — and exactly what would make deleting on `is_none()` alone destroy it on the next
+    /// save. The shape used here is the realistic one: a newer build's `embedded.encoding` this
+    /// build refuses, inside an otherwise well-formed reference.
+    ///
+    /// D-11.2's promise ("a project saved by a newer Namir and opened by an older one does not
+    /// silently lose settings on the next save") is the whole point, and the CLAP save path is
+    /// literally `save() -> write_onto(&last_document())`.
+    #[test]
+    fn write_onto_preserves_a_reference_this_build_could_not_read() {
+        let mut original = Document::empty();
+        let mut references = Map::new();
+        let Value::Object(mut newer) = a_reference("plexi.nam").to_value() else {
+            unreachable!("a FileRef always serialises to an object");
+        };
+        let mut embedded = Map::new();
+        // A future encoding this build has never heard of: everything else about the reference
+        // is well-formed, and a newer build reads it back perfectly.
+        embedded.insert("encoding".to_string(), Value::from("base64+zstd"));
+        embedded.insert("data".to_string(), Value::from("eyJmYWtlIjo="));
+        newer.insert("embedded".to_string(), Value::Object(embedded));
+        let unreadable = Value::Object(newer);
+        references.insert("nam".to_string(), unreadable.clone());
+        original.set_section("references", references);
+
+        // It really does degrade to `None` with a warning rather than failing the document.
+        let (state, warnings) = State::from_document(original.clone());
+        assert_eq!(state.nam, None);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code.id, crate::error_codes::MALFORMED_JSON.id);
+
+        // ... and saving that state back onto the document it came from must not delete it.
+        let saved = state.write_onto(&original);
+        assert_eq!(
+            saved.section("references").and_then(|s| s.get("nam")),
+            Some(&unreadable),
+            "a reference this build could not read is data it does not understand: D-11.2 \
+             preserves it verbatim rather than deleting it on the next save"
+        );
+    }
+
+    /// The same distinction at the `ir` slot, and with the other unreadable shape — a `hash` in
+    /// a form this build cannot parse — so the fix cannot be one that happens to key off
+    /// `embedded` or off `nam` alone.
+    #[test]
+    fn write_onto_preserves_an_unreadable_ir_reference_while_clearing_a_readable_nam() {
+        let mut original = Document::empty();
+        let mut references = Map::new();
+        references.insert("nam".to_string(), a_reference("plexi.nam").to_value());
+        let mut broken_ir = Map::new();
+        // A hypothetical newer build's algorithm-tagged hash; this build's `ContentHash` parser
+        // wants 64 bare hex characters and refuses it.
+        broken_ir.insert(
+            "hash".to_string(),
+            Value::from("blake3:d1f0a4c2b9e8375614a0c3d2e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e"),
+        );
+        broken_ir.insert("display_name".to_string(), Value::from("1960a.wav"));
+        let unreadable = Value::Object(broken_ir);
+        references.insert("ir".to_string(), unreadable.clone());
+        original.set_section("references", references);
+
+        let (mut state, warnings) = State::from_document(original.clone());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(state.nam.is_some(), "the nam reference is readable");
+        assert_eq!(state.ir, None, "the ir reference degraded to absent");
+
+        state.nam = None; // the user unloads the model this build *did* read
+        let saved = state.write_onto(&original);
+
+        let saved_references = saved.section("references").unwrap();
+        assert!(
+            !saved_references.contains_key("nam"),
+            "a reference this build read and the user then cleared must still be deleted \
+             (issue #112): {:?}",
+            saved_references.get("nam")
+        );
+        assert_eq!(
+            saved_references.get("ir"),
+            Some(&unreadable),
+            "a reference this build never managed to read must survive"
+        );
     }
 
     /// Clearing a slot must not become a licence to rewrite the `references` section wholesale:
