@@ -4,6 +4,8 @@
 //! crate's top doc comment for why a single type parameterized by *which `open_*` call wraps it*
 //! satisfies FR-UI-010 rather than two separate UIs.
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use egui::{CentralPanel, Panel, ScrollArea, Ui};
 use namir_params::global::{GLOBAL_BYPASS, OUTPUT_CEILING_DB};
 use namir_state::ParamValues;
@@ -309,10 +311,113 @@ fn default_window_size() -> baseview::dpi::Size {
     baseview::dpi::Size::Logical(baseview::dpi::LogicalSize::new(960.0, 640.0))
 }
 
+/// Opens a window through `open`, and if that attempt fails, opens it once more with sRGB
+/// framebuffer selection turned off.
+///
+/// # What this works around (issue #143)
+///
+/// `baseview`'s default `GlConfig` sets `srgb: true`, which its `get_fb_attribs` passes to
+/// `glXChooseFBConfig` as `GLX_FRAMEBUFFER_SRGB_CAPABLE_ARB, 1`. A software X server offers no
+/// sRGB-capable framebuffer config at all, so that request matches nothing and
+/// `find_best_visual_config_for_gl` panics on its own `.expect("Could not fetch framebuffer
+/// config")`. Measured under Xvfb on Mesa 25.2.8/llvmpipe: GLX itself is entirely healthy there --
+/// direct rendering, a 4.5 core profile, 240 framebuffer configs -- and **not one** of those 240
+/// carries the sRGB flag. That is why the failure reads as a GLX problem (issue #19's original
+/// diagnosis): GLX is merely the call that comes back empty. Retrying without the flag opens the
+/// window on the very same display.
+///
+/// Dropping the flag costs nothing visually on this stack, because nothing was using it: `egui_glow`
+/// (0.35, the renderer `egui-baseview` 0.6 drives) calls `gl.disable(FRAMEBUFFER_SRGB)` in
+/// `prepare_painting` on every frame it can, since egui's shader already emits gamma-encoded
+/// colour and must not have the driver convert it again. So `srgb: true` only ever selected a
+/// framebuffer *capable* of a conversion that egui then switched off.
+///
+/// Measured as far as one machine can measure it: a frame rendered through the fallback and read
+/// back off the X server (`xwd`) paints `egui::Visuals::dark()`'s `panel_fill` as exactly
+/// `(27, 27, 27)` -- byte-identical to `Color32::from_gray(27)`, so no linear-to-sRGB conversion is
+/// being applied on write. The A/B against an sRGB framebuffer cannot be run on the same display,
+/// since that is precisely the config no headless X server offers; for that half the evidence is
+/// `egui_glow`'s `disable(FRAMEBUFFER_SRGB)`, read rather than executed.
+///
+/// # Why a caught panic is the failure signal
+///
+/// `baseview` 0.2.2 has no fallible open: both `Window::open_blocking` and `Window::open_parented`
+/// end in `rx.recv().unwrap().unwrap()`, so a window thread that dies during setup reaches the
+/// calling thread as a panic and as nothing else. A retry therefore has to catch one. The catch is
+/// narrower than it looks: a panic raised by a *frame* runs on `baseview`'s own window thread,
+/// which `open_blocking` absorbs in its `thread.join().unwrap_or_else(..)`, so what arrives here is
+/// a window that failed to open.
+///
+/// A real display is unaffected -- its first attempt succeeds and `open` is called exactly once.
+/// If the second attempt fails too, the failure was never about sRGB (no `DISPLAY` at all, say)
+/// and its panic propagates unchanged rather than being swallowed.
+///
+/// `open` is called at most twice, so it must build its own per-attempt window state; see
+/// [`open_blocking`] for what a host that cannot simply be rebuilt does instead.
+pub fn open_with_srgb_fallback<T>(
+    settings: egui_baseview::EguiWindowSettings,
+    mut open: impl FnMut(egui_baseview::EguiWindowSettings) -> T,
+) -> T {
+    // `AssertUnwindSafe` because nothing observable survives a failed attempt: `open` moves its own
+    // window state into `baseview`'s window thread, which drops it while unwinding, and the only
+    // value this function itself carries across the two attempts is `settings`, which it clones
+    // rather than mutates.
+    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(settings.clone())));
+    match first {
+        Ok(opened) => opened,
+        Err(_) => {
+            let mut fallback = settings;
+            fallback.graphics.gl_config.srgb = false;
+            // The two panic messages the default hook has just printed are alarming and, on a
+            // headless display, expected; say which is which rather than leaving them unexplained.
+            eprintln!(
+                "namir-ui: the window could not be opened with an sRGB-capable framebuffer; \
+                 retrying without one (expected under a headless X server -- see issue #143)."
+            );
+            open(fallback)
+        }
+    }
+}
+
+/// A [`UiHost`] both attempts of an [`open_with_srgb_fallback`] can share.
+///
+/// `egui-baseview` takes the window's state **by value**, and the first attempt's state is moved
+/// into `baseview`'s window thread and dropped when that thread unwinds -- so a host handed over
+/// directly would be gone before the retry could use it, and `H` cannot simply be rebuilt: it is a
+/// live bridge to a running engine, not data (see [`UiHost`]). Holding it behind a shared cell
+/// keeps the one host alive across both attempts.
+///
+/// The lock is uncontended: only one attempt is ever live, and within it only the window thread
+/// ever takes the host. This is the UI thread, never the audio thread, so NFR-RT-010 has nothing
+/// to say about a lock here. A poisoned lock is taken anyway rather than panicked on -- poisoning
+/// means a frame already panicked, and a second panic on the way out would replace that failure's
+/// message with a less informative one.
+struct SharedHost<H>(Arc<Mutex<H>>);
+
+impl<H: UiHost> UiHost for SharedHost<H> {
+    fn snapshot(&mut self) -> UiSnapshot {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot()
+    }
+
+    fn dispatch(&mut self, intent: UiIntent) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .dispatch(intent);
+    }
+}
+
 /// Opens `host` in a standalone, blocking window -- `namir-app`'s use of FR-UI-010's one shared
 /// UI implementation. Blocks the calling thread until the window is closed (matching
 /// `egui_baseview::EguiWindow::open_blocking`'s own contract); `namir-app` is expected to call
 /// this from whatever thread it dedicates to the GUI.
+///
+/// Goes through [`open_with_srgb_fallback`], so this opens a window under a headless X server too;
+/// `host` is shared with the retry through a [`SharedHost`] rather than consumed by the first
+/// attempt.
 pub fn open_blocking<H>(title: impl Into<String>, host: H)
 where
     H: UiHost + 'static,
@@ -322,13 +427,16 @@ where
         size: default_window_size(),
         ..Default::default()
     };
-    egui_baseview::EguiWindow::open_blocking(
-        settings,
-        NamirUi::new(host),
-        |_ctx, _cmds, _state: &mut NamirUi<H>| {},
-        |_output, _viewport, _state: &mut NamirUi<H>| {},
-        |ui, _cmds, state: &mut NamirUi<H>| state.frame(ui),
-    );
+    let host = Arc::new(Mutex::new(host));
+    open_with_srgb_fallback(settings, |settings| {
+        egui_baseview::EguiWindow::open_blocking(
+            settings,
+            NamirUi::new(SharedHost(Arc::clone(&host))),
+            |_ctx, _cmds, _state: &mut NamirUi<SharedHost<H>>| {},
+            |_output, _viewport, _state: &mut NamirUi<SharedHost<H>>| {},
+            |ui, _cmds, state: &mut NamirUi<SharedHost<H>>| state.frame(ui),
+        );
+    });
 }
 
 /// Opens `host` embedded in `parent`'s window -- `namir-clap`'s use of FR-UI-010's one shared UI
@@ -336,6 +444,9 @@ where
 /// eventually supplies `parent` from; wiring a real CLAP plugin to this function is `namir-clap`'s
 /// job, not this crate's). Returns immediately with a handle the caller closes when the host asks
 /// the plugin to destroy its editor.
+///
+/// Goes through [`open_with_srgb_fallback`] for the same reason [`open_blocking`] does, and shares
+/// `host` with the retry the same way.
 pub fn open_parented<H, P>(parent: &P, title: impl Into<String>, host: H) -> baseview::WindowHandle
 where
     H: UiHost + 'static,
@@ -346,14 +457,17 @@ where
         size: default_window_size(),
         ..Default::default()
     };
-    egui_baseview::EguiWindow::open_parented(
-        parent,
-        settings,
-        NamirUi::new(host),
-        |_ctx, _cmds, _state: &mut NamirUi<H>| {},
-        |_output, _viewport, _state: &mut NamirUi<H>| {},
-        |ui, _cmds, state: &mut NamirUi<H>| state.frame(ui),
-    )
+    let host = Arc::new(Mutex::new(host));
+    open_with_srgb_fallback(settings, |settings| {
+        egui_baseview::EguiWindow::open_parented(
+            parent,
+            settings,
+            NamirUi::new(SharedHost(Arc::clone(&host))),
+            |_ctx, _cmds, _state: &mut NamirUi<SharedHost<H>>| {},
+            |_output, _viewport, _state: &mut NamirUi<SharedHost<H>>| {},
+            |ui, _cmds, state: &mut NamirUi<SharedHost<H>>| state.frame(ui),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1019,5 +1133,110 @@ mod tests {
                 "{element:?} was pushed to {rect:?}, outside a {EDITOR:?} editor"
             );
         }
+    }
+
+    /// The upstream default the whole sRGB fallback is premised on: `baseview`'s `GlConfig` asks
+    /// for an sRGB-capable framebuffer, and `egui-baseview` carries that default straight into
+    /// `EguiWindowSettings`. If a future bump flips that default, the retry below stops being a
+    /// fallback and becomes a second identical attempt -- this test is what says so out loud
+    /// rather than leaving a retry that quietly changes nothing.
+    #[test]
+    fn the_default_window_settings_ask_for_an_srgb_framebuffer() {
+        assert!(
+            egui_baseview::EguiWindowSettings::default()
+                .graphics
+                .gl_config
+                .srgb
+        );
+    }
+
+    /// A display that can satisfy the default config -- every real one -- is opened exactly once,
+    /// with the settings untouched. The fallback must cost a working machine nothing.
+    #[test]
+    fn a_window_that_opens_first_try_is_opened_once_and_unmodified() {
+        let mut attempts = Vec::new();
+        let opened =
+            open_with_srgb_fallback(egui_baseview::EguiWindowSettings::default(), |settings| {
+                attempts.push(settings.graphics.gl_config.srgb);
+                "the window"
+            });
+        assert_eq!(opened, "the window");
+        assert_eq!(attempts, vec![true], "one attempt, sRGB left as it came in");
+    }
+
+    /// Issue #143's case: the first attempt dies the way `baseview` dies under Xvfb, and the retry
+    /// arrives with sRGB switched off and its window is the one returned.
+    #[test]
+    fn a_window_that_fails_to_open_is_retried_once_without_srgb() {
+        let mut attempts = Vec::new();
+        let opened =
+            open_with_srgb_fallback(egui_baseview::EguiWindowSettings::default(), |settings| {
+                attempts.push(settings.graphics.gl_config.srgb);
+                if attempts.len() == 1 {
+                    // Verbatim what baseview 0.2.2's `visual_info.rs:28` raises on a display whose
+                    // framebuffer configs are none of them sRGB-capable.
+                    panic!("Could not fetch framebuffer config: CreationFailed(NoValidFBConfig)");
+                }
+                "the window"
+            });
+        assert_eq!(opened, "the window");
+        assert_eq!(
+            attempts,
+            vec![true, false],
+            "the first attempt as given, then one retry with sRGB off"
+        );
+    }
+
+    /// A failure that is not about sRGB -- no `DISPLAY` at all, say -- must still reach the caller.
+    /// Swallowing it would turn "no window" into a silent hang or an unexplained exit, which is
+    /// worse than the panic this issue started from.
+    #[test]
+    fn a_failure_that_survives_the_retry_is_not_swallowed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attempts = AtomicUsize::new(0);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            open_with_srgb_fallback(egui_baseview::EguiWindowSettings::default(), |_settings| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                panic!("no display of any kind");
+            })
+        }));
+        assert!(outcome.is_err(), "the second failure reached the caller");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "tried the default config, then the fallback, then gave up"
+        );
+    }
+
+    /// The host survives a failed first attempt: `SharedHost` hands the *same* host to the retry,
+    /// which is the whole reason it exists (`egui-baseview` takes the window state by value, and
+    /// the first attempt's copy is dropped when `baseview`'s window thread unwinds). Driven
+    /// through a `SharedHost` rather than through a real window, since opening one needs a display.
+    #[test]
+    fn a_host_shared_across_attempts_is_the_same_host_both_times() {
+        let host = Arc::new(Mutex::new(RecordingHost::default()));
+
+        let mut attempts = 0;
+        open_with_srgb_fallback(egui_baseview::EguiWindowSettings::default(), |_settings| {
+            attempts += 1;
+            // What each attempt does with the host it is handed, minus the window.
+            let mut shared = SharedHost(Arc::clone(&host));
+            let _ = shared.snapshot();
+            shared.dispatch(UiIntent::DismissNotice { id: attempts });
+            if attempts == 1 {
+                panic!("Could not fetch framebuffer config: CreationFailed(NoValidFBConfig)");
+            }
+        });
+
+        let dispatched = &host.lock().unwrap().dispatched;
+        assert_eq!(
+            dispatched,
+            &[
+                UiIntent::DismissNotice { id: 1 },
+                UiIntent::DismissNotice { id: 2 }
+            ],
+            "both attempts reached one and the same host, in order"
+        );
     }
 }
