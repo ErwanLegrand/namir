@@ -27,7 +27,7 @@
 //! worker thread (`LoadLibraryEntry`/`RescanLibraryRequested`/`CancelScanRequested`) — see
 //! [`crate::worker`]'s module doc comment for why load/scan don't also go through the direct path.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -117,6 +117,20 @@ pub(crate) mod local_error_codes {
         "Choose a name without a slash, backslash, colon, asterisk, question mark, quote, angle \
          bracket or vertical bar. Nothing was written, and your settings are unchanged.",
     );
+
+    /// A save was asked for under a name that already names a preset file. **`Warning`, and a
+    /// refusal, not a failure:** nothing has been written, the preset on disk is untouched, and
+    /// the same name pressed again goes through — see
+    /// [`super::AppHost::needs_overwrite_confirmation`] for why the confirmation is a second press
+    /// rather than a dialog.
+    pub const PRESET_EXISTS: ErrorCode = ErrorCode::new(
+        "app.host.preset_exists",
+        Severity::Warning,
+        "A preset named {detail} already exists, so nothing was saved.",
+        "Press Save again to replace it, or type a different name. The preset on disk is still \
+         whatever it was, and your current settings are unchanged either way.",
+    );
+
     pub const PRESET_LOCATION_UNKNOWN: ErrorCode = ErrorCode::new(
         "app.host.preset_location_unknown",
         Severity::Warning,
@@ -206,6 +220,16 @@ const STREAM_FAILURE_DRAIN_BATCH: usize = 8;
 /// window is not listing a directory 60 times a second. The same cadence `namir-clap`'s
 /// `SharedInner::presets_snapshot` uses, for the same reason.
 const PRESET_LISTING_MAX_AGE: Duration = Duration::from_secs(1);
+
+/// How long a "that preset already exists" refusal stays armed for the second, confirming press
+/// (see [`AppHost::needs_overwrite_confirmation`]).
+///
+/// Bounded rather than held for the session because the arming is a *loaded* destructive action:
+/// a user who reads the notice, leaves the name in the box and comes back an hour later is a user
+/// who should be warned again, not one whose next press silently replaces a preset. Thirty seconds
+/// is long enough to read the notice and press Save again deliberately, and short enough that the
+/// confirmation belongs to that gesture rather than to the session.
+const OVERWRITE_CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 
 /// The UI-thread end of [`crate::stream`]'s two error callbacks: one bounded ring per direction,
 /// plus the device names a notice has to name (issue #44).
@@ -317,6 +341,10 @@ pub struct AppHost {
     /// not both queue one.
     presets: Vec<PresetSummary>,
     presets_listed_at: Option<Instant>,
+    /// The preset name whose overwrite was refused, and when — the armed half of
+    /// [`AppHost::needs_overwrite_confirmation`]'s confirm-on-second-press guard. `None` whenever
+    /// no refusal is outstanding, which is every save that names a file that does not exist yet.
+    pending_overwrite: Option<(String, Instant)>,
     /// FR-IO-070's stream-failure reports, when this host is driving a real duplex path. `None`
     /// on `crate::app`'s `open_window_without_audio` path, where there is no stream to fail.
     stream_failures: Option<StreamFailureWatch>,
@@ -361,6 +389,7 @@ impl AppHost {
             preset_dir: None,
             presets: Vec::new(),
             presets_listed_at: None,
+            pending_overwrite: None,
             stream_failures: None,
             streams: None,
             thread_priority: None,
@@ -418,6 +447,62 @@ impl AppHost {
         // Stamped before the request, not after it lands.
         self.presets_listed_at = Some(Instant::now());
         self.worker.send(AppCommand::ListPresets(dir));
+    }
+
+    /// Whether writing `path` now would replace an existing preset **that the user has not asked
+    /// to replace**, arming (or consuming) the confirmation as it decides.
+    ///
+    /// # Why a second press, and not a dialog or a refusal
+    ///
+    /// [`namir_ui::UiIntent::SavePreset`] documents an overwriting name as the host's to reject and
+    /// to report, and until this guard existed no host did: `Save` over the name of an existing
+    /// preset destroyed it with no confirmation, no notice and no undo, and the user's only
+    /// feedback was the same success path as a fresh save. The three ways out of that, and why
+    /// this is the one taken:
+    ///
+    /// - **A confirmation dialog** is unavailable. `namir-ui` cannot open one (D-5.1 puts
+    ///   `namir-platform` out of its reach), and NFR-PORT-030's "no blocking dialog on the path of
+    ///   any audio-affecting operation" rules a modal out of the row that also carries the recall
+    ///   control, which *is* audio-affecting.
+    /// - **A plain refusal** would make overwriting impossible from inside the application, and
+    ///   re-saving a preset under the name it already has is the ordinary way to update one — the
+    ///   guard would then have traded a data-loss path for a workflow the user can only complete
+    ///   by deleting files behind Namir's back.
+    /// - **A second, deliberate press** costs a fresh save nothing, needs no new intent and no view
+    ///   state (so it holds for the plugin's copy of the same screen too), and is keyboard-operable
+    ///   — Enter twice in the name box, FR-UI-030.
+    ///
+    /// # Why here rather than in the view
+    ///
+    /// Only this side knows which *file* a name resolves to. `namir_platform::presets::preset_path`
+    /// sanitises the name first, and `sanitise_name`'s own doc comment records the collision a view
+    /// comparing typed names against [`namir_ui::UiSnapshot::presets`] could never see: `Crunch`
+    /// and `crunch` are two files on Linux and one on Windows and on a default-configured macOS.
+    /// `Path::exists` is the filesystem's own answer to that question, so it is asked here.
+    ///
+    /// **The one `stat` this host does on the UI thread**, and deliberately: it is on a Save
+    /// gesture, not on a frame ([`UiHost::snapshot`]'s no-I/O contract is untouched — see
+    /// [`PRESET_LISTING_MAX_AGE`] for the listing, which is still the worker's job), and the cached
+    /// listing it would otherwise consult cannot answer the case-folding question and can be up to
+    /// [`PRESET_LISTING_MAX_AGE`] stale over a directory two products and a second copy of this one
+    /// write into.
+    fn needs_overwrite_confirmation(&mut self, path: &Path, name: &str) -> bool {
+        if !path.exists() {
+            // Nothing to lose, so nothing to confirm -- and any arming for another name goes with
+            // it, since the gesture that armed it has been abandoned.
+            self.pending_overwrite = None;
+            return false;
+        }
+        let confirmed = self
+            .pending_overwrite
+            .as_ref()
+            .is_some_and(|(armed, at)| armed == name && at.elapsed() < OVERWRITE_CONFIRM_WINDOW);
+        if confirmed {
+            self.pending_overwrite = None;
+            return false;
+        }
+        self.pending_overwrite = Some((name.to_string(), Instant::now()));
+        true
     }
 
     /// Wires D-13.2's thread-elevation outcome in (issue #76). Called by [`crate::app::run`] once,
@@ -640,14 +725,39 @@ impl AppHost {
         }
     }
 
+    /// Folds one recall's outcome into the two name labels `namir-ui` renders as Model and
+    /// Impulse Response, and into FR-STATE-070's missing-reference notices.
+    ///
+    /// **Where a recalled name comes from.** [`crate::worker::RecallOutcomeSummary`] carries a
+    /// display name only for the *missing* case, so the loaded case reads FR-STATE-070's
+    /// [`namir_state::FileRef::display_name`] out of the recalled `State` itself — the same field
+    /// the missing case reports, and the one the preset actually stores. `crate::worker` installs
+    /// that state in this host's shared mirror *before* it posts `AppEvent::StateLoaded`, so it is
+    /// the recalled state that is read here, not the displaced one. Both names are taken under one
+    /// guard, for the reason [`AppHost::snapshot`] gives: two labels out of one state, never a
+    /// half-applied pair.
+    ///
+    /// `Failed`/`NotDelivered` deliberately leave the label alone: a load that failed or missed
+    /// the handover deadline left the previous resource playing, so the previous name is still
+    /// what is audible.
     fn apply_recall_summary(&mut self, outcome: crate::worker::RecallOutcomeSummary) {
+        let (nam_name, ir_name) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.nam.as_ref().map(|r| r.display_name.clone()),
+                state.ir.as_ref().map(|r| r.display_name.clone()),
+            )
+        };
         match outcome.nam {
-            LoadOutcomeSummary::Loaded { .. } => {}
+            // A `Loaded` outcome always came from a reference, so this is `Some`; assigned rather
+            // than guarded so that if it ever is not, the label empties instead of keeping a name
+            // that names nothing.
+            LoadOutcomeSummary::Loaded { .. } => self.loaded_model_name = nam_name,
             LoadOutcomeSummary::Unloaded => self.loaded_model_name = None,
             _ => {}
         }
         match outcome.ir {
-            LoadOutcomeSummary::Loaded { .. } => {}
+            LoadOutcomeSummary::Loaded { .. } => self.loaded_ir_name = ir_name,
             LoadOutcomeSummary::Unloaded => self.loaded_ir_name = None,
             _ => {}
         }
@@ -788,6 +898,19 @@ impl UiHost for AppHost {
                     self.push_notice(local_error_codes::PRESET_NAME_REFUSED, name);
                     return;
                 };
+                // A preset the user is about to lose is worth one refusal first -- see
+                // [`Self::needs_overwrite_confirmation`] for the whole argument, including why
+                // the confirmation is a second press of the same button rather than a dialog.
+                if self.needs_overwrite_confirmation(&path, &name) {
+                    self.push_notice(local_error_codes::PRESET_EXISTS, name);
+                    return;
+                }
+                // The refusal's own notice has been answered, so it stops being displayed --
+                // matched on the name it carries, so a warning outstanding about *another* preset
+                // survives this save.
+                self.notices.retain(|n| {
+                    n.code.id != local_error_codes::PRESET_EXISTS.id || n.detail != name
+                });
                 self.worker.send(AppCommand::SaveState(path));
                 // The list the user is about to look at must contain what they just saved.
                 self.presets_listed_at = None;
@@ -1718,6 +1841,206 @@ mod tests {
             reference.absolute.as_deref(),
             Some(ir_path.to_string_lossy().as_ref())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A successful recall must put the recalled file's name on screen.** Until this pass
+    /// `apply_recall_summary`'s two `Loaded` arms did nothing at all: only an `Unloaded` recall
+    /// touched `loaded_model_name`/`loaded_ir_name`, so recalling a preset swapped the engine over
+    /// while the window went on showing whatever had been loaded *before* it — the Model and
+    /// Impulse Response labels disagreeing with what was audible until the next manual library
+    /// load. The wait is on the parameter value rather than on the name, so a regression here
+    /// fails on the assertion instead of timing out on the poll.
+    #[test]
+    fn recalling_a_preset_puts_the_recalled_resource_name_on_screen() {
+        let dir = temp_dir("preset_recall_names");
+        let (mut host, _engine) = build_host(&dir);
+        host.watch_presets(crate::presets::preset_dir_under(&dir));
+        let key = namir_params::stages::trim::GAIN_DB.key;
+
+        // Two *different* IRs: FR-STATE-070 resolves by content hash, so two files with identical
+        // bytes would be interchangeable and the test could pass by accident.
+        let first = dir.join("marshall.wav");
+        std::fs::write(
+            &first,
+            namir_fixtures::ir::to_mono_wav_bytes(&namir_fixtures::ir::delta(64), 48_000),
+        )
+        .unwrap();
+        let second = dir.join("fender.wav");
+        std::fs::write(
+            &second,
+            namir_fixtures::ir::to_mono_wav_bytes(
+                &namir_fixtures::ir::delayed_delta(64, 3),
+                48_000,
+            ),
+        )
+        .unwrap();
+
+        host.dispatch(UiIntent::SetParam { key, value: -18.0 });
+        host.dispatch(UiIntent::LoadLibraryEntry(first));
+        let snapshot = snapshot_until(&mut host, |s| s.loaded_ir_name.is_some());
+        assert_eq!(
+            snapshot.loaded_ir_name.as_deref(),
+            Some("marshall.wav"),
+            "{:?}",
+            snapshot.notices
+        );
+        host.dispatch(UiIntent::SavePreset {
+            name: "Marshall".to_string(),
+        });
+        let snapshot = snapshot_until(&mut host, |s| !s.presets.is_empty());
+        let path = snapshot.presets[0].path.clone();
+
+        host.dispatch(UiIntent::SetParam { key, value: -3.0 });
+        host.dispatch(UiIntent::LoadLibraryEntry(second));
+        let snapshot = snapshot_until(&mut host, |s| {
+            s.loaded_ir_name.as_deref() == Some("fender.wav")
+        });
+        assert_eq!(snapshot.loaded_ir_name.as_deref(), Some("fender.wav"));
+
+        host.dispatch(UiIntent::RecallPreset { path });
+        let snapshot = snapshot_until(&mut host, |s| s.params.get(key) == Some(-18.0));
+        assert_eq!(
+            snapshot.params.get(key),
+            Some(-18.0),
+            "the recall itself must land first: {:?}",
+            snapshot.notices
+        );
+        assert_eq!(
+            snapshot.loaded_ir_name.as_deref(),
+            Some("marshall.wav"),
+            "the recalled IR's name must replace the one it displaced: {:?}",
+            snapshot.notices
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A save that would replace an existing preset is refused once, and only a second,
+    /// deliberate press writes it.** [`UiIntent::SavePreset`]'s own doc comment has always said an
+    /// overwriting name "is the host's to reject (and to report through a `UiNotice`)"; until this
+    /// pass no host did, so typing the name of a preset that already existed destroyed it with no
+    /// confirmation, no notice and no undo — the same success path as a fresh save.
+    ///
+    /// The confirmation is a second press rather than a dialog: `namir-ui` cannot open one and
+    /// NFR-PORT-030 forbids one on this path in the plugin, and it is `AppHost` rather than the
+    /// view that decides, because only this side knows which *file* a name resolves to (see
+    /// [`AppHost::needs_overwrite_confirmation`]).
+    #[test]
+    fn saving_over_an_existing_preset_is_refused_until_a_second_press_confirms_it() {
+        let dir = temp_dir("preset_overwrite");
+        let (mut host, _engine) = build_host(&dir);
+        host.watch_presets(crate::presets::preset_dir_under(&dir));
+        let key = namir_params::stages::trim::GAIN_DB.key;
+        let saved_gain = |path: &std::path::Path| -> Option<f32> {
+            let bytes = std::fs::read(path).ok()?;
+            let (state, _warnings) = namir_state::State::read(&bytes).ok()?;
+            state.params.get(key)
+        };
+
+        host.dispatch(UiIntent::SetParam { key, value: -18.0 });
+        host.dispatch(UiIntent::SavePreset {
+            name: "Rock".to_string(),
+        });
+        let snapshot = snapshot_until(&mut host, |s| !s.presets.is_empty());
+        let path = snapshot.presets[0].path.clone();
+        assert_eq!(saved_gain(&path), Some(-18.0), "{:?}", snapshot.notices);
+        assert!(snapshot.notices.is_empty(), "{:?}", snapshot.notices);
+
+        // The same name again, over a different value: refused, reported, and nothing written.
+        host.dispatch(UiIntent::SetParam { key, value: -3.0 });
+        host.dispatch(UiIntent::SavePreset {
+            name: "Rock".to_string(),
+        });
+        let snapshot = host.snapshot();
+        assert_eq!(snapshot.notices.len(), 1, "{:?}", snapshot.notices);
+        assert_eq!(
+            snapshot.notices[0].code.id,
+            local_error_codes::PRESET_EXISTS.id
+        );
+        assert!(
+            snapshot.notices[0].detail.contains("Rock"),
+            "the notice must name the preset it is about to replace: {:?}",
+            snapshot.notices[0]
+        );
+        assert_eq!(
+            saved_gain(&path),
+            Some(-18.0),
+            "the refused save must not have touched the file"
+        );
+
+        // The second press is the confirmation, and it writes.
+        host.dispatch(UiIntent::SavePreset {
+            name: "Rock".to_string(),
+        });
+        let mut written = None;
+        for _ in 0..400 {
+            written = saved_gain(&path);
+            if written == Some(-3.0) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            written,
+            Some(-3.0),
+            "a confirmed overwrite must actually replace the preset"
+        );
+        // ... and the stale "already exists" notice goes with it.
+        let snapshot = snapshot_until(&mut host, |s| s.notices.is_empty());
+        assert!(snapshot.notices.is_empty(), "{:?}", snapshot.notices);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The confirmation is armed for **one** name: typing a different one after a refusal starts
+    /// over rather than carrying the arming across, so a user who reacts to the notice by choosing
+    /// another name cannot then overwrite a *third* preset with one press.
+    #[test]
+    fn an_overwrite_confirmation_does_not_carry_across_to_another_name() {
+        let dir = temp_dir("preset_overwrite_other_name");
+        let (mut host, _engine) = build_host(&dir);
+        host.watch_presets(crate::presets::preset_dir_under(&dir));
+
+        for name in ["Rock", "Blues"] {
+            host.dispatch(UiIntent::SavePreset {
+                name: name.to_string(),
+            });
+            let count = if name == "Rock" { 1 } else { 2 };
+            snapshot_until(&mut host, |s| s.presets.len() == count);
+        }
+
+        host.dispatch(UiIntent::SavePreset {
+            name: "Rock".to_string(),
+        });
+        host.dispatch(UiIntent::SavePreset {
+            name: "Blues".to_string(),
+        });
+        let snapshot = host.snapshot();
+        assert_eq!(
+            snapshot
+                .notices
+                .iter()
+                .filter(|n| n.code.id == local_error_codes::PRESET_EXISTS.id)
+                .count(),
+            2,
+            "each name is refused on its own first press: {:?}",
+            snapshot.notices
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name that does not exist yet is written on the first press -- the guard costs an ordinary
+    /// save nothing.
+    #[test]
+    fn a_preset_name_that_is_free_is_saved_on_the_first_press() {
+        let dir = temp_dir("preset_free_name");
+        let (mut host, _engine) = build_host(&dir);
+        host.watch_presets(crate::presets::preset_dir_under(&dir));
+        host.dispatch(UiIntent::SavePreset {
+            name: "Fresh".to_string(),
+        });
+        let snapshot = snapshot_until(&mut host, |s| !s.presets.is_empty());
+        assert_eq!(snapshot.presets.len(), 1);
+        assert!(snapshot.notices.is_empty(), "{:?}", snapshot.notices);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
