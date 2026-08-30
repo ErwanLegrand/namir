@@ -142,7 +142,7 @@ use wide::f32x8;
 
 use namir_core::SampleRate;
 
-use crate::error_codes::IrLoadError;
+use crate::error_codes::{self, IrLoadError};
 use crate::wav;
 
 /// `out[t] += w * in_[t]` for every `t`, vectorized 8 lanes at a time with a scalar remainder —
@@ -753,6 +753,7 @@ impl PreparedIr {
     ) -> Result<Self, IrLoadError> {
         let decoded = wav::decode(bytes)?;
         let mut was_truncated = decoded.was_truncated;
+        let source_frames = decoded.channel_data.first().map(Vec::len).unwrap_or(0);
 
         let mut channel_taps: Vec<Vec<f32>> = Vec::with_capacity(decoded.channel_data.len());
         for ch in decoded.channel_data {
@@ -765,6 +766,32 @@ impl PreparedIr {
         }
 
         was_truncated |= truncate_to_engine_ceiling(&mut channel_taps, engine_rate.hz());
+
+        // A file that *has* frames can still resample to none. `resample_mono` sizes its output
+        // `round(len * to_hz / from_hz)`, which rounds below 0.5 for an IR of a frame or two at a
+        // rate far above the engine's (1 frame at 192 kHz into 48 kHz is 0.25; 2 frames at
+        // 192 kHz into 44.1 kHz is 0.46), and `wav::decode`'s only emptiness guard is the
+        // *pre*-resample declared frame count. Such a file used to load `Ok` with an empty tap
+        // array — an empty head and schedule, `len_samples() == 0`, and `process_block` writing
+        // zeros for the life of the load, with no diagnostic anywhere: a silent cabinet.
+        //
+        // `EMPTY_IR` is the right code rather than a new one, and refusal the right answer rather
+        // than padding to one tap. The code is a convolution-usability judgment — D-9's "an IR
+        // with nothing in it is not a usable IR", which is why `probe_wav` indexes a zero-frame
+        // file that `decode` refuses to load — and at the engine rate, which is the only rate the
+        // convolver ever runs at, this file has nothing in it. `new_length.max(1)` would instead
+        // manufacture a tap the file does not contain, and the resulting one-tap near-silent
+        // cabinet is the same inaudible outcome with the diagnostic removed.
+        if channel_taps.iter().any(Vec::is_empty) {
+            return Err(IrLoadError {
+                code: error_codes::EMPTY_IR,
+                detail: format!(
+                    "{source_frames} frames at {} Hz resample to 0 frames at the {} Hz engine rate",
+                    decoded.sample_rate,
+                    engine_rate.hz()
+                ),
+            });
+        }
 
         let len_samples = channel_taps.first().map(Vec::len).unwrap_or(0);
 
@@ -1731,6 +1758,52 @@ mod tests {
         let engine_rate = SampleRate::new(48_000).unwrap();
         let prepared = PreparedIr::from_wav_bytes(&bytes, engine_rate, 64).unwrap();
         assert_eq!(prepared.len_samples(), 500);
+    }
+
+    /// A file that *has* frames but resamples to none must be refused, not loaded as a silent
+    /// cabinet.
+    ///
+    /// `resample_mono` sizes its output `round(len * to_hz / from_hz)`, and `wav::decode`'s only
+    /// emptiness guard is the *pre*-resample declared frame count — so any IR short enough that
+    /// its resampled length rounds below 0.5 produced an empty tap array, an empty head and
+    /// schedule, `len_samples() == 0`, and `process_block` writing zeros forever with no
+    /// diagnostic at all. The predecessor `SincFixedIn` path truncated identically, so this is
+    /// older than the FFT resampler, but the invariant `EMPTY_IR` exists to hold — D-9's "an IR
+    /// with nothing in it is not a usable IR" — is the same one, and at the engine rate these
+    /// files have nothing in them. Refused rather than padded to one tap: a manufactured tap the
+    /// file does not contain is still an inaudible cabinet, only without the diagnostic.
+    #[test]
+    fn an_ir_that_resamples_to_no_taps_is_refused_rather_than_silently_empty() {
+        for (source_hz, engine_hz, frames) in
+            [(192_000u32, 48_000u32, 1usize), (192_000, 44_100, 2)]
+        {
+            let bytes = write_mono_wav(source_hz, &delta(frames));
+            let engine_rate = SampleRate::new(engine_hz).unwrap();
+            // Reported as the silent load it would otherwise be, so a regression names the
+            // symptom rather than only the missing error.
+            let err = match PreparedIr::from_wav_bytes(&bytes, engine_rate, 64) {
+                Ok(prepared) => {
+                    let mut state = prepared.new_state();
+                    let x = vec![1.0f32; 64];
+                    let mut y = vec![0f32; 64];
+                    let mut out_slice = &mut y[..];
+                    prepared.process_block(&mut state, &x, std::slice::from_mut(&mut out_slice));
+                    panic!(
+                        "{frames} frames at {source_hz} Hz, engine {engine_hz} Hz: expected a \
+                         catalogued error, got Ok with len_samples = {} and a full-scale block \
+                         convolved to {:?}",
+                        prepared.len_samples(),
+                        &y[..4]
+                    )
+                }
+                Err(e) => e,
+            };
+            assert_eq!(
+                err.code.id,
+                error_codes::EMPTY_IR.id,
+                "{frames} frames at {source_hz} Hz, engine {engine_hz} Hz"
+            );
+        }
     }
 
     /// The source/engine rate pairs the measurement below covers.

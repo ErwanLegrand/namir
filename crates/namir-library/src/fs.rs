@@ -22,8 +22,9 @@ pub struct DirEntryInfo {
     pub is_dir: bool,
     /// Whether this entry is a symlink (or, on Windows, a directory reparse point) whose target
     /// is a directory. Issue #73: symlinking a model collection into the library root is an
-    /// ordinary user setup, so `scan.rs` follows these — see its `visited_link_targets` set for
-    /// how a loop is made to terminate now that it is no longer impossible by construction.
+    /// ordinary user setup, so `scan.rs` follows these — see its `visited_dirs` set for how a
+    /// loop is made to terminate, and one directory kept to one spelling, now that neither is
+    /// impossible by construction.
     pub is_dir_symlink: bool,
     /// Byte length as the directory listing reports it. For a directory, `0` — meaningless and
     /// never consulted.
@@ -311,6 +312,25 @@ impl FakeFs {
                 size: 0,
                 mtime: FileTime::from_system_time(std::time::UNIX_EPOCH),
             });
+        path
+    }
+
+    /// Registers `name` as an ordinary, listable subdirectory of `parent` — the real folder a
+    /// [`Self::add_dir_symlink`] target needs when both spellings are inside the scanned tree.
+    /// [`Self::add_unlistable_dir`] is the same listing entry without the directory behind it.
+    pub(crate) fn add_dir(&mut self, parent: &Path, name: &str) -> PathBuf {
+        let path = parent.join(name);
+        self.dirs
+            .entry(parent.to_path_buf())
+            .or_default()
+            .push(DirEntryInfo {
+                path: path.clone(),
+                is_dir: true,
+                is_dir_symlink: false,
+                size: 0,
+                mtime: FileTime::from_system_time(std::time::UNIX_EPOCH),
+            });
+        self.dirs.entry(path.clone()).or_default();
         path
     }
 
