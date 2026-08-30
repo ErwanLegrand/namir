@@ -28,10 +28,14 @@
 //!    (`chain.rs`'s own doc comment: "at most one stage with a nonzero tail"). See
 //!    [`Stage::tail_samples`]'s impl below.
 //!
-//! Everything else — the two-fades-composed reasoning, the `mix_target` recomputation triggers,
-//! and D-8.1's four-step handover including the two audio-thread drop sites M4 closed (a completing
-//! handover's outgoing slot, and a displaced still-fading-in slot) — is identical in spirit to
-//! `nam.rs`'s own module doc comment; read that first, this doc comment only covers what differs.
+//! Everything else — the two-fades reasoning, the `mix_target` recomputation triggers (including
+//! issue #141's widening of them, and [`IrStage::begin_crossfade`]'s snap), and D-8.1's four-step
+//! handover including the two audio-thread drop sites M4 closed (a completing handover's outgoing
+//! slot, and a displaced still-fading-in slot) — is identical in spirit to `nam.rs`'s own module
+//! doc comment; read that first, this doc comment only covers what differs. Issue #141 reproduced
+//! identically on both stages (the wet signal first appearing at frame 512, 768, 896 or 959 for
+//! block sizes 512, 256, 64 and 1) and is fixed identically on both, with one difference this
+//! stage's own extra wet-path processing forces — see [`IrStage::wet_path_is_transparent`].
 //!
 //! # The handover crossfade is per physical channel, not mono-core
 //!
@@ -333,9 +337,10 @@ pub struct IrStage {
     /// Current dry/wet blend for the *shared* bypass crossfade: `0.0` = fully dry/bypassed,
     /// `1.0` = fully wet/engaged.
     mix: f32,
-    /// Where `mix` is heading: `1.0` when `enabled && slots[active].is_some()`, `0.0` otherwise
-    /// (FR-CHAIN-040). Recomputed by `apply`, `load_ir`, and by `process_wet` itself right after a
-    /// handover completes and `active` changes.
+    /// Where `mix` is heading: `1.0` when `enabled` and some slot is contributing wet signal to
+    /// the output right now, `0.0` otherwise (FR-CHAIN-040). Recomputed by `apply`, by
+    /// `begin_crossfade`, and by `process_wet` itself right after a handover completes and
+    /// `active` changes.
     mix_target: f32,
     /// One-pole coefficient for the `mix` crossfade, computed once in `prepare` from
     /// [`BYPASS_CROSSFADE_TIME_CONSTANT_MS`] and the sample rate.
@@ -423,11 +428,7 @@ impl IrStage {
             self.retired = Some(Resource::ir(displaced, self.prepared_for));
         }
         self.slots[inactive] = Some(slot);
-        self.crossfade = Some(Crossfade {
-            remaining: self.crossfade_total_samples,
-            total: self.crossfade_total_samples,
-        });
-        self.recompute_mix_target();
+        self.begin_crossfade();
         None
     }
 
@@ -446,21 +447,71 @@ impl IrStage {
         if let Some(displaced) = self.slots[inactive].take() {
             self.retired = Some(Resource::ir(displaced, self.prepared_for));
         }
+        self.begin_crossfade();
+    }
+
+    /// **RT-safe.** Starts a handover fade and puts the shared bypass blend where that fade can be
+    /// heard — `nam.rs`'s `begin_crossfade`, for this stage. Read that method's doc comment for
+    /// issue #141's measurement and for why the bypass blend is *snapped* to its target rather
+    /// than ramped there; only the transparency test differs, and it differs in
+    /// [`Self::wet_path_is_transparent`], not here.
+    fn begin_crossfade(&mut self) {
+        // Sampled before `self.crossfade` is overwritten, for the reason `nam.rs`'s identical line
+        // gives.
+        let mix_is_unobservable = self.wet_path_is_transparent();
         self.crossfade = Some(Crossfade {
             remaining: self.crossfade_total_samples,
             total: self.crossfade_total_samples,
         });
         self.recompute_mix_target();
+        if mix_is_unobservable {
+            self.mix = self.mix_target;
+        }
     }
 
-    /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
-    /// identical rule to `nam.rs`'s `recompute_mix_target`.
+    /// Whether this stage's wet path currently reproduces its dry input, which is what makes `mix`
+    /// unobservable and [`Self::begin_crossfade`]'s snap inaudible.
+    ///
+    /// **This is the one place issue #141's fix is not symmetric with `nam.rs`'s.** That stage's
+    /// wet path with nothing active is a bit-exact passthrough and the test is just "nothing
+    /// active, no fade in flight". This one's is not: FR-IR-070's low-cut, high-cut and level run
+    /// *unconditionally* on whatever `process_wet` produced (this module's doc comment: so that
+    /// bypassing the stage bypasses the whole IR+filter+level chain, not just the convolution), so
+    /// with an enabled low-cut and nothing loaded the wet path carries a high-passed copy of the
+    /// dry input that `mix == 0.0` is the only thing discarding. Snapping `mix` to 1.0 there would
+    /// step the output from `dry` to `filter(dry)` in one sample — a click, and precisely what
+    /// FR-CHAIN-020 forbids. So all three controls must be at their neutral settings too.
+    ///
+    /// When they are not, nothing is snapped: `mix_target` is still engaged for the fade's whole
+    /// duration (which is what removes #141's block-quantised onset), and `mix` reaches it on the
+    /// ordinary 15 ms one-pole, composed with the equal-power curve rather than replaced by it.
+    /// That is the honest residue of this fix — the fade a user hears on a first IR load *with a
+    /// low-cut, high-cut or non-unity level already dialled in* is still not purely equal-power,
+    /// and closing that needs the FR-IR-070 chain moved to the far side of the handover blend,
+    /// which is a larger change than #141 asks for.
+    ///
+    /// One further approximation, stated rather than hidden: the three fields tested here are
+    /// parameter *targets*, while `Biquad`'s coefficient interpolation and `GainRamp`'s gain are
+    /// smoothed towards them. A control returned to neutral within the last few milliseconds reads
+    /// as transparent here while its smoother is still a fraction of the way from where it was, so
+    /// the snap can carry that fraction of the (already small) difference. `namir-dsp` exposes no
+    /// settled-ness query to test instead, and the window is a coefficient ramp of at most
+    /// `max_block_size` samples wide.
+    fn wet_path_is_transparent(&self) -> bool {
+        self.slots[self.active].is_none()
+            && self.crossfade.is_none()
+            && !self.low_cut_enabled
+            && !self.high_cut_enabled
+            && self.level_db == 0.0
+    }
+
+    /// `mix_target` is a function of `enabled` and of whether *any* slot is contributing wet
+    /// signal to the output right now — identical rule, and identical issue #141 rationale, to
+    /// `nam.rs`'s `recompute_mix_target`.
     fn recompute_mix_target(&mut self) {
-        self.mix_target = if self.enabled && self.slots[self.active].is_some() {
-            1.0
-        } else {
-            0.0
-        };
+        let engaged = self.slots[self.active].is_some()
+            || (self.crossfade.is_some() && self.slots[1 - self.active].is_some());
+        self.mix_target = if self.enabled && engaged { 1.0 } else { 0.0 };
     }
 
     /// The low-cut (high-pass) coefficient target right now: [`BiquadCoeffs::identity`] when off,
@@ -1048,6 +1099,121 @@ mod tests {
     ///
     /// Committed red-first: before the fix, `crossfade` is still `Some(remaining: 0)` and `active`
     /// is still 1 after the pen has been drained and further blocks processed.
+    /// **Issue #141 at this stage** — `nam.rs`'s `a_first_load_engages_the_bypass_blend_for_the_whole_fade`,
+    /// for the Ir stage, which reproduced the same defect with the same numbers (the wet signal
+    /// first appearing at frame 512, 768, 896 or 959 for block sizes 512, 256, 64 and 1). Read
+    /// that test's doc comment for the measurement that identified the mechanism: the equal-power
+    /// blend was computed correctly all along and then multiplied away by a bypass blend that
+    /// stayed shut for the fade's whole duration.
+    #[test]
+    fn a_first_load_engages_the_bypass_blend_for_the_whole_fade() {
+        const SR: u32 = 48_000;
+        let mut stage = stage(SR, ChannelConfig::Mono);
+        let taps = [0.6f32, -0.2, 0.1];
+
+        assert_eq!(stage.mix, 0.0, "nothing loaded: bypassed");
+        assert_eq!(stage.mix_target, 0.0);
+        assert!(
+            stage.wet_path_is_transparent(),
+            "at its defaults this stage's wet path is a passthrough, which is what makes the snap \
+             below inaudible"
+        );
+
+        stage.load_ir(mono_ir(SR, &taps, 64));
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "a first load's fade must be heard, so the bypass blend's target is engaged when the \
+             fade starts -- not when it completes"
+        );
+        assert_eq!(stage.mix, 1.0, "and `mix` is snapped there (issue #141)");
+
+        let input = 0.37f32;
+        let out = process_constant_in_chunks(&mut stage, 64, input);
+        assert_eq!(
+            out[0].to_bits(),
+            input.to_bits(),
+            "the fade's first sample has theta = 0, so it must be the dry input bit-for-bit"
+        );
+        let divergence = out.iter().position(|s| s.to_bits() != input.to_bits());
+        assert_eq!(
+            divergence,
+            Some(1),
+            "the wet signal must appear on the fade's second sample, not at the block boundary \
+             after the fade completes (issue #141)"
+        );
+        assert!(
+            stage.crossfade.is_some(),
+            "64 samples is well inside a 960-sample fade"
+        );
+    }
+
+    /// **The guard on issue #141's snap, which is this stage's own and has no `nam.rs` equivalent.**
+    /// FR-IR-070's low-cut/high-cut/level run on the wet path unconditionally, so with a low-cut
+    /// engaged and nothing loaded the wet path carries a high-passed copy of the dry input that
+    /// only `mix == 0.0` is discarding. Snapping `mix` to 1.0 there would step the output from
+    /// `dry` to `filter(dry)` in a single sample — the click FR-CHAIN-020 forbids — so
+    /// [`IrStage::wet_path_is_transparent`] refuses it and the blend ramps instead.
+    ///
+    /// The onset is still not block-quantised (`mix_target` is engaged from the fade's first
+    /// sample either way), which is the part of #141 that must hold in every configuration.
+    #[test]
+    fn a_filtered_wet_path_ramps_the_bypass_blend_instead_of_snapping_it() {
+        const SR: u32 = 48_000;
+        let mut stage = stage(SR, ChannelConfig::Mono);
+        let taps = [0.6f32, -0.2, 0.1];
+
+        stage.apply(ParamChange {
+            id: LOW_CUT_FREQ_HZ_ID,
+            value: 300.0,
+        });
+        stage.apply(ParamChange {
+            id: LOW_CUT_ENABLED_ID,
+            value: 1.0,
+        });
+        // Settle the coefficient ramp, and confirm the guard sees a non-transparent wet path.
+        process_constant_in_chunks(&mut stage, 4_096, 0.37);
+        assert!(!stage.wet_path_is_transparent());
+
+        stage.load_ir(mono_ir(SR, &taps, 64));
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "the fade is still engaged from its first sample -- that half of #141's fix is \
+             unconditional"
+        );
+        assert_eq!(
+            stage.mix, 0.0,
+            "but `mix` may not be snapped across a wet path that is high-passing the dry signal: \
+             that step is a click, not a fade"
+        );
+
+        // And the transition is smooth. Two fades are travelling at once here — the bypass
+        // one-pole and the handover's equal-power curve — so the bound is the sum of their
+        // steepest per-sample slopes over the range the output actually covers: `1 - e^(-1/tau)`
+        // for a one-pole of time constant tau, and `(pi/2) / total` for a quarter-sine spread over
+        // the fade's `total` samples. A step would be orders above it; the measured figure is
+        // about half of it.
+        let out = process_constant_in_chunks(&mut stage, 2_048, 0.37);
+        let range = out
+            .iter()
+            .fold(0.0f32, |m, &s| m.max((s - 0.37).abs()))
+            .max(1e-6);
+        let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * f64::from(SR);
+        let one_pole_step = (1.0 - (-1.0 / tau_samples).exp()) as f32;
+        let equal_power_step = FRAC_PI_2 / stage.crossfade_total_samples as f32;
+        let ideal_max_delta = range * (one_pole_step + equal_power_step);
+        let mut prev = 0.37f32;
+        let mut max_delta = 0.0f32;
+        for &s in &out {
+            max_delta = max_delta.max((s - prev).abs());
+            prev = s;
+        }
+        assert!(
+            max_delta <= ideal_max_delta,
+            "max_delta={max_delta} exceeds the {ideal_max_delta} two smooth fades can travel in \
+             one sample across a range of {range}"
+        );
+    }
+
     #[test]
     fn a_handover_deferred_by_a_full_retire_pen_finalizes_once_the_pen_clears() {
         const SR: u32 = 48_000;
