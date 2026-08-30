@@ -17,7 +17,8 @@
 //! library index, scan progress, pending error notices) and it renders exactly that -- nothing it
 //! draws can be more than one frame stale, and nothing it draws has a side effect on its own. The
 //! only way this crate ever asks for something to change is by producing a [`UiIntent`] ("set this
-//! parameter to X", "load this library entry", "start/cancel a scan", "dismiss this notice"),
+//! parameter to X", "load this library entry", "start/cancel a scan", "dismiss this notice",
+//! "save the current state under this name", "recall the preset at this path"),
 //! which is handed to the [`UiHost`] trait the caller implements. `namir-app` and `namir-clap` are
 //! this milestone's two implementors: each turns a `UiIntent` into a real call against its own
 //! `Chain`/`namir-worker`/`namir-library::Index`, and each turns its own state into a fresh
@@ -53,6 +54,13 @@
 //!   10,000-file corpus in that module's own test, not a guessed row count.
 //! - FR-UI-070 -- [`notices::render`]'s non-modal, individually-dismissible notice lines.
 //!
+//! Contributed to but **not** closed here (issue #100): FR-STATE-030's save and recall gestures.
+//! `app::preset_controls` renders the two controls and emits [`UiIntent::SavePreset`] /
+//! [`UiIntent::RecallPreset`]; the requirement's `*Verify:*` code is `I` and its subject is
+//! "interchangeable between the standalone application and the CLAP plugin", so what closes it is
+//! an integration test across both shells' `UiHost` implementations, not anything in this crate.
+//! Its `trace-partial:` therefore stays where it is, on `namir-worker`'s recall test.
+//!
 //! Out of scope, deliberately:
 //! - **Actually driving a `Chain`, a `namir-worker` instance, or a `namir-library` scan** -- that
 //!   is precisely what [`UiHost`] exists to hand off, to `namir-app`/`namir-clap`.
@@ -71,10 +79,10 @@ mod library_view;
 mod meter;
 mod notices;
 
-pub use app::{NamirUi, ViewState, open_blocking, open_parented, render};
+pub use app::{NamirUi, ViewState, open_blocking, open_parented, open_with_srgb_fallback, render};
 pub use host::{
-    AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading, UiHost, UiIntent, UiNotice,
-    UiSnapshot,
+    AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading, PresetSummary, UiHost,
+    UiIntent, UiNotice, UiSnapshot,
 };
 pub use library_view::{LibraryViewState, entry_label};
 // The list-side half of FR-UI-070, shared by both shells rather than copied into each -- see

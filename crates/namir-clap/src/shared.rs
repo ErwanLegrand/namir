@@ -53,29 +53,44 @@
 //!   a *second* root — that gap is real and still open — but a single, correct default needed no
 //!   new UI to fix, only for this crate to stop assuming "unconfigured" was a harmless state to
 //!   leave a destructive scan operation pointed at.
-//! - `latency_samples`/`latency_dirty` — see `crate::audio`'s module doc comment for the full
-//!   FR-CLAP-040 story; these are the audio-thread-writable, main-thread-readable channel between
-//!   the two halves of it.
+//! - `latency_samples`/`latency_announced`/`latency_basis_rate`/`latency_dirty` — see
+//!   `crate::audio`'s module doc comment for the full FR-CLAP-040 story, and
+//!   [`SharedInner::carried_latency`] for the part of it (issue #93) that has to survive an
+//!   activation; these are the audio-thread-writable, main-thread-readable channel between the two
+//!   halves of it.
+//! - `telemetry`/`telemetry_generation` — the live engine's meter feed, and a counter that lets a
+//!   [`ClapUiHost`] holding a *clone* of the reader notice that the clone it holds has been
+//!   retired (issue #95). See [`SharedInner::set_telemetry_reader`].
+//! - `thread_priority_kind`/`thread_priority_os_error` — D-13.2's elevation outcome, parked here by
+//!   the audio thread and reported from the main one. See
+//!   [`SharedInner::record_thread_priority_outcome`] for why it cannot be reported where it is
+//!   produced.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use clack_plugin::plugin::PluginShared;
 use namir_core::ErrorCode;
 use namir_engine::TelemetryReader;
 use namir_library::ScanProgress;
+use namir_platform::ThreadPriorityOutcome;
 use namir_state::{Document, FileRef, State};
-use namir_ui::UiNotice;
+use namir_ui::{PresetSummary, UiNotice};
 use namir_worker::library::{LibraryService, ScanHandle};
 use namir_worker::pool::ThreadPool;
 use namir_worker::{Instance, ResourceCache};
 
 use crate::param_mirror::ParamMirror;
+use crate::params_ext::GestureState;
 
 /// Everything this instance needs that has no reason to be tied to the plugin's `'a` lifetime.
 /// See this module's doc comment.
 pub(crate) struct SharedInner {
     pub(crate) params: ParamMirror,
+    /// Which parameters have a `ParamGestureBegin` outstanding with the host — see
+    /// [`crate::params_ext::GestureState`], which is the whole of the explanation.
+    pub(crate) gestures: GestureState,
     pub(crate) cache: Arc<ResourceCache>,
     pub(crate) pool: ThreadPool,
     pub(crate) instance: Mutex<Option<Instance>>,
@@ -90,10 +105,35 @@ pub(crate) struct SharedInner {
     /// The chain's own last-measured `latency_samples()`, published by the audio thread every
     /// block (see `crate::audio`).
     pub(crate) latency_samples: AtomicU32,
+    /// The value of `latency_samples` at the moment the host was last *told* to re-read it
+    /// (`crate::main_thread`'s `notify_latency_changed`, which is every `activate()` plus
+    /// `on_main_thread`'s inactive branch).
+    ///
+    /// **This is what closes issue #93's restart loop.** A restart is only worth asking a host for
+    /// when the figure it currently believes is wrong; comparing against what was actually
+    /// announced — rather than against whatever a freshly rebuilt engine happens to report before
+    /// its replay has landed — is what makes "the model I already restarted for came back" a
+    /// non-event. See `crate::main_thread`'s `on_main_thread`.
+    pub(crate) latency_announced: AtomicU32,
+    /// The sample rate `latency_samples` was measured at, or 0 if it has never been measured.
+    /// [`Self::carried_latency`] is the only reader; see its doc comment.
+    pub(crate) latency_basis_rate: AtomicU32,
+    /// Completed worker-side interactions with this instance's live engine — see
+    /// [`SharedInner::worker_instance_epoch`], which is the only reader and carries the whole
+    /// explanation.
+    worker_instance_epoch: AtomicU32,
     /// Set by the audio thread when `latency_samples` changed since it was last reported to the
     /// host; cleared once `on_main_thread` has acted on it. See `crate::audio`'s module doc
     /// comment for the full FR-CLAP-040 sequencing.
     pub(crate) latency_dirty: AtomicBool,
+    /// D-13.2's elevation outcome as an atomic pair — the discriminant, and `OsError`'s payload.
+    /// Written from the audio thread, read and reported from the main one. See
+    /// [`Self::record_thread_priority_outcome`].
+    thread_priority_kind: AtomicU8,
+    thread_priority_os_error: AtomicI64,
+    /// Whether an outcome worth reporting has already been recorded for this instance. See
+    /// [`SharedInner::record_thread_priority_outcome`]'s return value.
+    thread_priority_seen: AtomicBool,
     library: Mutex<Option<LibraryService>>,
     scan_progress: Mutex<Option<ScanProgress>>,
     scan_handle: Mutex<Option<ScanHandle>>,
@@ -102,7 +142,40 @@ pub(crate) struct SharedInner {
     /// why the GUI keeps its own clone rather than reading through here directly (each clone
     /// tracks an independent cursor, so the GUI's drain cadence never affects anyone else's).
     telemetry: Mutex<Option<TelemetryReader>>,
+    /// Incremented by every [`Self::set_telemetry_reader`] call. A GUI-side holder of a clone
+    /// compares this against the generation its own clone came from and re-clones when it is
+    /// behind — issue #95, where a clone taken once at editor-open outlived the ring it read from.
+    telemetry_generation: AtomicU64,
+    /// FR-STATE-030's preset list, as last enumerated off-thread, and when that was — see
+    /// [`SharedInner::presets_snapshot`], which is modelled on [`SharedInner::library_snapshot`]'s
+    /// "never block the GUI thread, fill in a moment later" contract.
+    presets: Mutex<Vec<PresetSummary>>,
+    presets_listed_at: Mutex<Option<Instant>>,
+    /// Set when a preset recall has replaced every parameter value behind the host's back, so the
+    /// next main-thread callback can tell it to re-read them (`HostParams::rescan`) — see
+    /// `crate::main_thread`'s `notify_params_changed`, and its `on_main_thread` for why this is a
+    /// flag rather than a direct call.
+    pub(crate) params_rescan_pending: AtomicBool,
 }
+
+/// How stale [`SharedInner::presets_snapshot`] lets its cached listing get before enumerating the
+/// preset directory again.
+///
+/// A GUI frame must not do a `read_dir`, so the listing is refreshed by a pool job and the GUI
+/// renders whatever the last one produced. One second is short enough that a preset saved from the
+/// standalone application (or from another instance of this plugin) appears while the user is
+/// still looking for it, and long enough that a 60 Hz editor is not listing a directory 60 times a
+/// second.
+const PRESET_LISTING_MAX_AGE: Duration = Duration::from_secs(1);
+
+/// `thread_priority_kind`'s discriminants. Nothing outside this module reads them: the pair of
+/// atomics is a private transport for one `ThreadPriorityOutcome` between two threads, and both
+/// ends of it are `SharedInner` methods.
+const THREAD_PRIORITY_UNREPORTED: u8 = 0;
+const THREAD_PRIORITY_ELEVATED: u8 = 1;
+const THREAD_PRIORITY_DENIED: u8 = 2;
+const THREAD_PRIORITY_OS_ERROR: u8 = 3;
+const THREAD_PRIORITY_UNSUPPORTED: u8 = 4;
 
 impl SharedInner {
     pub(crate) fn new() -> Self {
@@ -113,9 +186,23 @@ impl SharedInner {
         // straight back where it was. The load's warnings are drained in `library_snapshot`
         // instead, which the GUI calls every frame and which is off the instantiation path.
         let library = LibraryService::open_default().map(|(service, _)| service);
+        Self::with_library(library)
+    }
 
+    /// [`Self::new`] against an explicitly supplied per-user configuration directory, for tests
+    /// that need a library whose roots they control — the same injectable-path seam
+    /// [`LibraryService::open_at`] exists for, and the only way a test can assert anything about
+    /// [`Self::library_roots`] without depending on what this developer's machine happens to hold.
+    #[cfg(test)]
+    pub(crate) fn new_at(config_dir: &std::path::Path) -> Self {
+        let (service, _warnings) = LibraryService::open_at(config_dir);
+        Self::with_library(Some(service))
+    }
+
+    fn with_library(library: Option<LibraryService>) -> Self {
         Self {
             params: ParamMirror::new(),
+            gestures: GestureState::new(),
             cache: ResourceCache::shared(),
             pool: ThreadPool::new(),
             instance: Mutex::new(None),
@@ -127,11 +214,21 @@ impl SharedInner {
             unsaved_changes: AtomicBool::new(false),
             active: AtomicBool::new(false),
             latency_samples: AtomicU32::new(0),
+            latency_announced: AtomicU32::new(0),
+            latency_basis_rate: AtomicU32::new(0),
+            worker_instance_epoch: AtomicU32::new(0),
             latency_dirty: AtomicBool::new(false),
+            thread_priority_kind: AtomicU8::new(THREAD_PRIORITY_UNREPORTED),
+            thread_priority_os_error: AtomicI64::new(0),
+            thread_priority_seen: AtomicBool::new(false),
             library: Mutex::new(library),
             scan_progress: Mutex::new(None),
             scan_handle: Mutex::new(None),
             telemetry: Mutex::new(None),
+            telemetry_generation: AtomicU64::new(0),
+            presets: Mutex::new(Vec::new()),
+            presets_listed_at: Mutex::new(None),
+            params_rescan_pending: AtomicBool::new(false),
         }
     }
 
@@ -139,8 +236,36 @@ impl SharedInner {
         lock(&self.telemetry).clone()
     }
 
+    /// Installs (or clears) the reader every GUI-side meter drain works from, and bumps
+    /// [`Self::telemetry_generation`] so a holder of a stale clone notices.
+    ///
+    /// The generation is bumped *after* the new reader is in place, so a reader that observes the
+    /// new generation is guaranteed to fetch the new reader (or a later one) and never the retired
+    /// one.
     pub(crate) fn set_telemetry_reader(&self, reader: Option<TelemetryReader>) {
         *lock(&self.telemetry) = reader;
+        self.telemetry_generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// How many times [`Self::set_telemetry_reader`] has been called. See `crate::ui_host`'s
+    /// `rebind_telemetry_if_stale` — issue #95.
+    pub(crate) fn telemetry_generation(&self) -> u64 {
+        self.telemetry_generation.load(Ordering::Acquire)
+    }
+
+    /// The library roots a resolver built for this instance must search — FR-STATE-070's first
+    /// resolution candidate, `library_relative`, resolves against exactly these.
+    ///
+    /// Read off the held [`LibraryService`] rather than restated, for the same reason
+    /// `LibraryService::open_default` is the one function both shells bootstrap through: issue
+    /// #96 was `crate::worker_jobs::spawn_recall` building its resolver with a hardcoded empty
+    /// list, so every `library_relative` reference in a preset resolved in the standalone
+    /// application and missed in the plugin.
+    pub(crate) fn library_roots(&self) -> Vec<std::path::PathBuf> {
+        lock(&self.library)
+            .as_ref()
+            .map(|service| service.roots().to_vec())
+            .unwrap_or_default()
     }
 
     pub(crate) fn nam_ref(&self) -> Option<FileRef> {
@@ -228,6 +353,26 @@ impl SharedInner {
         lock(&self.notices).clone()
     }
 
+    /// A handle a pool job can block on until this instance's library index has actually been
+    /// read — [`namir_worker::library::LibraryService::loader`], taken under the lock but *used*
+    /// outside it.
+    ///
+    /// **Why any job needs this at all (#145).** M14 made the index load deferred, so
+    /// [`Self::library_snapshot`] hands back an empty `Index` for the first fraction of a second
+    /// of an instance's life. `LibraryService::start_scan` already blocks for the load inside its
+    /// own pool job for exactly that reason; `crate::worker_jobs`' `spawn_recall` and
+    /// `library_target` did not, and a host's `set_state` and every `activate` arrive within
+    /// milliseconds of `SharedInner::new` — so a preset's reference was resolved against nothing
+    /// and FR-STATE-070's hash candidate could never fire. `namir-app` has always called
+    /// `ensure_loaded()` before building its resolver (`crate::app`), so this was a shell-parity
+    /// divergence (FR-CFG-020) as well as a defect.
+    ///
+    /// `None` only when this instance has no library service at all — the same condition
+    /// [`Self::library_roots`] returns an empty list for.
+    pub(crate) fn library_loader(&self) -> Option<namir_worker::library::IndexLoader> {
+        lock(&self.library).as_ref().map(|service| service.loader())
+    }
+
     /// The library as the GUI sees it this frame — and the point at which the deferred load's
     /// warnings are reported (M14, see [`SharedInner::new`]).
     ///
@@ -248,6 +393,43 @@ impl SharedInner {
         }
         let scan = *lock(&self.scan_progress);
         namir_ui::LibrarySnapshot { index, scan }
+    }
+
+    /// FR-STATE-030's preset list as the GUI sees it this frame, and the point at which a stale
+    /// listing is refreshed — off-thread, exactly as `library_snapshot` defers its own parse.
+    ///
+    /// Never blocks and never touches the filesystem on the calling thread: until the first
+    /// enumeration lands this returns an empty list, which `namir_ui::UiSnapshot::presets`
+    /// documents as "the host knows of none (or has not looked yet)" and which the UI renders as a
+    /// disabled recall control rather than as an error.
+    pub(crate) fn presets_snapshot(self: &Arc<Self>) -> Vec<PresetSummary> {
+        self.refresh_presets_if_stale();
+        lock(&self.presets).clone()
+    }
+
+    /// Forces the next [`Self::presets_snapshot`] to re-enumerate — called after this instance
+    /// writes a preset, so the list it just added to is not up to a second out of date.
+    pub(crate) fn mark_presets_stale(&self) {
+        *lock(&self.presets_listed_at) = None;
+    }
+
+    fn refresh_presets_if_stale(self: &Arc<Self>) {
+        {
+            let mut listed_at = lock(&self.presets_listed_at);
+            if listed_at.is_some_and(|at| at.elapsed() < PRESET_LISTING_MAX_AGE) {
+                return;
+            }
+            // Stamped before the job runs, not after: two frames in the same millisecond must not
+            // both queue an enumeration.
+            *listed_at = Some(Instant::now());
+        }
+        let this = Arc::clone(self);
+        self.pool.spawn(move || {
+            let listed = crate::presets::preset_dir()
+                .map(|dir| crate::presets::list_presets(&dir))
+                .unwrap_or_default();
+            *lock(&this.presets) = listed;
+        });
     }
 
     pub(crate) fn start_library_scan(self: &Arc<Self>) {
@@ -287,12 +469,173 @@ impl SharedInner {
         }
     }
 
+    /// The latency figure a fresh `activate()` should keep reporting rather than replacing with
+    /// the zero its freshly built engine reports — **issue #93's other half**.
+    ///
+    /// Every activation builds a default engine (latency 0) and dispatches
+    /// `crate::worker_jobs::spawn_recall` to reload whatever this instance stands for. Publishing
+    /// the transient zero and then the replayed model's real figure is what made the plugin
+    /// observe a latency *change* on every single activation, and ask for a restart for it — a
+    /// cycle with no exit for as long as a rate-mismatched model stayed loaded.
+    ///
+    /// So when a replay is pending, the figure the host already has is carried across the
+    /// activation instead: it is the value that same replay converged on last time, and the
+    /// activation is the plugin's own restart, not a configuration change.
+    ///
+    /// **Two conditions, both necessary.** There must be something to replay (`nam_ref`/`ir_ref`),
+    /// or the engine's zero is simply the truth; and the activation's sample rate must match the
+    /// rate the carried figure was measured at, because D-9.2's resampler — the chain's only
+    /// source of latency in 1.0 — exists precisely when the model's rate differs from the
+    /// session's, so a rate change can legitimately move the converged figure to something else.
+    /// When either fails the caller adopts the engine's own reading and the ordinary
+    /// change-detection path does the rest, at the cost of the one restart it was always going to
+    /// cost.
+    ///
+    /// **Both conditions hold at the moment of the activation, and neither is a guarantee about
+    /// the replay's outcome** (issue #145's finding 8). The reference may name a file that has
+    /// since been deleted, or one whose content is now a session-rate model that adds no latency at
+    /// all; the replay then converges on zero and this figure is simply wrong. That is not
+    /// detectable here — it is only knowable once the replay has run — so the correction lives
+    /// where the replay's outcome can be observed: `crate::audio`'s `publish_latency`, which
+    /// carries this figure as a claim and retracts it against [`Self::worker_instance_epoch`].
+    pub(crate) fn carried_latency(&self, sample_rate_hz: u32) -> Option<u32> {
+        let replay_pending = self.nam_ref().is_some() || self.ir_ref().is_some();
+        let basis = self.latency_basis_rate.load(Ordering::Relaxed);
+        (replay_pending && basis != 0 && basis == sample_rate_hz)
+            .then(|| self.latency_samples.load(Ordering::Relaxed))
+    }
+
+    /// Records the figure `clap_plugin_latency.get` reports, and the sample rate it was measured
+    /// at (which [`Self::carried_latency`] later checks against).
+    pub(crate) fn publish_latency(&self, latency: u32, sample_rate_hz: u32) {
+        self.latency_samples.store(latency, Ordering::Relaxed);
+        self.latency_basis_rate
+            .store(sample_rate_hz, Ordering::Relaxed);
+    }
+
+    /// D-13.2's outcome, parked for the main thread to report — **the audio thread cannot report
+    /// it itself** (issue #76's follow-up).
+    ///
+    /// `namir_platform::elevate_current_thread_priority` can only raise the priority of the thread
+    /// that calls it, so its one caller here is `crate::audio`'s `process()`. FR-ERR-030 forbids
+    /// logging, allocation and logging-formatting on that thread, and `xtask rt-logging` fails the
+    /// build if `crates/namir-clap/src/audio.rs` so much as names the logger — so the outcome
+    /// crosses to the main thread as two plain atomic stores and becomes a notice (and an
+    /// FR-ERR-010 record) in [`Self::report_thread_priority_outcome`], exactly the way `activate`'s
+    /// unusable-sample-rate condition already goes through `push_notice` here rather than there.
+    ///
+    /// Wait-free and allocation-free: two relaxed-and-release stores of a discriminant and an
+    /// `i64`. The payload is written before the discriminant is released, so a main thread that
+    /// acquires a non-zero discriminant sees the payload that belongs to it.
+    ///
+    /// **Returns whether the main thread is worth waking for this** — `false` for an elevation
+    /// that succeeded (nothing to report) and for the second and later activations of one
+    /// instance, since the answer cannot change within a process and one notice about it is the
+    /// right number. That makes the extra `request_callback` a once-per-instance event rather than
+    /// a once-per-activation one, which is also what keeps `tests/clap_host_latency.rs`'s waits on
+    /// "the plugin asked for a callback" unambiguous.
+    #[must_use]
+    pub(crate) fn record_thread_priority_outcome(&self, outcome: ThreadPriorityOutcome) -> bool {
+        if outcome.diagnostic().is_none() || self.thread_priority_seen.swap(true, Ordering::AcqRel)
+        {
+            return false;
+        }
+        let kind = match outcome {
+            ThreadPriorityOutcome::Elevated => THREAD_PRIORITY_ELEVATED,
+            ThreadPriorityOutcome::PermissionDenied => THREAD_PRIORITY_DENIED,
+            ThreadPriorityOutcome::OsError(code) => {
+                self.thread_priority_os_error.store(code, Ordering::Relaxed);
+                THREAD_PRIORITY_OS_ERROR
+            }
+            ThreadPriorityOutcome::Unsupported => THREAD_PRIORITY_UNSUPPORTED,
+        };
+        self.thread_priority_kind.store(kind, Ordering::Release);
+        true
+    }
+
+    /// Turns whatever [`Self::record_thread_priority_outcome`] parked into an FR-UI-070 notice and
+    /// an FR-ERR-010 record, once. Called from `crate::main_thread`'s `on_main_thread`.
+    ///
+    /// Reported once per outcome, not once per block: the discriminant is taken (swapped back to
+    /// "nothing to report") by whoever reads it, and `process()` only writes it once per audio
+    /// processor anyway. A successful elevation reports nothing at all —
+    /// `ThreadPriorityOutcome::diagnostic()` is `None` for it, which is the whole reason that
+    /// method exists rather than a bare `bool`.
+    pub(crate) fn report_thread_priority_outcome(&self) {
+        let kind = self
+            .thread_priority_kind
+            .swap(THREAD_PRIORITY_UNREPORTED, Ordering::Acquire);
+        let outcome = match kind {
+            THREAD_PRIORITY_ELEVATED => ThreadPriorityOutcome::Elevated,
+            THREAD_PRIORITY_DENIED => ThreadPriorityOutcome::PermissionDenied,
+            THREAD_PRIORITY_OS_ERROR => ThreadPriorityOutcome::OsError(
+                self.thread_priority_os_error.load(Ordering::Relaxed),
+            ),
+            THREAD_PRIORITY_UNSUPPORTED => ThreadPriorityOutcome::Unsupported,
+            _ => return,
+        };
+        let Some(code) = outcome.diagnostic() else {
+            return;
+        };
+        // Formatted here, on the main thread, from a value the audio thread only ever stored --
+        // FR-ERR-030's "no formatting for logging on the audio thread" is why the payload crosses
+        // as an `i64` rather than as a message.
+        match outcome {
+            ThreadPriorityOutcome::OsError(os) => {
+                self.push_notice(code, format!("the OS reported error {os}"))
+            }
+            _ => self.push_notice(code, "the audio thread runs at its default priority"),
+        }
+    }
+
     fn lock_instance(&self) -> MutexGuard<'_, Option<Instance>> {
         lock(&self.instance)
     }
 
+    /// Runs `f` against the live `Instance`, or answers `None` when there is none yet (not an
+    /// error — just "not activated"; see `crate::params_ext`'s main-thread `flush`).
+    ///
+    /// Every call that actually reached an `Instance` bumps [`Self::worker_instance_epoch`] on the
+    /// way out, which is how the audio thread learns that an off-thread interaction with *its*
+    /// engine has finished. See that method's doc comment.
     pub(crate) fn with_instance<R>(&self, f: impl FnOnce(&mut Instance) -> R) -> Option<R> {
-        self.lock_instance().as_mut().map(f)
+        let outcome = self.lock_instance().as_mut().map(f);
+        if outcome.is_some() {
+            // After the guard above has been dropped, so the epoch a reader observes is never
+            // ahead of the lock being free.
+            self.worker_instance_epoch.fetch_add(1, Ordering::Release);
+        }
+        outcome
+    }
+
+    /// How many worker-side interactions with this instance's live engine have *completed*.
+    ///
+    /// **What this is for (issue #145's finding 8).** `crate::audio`'s `activate` may carry the
+    /// previous activation's latency figure across an activation ([`Self::carried_latency`]) on the
+    /// prediction that the replay it dispatches will converge on that figure again. The prediction
+    /// can be wrong — the model may have been deleted or replaced while the plugin was inactive —
+    /// and when it is, *nothing about the engine moves*: it reports zero before the replay and zero
+    /// after it, so a change detector comparing against the engine's own reading has nothing to
+    /// detect and the host is never told the figure it holds is stale.
+    ///
+    /// Telling the two apart needs one fact the audio thread cannot get from the engine: whether
+    /// the replay has finished. This counter is that fact. `crate::worker_jobs::spawn_recall`'s
+    /// last act is a [`Self::with_instance`] call, so an epoch different from the one `activate`
+    /// recorded means the replay has had its turn at the engine and whatever the engine reports now
+    /// is the outcome, not a transient.
+    ///
+    /// **Deliberately coarse, and stated as such.** It counts *every* completed `with_instance`
+    /// call, not only a replay's — a GUI-driven load or a main-thread parameter flush that reached
+    /// a live engine bumps it too. That over-approximates in the safe direction: the worst a
+    /// spurious bump can do is start `crate::audio`'s settle countdown early, and the countdown is
+    /// what absorbs the lag between a command being submitted and the handover crossfade finishing.
+    /// A missed bump would be the dangerous direction, and there is none — the counter only ever
+    /// moves forwards.
+    ///
+    /// Read from the audio thread as one relaxed atomic load per block (and only while a carried
+    /// figure is unconfirmed), which is wait-free and allocation-free.
+    pub(crate) fn worker_instance_epoch(&self) -> u32 {
+        self.worker_instance_epoch.load(Ordering::Acquire)
     }
 
     /// Installs a freshly built `Instance`, replacing whatever was there — every `activate()`
@@ -535,5 +878,181 @@ mod tests {
         let id = inner.notices()[0].id;
         inner.dismiss_notice(id);
         assert!(inner.notices().is_empty());
+    }
+
+    fn temp_config_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "namir-clap-shared-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// **Issue #96.** The roots a resolver is built from come off the `LibraryService` this
+    /// instance holds. Built against an injected configuration directory, so what is asserted is
+    /// the wiring rather than whatever this developer's machine happens to have configured.
+    #[test]
+    fn the_library_roots_are_the_services_own_and_not_an_empty_list() {
+        let config = temp_config_dir("roots");
+        let inner = SharedInner::new_at(&config);
+
+        let roots = inner.library_roots();
+        assert_eq!(
+            roots,
+            vec![config.join("Library")],
+            "an empty root list here is issue #96: LibraryResolver::resolve_library_relative \
+             cannot succeed against one, so FR-STATE-070's first resolution candidate is dead in \
+             the plugin"
+        );
+
+        // And it is a set a real resolver can actually resolve against.
+        std::fs::create_dir_all(config.join("Library").join("marshall")).unwrap();
+        std::fs::write(config.join("Library/marshall/jcm800.nam"), b"{}").unwrap();
+        let index = namir_library::Index::empty();
+        let resolver = namir_library::LibraryResolver::new(&index, &roots);
+        let rel = namir_state::RelPath::parse("marshall/jcm800.nam").unwrap();
+        assert_eq!(
+            namir_state::FileResolver::resolve_library_relative(&resolver, &rel),
+            Some(config.join("Library/marshall/jcm800.nam"))
+        );
+
+        let _ = std::fs::remove_dir_all(&config);
+    }
+
+    /// Issue #76's follow-up: D-13.2's elevation outcome is produced on the audio thread and
+    /// becomes a notice on the main one. A refusal is reported...
+    #[test]
+    fn a_refused_priority_elevation_becomes_a_notice_on_the_main_thread() {
+        let inner = SharedInner::new();
+        assert!(
+            inner.record_thread_priority_outcome(ThreadPriorityOutcome::PermissionDenied),
+            "a refusal is worth waking the main thread for"
+        );
+        assert!(
+            inner.notices().is_empty(),
+            "the audio thread must not push the notice itself -- FR-ERR-030"
+        );
+
+        inner.report_thread_priority_outcome();
+        let notices = inner.notices();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            notices[0].code.id,
+            ThreadPriorityOutcome::PermissionDenied
+                .diagnostic()
+                .expect("a refusal has a diagnostic")
+                .id
+        );
+
+        // ...once. A second callback with nothing new parked reports nothing.
+        inner.report_thread_priority_outcome();
+        assert_eq!(inner.notices().len(), 1);
+    }
+
+    /// ...and a success is not. `ThreadPriorityOutcome::diagnostic()` returning `None` for
+    /// `Elevated` is the whole reason that method exists rather than a bare `bool`.
+    #[test]
+    fn a_successful_priority_elevation_reports_nothing() {
+        let inner = SharedInner::new();
+        assert!(
+            !inner.record_thread_priority_outcome(ThreadPriorityOutcome::Elevated),
+            "a successful elevation is not worth a main-thread callback"
+        );
+        inner.report_thread_priority_outcome();
+        assert!(inner.notices().is_empty());
+    }
+
+    /// An `OsError`'s payload survives the crossing, so FR-ERR-010's record names the number the
+    /// platform's own documentation uses — the formatting happens on the main thread, which is
+    /// exactly why the payload crosses as an `i64` and not as a message.
+    #[test]
+    fn an_os_error_code_survives_the_crossing_to_the_main_thread() {
+        let inner = SharedInner::new();
+        assert!(inner.record_thread_priority_outcome(ThreadPriorityOutcome::OsError(-2147024882)));
+        inner.report_thread_priority_outcome();
+        let notices = inner.notices();
+        assert_eq!(notices.len(), 1);
+        assert!(
+            notices[0].detail.contains("-2147024882"),
+            "the OS's own error code must reach the record: {:?}",
+            notices[0].detail
+        );
+    }
+
+    /// **Issue #93's carrying rule**, at the field that implements it. A figure measured at one
+    /// sample rate is only carried across an activation at the *same* rate, and only while there
+    /// is something for that activation's replay to restore.
+    #[test]
+    fn a_latency_figure_is_carried_only_for_a_pending_replay_at_the_same_rate() {
+        let inner = SharedInner::new();
+        inner.publish_latency(512, 48_000);
+
+        assert_eq!(
+            inner.carried_latency(48_000),
+            None,
+            "with nothing loaded there is no replay coming, so the fresh engine's own reading is \
+             the truth"
+        );
+
+        inner.set_nam_ref(Some(FileRef {
+            hash: namir_core::ContentHash::of(b"m"),
+            library_relative: None,
+            absolute: None,
+            display_name: "m.nam".to_string(),
+            embedded: None,
+        }));
+        assert_eq!(
+            inner.carried_latency(48_000),
+            Some(512),
+            "the replay will put this model, and its latency, back -- republishing zero in the \
+             meantime is what made the restart unbounded (issue #93)"
+        );
+        assert_eq!(
+            inner.carried_latency(44_100),
+            None,
+            "at another rate D-9.2's resampler may not be needed at all, so the old figure is not \
+             evidence about the new configuration"
+        );
+    }
+
+    /// The counter `crate::audio` uses to know a replay has had its turn at the engine (issue
+    /// #145's finding 8): it moves for a call that reached a live `Instance`, and not for one that
+    /// found none.
+    #[test]
+    fn the_worker_instance_epoch_moves_only_when_a_job_actually_reached_the_engine() {
+        let inner = SharedInner::new();
+        let start = inner.worker_instance_epoch();
+
+        assert_eq!(
+            inner.with_instance(|_| ()),
+            None,
+            "there is no engine before the first activate()"
+        );
+        assert_eq!(
+            inner.worker_instance_epoch(),
+            start,
+            "a job that found no engine has told the audio thread nothing -- there is no audio \
+             thread yet"
+        );
+
+        let ctx = namir_engine::PrepareContext::new(
+            namir_core::SampleRate::new(48_000).expect("48 kHz is a valid sample rate"),
+            64,
+            namir_core::ChannelConfig::Stereo,
+        )
+        .expect("the prepare context must build");
+        let (_engine, endpoint) =
+            namir_engine::build_default_engine(&ctx).expect("the engine must build");
+        inner.install_instance(Instance::new(namir_worker::EngineConfig { ctx }, endpoint));
+
+        assert_eq!(inner.with_instance(|_| 7), Some(7));
+        assert_eq!(
+            inner.worker_instance_epoch(),
+            start + 1,
+            "a completed interaction with the live engine is exactly what the carried-latency \
+             claim in `crate::audio` waits for"
+        );
     }
 }

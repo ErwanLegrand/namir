@@ -35,6 +35,8 @@
 //! - [`params_ext`], [`audio_ports_ext`], [`latency_ext`], [`state_ext`] — the remaining CLAP
 //!   extensions (`params`/FR-CLAP-060's bypass convention, `audio-ports`/FR-CLAP-030,
 //!   `latency`/FR-CLAP-040, `state`/FR-CLAP-050).
+//! - [`presets`] — FR-STATE-030's named-preset locations and listing. **Its `preset_dir` belongs
+//!   in `namir-platform`** so both shells resolve one directory; see that module's own doc comment.
 //! - [`error_codes`] — this crate's own D-16.1 catalogue entries.
 //!
 //! # Deliberately out of scope this round
@@ -56,6 +58,7 @@ mod latency_ext;
 mod main_thread;
 mod param_mirror;
 mod params_ext;
+mod presets;
 mod shared;
 mod state_ext;
 mod ui_host;

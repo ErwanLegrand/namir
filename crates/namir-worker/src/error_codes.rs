@@ -45,6 +45,22 @@ pub const FILE_TOO_LARGE: ErrorCode = ErrorCode::new(
      mistake -- the wrong file extension, or a recording saved in place of an export.",
 );
 
+/// The path names something that is not a regular file — a directory, a device, a FIFO.
+///
+/// Issue #107's other half, and the one a byte ceiling cannot cover: on Unix, opening a FIFO
+/// blocks until a writer appears, and a character device reports `len() == 0` while streaming
+/// forever. Neither is answered by bounding the read, only by not opening the thing — so the file
+/// *type* is checked before anything is opened, exactly as `namir-library`'s `StdFs::read_file`
+/// does after the same fix.
+pub const FILE_NOT_REGULAR: ErrorCode = ErrorCode::new(
+    "worker.file.not_regular",
+    Severity::Error,
+    "That path is not a regular file, so Namir will not load it ({detail}).",
+    "Point Namir at the `.nam` or `.wav` file itself. If a preset names this path, the file it \
+     was saved against has been replaced by a folder or a device -- locate the original and load \
+     it again.",
+);
+
 /// D-9.7 truncates an impulse response at ten seconds at the engine rate, and says so should be
 /// reported — but no catalogue entry existed for it anywhere, and `PreparedIr::was_truncated()`
 /// returned a bare `bool` that nothing consumed. The worker is the first layer that can report
@@ -86,6 +102,7 @@ mod tests {
             JOB_PANICKED,
             FILE_UNREADABLE,
             FILE_TOO_LARGE,
+            FILE_NOT_REGULAR,
             IR_TRUNCATED,
             NOT_DELIVERED,
         ];

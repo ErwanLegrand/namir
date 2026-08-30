@@ -361,6 +361,16 @@ mod tests {
     /// question): the error id differs from `MALFORMED_JSON`'s **and** `detail` names the offending
     /// key — asserting only the first would leave "names the unsupported feature" untested and this
     /// tag would be a `trace-partial`, not a plain one.
+    ///
+    /// Issue #46 added one more member to the set this quantifies over — a model declaring more
+    /// than one output channel, i.e. a last layer array whose head is wider than 1 — and it is
+    /// *not* in the table below, because unlike every case here it changes a dimension and so
+    /// needs its own weight count. It is covered, with both the same assertions, by
+    /// [`documents_that_used_to_load_and_then_misbehave_on_the_audio_thread_are_rejected`], which
+    /// carries the same tag: the two tests jointly span the set, neither alone does (the same
+    /// split, for the same reason, that FR-NAM-030's pair of golden-reference tests uses). Issue
+    /// #47's `layers[0].input_size` is not a member at all — a self-contradictory file is
+    /// `INCONSISTENT_CONFIGURATION`, which this requirement's text does not cover.
     // trace: FR-NAM-140
     #[test]
     fn unsupported_features_are_named_and_distinct_from_malformed() {
@@ -502,6 +512,120 @@ mod tests {
         let err = expect_err(load(&bytes));
         assert_ne!(err.code.id, error_codes::MALFORMED_JSON.id);
         assert!(err.detail.contains("RNN"));
+    }
+
+    /// Issues #46, #47 and #49: three `.nam` documents a user can really hold, each of which
+    /// **loaded successfully** and then misbehaved on the audio thread, reached here through the
+    /// same bytes-to-model path a real file takes (`load`), not through a hand-built `NamFile`.
+    ///
+    /// What each did before the load-time checks that now reject them:
+    ///
+    /// | document | observed |
+    /// |---|---|
+    /// | `head_size: 4` on the only (therefore last) layer array | `process_block` panicked: `range end index 32 out of range for slice of length 8` |
+    /// | `input_size: 2` on the first layer array | `process_block` panicked: `range end index 16 out of range for slice of length 8` |
+    /// | a `1e40` weight (in `f64` range, out of `f32` range, so `f32::INFINITY` after serde) | loaded, and `process` returned a non-finite block |
+    ///
+    /// A panic inside `process_block` is a panic on the host's audio thread — in `namir-clap`,
+    /// the user's whole DAW session. None of the three is defensible there (the RT path may not
+    /// allocate, and has no way to report anything), so all three are rejected here, at load, off
+    /// the audio thread, where an error costs nothing. The weight counts below are exact for each
+    /// mutated shape, so each document is genuinely *loadable-looking* — a weight-count mismatch
+    /// would prove nothing about these checks.
+    ///
+    /// Tagged FR-NAM-140 for its first case only — a model with more than one output channel is
+    /// an unsupported feature; see [`unsupported_features_are_named_and_distinct_from_malformed`]'s
+    /// own doc comment for how the two tests split that requirement's set between them. The other
+    /// two cases are a self-contradictory file and a corrupted one, neither of which FR-NAM-140
+    /// covers.
+    // trace: FR-NAM-140
+    #[test]
+    fn documents_that_used_to_load_and_then_misbehave_on_the_audio_thread_are_rejected() {
+        // `1e40` is written as JSON text (an `f64`, in range there), not as an `f32`: it cannot
+        // be a Rust `f32` literal at all (rustc's `overflowing_literals` lint refuses `1e40f32`
+        // outright), and it cannot even be *re-serialized* from an `f32::INFINITY` value, since
+        // `serde_json` writes every non-finite float as `null`. Only the text form reproduces
+        // what a real file carries -- which is exactly why this slipped through: the value is
+        // perfectly ordinary JSON, and becomes infinite only on the way into an `f32`.
+        assert!(
+            serde_json::from_str::<f32>("1e40").unwrap().is_infinite(),
+            "serde_json deserializes the JSON number 1e40 into f32::INFINITY"
+        );
+        let mut infinite_weights = vec![serde_json::json!(0.0); 8];
+        infinite_weights[6] = serde_json::json!(1e40);
+        infinite_weights[7] = serde_json::json!(0.5);
+
+        // (case, layer-array overrides, weights, expected code, substring `detail` must name)
+        let cases: Vec<(&str, serde_json::Value, serde_json::Value, &str, &str)> = vec![
+            (
+                "issue #46: last layer array's head_size > 1",
+                serde_json::json!({ "head_size": 4 }),
+                // exact for this shape: 6 + head_size(4) * channels(1)
+                serde_json::json!(vec![0.0f32; 10]),
+                error_codes::UNSUPPORTED_CONFIGURATION.id,
+                "head",
+            ),
+            (
+                "issue #47: first layer array's input_size > 1",
+                serde_json::json!({ "input_size": 2 }),
+                // exact for this shape: rechannel is channels(1) * input_size(2)
+                serde_json::json!(vec![0.0f32; 8]),
+                // Inconsistent, not unsupported: this document declares a one-channel input (by
+                // omitting `in_channels`) and a first layer array expecting two. See
+                // `wavenet::PreparedWaveNet::from_file`'s comment at the check.
+                error_codes::INCONSISTENT_CONFIGURATION.id,
+                "input_size",
+            ),
+            (
+                "issue #49: a non-finite weight",
+                serde_json::json!({}),
+                serde_json::Value::Array(infinite_weights),
+                error_codes::NON_FINITE_VALUE.id,
+                "weights[6]",
+            ),
+        ];
+
+        for (case, layer_overrides, weights, expected_code, expect_substring) in cases {
+            let layer = merge_object(minimal_layer_array_json(), layer_overrides);
+            let bytes = serde_json::json!({
+                "architecture": "WaveNet",
+                "config": { "layers": [layer], "head_scale": 0.5, "head": null },
+                "weights": weights,
+                "sample_rate": 48000
+            })
+            .to_string()
+            .into_bytes();
+
+            let err = expect_err(load(&bytes));
+            assert_eq!(err.code.id, expected_code, "{case}: wrong catalogue code");
+            assert!(
+                err.detail.contains(expect_substring),
+                "{case}: detail {:?} does not name {expect_substring:?}",
+                err.detail
+            );
+        }
+
+        // The positive control: the same document, unmutated, still loads and still processes —
+        // so the three rejections above are about the mutations, not about this shape.
+        let good = load(&minimal_wavenet_json()).expect("the unmutated document still loads");
+        let mut state = good.new_state(4);
+        assert_eq!(good.process(&mut state, &[0.1, 0.2, 0.3, 0.4]).len(), 4);
+    }
+
+    /// Issue #49's LSTM half: `lstm::PreparedLstm::from_file` has the same check, reached through
+    /// the same `load` path. LSTM has no `head_scale`, so `weights` is the whole of it.
+    #[test]
+    fn a_non_finite_lstm_weight_is_rejected_at_load() {
+        let mut value: serde_json::Value = serde_json::from_slice(&minimal_lstm_json()).unwrap();
+        value["weights"][3] = serde_json::json!(1e40);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::NON_FINITE_VALUE.id);
+        assert!(
+            err.detail.contains("weights[3]"),
+            "detail: {:?}",
+            err.detail
+        );
     }
 
     #[test]

@@ -54,17 +54,22 @@
 //!    `gate.rs`/`trim.rs` use), which blends the handover crossfade's *result* against this
 //!    stage's dry input, based on `enabled && slots[active].is_some()`.
 //!
-//! `mix_target` is recomputed from `slots[active]` — deliberately the *pre-handover* active slot,
-//! not whichever slot is fading in — every time `enabled` changes or `active` itself changes
-//! (i.e. when a handover completes, never mid-handover). One consequence worth stating plainly:
-//! loading the very first model (nothing previously active) does not make the bypass blend start
-//! moving until the handover crossfade itself finishes and `active` flips — the two fades compose
-//! in sequence for that specific case, not in parallel. Both fades are individually smooth
-//! one-pole/equal-power curves, so the composition is still click-free throughout, just not the
-//! single ~20 ms fade a naive reading might expect. Loading a *replacement* model into an already
-//! fully-engaged stage (`slots[active]` already `Some`, bypass blend already settled at 1.0) does
-//! not have this composition effect: `mix_target` is already 1.0 and stays there, so the handover
-//! crossfade's own equal-power blend is heard in full, which is the FR-NAM-070 case that matters.
+//! `mix_target` is recomputed every time `enabled` changes, every time `active` changes (i.e. when
+//! a handover completes) and at the start of every handover. Loading a *replacement* model into an
+//! already fully-engaged stage never moves it: it is already 1.0 and stays there, so the handover
+//! crossfade's own equal-power blend is heard in full.
+//!
+//! **Loading the very first model used to be the exception, and issue #141 is that it was the
+//! wrong one.** `mix_target` was a function of `slots[active]` alone — deliberately the
+//! *pre-handover* active slot, which on a first load is `None` — so the bypass blend stayed pinned
+//! at 0.0 for the whole handover and multiplied the equal-power fade's result out of existence.
+//! Measured on this stage: bit-exactly the dry input for all 960 samples of the fade, with the
+//! model first becoming audible at the *start of the block* the fade completed in (frame 512, 768,
+//! 896 and 959 for block sizes 512, 256, 64 and 1). FR-NAM-070's fade was inaudible and what
+//! replaced it was the 15 ms bypass blend at a block-quantised instant. Since #141 the target
+//! counts the slot a fade is fading *into* as well, and [`NamStage::begin_crossfade`] moves `mix`
+//! there at once rather than ramping — read that method's doc comment for why an instant move is
+//! the click-free choice here and a ramp is not.
 
 use std::collections::VecDeque;
 use std::f32::consts::FRAC_PI_2;
@@ -615,6 +620,34 @@ struct Crossfade {
     /// The fade's total duration in samples, fixed at construction
     /// (`NamStage::crossfade_total_samples`, from [`HANDOVER_CROSSFADE_MS`]).
     total: u32,
+    /// Samples the fade is held at `theta == 0` before it starts, so it never blends against a
+    /// signal the incoming slot has not produced yet — the incoming slot's own
+    /// [`NamSlot::latency_samples`], and therefore `0` for every slot without a
+    /// [`SlotResampler`].
+    ///
+    /// # Why (issue #145's finding 7)
+    ///
+    /// A rate-mismatched slot's [`SlotResampler`] is built with one engine block of silence in
+    /// its output FIFO — deliberately, so its actual delay equals the 640 samples it reports (see
+    /// `SlotResampler::new`'s M9b note). Its first `latency_samples` outputs are therefore
+    /// silence, and an equal-power fade that starts at the install blends *that* silence in:
+    /// `outgoing * cos(theta)` alone for the first 640 of the fade's 960 samples, reaching
+    /// `cos(60 deg)` = 0.5 — a −6 dB, 13 ms level sag in the middle of every handover into a
+    /// rate-mismatched model, which is FR-NAM-070's "shall not ... glitch" clause failing on the
+    /// one path D-9.2's resampler exists for.
+    ///
+    /// Holding `theta` at zero for exactly that many samples is continuous at both ends (the
+    /// fade's own first sample already has `cos(0) == 1`, `sin(0) == 0`, so the hold *is* the
+    /// fade's first sample repeated) and costs nothing on the path that has no resampler, where
+    /// this is `0` and every arithmetic below is what it always was. Both slots still run for
+    /// every sample of the hold — that is what primes the incoming one.
+    ///
+    /// **It stays inside FR-NAM-070's 50 ms ceiling**, which the hold does lengthen: the largest
+    /// latency any 1.0 slot reports is a `SlotResampler`'s, and across the rates
+    /// `clap_host_sample_rates.rs` sweeps that peaks at 2 560 samples (a 44.1 kHz model at a
+    /// 192 kHz engine) = 13.3 ms, so hold plus [`HANDOVER_CROSSFADE_MS`] reaches about 33 ms at
+    /// its worst against the requirement's 50.
+    prime: u32,
 }
 
 /// RT-safe NAM stage: up to two [`NamSlot`]s, equal-power-crossfaded between per FR-NAM-070's
@@ -664,7 +697,8 @@ pub struct NamStage {
     /// `1.0` = fully wet/engaged. See this module's doc comment for how this composes with the
     /// separate handover crossfade above.
     mix: f32,
-    /// Where `mix` is heading: `1.0` when `enabled && slots[active].is_some()`, `0.0` otherwise
+    /// Where `mix` is heading: `1.0` when `enabled` and some slot is contributing wet signal to
+    /// the output right now, `0.0` otherwise
     /// (FR-CHAIN-040: nothing loaded behaves as bypassed). Recomputed by `apply`, `load_model`,
     /// and by `process` itself right after a handover completes and `active` changes — every
     /// place this stage's doc comment lists as changing one of the two inputs to this formula.
@@ -751,11 +785,7 @@ impl NamStage {
             self.retired = Some(Resource::nam(displaced, self.prepared_for));
         }
         self.slots[inactive] = Some(slot);
-        self.crossfade = Some(Crossfade {
-            remaining: self.crossfade_total_samples,
-            total: self.crossfade_total_samples,
-        });
-        self.recompute_mix_target();
+        self.begin_crossfade();
         None
     }
 
@@ -783,22 +813,82 @@ impl NamStage {
             // A move, not a drop. See `install`'s doc comment.
             self.retired = Some(Resource::nam(displaced, self.prepared_for));
         }
+        self.begin_crossfade();
+    }
+
+    /// **RT-safe.** Starts a [`HANDOVER_CROSSFADE_MS`]-long fade (D-8.1 step 3) and puts the
+    /// shared bypass blend where that fade can actually be heard. Shared by [`Self::install`] and
+    /// [`Self::unload`], which differ only in what they leave in the inactive slot first.
+    ///
+    /// # Issue #141: why `mix` is *snapped* here rather than left to its one-pole
+    ///
+    /// See this module's own doc comment for the measurement. In short: on a first load the fade's
+    /// outgoing side is `None`, so a `mix_target` derived from `slots[active]` alone held the
+    /// bypass blend at 0.0 for the fade's whole duration and the equal-power blend was multiplied
+    /// out of existence — the stage emitted bit-exactly its dry input until the fade *completed*,
+    /// and then engaged over 15 ms starting at whatever block boundary that landed on.
+    ///
+    /// [`Self::recompute_mix_target`] fixes the first half by counting the slot being faded *into*.
+    /// That alone would leave the second: a one-pole ramp composed on top of the equal-power curve
+    /// is not the equal-power curve FR-NAM-070 asks for, and would still spread the onset over
+    /// 15 ms. So `mix` is moved to its target in one step.
+    ///
+    /// **The step is click-free by construction, not by tolerance.** It is taken only when
+    /// [`Self::wet_path_is_transparent`] holds — this stage's wet path is currently a bit-exact
+    /// copy of its dry input — and in that state `mix` is unobservable: the stage's output is the
+    /// dry signal for *every* value of `mix`, on the sample before the step and on the sample
+    /// after it. The fade then picks up from exactly there, because its first sample has
+    /// `theta == 0`, `cos(0) == 1`, `sin(0) == 0` and a `None` outgoing slot contributes a
+    /// `copy_from_slice` of the dry input. When the wet path is *not* transparent (a replacement
+    /// model faded into an already-engaged stage) nothing is snapped and `mix` is already 1.0
+    /// anyway, which is the case that always worked.
+    ///
+    /// Costs two `Option` inspections and three scalar assignments; allocates nothing, and every
+    /// branch is straight-line.
+    fn begin_crossfade(&mut self) {
+        // Sampled *before* `self.crossfade` is overwritten: an in-flight fade is itself one of the
+        // things that makes the wet path non-transparent.
+        let mix_is_unobservable = self.wet_path_is_transparent();
         self.crossfade = Some(Crossfade {
             remaining: self.crossfade_total_samples,
             total: self.crossfade_total_samples,
+            // The slot being faded *into* — `install` has already put it there, and `unload`
+            // leaves it `None`, which is a dry passthrough with no pipeline to prime.
+            prime: self.slots[1 - self.active]
+                .as_ref()
+                .map_or(0, |slot| slot.latency_samples()),
         });
         self.recompute_mix_target();
+        if mix_is_unobservable {
+            self.mix = self.mix_target;
+        }
     }
 
-    /// `mix_target` is a function of exactly two inputs (`enabled`, `slots[active]`'s presence) —
-    /// see the field's own doc comment for the FR-CHAIN-040 rationale and for why it is
-    /// deliberately `slots[active]`, not whichever slot a handover is fading into.
+    /// Whether this stage's wet path currently reproduces its dry input **bit-exactly**, which is
+    /// what makes `mix` unobservable and [`Self::begin_crossfade`]'s snap inaudible.
+    ///
+    /// True exactly when nothing is active and no fade is in flight: `process_channel0` returns
+    /// without touching `io` in that state (FR-CHAIN-040's passthrough), so the bypass blend below
+    /// it is blending the dry signal against itself. Unlike `ir.rs`'s counterpart there is nothing
+    /// else on this stage's wet path to be transparent about — no filters, no level ramp.
+    fn wet_path_is_transparent(&self) -> bool {
+        self.slots[self.active].is_none() && self.crossfade.is_none()
+    }
+
+    /// `mix_target` is a function of `enabled` and of whether *any* slot is contributing wet
+    /// signal to the output right now — see the field's own doc comment for the FR-CHAIN-040
+    /// rationale.
+    ///
+    /// **Issue #141 widened the second input.** It used to be `slots[active]`'s presence alone,
+    /// deliberately the pre-handover active slot; but a fade *into* the inactive slot is audible
+    /// from its own first sample, so a target that ignores it holds the bypass blend closed over
+    /// exactly the interval FR-NAM-070 specifies a fade for. `slots[active]` still governs
+    /// everywhere outside a handover, and still governs `latency_samples`/`telemetry`, which are
+    /// statements about the settled stage rather than about what is audible this block.
     fn recompute_mix_target(&mut self) {
-        self.mix_target = if self.enabled && self.slots[self.active].is_some() {
-            1.0
-        } else {
-            0.0
-        };
+        let engaged = self.slots[self.active].is_some()
+            || (self.crossfade.is_some() && self.slots[1 - self.active].is_some());
+        self.mix_target = if self.enabled && engaged { 1.0 } else { 0.0 };
     }
 
     /// The mono-core wet path (FR-CHAIN-050): writes this block's processed result into
@@ -836,12 +926,32 @@ impl NamStage {
 
         if crossfade.remaining == 0 {
             // Deferred-finalization state (see this method's finalization block below): the fade
-            // is mathematically complete but the retire pen is still occupied, so `active` has
-            // not flipped yet. Run only the incoming slot rather than blending in an outgoing one
-            // scaled by `cos(FRAC_PI_2)` — which is -4.4e-8 in f32, not exactly zero, and would
-            // otherwise leave a faint copy of the old model in the output for as long as the
-            // deferral lasts. Skipping it also avoids paying the 2x inference cost in a state
-            // that can persist across many blocks.
+            // is mathematically complete but the retire pen was still occupied when it ended, so
+            // `active` has not flipped yet.
+            //
+            // **Try to finalize first, every block (issue #56).** This used to fall straight
+            // through to the incoming-only render, which made the state a dead end: nothing else
+            // in `process_channel0` re-tests `self.retired`, so once entered, `active` never
+            // flipped, `crossfade` never cleared and the outgoing slot never reached the pen — for
+            // the rest of the session. The consequences were permanent and all silent:
+            // `latency_samples()` kept reporting the outgoing slot (FR-CLAP-040 wrong),
+            // `telemetry.nam.handover_active` stayed pinned at 1.0, `recompute_mix_target` never
+            // re-ran (so a *first* load left the stage bypassed forever), and a later install
+            // displaced the audible slot and re-faded from the stale outgoing one. The block
+            // comment below promised exactly this recovery; it simply did not exist.
+            //
+            // The retry is one `Option::is_none()` check per block. `collect_retired` empties the
+            // pen as soon as the worker drains, so the deferral is normally over within a block or
+            // two — but nothing bounds it, which is precisely why it must be retried rather than
+            // entered once.
+            self.try_finalize_handover();
+
+            // Run only the incoming slot rather than blending in an outgoing one scaled by
+            // `cos(FRAC_PI_2)` — which is -4.4e-8 in f32, not exactly zero, and would otherwise
+            // leave a faint copy of the old model in the output for as long as the deferral lasts.
+            // Skipping it also avoids paying the 2x inference cost in a state that can persist
+            // across many blocks. `incoming_idx` names the same slot either way: a successful
+            // finalization sets `self.active` *to* it.
             if let Some(slot) = &mut self.slots[incoming_idx] {
                 slot.process_wet(
                     &self.dry[0][..n],
@@ -879,6 +989,16 @@ impl NamStage {
             .zip(self.crossfade_outgoing[..n].iter())
             .zip(self.crossfade_incoming[..n].iter())
         {
+            // The incoming slot has not produced a real sample yet, so there is nothing to fade
+            // into: emit the outgoing side alone, which is what `theta == 0` already evaluates
+            // to. See `Crossfade::prime`. Written as its own arm rather than folded into
+            // `progress` so the fade's own arithmetic is untouched on the (far commoner) path
+            // where `prime` is zero from the start.
+            if crossfade.prime > 0 {
+                crossfade.prime -= 1;
+                *o = outgoing;
+                continue;
+            }
             let progress = (total - crossfade.remaining).min(total);
             let theta = (progress as f32 / total as f32) * FRAC_PI_2;
             *o = outgoing * theta.cos() + incoming * theta.sin();
@@ -888,20 +1008,7 @@ impl NamStage {
         }
 
         if crossfade.remaining == 0 {
-            if self.retired.is_none() {
-                // **The M2 P1 violation, closed.** This used to be `self.slots[outgoing_idx] =
-                // None`, i.e. a *drop* — freeing the outgoing `NamState`'s scratch and possibly
-                // the last `Arc<PreparedNam>` reference, on the audio thread, at the exact
-                // instant a handover completed. `take()` *moves*: nothing is dropped here, and
-                // the return ring carries the slot to a worker that can afford to free it
-                // (D-8.1 step 4). Do not "simplify" this back to an assignment.
-                self.retired = self.slots[outgoing_idx]
-                    .take()
-                    .map(|slot| Resource::nam(slot, self.prepared_for));
-                self.active = incoming_idx;
-                self.crossfade = None;
-                self.recompute_mix_target();
-            } else {
+            if !self.try_finalize_handover() {
                 // The pen is still occupied because the return ring was full when
                 // `collect_retired` last ran — i.e. the worker is not draining (D-8.1: "If the
                 // worker dies, the ring fills and memory is retained but audio continues.
@@ -910,8 +1017,9 @@ impl NamStage {
                 // Only the *bookkeeping* is deferred; the audio is already correct. `theta` has
                 // saturated at FRAC_PI_2, so the outgoing slot is multiplied by cos(pi/2) and
                 // contributes nothing audible, and `process_channel0`'s own fast path above skips
-                // running it at all. The stage simply stays in this state until a later block's
-                // `collect_retired` empties the pen, then finalizes.
+                // running it at all. The stage stays in this state until a later block's
+                // `collect_retired` empties the pen — and that same fast path retries the
+                // finalization on every block until it does (issue #56).
                 //
                 // The wrong "fix" here is to drop the outgoing slot to make progress. That is
                 // exactly the bug this milestone removes; deferring costs bounded memory, and
@@ -921,6 +1029,38 @@ impl NamStage {
         } else {
             self.crossfade = Some(crossfade);
         }
+    }
+
+    /// D-8.1's step-4 bookkeeping for a fade that has reached zero: move the outgoing slot into
+    /// the retire pen, flip `active` onto the incoming one, clear the crossfade and recompute the
+    /// bypass blend's target. Returns `false` — changing nothing at all — when the pen is still
+    /// occupied, which is the deferred-finalization state both callers document.
+    ///
+    /// **RT-safe:** one `Option::is_none()`, one `Option::take()` (a move, never a drop — see the
+    /// note in `install`), and three scalar assignments.
+    ///
+    /// Called from two places, and that is the fix for issue #56: once at the end of the fade in
+    /// `process_channel0`, and again on every subsequent block from that method's `remaining == 0`
+    /// fast path, so a deferral entered because the worker was not draining is left as soon as it
+    /// is.
+    fn try_finalize_handover(&mut self) -> bool {
+        if self.retired.is_some() {
+            return false;
+        }
+        let outgoing_idx = self.active;
+        // **The M2 P1 violation, closed.** This used to be `self.slots[outgoing_idx] = None`, i.e.
+        // a *drop* — freeing the outgoing `NamState`'s scratch and possibly the last
+        // `Arc<PreparedNam>` reference, on the audio thread, at the exact instant a handover
+        // completed. `take()` *moves*: nothing is dropped here, and the return ring carries the
+        // slot to a worker that can afford to free it (D-8.1 step 4). Do not "simplify" this back
+        // to an assignment.
+        self.retired = self.slots[outgoing_idx]
+            .take()
+            .map(|slot| Resource::nam(slot, self.prepared_for));
+        self.active = 1 - outgoing_idx;
+        self.crossfade = None;
+        self.recompute_mix_target();
+        true
     }
 }
 
@@ -1683,6 +1823,281 @@ mod tests {
             measured, reported as usize,
             "the stage reports {reported} samples of latency and delays the signal by {measured}: \
              FR-NAM-110 asks for the figure it reports, not one of the right order of magnitude"
+        );
+    }
+
+    /// **Issue #56: the deferred-finalization state was entered and never left.**
+    ///
+    /// When a fade reached `remaining == 0` while the retire pen was occupied, `process_channel0`
+    /// set `crossfade = Some(remaining: 0)` and skipped finalization. On every later block the
+    /// `remaining == 0` fast path returned *before* the finalization block, so `self.retired` was
+    /// never re-tested: `active` never flipped, `crossfade` never cleared, and the outgoing slot
+    /// never reached the pen — permanently, for the rest of the session, even after the worker
+    /// resumed draining. `latency_samples()` kept reporting the outgoing slot (FR-CLAP-040), the
+    /// `handover_active` reading stayed pinned at 1.0, and a later install would displace the
+    /// audible slot and re-fade from the stale outgoing one.
+    ///
+    /// The state is reached the way the engine reaches it: an install that displaces a slot still
+    /// fading in parks that slot in the pen, and the fade then completes with the pen occupied.
+    /// This test simply does not collect in between, which is what a stalled worker looks like
+    /// from inside the stage.
+    ///
+    /// Committed red-first: before the fix, the final three assertions all fail — `crossfade` is
+    /// still `Some`, `active` is still 1, and the pen is empty because the outgoing slot is stuck
+    /// in `slots[1]` forever.
+    /// **Issue #141 at the stage, where the mechanism is visible.** The chain-level probe
+    /// (`chain_probes.rs`'s `a_first_load_is_audible_inside_its_own_fade_at_every_block_size`)
+    /// asserts the audible consequence; this pins the two pieces of state that produced it, so a
+    /// regression names its own cause rather than only its symptom.
+    ///
+    /// The defect was **not** that the wet signal went unproduced during a first load's fade — it
+    /// was produced all along. Measured before the fix, on the first 64-frame block after a first
+    /// `load_model`: `crossfade_incoming` diverged from the dry input by 2.0e-1 (the whole wet
+    /// signal), `crossfade_outgoing` by exactly 0e0 (the `None` slot's dry passthrough), the fade
+    /// advanced 960 -> 896 — and `io` came out **bit-exactly the dry input**, because the shared
+    /// bypass blend sat at `mix == mix_target == 0.0` for the fade's entire duration and multiplied
+    /// the equal-power blend away. So the fade was applied and then discarded.
+    ///
+    /// Asserted here: the blend is engaged from the first block of a first load, the fade's own
+    /// first sample is still bit-exactly dry (which is what makes `begin_crossfade`'s snap
+    /// click-free rather than merely quiet), and the block as a whole is no longer dry.
+    #[test]
+    fn a_first_load_engages_the_bypass_blend_for_the_whole_fade() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Mono);
+
+        assert_eq!(stage.mix, 0.0, "nothing loaded: bypassed");
+        assert_eq!(stage.mix_target, 0.0);
+
+        stage.load_model(tiny_model(sample_rate));
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "a first load's fade must be heard, so the bypass blend's target is engaged when the \
+             fade starts -- not when it completes"
+        );
+        assert_eq!(
+            stage.mix, 1.0,
+            "and `mix` is snapped there, because a 15 ms one-pole composed on top of the \
+             equal-power curve is not the equal-power curve FR-NAM-070 specifies"
+        );
+
+        let input: Vec<f32> = (0..64).map(|i| 0.2 * ((i as f32) * 0.05).sin()).collect();
+        let out = process_signal_in_chunks(&mut stage, &input);
+
+        assert_eq!(
+            out[0].to_bits(),
+            input[0].to_bits(),
+            "the fade's first sample has theta = 0, so it must be the dry input bit-for-bit: that \
+             is what makes snapping `mix` a continuation rather than a step"
+        );
+        let divergence = out
+            .iter()
+            .zip(input.iter())
+            .position(|(a, b)| a.to_bits() != b.to_bits());
+        assert_eq!(
+            divergence,
+            Some(1),
+            "the wet signal must appear on the fade's second sample, not at the block boundary \
+             after it completes (issue #141)"
+        );
+        assert!(
+            stage.crossfade.is_some(),
+            "64 samples is well inside a 960-sample fade"
+        );
+    }
+
+    /// The other half of issue #141's fix: the snap is taken **only** where it cannot be heard.
+    /// A replacement model faded into an already-engaged stage has a non-transparent wet path
+    /// (`slots[active]` is `Some`), so nothing is snapped and `mix` is left exactly where it was —
+    /// which is 1.0 there anyway, the case that always worked.
+    #[test]
+    fn a_replacement_load_snaps_nothing() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Mono);
+        stage.load_model(tiny_model(sample_rate));
+        process_constant_in_chunks(&mut stage, 48_000, 0.1);
+        assert!(
+            !stage.wet_path_is_transparent(),
+            "an engaged stage's wet path is not a passthrough, which is what withholds the snap"
+        );
+
+        // Disable the stage and catch `mix` part-way down its 15 ms ramp, so a snap would be
+        // visible as a jump rather than hidden by an already-settled value.
+        stage.apply(ParamChange {
+            id: ENABLED_ID,
+            value: 0.0,
+        });
+        process_constant_in_chunks(&mut stage, 64, 0.1);
+        let mid_ramp = stage.mix;
+        assert!(
+            mid_ramp > 0.0 && mid_ramp < 1.0,
+            "the bypass ramp should be mid-flight, got {mid_ramp}"
+        );
+
+        stage.load_model(tiny_model(sample_rate));
+        assert_eq!(
+            stage.mix, mid_ramp,
+            "an install into a stage whose wet path is audible must not move `mix` at all"
+        );
+    }
+
+    #[test]
+    fn a_handover_deferred_by_a_full_retire_pen_finalizes_once_the_pen_clears() {
+        const SR: u32 = 48_000;
+        // 20 ms at 48 kHz = 960 samples; 2048 is comfortably past a whole fade.
+        const PAST_A_FADE: usize = 2_048;
+        // Well inside one, so the next install displaces a slot that is still fading in.
+        const MID_FADE: usize = 128;
+
+        let mut stage = stage(SR, ChannelConfig::Mono);
+
+        // First model: settles with nothing displaced, so the pen stays empty.
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(stage.active, 1);
+        assert!(stage.crossfade.is_none());
+        assert!(stage.retired.is_none());
+
+        // Second model, then a third *while the second is still fading in*: the third install
+        // displaces the second into the pen (`install`'s "a move, not a drop").
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, MID_FADE, 0.1);
+        stage.load_model(tiny_model(SR));
+        assert!(
+            stage.retired.is_some(),
+            "the displaced slot should be parked in the pen"
+        );
+
+        // Let the third model's fade run to completion with the pen still occupied -- nothing
+        // collects, which is exactly D-8.1's "the worker is not draining" case.
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(
+            stage.crossfade,
+            Some(Crossfade {
+                remaining: 0,
+                total: stage.crossfade_total_samples,
+                // `tiny_model(SR)` declares the engine's own rate, so no `SlotResampler` is built
+                // and there is no pipeline to prime.
+                prime: 0
+            }),
+            "the fade should have reached zero and deferred its finalization"
+        );
+        assert_eq!(
+            stage.active, 1,
+            "`active` may not flip while the pen is full"
+        );
+
+        // The worker drains: the pen empties.
+        let (mut producer, mut consumer) = crate::ring::ring::<Resource>(4);
+        {
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+        assert!(stage.retired.is_none());
+        assert!(
+            consumer.try_pop().is_some(),
+            "the displaced slot reached the ring"
+        );
+
+        // One more block is all it should take. Before the fix, no number of blocks was enough.
+        process_constant_in_chunks(&mut stage, 64, 0.1);
+        assert!(
+            stage.crossfade.is_none(),
+            "the deferred handover must finalize once the pen clears, not stay in it forever"
+        );
+        assert_eq!(
+            stage.active, 0,
+            "finalization flips `active` onto the slot that faded in"
+        );
+        assert!(
+            stage.retired.is_some(),
+            "the outgoing slot must reach the pen, not stay stuck in `slots`"
+        );
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "`recompute_mix_target` must have re-run against the newly-active slot"
+        );
+    }
+
+    /// The consequence of issue #56 that is audible rather than merely wrong on paper: a
+    /// **first** load deferred by a full pen left `mix_target` at 0.0, so the stage stayed
+    /// bypassed — silent as far as the model is concerned — for the rest of the session.
+    ///
+    /// Reached the same way as the test above, but with the pen filled by an unload rather than by
+    /// a prior model, so the deferred handover is the one that first makes a model audible.
+    ///
+    /// **Issue #141 changed what this can observe, and the change is recorded rather than papered
+    /// over.** A first load now engages the bypass blend when its fade *starts*, so the deferral
+    /// this test constructs no longer has a bypassed interval for the mid-run assertion to catch;
+    /// what it pins instead is that the deferral is entered without losing audibility and left
+    /// completely once the pen clears (`crossfade` cleared, `active` flipped, `mix_target` still
+    /// engaged), which is the state machine #56 was about.
+    #[test]
+    fn a_deferred_first_handover_does_not_leave_the_stage_bypassed_forever() {
+        const SR: u32 = 48_000;
+        const PAST_A_FADE: usize = 2_048;
+        const MID_FADE: usize = 128;
+
+        let mut stage = stage(SR, ChannelConfig::Mono);
+
+        // Get one model settled and audible, then unload it so the stage is back to nothing
+        // active -- and immediately load a replacement while that unload fade is still running,
+        // which parks the unload's own slot in the pen.
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        {
+            let (mut producer, _consumer) = crate::ring::ring::<Resource>(4);
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+        stage.unload();
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        assert_eq!(stage.mix_target, 0.0, "an unloaded stage fades to dry");
+        {
+            // The unload's own finalization parks the formerly-active slot; clear it so the next
+            // install is the ordinary pen-empty case and the deferral this test is about is
+            // caused by the mid-fade displacement below, not by leftovers.
+            let (mut producer, _consumer) = crate::ring::ring::<Resource>(4);
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+
+        stage.load_model(tiny_model(SR));
+        process_constant_in_chunks(&mut stage, MID_FADE, 0.1);
+        stage.load_model(tiny_model(SR));
+        assert!(stage.retired.is_some());
+        process_constant_in_chunks(&mut stage, PAST_A_FADE, 0.1);
+        // **Issue #141 moved this assertion, and moved it in the direction #56 wanted.** It used
+        // to read `mix_target == 0.0` — "still deferred, still bypassed" — because a first load's
+        // target was derived from the (empty) outgoing slot alone. `recompute_mix_target` now
+        // counts the slot being faded *into*, so the deferral no longer costs audibility at all:
+        // it is the bookkeeping that is outstanding, never the audio. What #56 is about — that the
+        // deferral is left rather than entered forever — is the `crossfade`/`active`/`retired`
+        // assertions below, which are unchanged.
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "a deferred first handover must still be audible: the pen being full delays the \
+             retirement, not the fade"
+        );
+
+        let (mut producer, _consumer) = crate::ring::ring::<Resource>(4);
+        {
+            let mut sink = RetireSink::new(&mut producer);
+            stage.collect_retired(&mut sink);
+        }
+        process_constant_in_chunks(&mut stage, 64, 0.1);
+        assert!(
+            stage.crossfade.is_none(),
+            "the deferred handover must finalize once the pen clears, not stay in it forever"
+        );
+        assert_eq!(
+            stage.active, 1,
+            "finalization flips `active` onto the slot that faded in"
+        );
+        assert_eq!(
+            stage.mix_target, 1.0,
+            "once the pen clears the stage must be audible on its own account, with the fade over \
+             and `slots[active]` holding the model"
         );
     }
 

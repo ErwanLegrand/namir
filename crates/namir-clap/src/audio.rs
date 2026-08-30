@@ -46,10 +46,13 @@
 //! the segment's range for exactly this reason — doing either over the whole block would have a
 //! later segment overwrite what an earlier one produced.
 //!
-//! **The click-free half of FR-CLAP-060 is not this module's to close.** `namir_engine::Chain`'s
-//! global bypass is a `bool` flip with no crossfade, where FR-CHAIN-020's *per-stage* bypass fades
-//! over 15 ms; sample-accurate delivery is what makes that step land where the host asked, not what
-//! smooths it. `tests/clap_host_automation.rs` measures the step and books the gap.
+//! **The click-free half of FR-CLAP-060 was not this module's to close, and issue #142 closed it
+//! elsewhere.** `namir_engine::Chain`'s global bypass used to be a `bool` flip with no crossfade,
+//! where FR-CHAIN-020's *per-stage* bypass faded over 15 ms; sample-accurate delivery is what makes
+//! a change land where the host asked, not what smooths it. `Chain` now runs the same 15 ms blend
+//! for its global bypass, so what this module delivers sample-accurately is the fade's *start*, and
+//! `tests/clap_host_automation.rs` measures both halves — the frame the transition begins on, and
+//! the trajectory it takes from there.
 //!
 //! # FR-CLAP-040: latency reporting, and the restart CLAP's own contract requires
 //!
@@ -69,6 +72,27 @@
 //! requirement Namir has no way around, not an engine defect; FR-NAM-070's glitch-free crossfade
 //! still holds for every model swap that does *not* change latency, which is the common case. See
 //! `docs/manual-tests/fr-clap-040-latency-restart.md`.
+//!
+//! ## The figure an activation carries is a prediction, and predictions get checked (issue #145)
+//!
+//! `SharedInner::carried_latency` (issue #93) lets `activate` keep announcing the figure the host
+//! already has instead of the zero its freshly built engine reports, because the replay it is about
+//! to dispatch is expected to put the same model — and the same latency — straight back. That is a
+//! prediction about work that has not happened yet, and it can be wrong: the model may have been
+//! deleted or replaced with a session-rate one while the plugin was inactive, in which case the
+//! replay converges on **zero**, which is exactly what the fresh engine already reported. "Differs
+//! from the last block" is then false forever, and the host is left compensating for a delay the
+//! chain does not have — for the rest of the session, since nothing else will ever wake the main
+//! thread about it.
+//!
+//! So a carried figure is tracked as an outstanding claim ([`CarriedLatency`]) until it is
+//! discharged one of two ways: the engine's own reading moves (the prediction came true, or came
+//! true differently, and the ordinary change path handles it), or the replay finishes with the
+//! engine and the reading still disagrees with what the host was *told*, in which case the figure
+//! is corrected downwards and the same restart machinery renegotiates it. "The replay finished" is
+//! not something the engine can report — a replay that loads nothing leaves no trace on it — so it
+//! comes from `SharedInner::worker_instance_epoch`, with `CARRY_SETTLE_MS` covering the bounded
+//! remainder between a command being submitted and the handover crossfade completing.
 
 use clack_plugin::events::Event;
 use clack_plugin::events::spaces::CoreEventSpace;
@@ -96,8 +120,51 @@ pub struct NamirAudioProcessor<'a> {
     shared: &'a NamirShared<'a>,
     host: HostAudioProcessorHandle<'a>,
     priority_elevated: bool,
+    /// The engine's *own* last `latency_samples()` reading — not the figure the host is being
+    /// told, which `SharedInner::latency_samples` holds and which can legitimately differ from
+    /// this while an activation's replay is still in flight (issue #93; see
+    /// `SharedInner::carried_latency`).
     last_seen_latency: u32,
+    /// The unconfirmed half of that difference, while there is one — see [`CarriedLatency`] and
+    /// [`Self::publish_latency`]. `None` for an activation that adopted the engine's own reading,
+    /// which is the common case and needs no bookkeeping at all.
+    carried: Option<CarriedLatency>,
+    /// This activation's sample rate, kept so [`Self::publish_latency`] can record which rate the
+    /// figure it publishes was measured at without asking the engine again.
+    sample_rate_hz: u32,
 }
+
+/// A latency figure `activate` carried across an activation on the *prediction* that this
+/// activation's replay will reproduce it — issue #93's mechanism, and issue #145's finding 8 about
+/// what happens when the prediction is wrong.
+///
+/// See [`NamirAudioProcessor::publish_latency`] for how this is discharged.
+struct CarriedLatency {
+    /// The figure `activate` published and `notify_latency_changed` announced: what the host is
+    /// currently compensating for, and what the engine's own reading is measured against once the
+    /// replay has had its turn.
+    announced: u32,
+    /// `SharedInner::worker_instance_epoch` as `activate` read it, immediately before dispatching
+    /// the replay. While it is unchanged the replay has not finished touching the engine, so the
+    /// engine's reading is a transient rather than an answer.
+    epoch: u32,
+    /// Frames still to be processed before the prediction is judged, or `None` while the epoch has
+    /// not moved. See [`CARRY_SETTLE_MS`].
+    settle_frames: Option<u32>,
+}
+
+/// How much audio must pass after the replay has finished with the engine before an unconfirmed
+/// carried figure is judged against the engine's own reading.
+///
+/// **Not a guess at how long a replay takes** — that is unbounded (a file read, a parse, a worker
+/// thread the OS may schedule whenever it likes) and is what `SharedInner::worker_instance_epoch`
+/// answers instead. This covers only the strictly bounded remainder: the replay's resource command
+/// is already in the SPSC ring by the time the epoch moves, so what is left is one `process()` call
+/// to drain it plus D-8.1 step 3's handover crossfade (`HANDOVER_CROSSFADE_MS`, 20 ms) before the
+/// new slot becomes active and the chain's reported latency moves. Half a second is that with more
+/// than an order of magnitude of margin, and it is half a second of *processed audio*, so it is
+/// half a second of wall clock in any host that is actually running.
+const CARRY_SETTLE_MS: u32 = 500;
 
 impl<'a> NamirAudioProcessor<'a> {
     /// Runs `audio`'s frames `[start, end)` through the engine — see [`process_port_pair`] for the
@@ -120,31 +187,103 @@ impl<'a> NamirAudioProcessor<'a> {
         }
     }
 
+    /// This instance's shared state — `pub(crate)` accessor rather than a `pub(crate)` field, so
+    /// `crate::params_ext`'s `flush` can reach the parameter mirror without every field of this
+    /// audio-thread type becoming reachable from outside the module that owns the audio thread.
+    pub(crate) fn shared(&self) -> &'a NamirShared<'a> {
+        self.shared
+    }
+
     /// One direct-applied change plus its `ParamMirror` update — the one piece of logic both
     /// `process()`'s own automation loop and `crate::params_ext`'s `PluginAudioProcessorParams::
     /// flush` (called when active but `process()` was not, per `clack_extensions::params`'s own
     /// doc comment) share, kept in one place so the two paths cannot silently drift apart.
+    ///
+    /// **Non-finite values are refused here, not passed on** (issue #145's finding 6). A host is
+    /// free to hand us any `f64` it likes and both callers narrow it with `as f32`, so a `NaN` or
+    /// an infinity is reachable from outside. `namir_engine`'s `Chain::apply` rejects one too --
+    /// it has to, being reachable from the ring as well -- but the engine's guard cannot protect
+    /// the *mirror*: without this check the bad value would still be stored, shown in the editor
+    /// and written back into the instance's state on the next save, which outlives the session
+    /// the bad event arrived in. Refused rather than clamped, for the reason D-16.3 gives and
+    /// `Chain::apply` repeats: there is no sensible clamp for "NaN dB", so the last valid value
+    /// stays in force. Silent, per FR-ERR-030 -- this is the audio thread.
     pub(crate) fn apply_direct_and_mirror(&mut self, id: ParamId, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
         self.engine.apply_param_direct(ParamChange { id, value });
         self.shared.inner.params.set_by_id(id.0, value);
     }
 
     /// Publishes this block's latency reading and, if it changed, wakes the main thread — see
-    /// this module's doc comment for the full FR-CLAP-040 sequence.
-    fn publish_latency(&mut self) {
+    /// this module's doc comment for the full FR-CLAP-040 sequence, and [`CarriedLatency`] for the
+    /// one case in which "changed" is not the same question as "differs from last block".
+    ///
+    /// `frames` is this block's own frame count, which only the settle countdown reads.
+    fn publish_latency(&mut self, frames: u32) {
         let latency = self.engine.chain().latency_samples();
+        if latency != self.last_seen_latency {
+            // The engine has spoken, which settles any outstanding prediction along with it.
+            self.last_seen_latency = latency;
+            self.carried = None;
+            self.announce_latency(latency);
+            return;
+        }
+
+        // The engine's reading has not moved. Ordinarily that is the whole story -- and it must
+        // stay the whole story while a replay is in flight, where the engine still reports 0 and
+        // `SharedInner::latency_samples` is deliberately holding the figure that replay is
+        // expected to converge on. Republishing the transient zero there re-opens issue #93's loop
+        // from the other side, which is why this compares against the engine's own last reading
+        // rather than against the published one.
+        //
+        // What that comparison alone cannot see is a replay that has *finished* and converged
+        // somewhere else -- most sharply, back on the fresh engine's own zero, where "differs from
+        // last block" is false forever and the host is left compensating for a delay the chain
+        // does not have (issue #145's finding 8). So a carried figure is a prediction with an
+        // outstanding verdict, and this is where it is discharged: once the replay has finished
+        // with the engine (`SharedInner::worker_instance_epoch`) and the bounded remainder of the
+        // handover has had time to land (`CARRY_SETTLE_MS`), the engine's reading is compared
+        // against what the host was actually *told*, and a disagreement is published like any
+        // other change.
+        let Some(carried) = self.carried.as_mut() else {
+            return;
+        };
+        match carried.settle_frames {
+            None => {
+                if self.shared.inner.worker_instance_epoch() != carried.epoch {
+                    carried.settle_frames = Some(settle_frames(self.sample_rate_hz));
+                }
+            }
+            Some(remaining) => {
+                let remaining = remaining.saturating_sub(frames);
+                carried.settle_frames = Some(remaining);
+                if remaining == 0 {
+                    let announced = carried.announced;
+                    self.carried = None;
+                    if latency != announced {
+                        self.announce_latency(latency);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Publishes `latency` as this instance's reported figure and wakes the main thread to act on
+    /// it — the tail both of [`Self::publish_latency`]'s paths share.
+    ///
+    /// Wait-free: two relaxed atomic stores and `request_callback`, which
+    /// `clack_extensions::latency` documents as thread-safe and which returns without waiting.
+    fn announce_latency(&mut self, latency: u32) {
         self.shared
             .inner
-            .latency_samples
-            .store(latency, Ordering::Relaxed);
-        if latency != self.last_seen_latency {
-            self.last_seen_latency = latency;
-            self.shared
-                .inner
-                .latency_dirty
-                .store(true, Ordering::Relaxed);
-            self.host.shared().request_callback();
-        }
+            .publish_latency(latency, self.sample_rate_hz);
+        self.shared
+            .inner
+            .latency_dirty
+            .store(true, Ordering::Relaxed);
+        self.host.shared().request_callback();
     }
 }
 
@@ -195,14 +334,25 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
         shared.inner.install_instance(instance);
         shared.inner.active.store(true, Ordering::Relaxed);
 
-        let latency = engine.chain().latency_samples();
-        shared
+        // The engine this activation just built is a *default* one, so this is 0 -- and
+        // publishing that zero on every activation, while `spawn_recall` below is about to put
+        // the model (and its latency) back, is exactly what made FR-CLAP-040's restart
+        // unbounded (issue #93). `carried_latency` is what decides whether the figure the host
+        // already has survives this activation; see its doc comment for both of its conditions.
+        let engine_latency = engine.chain().latency_samples();
+        let sample_rate_hz = sample_rate.hz();
+        let reported = shared
             .inner
-            .latency_samples
-            .store(latency, Ordering::Relaxed);
+            .carried_latency(sample_rate_hz)
+            .unwrap_or(engine_latency);
+        shared.inner.publish_latency(reported, sample_rate_hz);
+        // Read *before* the replay is dispatched below, or the very job whose completion this is
+        // waiting for could finish between the read and the dispatch and go unnoticed.
+        let epoch = shared.inner.worker_instance_epoch();
         // Permitted here unconditionally per `clack_extensions::latency::HostLatency::changed`'s
         // own doc comment ("allowed to change only during the activate callback") — see this
-        // module's doc comment for the full sequence.
+        // module's doc comment for the full sequence. It is also what records `reported` as the
+        // figure the host has been given, which `on_main_thread` then compares against.
         main_thread.notify_latency_changed();
 
         // FR-STATE-030/050's replay: whatever this instance's `ParamMirror`/resource references
@@ -217,7 +367,15 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
             shared,
             host,
             priority_elevated: false,
-            last_seen_latency: latency,
+            last_seen_latency: engine_latency,
+            // Only when the two actually disagree is there a prediction outstanding: a carried
+            // figure that already matches the fresh engine's reading predicts nothing.
+            carried: (reported != engine_latency).then_some(CarriedLatency {
+                announced: reported,
+                epoch,
+                settle_frames: None,
+            }),
+            sample_rate_hz,
         })
     }
 
@@ -233,7 +391,17 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
         // D-13.2: once, at first `process()` activation — see `namir_platform::thread_priority`'s
         // own module doc comment for why this cadence (not once per callback) is correct.
         if !self.priority_elevated {
-            let _ = namir_platform::elevate_current_thread_priority();
+            // The outcome is `#[must_use]` and is carried *off* this thread rather than reported
+            // here: FR-ERR-030 forbids logging and logging-formatting on the audio thread, and
+            // `xtask rt-logging` forbids this module from so much as naming the logger. Two atomic
+            // stores, and `on_main_thread` turns them into a notice -- see
+            // `SharedInner::record_thread_priority_outcome`.
+            let outcome = namir_platform::elevate_current_thread_priority();
+            if self.shared.inner.record_thread_priority_outcome(outcome) {
+                // Only when there is something to say, and only once per instance -- see that
+                // method's own doc comment. A successful elevation wakes nobody.
+                self.host.shared().request_callback();
+            }
             self.priority_elevated = true;
         }
 
@@ -267,7 +435,18 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
             self.process_segment(&mut audio, cursor, frames);
         }
 
-        self.publish_latency();
+        self.publish_latency(frames);
+
+        // FR-PARAM-030's other direction (issue #94): a knob the user turned in *this* plugin's
+        // editor is reported back to the host as automation, wrapped in a gesture, so the host can
+        // record it and keep its own generic UI in step. See `crate::params_ext`'s
+        // `emit_gui_param_changes` for why this is allocation-free and why host-originated changes
+        // are never echoed back through it.
+        crate::params_ext::emit_gui_param_changes(
+            &self.shared.inner.params,
+            &self.shared.inner.gestures,
+            events.output,
+        );
 
         Ok(ProcessStatus::Continue)
     }
@@ -285,6 +464,13 @@ impl<'a> PluginAudioProcessor<'a, NamirShared<'a>, NamirMainThread<'a>>
         // needed" reason `apply_param_direct` documents in `namir-engine`.
         self.engine.reset_direct();
     }
+}
+
+/// [`CARRY_SETTLE_MS`] as a frame count at `sample_rate_hz`, saturating rather than wrapping on a
+/// rate no sane host presents. At least one frame, so the countdown always terminates.
+fn settle_frames(sample_rate_hz: u32) -> u32 {
+    let frames = u64::from(sample_rate_hz) * u64::from(CARRY_SETTLE_MS) / 1_000;
+    u32::try_from(frames).unwrap_or(u32::MAX).max(1)
 }
 
 /// Builds the up-to-two channel mutable slices a `StageIo` needs from one port pair's frames

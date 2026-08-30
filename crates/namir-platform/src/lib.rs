@@ -37,6 +37,7 @@ mod denormal;
 pub mod error_codes;
 pub mod logging;
 mod paths;
+pub mod presets;
 mod thread_priority;
 
 pub use clap_paths::{ClapInstallScope, clap_install_dir};

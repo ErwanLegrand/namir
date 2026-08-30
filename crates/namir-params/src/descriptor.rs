@@ -139,6 +139,62 @@ impl ParamDescriptor {
         }
     }
 
+    /// Checks the invariants a descriptor's own fields have to satisfy to mean anything, and
+    /// which nothing enforced until `params.lock` grew shape columns (issue #119): [`ParamDescriptor::new`] is a `const fn`
+    /// that accepts every one of these, and `format_value` merely *clamps* a bad stepped index
+    /// rather than reporting it, so a typo'd `StepIndex(5)` on a two-value list used to reach
+    /// consumers — where a direct index into `values` panics instead of clamping.
+    ///
+    /// Four invariants, one message each:
+    ///
+    /// - [`ParamKind::Stepped`]'s `values` is non-empty;
+    /// - its `default_index` indexes `values`;
+    /// - [`ParamKind::Continuous`]'s `min <= max`, both finite;
+    /// - its `default` is finite and lies in `min..=max`.
+    ///
+    /// This is not only a test's business: since `params.lock`'s format version 2 the manifest
+    /// records a parameter's range, default and stepped-value fingerprint, so an internally
+    /// inconsistent descriptor would be written into the checked-in manifest as fact.
+    /// [`crate::check_manifest`] therefore runs this over every descriptor it is given and reports
+    /// a failure as `params.manifest.invalid_descriptor`, which makes it a build failure through
+    /// `cargo run -p xtask -- params-lock` rather than only a test.
+    ///
+    /// Returns the first problem found, phrased for that violation's `detail` field.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.kind {
+            ParamKind::Continuous { min, max, default } => {
+                if !min.is_finite() || !max.is_finite() {
+                    return Err(format!("non-finite range {min}..={max}"));
+                }
+                if min > max {
+                    return Err(format!("minimum {min} is above maximum {max}"));
+                }
+                if !default.is_finite() {
+                    return Err(format!("non-finite default {default}"));
+                }
+                if default < min || default > max {
+                    return Err(format!("default {default} lies outside {min}..={max}"));
+                }
+            }
+            ParamKind::Stepped {
+                values,
+                default_index,
+            } => {
+                if values.is_empty() {
+                    return Err("a stepped parameter with no values".to_string());
+                }
+                if default_index.0 as usize >= values.len() {
+                    return Err(format!(
+                        "default index {} is outside 0..{}",
+                        default_index.0,
+                        values.len()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Renders `value` as text per this descriptor's [`ValueFormat`] (FR-PARAM-010). `value` is
     /// in the parameter's own space: the raw `f32` for `Continuous`, or a step index (as `f32`,
     /// rounded and clamped) for `Stepped`. A format/kind pairing this crate didn't intend (e.g.
@@ -221,6 +277,81 @@ mod tests {
     fn stepped_formatting_clamps_out_of_range_indices() {
         assert_eq!(CHANNEL_MODE.format_value(-5.0), "Mono");
         assert_eq!(CHANNEL_MODE.format_value(99.0), "Dual Mono");
+    }
+
+    #[test]
+    fn a_well_formed_descriptor_validates() {
+        assert_eq!(TRIM.validate(), Ok(()));
+        assert_eq!(CHANNEL_MODE.validate(), Ok(()));
+    }
+
+    /// The four invariants issue #119 names, one deliberately-broken descriptor each. Each is
+    /// built by struct literal rather than through `ParamDescriptor::new`, only because `new` is a
+    /// `const fn` that would accept them all just the same -- that is the defect.
+    #[test]
+    fn each_broken_invariant_is_reported() {
+        let stepped_index_past_the_end = ParamDescriptor {
+            kind: ParamKind::Stepped {
+                values: &["Off", "On"],
+                default_index: StepIndex(5),
+            },
+            ..CHANNEL_MODE
+        };
+        assert!(
+            stepped_index_past_the_end
+                .validate()
+                .unwrap_err()
+                .contains("default index 5"),
+        );
+
+        let no_values = ParamDescriptor {
+            kind: ParamKind::Stepped {
+                values: &[],
+                default_index: StepIndex(0),
+            },
+            ..CHANNEL_MODE
+        };
+        assert!(no_values.validate().unwrap_err().contains("no values"));
+
+        let inverted_range = ParamDescriptor {
+            kind: ParamKind::Continuous {
+                min: 24.0,
+                max: -24.0,
+                default: 0.0,
+            },
+            ..TRIM
+        };
+        assert!(
+            inverted_range
+                .validate()
+                .unwrap_err()
+                .contains("is above maximum"),
+        );
+
+        let default_outside_range = ParamDescriptor {
+            kind: ParamKind::Continuous {
+                min: -24.0,
+                max: 24.0,
+                default: 96.0,
+            },
+            ..TRIM
+        };
+        assert!(
+            default_outside_range
+                .validate()
+                .unwrap_err()
+                .contains("lies outside"),
+        );
+
+        let non_finite = ParamDescriptor {
+            kind: ParamKind::Continuous {
+                min: f32::NAN,
+                max: 24.0,
+                default: 0.0,
+            },
+            ..TRIM
+        };
+        assert!(non_finite.validate().unwrap_err().contains("non-finite"));
     }
 
     #[test]

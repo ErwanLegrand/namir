@@ -26,6 +26,23 @@
 //!
 //! With no tombstone in the file, `merge_manifest` is byte-identical to `render_manifest`, so this
 //! change moves nothing in today's `params.lock` beyond its header text.
+//!
+//! # What the diff can see (format version 2)
+//!
+//! Until format version 2 a manifest line recorded `key id kind live|tombstoned`, and the kind was
+//! the bare word `continuous` or `stepped`. A change to a parameter's minimum, maximum, default or
+//! set of stepped values therefore moved no byte of the file and this gate stayed green — while
+//! silently reinterpreting every saved preset and every host-normalised automation value carrying
+//! that id (issue #121). The line now carries the range, the default and a fingerprint of the
+//! stepped labels, so such a change lands here as a **stale file**: not a violation (D-10.1 reserves
+//! the build failure for a changed identifier or type, and a widened range is a legitimate edit),
+//! but a regeneration whose diff a reviewer reads.
+//!
+//! Two things follow for `--write`. A file declaring an **older** format version is migrated by it,
+//! deliberately: leaving the file in a state the documented regeneration command refuses to fix is
+//! the trap issue #117 named. A file declaring a **newer** one is refused in both modes, since
+//! `--write` would overwrite a manifest — tombstones included — written by tooling this build does
+//! not understand.
 
 // The gate now executes both of the method's conjuncts against the real REGISTRY and the real
 // checked-in file: `params_lock_gate_*` below drive the diff, the tombstone round-trip and each
@@ -58,13 +75,12 @@ pub fn check_or_write(repo_root: &Path, write: bool) -> Result<(bool, String), S
     // identifier would defeat the mechanism this check exists to defend.
     if let Err(violations) = namir_params::check_manifest(&actual, namir_params::REGISTRY) {
         let mut message = format!(
-            "{} violates D-10.1's identifier rules. This is not a staleness a regeneration \
-             fixes -- revert the source change, or retire the parameter by flipping its existing \
-             line to `tombstoned` (never by deleting it, and never by reusing its id):\n",
+            "{} violates D-10.1's manifest rules. None of these is a staleness a regeneration \
+             fixes, so each carries its own remedy rather than a shared `--write`:\n",
             lock_path.display()
         );
         for violation in &violations {
-            message.push_str(&format!("  - {violation}\n"));
+            message.push_str(&format!("  - {violation}\n    {}\n", violation.code.remedy));
         }
         return Err(message);
     }
@@ -194,13 +210,34 @@ mod tests {
         format!("{manifest}{line}\n")
     }
 
+    /// `manifest` without the line for `key`. Whole lines, because since format version 2 a line
+    /// carries shape columns after its `live` word: deleting the text up to that word would leave
+    /// the tail behind as a malformed line and change what the test is measuring.
+    fn without_key(manifest: &str, key: &str) -> String {
+        manifest
+            .lines()
+            .filter(|line| !line.starts_with(&format!("{key} ")))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    }
+
+    /// The whole manifest line for `key`.
+    fn line_for(manifest: &str, key: &str) -> String {
+        manifest
+            .lines()
+            .find(|line| line.starts_with(&format!("{key} ")))
+            .unwrap_or_else(|| panic!("no line for {key}"))
+            .to_string()
+    }
+
     #[test]
     fn params_lock_gate_keeps_a_committed_tombstone_green_and_write_no_longer_deletes_it() {
         // The end-to-end verification issue #31 asks for. `zz.retired_example` is a key REGISTRY
         // has never carried, standing in for a parameter that once existed and has been retired:
         // its line is in the file, flipped to `tombstoned`, and its descriptor is gone from the
         // live set.
-        let tombstone = "zz.retired_example 4242424242 continuous tombstoned";
+        let tombstone =
+            "zz.retired_example 4242424242 continuous tombstoned min=-1.0 max=1.0 default=0.0";
         let dir = scratch("tombstone", &with_line(&live_manifest(), tombstone));
 
         // 1. The gate is green with the tombstone committed. (Before M14 this failed permanently:
@@ -225,11 +262,11 @@ mod tests {
         // The half of FR-PARAM-020 that protects a saved project: a key the manifest already
         // retired coming back live. `--write` is checked too -- a regeneration flag that could
         // rewrite its way past this would make the tombstone decorative.
-        let mut text = live_manifest();
-        text = text.replace("trim.gain_db 1371108501 continuous live", "");
+        let live = live_manifest();
+        let tombstone = line_for(&live, "trim.gain_db").replace(" live ", " tombstoned ");
         let dir = scratch(
             "reuse",
-            &with_line(&text, "trim.gain_db 1371108501 continuous tombstoned"),
+            &with_line(&without_key(&live, "trim.gain_db"), &tombstone),
         );
 
         for write in [false, true] {
@@ -241,10 +278,7 @@ mod tests {
         }
         // Nothing was written: the file still carries the tombstone it started with.
         let after = fs::read_to_string(dir.join("params.lock")).unwrap();
-        assert!(
-            after.contains("trim.gain_db 1371108501 continuous tombstoned"),
-            "{after}"
-        );
+        assert!(after.contains(&tombstone), "{after}");
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -254,9 +288,10 @@ mod tests {
         // The other clause of the same sentence. A key whose recorded id no longer matches what
         // its key derives is `ID_CHANGED` -- the failure that silently corrupts every saved
         // project that used it.
-        let text = live_manifest().replace(
-            "trim.gain_db 1371108501 continuous live",
-            "trim.gain_db 999999999 continuous live",
+        let live = live_manifest();
+        let text = live.replace(
+            &line_for(&live, "trim.gain_db"),
+            &line_for(&live, "trim.gain_db").replace("1371108501", "999999999"),
         );
         let dir = scratch("id-changed", &text);
         let err = check_or_write(&dir, false).expect_err("a changed id must fail");
@@ -274,7 +309,7 @@ mod tests {
             "dropped",
             &with_line(
                 &live_manifest(),
-                "zz.retired_example 4242424242 continuous live",
+                "zz.retired_example 4242424242 continuous live min=-1.0 max=1.0 default=0.0",
             ),
         );
         let err = check_or_write(&dir, false).expect_err("a silent drop must fail");
@@ -298,6 +333,124 @@ mod tests {
                 "write={write}: {err}"
             );
         }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- what the diff can see, and the format version (issues #121, #122, #117) ---------------
+
+    #[test]
+    fn params_lock_gate_reports_a_changed_range_as_a_stale_file() {
+        // Issue #121, end to end. REGISTRY is a `const` and cannot be edited from a test, so the
+        // change is made from the file's side, which is the same comparison: a manifest recording
+        // a range other than the one REGISTRY declares. Under format version 1 there was no column
+        // to disagree in and this file was reported up to date.
+        let live = live_manifest();
+        let stale = live.replace(
+            &line_for(&live, "trim.gain_db"),
+            &line_for(&live, "trim.gain_db").replace("min=-24.0", "min=-30.0"),
+        );
+        assert_ne!(stale, live, "the range must be recorded to be changeable");
+        let dir = scratch("range", &stale);
+
+        let (up_to_date, message) = check_or_write(&dir, false).unwrap();
+        assert!(!up_to_date, "{message}");
+        assert!(message.contains("min=-30.0"), "{message}");
+        assert!(message.contains("min=-24.0"), "{message}");
+
+        // And it is a staleness, not a violation: regeneration is the fix, and it restores the
+        // range REGISTRY actually declares.
+        assert!(check_or_write(&dir, true).unwrap().0);
+        let after = fs::read_to_string(dir.join("params.lock")).unwrap();
+        assert!(after.contains("min=-24.0"), "{after}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn params_lock_gate_reports_a_changed_stepped_values_list_as_a_stale_file() {
+        // The same for FR-PARAM-050's shape: the fingerprint column moves when the labels do, so a
+        // reordering -- which re-points every stored index at a different option -- cannot pass.
+        let live = live_manifest();
+        let stale = live.replace(
+            &line_for(&live, "gate.enabled"),
+            &line_for(&live, "gate.enabled").replace("values=", "values=f"),
+        );
+        let dir = scratch("values", &stale);
+        let (up_to_date, message) = check_or_write(&dir, false).unwrap();
+        assert!(!up_to_date, "{message}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn params_lock_gate_refuses_a_manifest_from_a_future_format_version_in_both_modes() {
+        // Issue #122. Parsed under this build's rules, a future file reads as a pile of malformed
+        // lines; named as what it is, it reads as one violation. And `--write` must not overwrite
+        // it -- that would destroy a manifest, tombstones included, written by newer tooling.
+        let future = live_manifest().replace(
+            &format!("format_version {}", namir_params::FORMAT_VERSION),
+            &format!("format_version {}", namir_params::FORMAT_VERSION + 1),
+        );
+        let dir = scratch("future", &future);
+
+        for write in [false, true] {
+            let err = check_or_write(&dir, write).expect_err("a future version must fail");
+            assert!(
+                err.contains("params.manifest.format_version_unsupported"),
+                "write={write}: {err}"
+            );
+            assert!(
+                !err.contains("params.manifest.malformed_line"),
+                "write={write}: reported as malformed lines rather than a version: {err}"
+            );
+        }
+        assert_eq!(fs::read_to_string(dir.join("params.lock")).unwrap(), future);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn params_lock_gate_migrates_a_format_version_1_file_on_write() {
+        // The other direction, and issue #117's rule applied to the version bump itself: an older
+        // file is a staleness the documented regeneration command fixes, never a state the gate
+        // refuses forever. Its tombstone survives the migration, shapeless as it was written.
+        let v1: String = live_manifest()
+            .lines()
+            .map(|line| {
+                if line.starts_with('#') {
+                    line.to_string()
+                } else if line == format!("format_version {}", namir_params::FORMAT_VERSION) {
+                    "format_version 1".to_string()
+                } else {
+                    // Back to four columns: key id kind live.
+                    line.split_whitespace()
+                        .take(4)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                }
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let dir = scratch(
+            "v1",
+            &with_line(&v1, "zz.retired_example 4242424242 continuous tombstoned"),
+        );
+
+        let (up_to_date, message) = check_or_write(&dir, false).unwrap();
+        assert!(!up_to_date, "{message}");
+
+        assert!(check_or_write(&dir, true).unwrap().0);
+        let after = fs::read_to_string(dir.join("params.lock")).unwrap();
+        assert!(
+            after.contains(&format!("format_version {}", namir_params::FORMAT_VERSION)),
+            "{after}"
+        );
+        assert!(after.contains("min=-24.0"), "{after}");
+        assert!(
+            after.contains("zz.retired_example 4242424242 continuous tombstoned\n"),
+            "{after}"
+        );
+        assert!(check_or_write(&dir, false).unwrap().0);
+
         fs::remove_dir_all(&dir).ok();
     }
 

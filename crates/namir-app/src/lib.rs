@@ -30,12 +30,19 @@
 //!
 //! - [`error_codes`] — this crate's own `ErrorCode` catalogue (D-16.1), for the FR-IO failure modes
 //!   no existing crate's catalogue names (device open failure, xrun, stream loss).
+//! - [`diagnostics`] — the only module in this crate outside [`host`] that names `namir-platform`'s
+//!   logger, so that [`app`] and [`audio_io`] can go on FR-ERR-030's audio-thread list. The same
+//!   `audio.rs` -> `shared.rs` split `namir-clap` already uses; see its own doc comment.
 //! - [`audio_io`] — D-13.1's trait plus the real `cpal` implementation.
 //! - [`device_state`] — FR-IO-010/040/080's pure selection logic: which device, sample rate and
 //!   buffer size to use, given what the system reports and what was remembered.
 //! - [`settings`] — FR-IO-080's persistence.
 //! - [`xrun`] — FR-IO-060's dropout counter.
 //! - [`latency`] — FR-IO-050's round-trip figure.
+//! - [`presets`] — FR-STATE-030's named-preset locations, naming rule and listing. **Its
+//!   `preset_dir_under` belongs in `namir-platform`** beside `config_dir`, shared with
+//!   `namir-clap`'s identical `crates/namir-clap/src/presets.rs`; see that module's own doc
+//!   comment for why it is duplicated today and what hoisting it costs.
 //! - [`bridge`] — the input->output ring buffer and its own xrun detection.
 //! - [`instance`] — [`instance::SharedInstance`], the `Mutex`-guarded `namir_worker::Instance`
 //!   shared between [`host`] and [`worker`] (see that module's doc comment).
@@ -60,10 +67,12 @@ pub mod app;
 pub mod audio_io;
 pub mod bridge;
 pub mod device_state;
+pub mod diagnostics;
 pub mod error_codes;
 pub mod host;
 pub mod instance;
 pub mod latency;
+pub mod presets;
 #[cfg(test)]
 mod rt_harness;
 pub mod settings;

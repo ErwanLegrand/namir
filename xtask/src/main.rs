@@ -34,6 +34,7 @@ mod preset;
 #[cfg_attr(not(test), allow(dead_code))]
 mod release_workflow;
 mod rt_logging;
+mod schema;
 mod traceability;
 
 use std::collections::HashMap;
@@ -656,6 +657,20 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
     // "stale" false-positive this session found the hard way.
     manual_test_docs.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Issue #34: a manual-test document's verdict is read, and a document that does not carry a
+    // readable one aborts the run here -- upstream of the `--write` branch, of `--allow-uncovered`
+    // and of every exit-status term, for exactly the reasons the malformed-annotation refusal below
+    // gives. A document whose result cannot be read is a bad input, not a coverage gap: left as a
+    // gap it would be relaxable by a flag, and left as a credit it would be the defect this check
+    // exists to remove -- `xtask traceability` printed `clean -- all 130 Must requirements are
+    // covered` while six of those Musts' scripts recorded NOT EXECUTED, PARTIAL or FAIL.
+    for (name, content) in &manual_test_docs {
+        if let Err(e) = traceability::check_manual_verdict(name, content) {
+            println!("traceability: docs/manual-tests/{name} {e}");
+            return TraceabilityRun::failed();
+        }
+    }
+
     // (crate_root, crate_name-per-first-path-component) -- xtask has no further nesting, so its
     // own directory name is used directly rather than derived per file.
     let mut files_with_crate: Vec<(PathBuf, String)> = Vec::new();
@@ -696,9 +711,9 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
     // per annotation. Only Musts appear in `requirements`, so an id that is not one is simply
     // absent and passes the guard -- this tool has never restricted what a tag may *name*, only
     // what a tag *means*.
-    let verify_codes: HashMap<&str, char> = requirements
+    let verify_codes: HashMap<&str, &[char]> = requirements
         .iter()
-        .map(|req| (req.id.as_str(), req.verify))
+        .map(|req| (req.id.as_str(), req.verify.as_slice()))
         .collect();
 
     let mut source_hits: HashMap<String, Vec<String>> = HashMap::new();
@@ -752,7 +767,12 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
             }
         }
         for req in &requirements {
-            if req.verify == 'M'
+            // A requirement whose method names no source-class code at all (`Verify: M` alone,
+            // `Verify: Process`) has nothing for a test-function name to stand for. One whose
+            // method names a source-class code *among others* does -- FR-STATE-040's `M plus S`
+            // is owed a source annotation as well as its manual document (issue #27), so the
+            // fn-name fallback has to be offered it.
+            if !traceability::resolves_through_partials(&req.verify)
                 || source_hits.contains_key(&req.id)
                 || partial_hits.contains_key(&req.id)
             {
@@ -845,7 +865,12 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
         for req in &report.missing {
             println!(
                 "{}",
-                uncovered_line(req, &owners, report.manual_unexecuted.get(&req.id))
+                uncovered_line(
+                    req,
+                    &owners,
+                    report.manual_unexecuted.get(&req.id),
+                    report.missing_codes.get(&req.id),
+                )
             );
         }
         // Mandatory rather than decorative: without it a derived label reads as a curated ownership
@@ -892,11 +917,28 @@ fn uncovered_line(
     req: &traceability::Requirement,
     owners: &HashMap<String, String>,
     manual: Option<&(String, String)>,
+    unresolved: Option<&Vec<char>>,
 ) -> String {
     let owner = owners
         .get(&req.id)
         .map_or(milestones::UNATTRIBUTED, String::as_str);
-    let mut line = format!("  - {} (Verify: {}) [{owner}]", req.id, req.verify);
+    let mut line = format!(
+        "  - {} (Verify: {}) [{owner}]",
+        req.id,
+        traceability::render_verify_codes(&req.verify)
+    );
+    // Issue #27: for a compound method, which half is missing is the whole of what the reader
+    // needs -- FR-STATE-040's manual document exists and passes, and it is the `S` its method also
+    // names that nothing executes. Printed only for a compound method: for a single-code one the
+    // codes repeat what the `(Verify: ...)` field already said.
+    if req.verify.len() > 1
+        && let Some(codes) = unresolved
+    {
+        line.push_str(&format!(
+            " -- no evidence for the {} half of its compound method",
+            traceability::render_verify_codes(codes)
+        ));
+    }
     if let Some((file, reason)) = manual {
         line.push_str(&format!(" -- docs/manual-tests/{file} {reason}"));
     }
@@ -1043,7 +1085,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|ci-commands|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|ci-commands|schema [path...]|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
     );
 }
 
@@ -1058,6 +1100,9 @@ fn main() {
         Some("network-free") => run_network_free(&root),
         Some("error-catalogue") => run_error_catalogue(&root),
         Some("ci-commands") => run_ci_commands(&root),
+        // FR-STATE-040's `S` half (issue #27). See `schema.rs`'s header for why the check lives in
+        // `namir-state` and this is only its build-time face.
+        Some("schema") => schema::run(&root, &args[1..]),
         Some("params-lock") => {
             let write = args.iter().skip(1).any(|a| a == "--write");
             run_params_lock(&root, write)
@@ -1191,6 +1236,65 @@ mod tests {
         assert!(!run_network_free(&dir));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- NFR-LIC-050: every checked-in asset declares its provenance -------------------------
+
+    /// The gate as CI should run it, over the real tree — the shape `rt-logging`, `network-free`,
+    /// `error-catalogue` and `feature-guard` already had and this one did not (M15 review, finding
+    /// 3). `assets.rs`'s own tests all run against a two-file scratch tree, so **nothing executed
+    /// this check against the repository it exists to police**, while
+    /// `crates/namir-fixtures/src/lib.rs` carries a plain `// trace: NFR-LIC-050` asserting it
+    /// does. A captured `.wav` committed under `crates/` renders as `unrecorded`, which fails
+    /// here; before this test and the CI step beside it, it failed nowhere.
+    #[test]
+    fn every_checked_in_asset_in_the_real_tree_declares_its_provenance() {
+        assert!(run_assets(&repo_root(), false));
+    }
+
+    /// The negative control, and deliberately over the **real** manifest rather than a scratch
+    /// one: the file this check reads is `crates/namir-fixtures/assets.lock` as committed, and one
+    /// captured `.wav` dropped in beside the generated fixtures is exactly what NFR-LIC-050 and
+    /// D-19.1 exist to catch. Nothing is written to the tree — the planted asset is added to the
+    /// scan's result, which is the same input `check_or_write` would have built had the file been
+    /// there.
+    #[test]
+    fn a_planted_captured_asset_fails_the_real_manifest() {
+        let root = repo_root();
+        let manifest = std::fs::read_to_string(root.join(assets::ASSET_MANIFEST_PATH)).unwrap();
+        let recorded = assets::parse(&manifest).unwrap();
+        let mut actual = assets::scan(&root, &recorded).unwrap();
+        assert!(
+            assets::violations(&recorded, &actual).is_empty(),
+            "the real tree must start clean"
+        );
+
+        actual.push(assets::AssetEntry {
+            path: "crates/namir-fixtures/assets/captured-cab.wav".to_string(),
+            bytes: 12,
+            hash: namir_core::ContentHash::of(b"RIFF....WAVE").to_string(),
+            provenance: assets::UNRECORDED.to_string(),
+        });
+        let violations = assets::violations(&recorded, &actual);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(
+            violations[0].contains("captured-cab.wav"),
+            "{violations:#?}"
+        );
+        assert!(
+            violations[0].contains("not in the manifest"),
+            "{violations:#?}"
+        );
+    }
+
+    // --- FR-STATE-040's S half: every checked-in state document matches the format document ----
+
+    /// The same shape for `schema`, wired into CI by the same change. Its validator has unit tests
+    /// in `namir-state` and an integration test over the corpus there; what had no artifact was
+    /// the subcommand itself — the build-time face FRS §1.5's `S` names — against the real corpus.
+    #[test]
+    fn every_checked_in_state_document_in_the_real_tree_matches_the_format() {
+        assert!(schema::run(&repo_root(), &[]));
     }
 
     // --- §22 R-17 (issue #25): the --all-features guard, wired to the real tree -----------------
@@ -1577,13 +1681,13 @@ mod tests {
     fn an_uncovered_line_carries_its_derived_milestone() {
         let req = traceability::Requirement {
             id: "FR-CFG-020".into(),
-            verify: 'G',
+            verify: vec!['G'],
             section: "4".into(),
         };
         let mut owners = HashMap::new();
         owners.insert("FR-CFG-020".to_string(), "M9".to_string());
         assert_eq!(
-            uncovered_line(&req, &owners, None),
+            uncovered_line(&req, &owners, None, None),
             "  - FR-CFG-020 (Verify: G) [M9]"
         );
     }
@@ -1595,7 +1699,7 @@ mod tests {
         // EXECUTED" are different pieces of work.
         let req = traceability::Requirement {
             id: "FR-UI-020".into(),
-            verify: 'M',
+            verify: vec!['M'],
             section: "5.13".into(),
         };
         let manual = (
@@ -1603,7 +1707,7 @@ mod tests {
             "records `NOT EXECUTED.`".to_string(),
         );
         assert_eq!(
-            uncovered_line(&req, &HashMap::new(), Some(&manual)),
+            uncovered_line(&req, &HashMap::new(), Some(&manual), Some(&vec!['M'])),
             "  - FR-UI-020 (Verify: M) [unattributed] -- \
              docs/manual-tests/fr-ui-020-single-screen-elements.md records `NOT EXECUTED.`"
         );
@@ -1613,12 +1717,29 @@ mod tests {
     fn an_uncovered_line_with_no_owner_says_so_rather_than_guessing() {
         let req = traceability::Requirement {
             id: "FR-XXXX-010".into(),
-            verify: 'U',
+            verify: vec!['U'],
             section: "9.9".into(),
         };
         assert_eq!(
-            uncovered_line(&req, &HashMap::new(), None),
+            uncovered_line(&req, &HashMap::new(), None, None),
             "  - FR-XXXX-010 (Verify: U) [unattributed]"
+        );
+    }
+
+    /// Issue #27: for a compound method the reader needs to know *which* half resolved to nothing,
+    /// because the other half's evidence exists and is what made the row read green before. This is
+    /// FR-STATE-040's own shape: a manual document that passes, and an `S` nothing executes.
+    #[test]
+    fn an_uncovered_compound_must_names_the_half_with_no_evidence() {
+        let req = traceability::Requirement {
+            id: "FR-STATE-040".into(),
+            verify: vec!['M', 'S'],
+            section: "5.9".into(),
+        };
+        assert_eq!(
+            uncovered_line(&req, &HashMap::new(), None, Some(&vec!['S'])),
+            "  - FR-STATE-040 (Verify: M+S) [unattributed] -- no evidence for the S half of its \
+             compound method"
         );
     }
 
@@ -1904,6 +2025,75 @@ mod tests {
     }
 
     #[test]
+    fn a_manual_document_with_no_readable_verdict_is_refused_end_to_end() {
+        // Issue #34, end to end. The document exists and is named for its requirement, which is
+        // all the pre-M15 gate ever asked of it -- so without this check the run goes green with
+        // FR-CHAIN-010 resolved by a file nobody has run. It is refused rather than counted as a
+        // gap because it is a malformed input: `--write` must not write a plan built from a
+        // verdict the tool could not read, and `--allow-uncovered` must not relax it.
+        for (name, body) in [
+            ("verdict-missing", "# FR-CHAIN-010\n\nRun it and see.\n"),
+            (
+                "verdict-tokenless",
+                "**Result: ran it, seemed fine.** No token here.\n",
+            ),
+            (
+                "verdict-self-contradicting",
+                "**Result: PASS.** Step 3 was not executed this session.\n",
+            ),
+        ] {
+            let dir = synthetic_root(name, 1);
+            std::fs::write(
+                dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
+                body,
+            )
+            .unwrap();
+
+            let run = traceability_outcome(&dir, true, true);
+            assert!(!run.ok, "{name}");
+            assert!(
+                !dir.join("docs/03-test-plan.md").exists(),
+                "{name}: a plan must never be written from a verdict the tool refused"
+            );
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn a_manual_document_recording_no_pass_leaves_its_must_uncovered_end_to_end() {
+        // The other half of issue #34, and the one that moves a number: a verdict the tool *can*
+        // read, saying the script did not pass. That is a coverage gap, not a malformed input --
+        // so the required half of the gate still holds (the plan regenerates, §14 agrees) and
+        // it is `--allow-uncovered` alone that decides the exit status.
+        let dir = synthetic_root("verdict-not-executed", 1);
+        std::fs::write(
+            dir.join("docs/manual-tests/fr-chain-010-signal-chain.md"),
+            "**Result: NOT EXECUTED.** Needs a display and a human.\n",
+        )
+        .unwrap();
+
+        assert!(
+            !traceability_outcome(&dir, true, false).ok,
+            "an unexecuted script is not coverage"
+        );
+        assert!(
+            traceability_outcome(&dir, true, true).ok,
+            "and it is a coverage gap, which is exactly what --allow-uncovered relaxes"
+        );
+        let plan = std::fs::read_to_string(dir.join("docs/03-test-plan.md")).unwrap();
+        assert!(
+            plan.contains(
+                "**UNRESOLVED** — `docs/manual-tests/fr-chain-010-signal-chain.md` \
+                 records `NOT EXECUTED.`"
+            ),
+            "the plan names the document and what it records:\n{plan}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn r_13s_printed_count_names_exactly_the_plans_partial_rows() {
         // R-13's mitigation (d) is a number put in front of whoever runs the gate, and (b) is the
         // rows that number is read against. A partial naming a non-Must lands in `partial_hits`
@@ -1911,7 +2101,7 @@ mod tests {
         // rather than being dropped -- it is still someone recording a gap.
         let requirements = vec![traceability::Requirement {
             id: "FR-CHAIN-010".into(),
-            verify: 'U',
+            verify: vec!['U'],
             section: "5.1".into(),
         }];
         let mut partial_hits = HashMap::new();
@@ -1926,6 +2116,7 @@ mod tests {
         }
         let report = traceability::Report {
             missing: Vec::new(),
+            missing_codes: HashMap::new(),
             manual_hits: HashMap::new(),
             manual_unexecuted: HashMap::new(),
             source_hits: HashMap::new(),

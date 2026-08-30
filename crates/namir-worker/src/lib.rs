@@ -40,6 +40,7 @@ pub mod pool;
 pub mod recall;
 pub mod submit;
 
+use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -117,30 +118,88 @@ pub enum LoadSource {
     File(std::path::PathBuf),
 }
 
+/// NFR-SEC-020's ceiling applied to one path — **the one route either product shell may read a
+/// user-named file through**, and every read this crate performs off disk: [`LoadSource::File`]
+/// and [`recall`]'s candidate reads alike (issue #107).
+///
+/// **`pub`, not `pub(crate)`, since #145.** `LoadSource::File` used to be the only door onto this
+/// function, so a shell that needed the bytes *themselves* — to take their [`namir_core::
+/// ContentHash`] for FR-STATE-060/-070's `FileRef`, or to parse a `.namirpreset` document, neither
+/// of which a `LoadSource` produces — had no way to ask for a bounded read and fell back to a bare
+/// `std::fs::read`. That is not a smaller version of this check, it is none of it: a 4 GB `.wav`
+/// under a library root was read whole into memory instead of being refused with
+/// [`error_codes::FILE_TOO_LARGE`], and a named pipe or character device at that path blocked the
+/// reading thread for as long as no writer appeared — on `namir-app`'s single worker thread, that
+/// is every later `SaveState`/`ListPresets`/`RescanLibrary` queued behind it forever. Keeping the
+/// check reachable only through `LoadSource::File` would have covered one of the four sites; the
+/// other three do not load a resource at all.
+///
+/// **One shape for both, not two.** `namir-library`'s `StdFs::read_file` reached this same shape
+/// through its own issue #70, and the argument is not crate-specific: the file *type* is checked
+/// before anything is opened, because no byte bound rescues a FIFO (`File::open` blocks until a
+/// writer appears) or a character device (`len() == 0`, streams forever); and the byte bound is
+/// then enforced **on the read** rather than on the `metadata()` call taken beforehand, because
+/// stat-then-read is a time-of-check/time-of-use gap a file that grows in between walks straight
+/// through.
+///
+/// The length from `metadata` is kept, but only as the two things it can honestly be: a cheap
+/// early rejection, so a 4 GB WAV is refused without being read up to the ceiling first, and a
+/// capacity hint, so an ordinary load makes one allocation instead of growing through a dozen.
+/// Being wrong about either costs a reallocation; neither can let a byte past the bound.
+pub fn read_file_bounded(path: &std::path::Path) -> Result<Vec<u8>, WorkerError> {
+    let display = path.display().to_string();
+    let meta = std::fs::metadata(path)
+        .map_err(|e| WorkerError::new(error_codes::FILE_UNREADABLE, format!("{display}: {e}")))?;
+    if !meta.is_file() {
+        return Err(WorkerError::new(
+            error_codes::FILE_NOT_REGULAR,
+            format!("{display}: not a regular file"),
+        ));
+    }
+    if meta.len() as usize > MAX_FILE_BYTES {
+        return Err(too_large(&display, meta.len()));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|e| WorkerError::new(error_codes::FILE_UNREADABLE, format!("{display}: {e}")))?;
+    read_bounded(file, &display, MAX_FILE_BYTES, meta.len() as usize)
+}
+
+/// [`read_file_bounded`]'s second half, over a plain reader so the bound itself is testable
+/// against an input no filesystem has to produce. `max_bytes` is a parameter for the same reason.
+fn read_bounded(
+    reader: impl std::io::Read,
+    display: &str,
+    max_bytes: usize,
+    capacity_hint: usize,
+) -> Result<Vec<u8>, WorkerError> {
+    let mut bytes = Vec::with_capacity(capacity_hint.min(max_bytes) + 1);
+    let mut limited = reader.take(max_bytes as u64 + 1);
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|e| WorkerError::new(error_codes::FILE_UNREADABLE, format!("{display}: {e}")))?;
+    if bytes.len() > max_bytes {
+        // One byte past the limit is the most that was ever in memory, and its presence is the
+        // proof the input was over it.
+        return Err(too_large(display, bytes.len() as u64));
+    }
+    Ok(bytes)
+}
+
+fn too_large(display: &str, len: u64) -> WorkerError {
+    WorkerError::new(
+        error_codes::FILE_TOO_LARGE,
+        format!(
+            "{display}: {len} bytes, limit {} MB",
+            MAX_FILE_BYTES / (1024 * 1024)
+        ),
+    )
+}
+
 impl LoadSource {
     fn read(&self) -> Result<Arc<[u8]>, WorkerError> {
         match self {
             Self::Bytes(bytes) => Ok(Arc::clone(bytes)),
-            Self::File(path) => {
-                let display = path.display().to_string();
-                let meta = std::fs::metadata(path).map_err(|e| {
-                    WorkerError::new(error_codes::FILE_UNREADABLE, format!("{display}: {e}"))
-                })?;
-                if meta.len() as usize > MAX_FILE_BYTES {
-                    return Err(WorkerError::new(
-                        error_codes::FILE_TOO_LARGE,
-                        format!(
-                            "{display}: {} bytes, limit {} MB",
-                            meta.len(),
-                            MAX_FILE_BYTES / (1024 * 1024)
-                        ),
-                    ));
-                }
-                let bytes = std::fs::read(path).map_err(|e| {
-                    WorkerError::new(error_codes::FILE_UNREADABLE, format!("{display}: {e}"))
-                })?;
-                Ok(Arc::from(bytes.into_boxed_slice()))
-            }
+            Self::File(path) => Ok(Arc::from(read_file_bounded(path)?.into_boxed_slice())),
         }
     }
 
@@ -733,10 +792,13 @@ mod tests {
     ///
     /// **The oversized file is sparse.** `File::set_len` past the ceiling sets the size without
     /// writing 256 MB of anything, on every filesystem this project targets, and the branch under
-    /// test reads `std::fs::metadata(..).len()` and returns *before* `std::fs::read` — so the
-    /// bytes never have to exist for the check to be the real one. That is not a shortcut around
-    /// the test: it is the property NFR-SEC-020 asks for, which is precisely that an oversized
-    /// file is refused without being loaded.
+    /// test reads `std::fs::metadata(..).len()` and returns *before the file is opened at all* —
+    /// so the bytes never have to exist for the check to be the real one. That is not a shortcut
+    /// around the test: it is the property NFR-SEC-020 asks for, which is precisely that an
+    /// oversized file is refused without being loaded. Since issue #107 that early rejection is
+    /// an optimisation rather than the check — [`read_bounded`] enforces the ceiling on the read
+    /// itself, and `a_reader_that_never_ends_is_stopped_one_byte_past_the_ceiling` is what
+    /// asserts *that* half.
     // The `.nam`/IR disk-load kind of the four `namir-core`'s limits doc comment enumerates; the
     // other three are annotated at `namir-state`'s `document.rs`, `namir-ir`'s `wav.rs` and
     // `namir-library`'s `scan.rs`.
@@ -780,6 +842,41 @@ mod tests {
             b"under the ceiling"
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **Issue #107, the bound itself.** `read_bounded` stops one byte past the ceiling whatever
+    /// the input claims about its own length — which is the whole point of enforcing the limit on
+    /// the read rather than on a `metadata()` call taken beforehand. `io::repeat` is the input no
+    /// filesystem has to produce: it never ends, so the pre-fix shape (`std::fs::read`, i.e. an
+    /// unbounded `read_to_end`) would never return at all.
+    ///
+    /// A small `max_bytes` rather than the real ceiling, so the test costs sixteen bytes instead
+    /// of 256 MB; the parameter exists for exactly this.
+    #[test]
+    fn a_reader_that_never_ends_is_stopped_one_byte_past_the_ceiling() {
+        let err = read_bounded(std::io::repeat(0u8), "endless", 16, 0).unwrap_err();
+        assert_eq!(err.code.id, error_codes::FILE_TOO_LARGE.id);
+        assert!(err.detail.contains("17 bytes"), "{}", err.detail);
+
+        // The boundary either side of it: exactly the limit is accepted, one more is not.
+        let at_limit = read_bounded(std::io::repeat(0u8).take(16), "at-limit", 16, 0).unwrap();
+        assert_eq!(at_limit.len(), 16);
+        let over = read_bounded(std::io::repeat(0u8).take(17), "over", 16, 0).unwrap_err();
+        assert_eq!(over.code.id, error_codes::FILE_TOO_LARGE.id);
+    }
+
+    /// Issue #107's type check: a path that is not a regular file is refused before it is opened,
+    /// through its own catalogue entry rather than as a generic read failure. A directory is the
+    /// case every platform this project targets can produce; the FIFO the check exists for cannot
+    /// be created here without platform code D-5.2 reserves for `namir-platform`.
+    #[test]
+    fn a_path_that_is_not_a_regular_file_is_refused_before_it_is_opened() {
+        let dir =
+            std::env::temp_dir().join(format!("namir-worker-not-regular-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = LoadSource::File(dir.clone()).read().unwrap_err();
+        assert_eq!(err.code.id, error_codes::FILE_NOT_REGULAR.id);
         std::fs::remove_dir_all(&dir).ok();
     }
 

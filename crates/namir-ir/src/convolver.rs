@@ -142,7 +142,7 @@ use wide::f32x8;
 
 use namir_core::SampleRate;
 
-use crate::error_codes::IrLoadError;
+use crate::error_codes::{self, IrLoadError};
 use crate::wav;
 
 /// `out[t] += w * in_[t]` for every `t`, vectorized 8 lanes at a time with a scalar remainder —
@@ -222,7 +222,8 @@ pub struct StageSpec {
 ///
 /// `growth_factor == 1` degenerates to uniform partitioned convolution (every FFT partition is
 /// `block_size`), useful as a schedule to compare against. `max_partition == block_size` also
-/// degenerates to uniform, regardless of `growth_factor`.
+/// degenerates to uniform, regardless of `growth_factor` — and so does a `max_partition` *below*
+/// `block_size`, which is floored to it (see the note at the assert below, and issue #53).
 ///
 /// **Causality**, ported from the spike's derivation: a size-`P` FFT partition at IR offset
 /// `off` can only be computed once `P` samples of input feeding it have arrived, and its output
@@ -250,7 +251,20 @@ pub fn build_schedule(
     growth_factor: usize,
     max_partition: usize,
 ) -> Vec<StageSpec> {
-    assert!(block_size > 0 && growth_factor >= 1 && max_partition >= block_size);
+    assert!(block_size > 0 && growth_factor >= 1);
+    // **`max_partition` is floored at `block_size` rather than asserted above it** (issue #53).
+    // D-9.6's `max_partition` is a ceiling on how large a partition may *grow*, and this schedule's
+    // partitions start at `block_size`; a `max_partition` below that asks for a ceiling under the
+    // floor. The loop below already answers that coherently — `size < max_partition` is false from
+    // the first iteration, so `size` never grows and every partition stays `block_size`, a valid
+    // uniform schedule — and the assert refused it anyway. What that cost was not hypothetical:
+    // `PreparedIr::from_wav_bytes` passes the host's block size straight through, so every host
+    // presenting more than `DEFAULT_MAX_PARTITION` (8192) frames at once — an ordinary offline
+    // render or bounce at 16384 — panicked on IR load, against a precondition `from_wav_bytes`
+    // documented nowhere. Flooring makes the degenerate case explicit instead of fatal; a caller
+    // asking for a genuinely smaller ceiling than the block size is asking for the uniform
+    // schedule and now gets it.
+    let max_partition = max_partition.max(block_size);
     let head = block_size.min(ir_len);
     let per_level = growth_factor.max(1);
 
@@ -703,6 +717,16 @@ impl PreparedIr {
     /// FR-NAM-060 — see `resample_mono`'s doc comment), truncates at D-9.7's 10-second-at-engine-
     /// rate ceiling, and builds the D-9.4 schedule with R-8's staggering baked in, using this
     /// crate's [`DEFAULT_GROWTH_FACTOR`] / [`DEFAULT_MAX_PARTITION`].
+    ///
+    /// `block_size` is the host's, and there is no upper bound on it: a `block_size` above
+    /// [`DEFAULT_MAX_PARTITION`] — an offline render or bounce presenting 16384 frames at once —
+    /// yields a uniform schedule rather than an error, and used to panic (issue #53; see
+    /// [`build_schedule`]'s note). The only precondition is `block_size > 0`.
+    ///
+    /// Every failure is a catalogued [`IrLoadError`], never a panic. That includes the file's
+    /// *values*, not only its shape: a 32-bit float WAV carrying a NaN or infinite sample is
+    /// refused here (`ir.load.non_finite_sample`), because there is no later point at which such
+    /// a tap can be made safe — see `wav.rs`'s check and issue #52.
     pub fn from_wav_bytes(
         bytes: &[u8],
         engine_rate: SampleRate,
@@ -729,6 +753,7 @@ impl PreparedIr {
     ) -> Result<Self, IrLoadError> {
         let decoded = wav::decode(bytes)?;
         let mut was_truncated = decoded.was_truncated;
+        let source_frames = decoded.channel_data.first().map(Vec::len).unwrap_or(0);
 
         let mut channel_taps: Vec<Vec<f32>> = Vec::with_capacity(decoded.channel_data.len());
         for ch in decoded.channel_data {
@@ -741,6 +766,32 @@ impl PreparedIr {
         }
 
         was_truncated |= truncate_to_engine_ceiling(&mut channel_taps, engine_rate.hz());
+
+        // A file that *has* frames can still resample to none. `resample_mono` sizes its output
+        // `round(len * to_hz / from_hz)`, which rounds below 0.5 for an IR of a frame or two at a
+        // rate far above the engine's (1 frame at 192 kHz into 48 kHz is 0.25; 2 frames at
+        // 192 kHz into 44.1 kHz is 0.46), and `wav::decode`'s only emptiness guard is the
+        // *pre*-resample declared frame count. Such a file used to load `Ok` with an empty tap
+        // array — an empty head and schedule, `len_samples() == 0`, and `process_block` writing
+        // zeros for the life of the load, with no diagnostic anywhere: a silent cabinet.
+        //
+        // `EMPTY_IR` is the right code rather than a new one, and refusal the right answer rather
+        // than padding to one tap. The code is a convolution-usability judgment — D-9's "an IR
+        // with nothing in it is not a usable IR", which is why `probe_wav` indexes a zero-frame
+        // file that `decode` refuses to load — and at the engine rate, which is the only rate the
+        // convolver ever runs at, this file has nothing in it. `new_length.max(1)` would instead
+        // manufacture a tap the file does not contain, and the resulting one-tap near-silent
+        // cabinet is the same inaudible outcome with the diagnostic removed.
+        if channel_taps.iter().any(Vec::is_empty) {
+            return Err(IrLoadError {
+                code: error_codes::EMPTY_IR,
+                detail: format!(
+                    "{source_frames} frames at {} Hz resample to 0 frames at the {} Hz engine rate",
+                    decoded.sample_rate,
+                    engine_rate.hz()
+                ),
+            });
+        }
 
         let len_samples = channel_taps.first().map(Vec::len).unwrap_or(0);
 
@@ -1003,6 +1054,68 @@ mod tests {
             }
         }
         assert!(covered.iter().all(|&c| c), "some tap never covered");
+    }
+
+    /// Issue #53: `build_schedule` asserted `max_partition >= block_size`, so a host block larger
+    /// than `DEFAULT_MAX_PARTITION` — 16384 frames, an ordinary offline render — aborted the
+    /// process on IR load. The degenerate schedule it refused is a perfectly good one: `size`
+    /// never grows past `block_size`, so every partition is `block_size` and the result is
+    /// uniform partitioned convolution. Asserted here as the three properties any schedule must
+    /// have (uniform size, causal, and covering every tap past the head exactly once), not as a
+    /// literal partition list.
+    #[test]
+    fn schedule_is_uniform_and_causal_when_block_size_exceeds_max_partition() {
+        let ir_len = 100_003; // deliberately not a multiple of the block size
+        let block_size = 16_384;
+        let stages = build_schedule(
+            ir_len,
+            block_size,
+            DEFAULT_GROWTH_FACTOR,
+            DEFAULT_MAX_PARTITION,
+        );
+        assert!(!stages.is_empty());
+
+        let mut covered = vec![false; ir_len];
+        for c in covered.iter_mut().take(block_size.min(ir_len)) {
+            *c = true;
+        }
+        for s in &stages {
+            assert_eq!(
+                s.size, block_size,
+                "every partition should be the block size"
+            );
+            assert!(s.offset >= s.size, "offset {} < size {}", s.offset, s.size);
+            assert_eq!(
+                s.stagger, 0,
+                "a one-phase size level has nothing to stagger"
+            );
+            for (i, c) in covered
+                .iter_mut()
+                .enumerate()
+                .skip(s.offset)
+                .take(s.actual_len)
+            {
+                assert!(!*c, "tap {i} covered twice");
+                *c = true;
+            }
+        }
+        assert!(covered.iter().all(|&c| c), "some tap never covered");
+    }
+
+    /// The same flooring seen from the other side: an explicitly *smaller* `max_partition` than
+    /// the block size is a request for the uniform schedule, and gives the same answer as asking
+    /// for it the two documented ways (`max_partition == block_size`, or `growth_factor == 1`).
+    #[test]
+    fn a_max_partition_below_the_block_size_gives_the_uniform_schedule() {
+        let floored = build_schedule(10_000, 512, 2, 64);
+        let equal = build_schedule(10_000, 512, 2, 512);
+        assert_eq!(floored.len(), equal.len());
+        for (a, b) in floored.iter().zip(equal.iter()) {
+            assert_eq!(
+                (a.offset, a.size, a.actual_len, a.stagger),
+                (b.offset, b.size, b.actual_len, b.stagger)
+            );
+        }
     }
 
     #[test]
@@ -1431,6 +1544,70 @@ mod tests {
         );
     }
 
+    /// Issue #52, the end-to-end half (`wav.rs`'s tests own the decode half). A float WAV with a
+    /// NaN or infinite tap is an ordinary artefact of a bad export, and before the load-time
+    /// rejection it reached the convolver two different ways with two different bad endings:
+    ///
+    /// - **rate-matched**: the file loaded, `PreparedIr` built an all-NaN `h` spectrum for the
+    ///   poisoned partition and an all-NaN head, and every output sample was non-finite from the
+    ///   first block on — for the life of the load, since the poison is in the *IR*, not in the
+    ///   signal. `namir-engine`'s FR-CHAIN-080 scan would then silence the chain and raise a
+    ///   fault on every block, permanently, from a file that reported a successful load.
+    /// - **resampled** (any file whose rate differs from the engine's, FR-IR-030): worse and
+    ///   sooner — `rubato`'s own inverse transform rejects the NaN spectrum and `unwrap`s it
+    ///   inside the dependency, so the load itself panicked, on the worker thread, before this
+    ///   crate saw a single tap.
+    ///
+    /// Both are closed by the same check, and it is at load time on purpose: the audio thread
+    /// cannot fix a poisoned IR, only pay per sample to rediscover it (D-16.3, NFR-RT-010).
+    #[test]
+    fn a_float_wav_with_a_non_finite_tap_is_refused_before_it_reaches_the_convolver() {
+        let engine_rate = SampleRate::new(48_000).unwrap();
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut h = decaying_noise(1_024, 9, 128.0);
+            h[10] = bad;
+            // Both file rates: 48 kHz takes the rate-matched branch, 44.1 kHz the resampling one.
+            for file_rate in [48_000u32, 44_100] {
+                let bytes = write_mono_wav(file_rate, &h);
+                let Err(err) = PreparedIr::from_wav_bytes(&bytes, engine_rate, 64) else {
+                    panic!("a non-finite tap must be refused at load, at either rate");
+                };
+                assert_eq!(err.code.id, "ir.load.non_finite_sample");
+            }
+        }
+    }
+
+    /// Issue #53, end to end: `PreparedIr::from_wav_bytes` passes the host's block size straight
+    /// into `build_schedule`, so a host presenting more frames than `DEFAULT_MAX_PARTITION`
+    /// panicked on IR load. It must load — and convolve correctly, against D-9.5's permanent
+    /// direct-convolution reference, since a uniform schedule is a different code path through
+    /// the same machinery and "does not panic" is the weaker half of what is wanted here.
+    #[test]
+    fn loads_and_convolves_correctly_at_a_block_size_above_max_partition() {
+        let block_size = 16_384;
+        let h = decaying_noise(40_000, 7, 4_096.0);
+        let bytes = write_mono_wav(48_000, &h);
+        let engine_rate = SampleRate::new(48_000).unwrap();
+        let prepared = PreparedIr::from_wav_bytes(&bytes, engine_rate, block_size)
+            .expect("a block size above DEFAULT_MAX_PARTITION must load, not panic");
+
+        let mut state = prepared.new_state();
+        let x = white_noise(3 * block_size, 21);
+        let mut y = vec![0f32; x.len()];
+        for chunk_start in (0..x.len()).step_by(block_size) {
+            let end = (chunk_start + block_size).min(x.len());
+            let mut out_slice = &mut y[chunk_start..end];
+            prepared.process_block(
+                &mut state,
+                &x[chunk_start..end],
+                std::slice::from_mut(&mut out_slice),
+            );
+        }
+        let direct = direct_convolve(&h, &x);
+        let err = rms_error_db(&direct, &y).unwrap();
+        assert!(err < -100.0, "error too high: {err} dB");
+    }
+
     #[test]
     fn stereo_wav_loads_as_two_independent_channels() {
         let left = delayed_delta(400, 10);
@@ -1583,6 +1760,52 @@ mod tests {
         assert_eq!(prepared.len_samples(), 500);
     }
 
+    /// A file that *has* frames but resamples to none must be refused, not loaded as a silent
+    /// cabinet.
+    ///
+    /// `resample_mono` sizes its output `round(len * to_hz / from_hz)`, and `wav::decode`'s only
+    /// emptiness guard is the *pre*-resample declared frame count — so any IR short enough that
+    /// its resampled length rounds below 0.5 produced an empty tap array, an empty head and
+    /// schedule, `len_samples() == 0`, and `process_block` writing zeros forever with no
+    /// diagnostic at all. The predecessor `SincFixedIn` path truncated identically, so this is
+    /// older than the FFT resampler, but the invariant `EMPTY_IR` exists to hold — D-9's "an IR
+    /// with nothing in it is not a usable IR" — is the same one, and at the engine rate these
+    /// files have nothing in them. Refused rather than padded to one tap: a manufactured tap the
+    /// file does not contain is still an inaudible cabinet, only without the diagnostic.
+    #[test]
+    fn an_ir_that_resamples_to_no_taps_is_refused_rather_than_silently_empty() {
+        for (source_hz, engine_hz, frames) in
+            [(192_000u32, 48_000u32, 1usize), (192_000, 44_100, 2)]
+        {
+            let bytes = write_mono_wav(source_hz, &delta(frames));
+            let engine_rate = SampleRate::new(engine_hz).unwrap();
+            // Reported as the silent load it would otherwise be, so a regression names the
+            // symptom rather than only the missing error.
+            let err = match PreparedIr::from_wav_bytes(&bytes, engine_rate, 64) {
+                Ok(prepared) => {
+                    let mut state = prepared.new_state();
+                    let x = vec![1.0f32; 64];
+                    let mut y = vec![0f32; 64];
+                    let mut out_slice = &mut y[..];
+                    prepared.process_block(&mut state, &x, std::slice::from_mut(&mut out_slice));
+                    panic!(
+                        "{frames} frames at {source_hz} Hz, engine {engine_hz} Hz: expected a \
+                         catalogued error, got Ok with len_samples = {} and a full-scale block \
+                         convolved to {:?}",
+                        prepared.len_samples(),
+                        &y[..4]
+                    )
+                }
+                Err(e) => e,
+            };
+            assert_eq!(
+                err.code.id,
+                error_codes::EMPTY_IR.id,
+                "{frames} frames at {source_hz} Hz, engine {engine_hz} Hz"
+            );
+        }
+    }
+
     /// The source/engine rate pairs the measurement below covers.
     ///
     /// An IR is a `.wav` file, so its rate is whatever a user's file declares rather than anything
@@ -1710,19 +1933,32 @@ mod tests {
                 },
                 passband.summary()
             );
-            if let Some(stopband_db) = stopband.stopband_db {
-                assert!(
-                    stopband_db <= -100.0,
-                    "FR-NAM-060 requires 100 dB of stopband attenuation from {} upward; {label} \
-                     measured {}",
-                    if restated {
-                        "0.5 x the lower rate"
-                    } else {
-                        "the lower Nyquist"
-                    },
+            // Every pair in the list has an out-of-band region, in both directions: a
+            // down-conversion has input frequencies above the output Nyquist that must alias away,
+            // and an up-conversion has output bins above the input Nyquist where images must not
+            // appear. `measure` reports `None` only when there is no such region at all, which
+            // takes `source_hz == engine_hz` and is true of no pair here. So a `None` would mean
+            // the instrument had stopped measuring, not that this pair had nothing to measure --
+            // and letting it skip the assertion, as this test did until issue #55, retires the
+            // 100 dB half of the bar for every pair at once while the test still reports green.
+            let stopband_db = stopband.stopband_db.unwrap_or_else(|| {
+                panic!(
+                    "{label}: no stopband figure was measured, but this pair has an out-of-band \
+                     region -- {}",
                     stopband.summary()
-                );
-            }
+                )
+            });
+            assert!(
+                stopband_db <= -100.0,
+                "FR-NAM-060 requires 100 dB of stopband attenuation from {} upward; {label} \
+                 measured {}",
+                if restated {
+                    "0.5 x the lower rate"
+                } else {
+                    "the lower Nyquist"
+                },
+                stopband.summary()
+            );
         }
     }
 

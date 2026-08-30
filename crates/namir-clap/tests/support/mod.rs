@@ -511,9 +511,14 @@ impl StereoBuffers {
             output_ports: AudioPorts::with_capacity(CHANNELS, 1),
             input: [vec![0.0; max_frames], vec![0.0; max_frames]],
             output: [vec![0.0; max_frames], vec![0.0; max_frames]],
-            // 64 standard-event slots up front so a plugin that emits output events does not
-            // allocate mid-block and trip `audio_section`. Namir emits none today.
-            out_events: EventBuffer::with_capacity(64),
+            // Standard-event slots up front so a plugin that emits output events does not
+            // allocate mid-block and trip `audio_section`. Namir *does* emit them since issue
+            // #94: a parameter the user moved in the plugin's own editor comes out as a
+            // gesture-wrapped automation point (three events), so the worst case is three times
+            // `namir_params::REGISTRY`'s length in one block -- 96 today. Sized past that, since
+            // an `EventBuffer` that has to grow allocates, and this buffer is written from inside
+            // an `audio_section`.
+            out_events: EventBuffer::with_capacity(256),
             max_frames,
             steady_time: 0,
         }

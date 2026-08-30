@@ -141,8 +141,48 @@ jobs:
       - name: xtask rt-logging (FR-ERR-030)
         run: cargo run -p xtask -- rt-logging
 
+      # M15 review, finding 3. Five `xtask` subcommands were wired into `xtask/src/main.rs` and
+      # into no CI step at all: the three steps that follow this comment, `assets` (below
+      # `params-lock`, beside the other generate-and-diff checks) and `schema` (below `identity`).
+      # Four of the five -- `network-free`, `error-catalogue`, `feature-guard`, `assets` -- have
+      # been unwired since M14 built them; `schema` is new on this branch. Each is the *entire*
+      # mechanism behind a claim made elsewhere in the repository: `crates/namir-fixtures/src/lib.rs`
+      # carries a plain `// trace: NFR-LIC-050` whose only check is `assets`, `deny.toml` names
+      # `xtask network-free` as FR-ERR-060's first-party half, and `crates/namir-core/src/error.rs`
+      # cites `error-catalogue` in eight places. `ci-commands` could not catch this: both its limbs
+      # compare README.md against this file, so a subcommand named in neither is invisible to it --
+      # which is why the README's gate block gained the same five lines in this change. They are in
+      # this job for the reason every step above is: line-based scans over checked-in source, with
+      # no OS-specific behaviour to matrix over.
+      #
+      # FR-ERR-060/NFR-SEC-030's first-party half. `deny.toml`'s `[bans]` list is the *dependency*
+      # half (the `network-free` job below runs it); this one refuses any `std::net` name under
+      # `crates/`, which no dependency ban can see because a first-party crate needs no dependency
+      # at all to open a socket.
+      - name: xtask network-free (FR-ERR-060, NFR-SEC-030)
+        run: cargo run -p xtask -- network-free
+
+      # FR-ERR-020's second conjunct -- "every error path in the code maps to an entry" -- which
+      # had no artifact before M14 and no gate before this step.
+      - name: xtask error-catalogue (FR-ERR-020)
+        run: cargo run -p xtask -- error-catalogue
+
+      # §22 R-17: `--all-features` in any build or release command silently links `clack-host`
+      # into the shipped cdylib, and `host-ext-tests` must stay non-default. The row's own
+      # mitigation said "nothing mechanical guards the linkage itself"; this is the mechanism, and
+      # until now it ran nowhere.
+      - name: xtask feature-guard (§22 R-17)
+        run: cargo run -p xtask -- feature-guard
+
       - name: xtask params-lock (FR-PARAM-020)
         run: cargo run -p xtask -- params-lock
+
+      # NFR-LIC-050's whole mechanism: every checked-in asset under `crates/` is in
+      # `crates/namir-fixtures/assets.lock` with a declared provenance and a matching hash. A
+      # captured `.wav` committed beside the generated fixtures renders as `unrecorded`, which
+      # fails this check -- but only if something runs it, which nothing did until now.
+      - name: xtask assets (NFR-LIC-050)
+        run: cargo run -p xtask -- assets
 
       # M7: NFR-LIC-030's attribution-file freshness gate. Pure static/text check over
       # `cargo metadata`'s resolve graph, same reasoning as the two steps above for living in this
@@ -157,6 +197,14 @@ jobs:
       # static/text checks over checked-in files, with no OS-specific behaviour to matrix over.
       - name: xtask identity (NFR-DOC-040, NFR-LIC-070)
         run: cargo run -p xtask -- identity
+
+      # FR-STATE-040's `S` half (issue #27), as a build-time check over the hand-authored
+      # `namir-state` corpus and the sample `xtask preset` writes. `namir-state`'s own
+      # `tests/schema.rs` runs the same validator under `cargo test --workspace`; this step is the
+      # form FRS §1.5's `S` names, and the requirement's compound `M plus S` method resolves only
+      # when both halves are there.
+      - name: xtask schema (FR-STATE-040)
+        run: cargo run -p xtask -- schema
 
       # M14 Phase 5: NFR-BUILD-020's *second* half. `identity` above asserts that README.md still
       # contains the build, run and test commands -- they cannot silently disappear from it. It
@@ -241,6 +289,72 @@ jobs:
         run: cargo run -p xtask -- traceability
         continue-on-error: true
 
+  # M15 (issue #143): does the interface actually open and paint on a machine with no display?
+  #
+  # Every other `namir-ui` test is headless by construction -- they drive `egui::Context::run_ui`
+  # and assert over the shapes `render` painted, which never touches a windowing stack. That is a
+  # deliberate design (the crate's own tests say so) and it leaves one thing unasserted: that a
+  # window opens at all. Until #143 it did not, on any machine without a physical display, and
+  # nothing here would have said so -- `baseview` asked `glXChooseFBConfig` for an sRGB-capable
+  # framebuffer, which a software X server offers on none of its configs, and the open panicked.
+  #
+  # This runs the crate's existing unattended smoke example, which renders a fixed number of frames
+  # and closes itself, against Xvfb. It is the step that makes #143's fallback a thing CI checks
+  # rather than a thing someone verified once.
+  #
+  # Required, not informational: a headless-window check permitted to fail asserts nothing, and the
+  # whole value of #143 is turning "needs a human at a screen" into "runs on every push". It has
+  # NOT been executed on a GitHub-hosted runner -- only under `Xvfb :99 -screen 0 1280x1024x24` on
+  # Mesa 25.2.8/llvmpipe, where the example panicked before #143 and renders its 90 frames and
+  # exits 0 after it. If the runner's GL stack differs, this job is where that surfaces.
+  #
+  # `libgl1-mesa-dri` is the llvmpipe software rasteriser: the runner has no GPU, so without it
+  # there is a GLX server and no driver to render through. The build-time X and ALSA headers are
+  # already satisfied on this image by the build + test job, which compiles the same workspace.
+  headless-window:
+    name: headless window smoke (FR-UI-010, issue #143)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb and a software GL driver
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri
+
+      # `xvfb-run -a` picks a free display rather than hard-coding :99, so this cannot collide with
+      # anything else the runner starts. The screen is 24-bit because `EguiWindowSettings`' default
+      # asks for a 24-bit depth buffer.
+      #
+      # Two panic messages on stderr before it succeeds are expected, not a failure: #143's
+      # fallback learns the framebuffer is unavailable by catching `baseview`'s panic, that library
+      # having no fallible open.
+      #
+      # **The assertion is the frame count, not the exit status alone** (M15 review, note b). This
+      # step asserted only that the example exited 0, and that was not the property it was here to
+      # check: `EguiWindow::open_blocking` runs the window on its own thread and joins it with
+      # `unwrap_or_else(eprintln!)`, and `open_with_srgb_fallback` catches only the *first*
+      # attempt's panic -- so a `namir_ui::render` that panicked on every single frame would unwind
+      # that thread, be reported to stderr, return normally, print "window closed cleanly" and
+      # exit 0. A required job that a totally broken interface passes is not a gate.
+      #
+      # So the example counts the frames whose `render` returned, exits 1 unless it drew all of
+      # them, and prints the count; and this step additionally requires that line, with the number
+      # read out of the example's own `FRAMES_BEFORE_CLOSE` rather than copied here -- a check that
+      # hard-codes 90 goes quietly green if the constant changes to something smaller. `pipefail`
+      # is what keeps `| tee` from masking the example's own status.
+      - name: Open and render the interface with no display (issue #143)
+        run: |
+          set -euo pipefail
+          example=crates/namir-ui/examples/manual_window_smoke.rs
+          frames=$(sed -n 's/^const FRAMES_BEFORE_CLOSE: u64 = \([0-9][0-9]*\);$/\1/p' "$example")
+          test -n "$frames"
+          echo "expecting $frames rendered frames"
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" cargo run -p namir-ui --example manual_window_smoke 2>&1 | tee smoke.log
+          grep -qx "manual_window_smoke: rendered $frames of $frames frames; window closed cleanly" smoke.log
+
   # Covers D-18.1's "cargo-deny licence audit" (NFR-LIC-020). deny.toml already exists at the
   # repo root; this job just runs it in CI instead of by hand.
   license-audit:
@@ -264,6 +378,25 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check sources
+
+      # M15 review, note (a): the **fourth** sub-check, and the last one nothing ran. `cargo deny
+      # check` -- the command README.md documents, annotated there as an "advisory ... audit" --
+      # runs advisories, bans, licenses and sources; CI ran the last three across three steps and
+      # never the first, and `deny.toml` has no `[advisories]` section, so a RUSTSEC advisory could
+      # enter Cargo.lock with every gate green. `xtask ci-commands` reported the two files in
+      # agreement while that was true, because its token-prefix rule read the narrower `check
+      # licenses` as exercising the broader documented `check`; that rule now refuses a sub-check
+      # invocation for a bare `cargo deny check` and instead requires the union of the sub-check
+      # steps to cover all four, which is what this step completes.
+      #
+      # No `[advisories]` section is added with it: cargo-deny's own defaults are what the
+      # documented bare command has always run, and this repository's practice of recording
+      # `cargo deny check ... green on advisories, bans, licenses and sources` by hand at each
+      # dependency adoption (`docs/02-architecture.md` §17, §21) is the evidence that the standing
+      # state is clean. This step is what keeps it so without anyone typing the command.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
 
   # M7: D-18.2/FR-ERR-070.5's network-free build gate, deferred here by design since M1 (see this
   # file's own header comment above) until there was a whole product to check against. FR-ERR-070's

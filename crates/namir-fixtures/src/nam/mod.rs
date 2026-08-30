@@ -11,6 +11,22 @@ mod a2_infer;
 mod infer;
 mod lstm_infer;
 
+/// Bumped by hand whenever anything in this module changes the *bytes* it generates for a given
+/// `(shape, seed)` — a weight-layout change, a different constrained-init scale, a new metadata
+/// field, a change to the calibration pass.
+///
+/// Its one consumer is [`crate::library`]'s corpus cache key: that cache stores `.nam` files this
+/// module produced, under a key that used to fold in only `library`'s own composition constants,
+/// so a change *here* left a warm `target/namir-fixtures-cache` serving the previous layout's
+/// files indefinitely — and nothing in `cargo test` re-validates a cached corpus, so the symptom
+/// was a `namir-library` scan test failing against files the current parser rejects, with no hint
+/// that a stale cache was the cause. Bumping this invalidates every cached corpus built from an
+/// older generator.
+///
+/// Version 1 is the pre-existing generator (this constant was introduced, not bumped, when the
+/// cache key first started folding it in).
+pub const GENERATOR_VERSION: u32 = 1;
+
 use rand::Rng;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
@@ -147,9 +163,21 @@ pub struct LstmConfig {
 }
 
 /// A thin public re-export of `lstm_infer::run`, exposed *specifically* as a cross-crate numeric
-/// parity oracle for `namir-nam`'s independently-written LSTM implementation — the LSTM
-/// counterpart of [`reference_infer`]; see that function's doc comment, which applies here
-/// unchanged except for architecture.
+/// parity oracle for `namir-nam`'s own LSTM implementation — the LSTM counterpart of
+/// [`reference_infer`]; see that function's doc comment, which applies here unchanged except for
+/// architecture and for the paragraph below.
+///
+/// **What "parity oracle" is worth here, stated precisely** (this doc comment used to call
+/// `namir-nam`'s LSTM implementation "independently-written" with respect to this one, which was
+/// false as written): `lstm_infer.rs` was originally written from `namir-nam`'s *reading* of the
+/// `.nam` LSTM format, not from the format's own source, so agreement between the two could not
+/// rule out a misreading they shared. M14 re-derived it from `NeuralAmpModelerCore`'s
+/// `NAM/lstm.h`/`NAM/lstm.cpp` at the pinned commit, fact by fact with citations, and pinned each
+/// fact to hand-computed arithmetic in that module's own tests. Two things are still true and
+/// worth keeping in view: the re-derivation was not blind (its author had seen the earlier port),
+/// and the only *external* LSTM evidence this project holds — `namir-nam`'s
+/// `tests/golden_reference.rs` `lstm_tiny` render — is a one-layer model, so the multi-layer
+/// facts rest on `lstm_infer.rs`'s analytic tests rather than on a real reference render.
 pub fn reference_infer_lstm(model: &LstmModel, input: &[f32]) -> Vec<f32> {
     lstm_infer::run(model, input)
 }
@@ -210,6 +238,39 @@ struct ShapeParams {
     channels1: usize,
     channels2: usize,
     layers: usize,
+}
+
+/// The placeholder `head_scale` [`generate`] builds its weights with, before the calibration pass
+/// replaces it. Named so [`uncalibrated_weights`] reproduces `generate`'s first pass exactly
+/// rather than by repeating a literal.
+const BASE_HEAD_SCALE: f32 = 0.02;
+
+/// Exactly the weight vector [`generate`]'s **first** pass produces for `(shape, seed)`: seeded,
+/// constrained-init, with [`BASE_HEAD_SCALE`] still in the trailing slot. No calibration, and so
+/// no inference — this is RNG and arithmetic only, microseconds for the small shapes, which is
+/// what makes it usable where calling `generate` would not be.
+///
+/// Exposed for [`crate::library`]'s cache key, and worth the exposure for a reason a version
+/// constant cannot cover: this fingerprints the weight *layout and initialisation* themselves, so
+/// reordering `build_weights`' sections or changing a fan-in scale invalidates a cached corpus
+/// mechanically — no hand-bump of [`GENERATOR_VERSION`] required, and no inference pass paid on
+/// every cache hit. What it does not see is a change confined to the calibration pass or to the
+/// metadata strings; those still need the constant bumped.
+pub fn uncalibrated_weights(shape: WaveNetShape, seed: u64) -> Vec<f32> {
+    let specs = shape.layer_configs();
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(seed);
+    build_weights(&specs, &mut rng, BASE_HEAD_SCALE)
+}
+
+/// The topology [`generate`] builds for `shape`, before any weights or calibration — cheap to
+/// compute (no RNG, no inference pass) and fully determined by `shape`.
+///
+/// Exposed for one purpose: a caller that *caches* generated `.nam` files can fold this into its
+/// cache key and have a change to a shape's topology invalidate that cache mechanically, without
+/// depending on someone remembering to bump [`GENERATOR_VERSION`] by hand. See
+/// [`crate::library`]'s `cache_signature`, its only caller.
+pub fn shape_signature(shape: WaveNetShape) -> Vec<LayerArrayConfig> {
+    shape.layer_configs()
 }
 
 impl WaveNetShape {
@@ -434,7 +495,7 @@ fn calibration_probe(seed: u64) -> Vec<f32> {
     (0..n)
         .map(|i| {
             let t = i as f32 / SAMPLE_RATE as f32;
-            0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+            0.3 * crate::detmath::sin_f32(2.0 * std::f32::consts::PI * 220.0 * t)
                 + 0.05 * rng.gen_range(-1.0f32..1.0)
         })
         .collect()
@@ -471,7 +532,18 @@ fn build_model(shape: WaveNetShape, weights: Vec<f32>, head_scale: f32) -> NamMo
 }
 
 /// Generates a deterministic, RMS-calibrated `.nam` WaveNet fixture: same `(shape, seed)` always
-/// produces byte-identical weights and output.
+/// produces byte-identical weights and output — **on every platform, not merely on every run of
+/// one machine**.
+///
+/// That distinction is the whole reason [`crate::detmath`] exists, and it was not always true:
+/// the calibration pass below runs a full inference, so until this generator stopped calling the
+/// platform libm, one differing `tanh` or `sin` anywhere in it moved `head_scale` (and the
+/// trailing weight mirroring it) by a ULP, and CI regenerated the checked-in goldens into
+/// different bytes than the machine that wrote them. Everything else here was already exact:
+/// `rand_pcg`'s bits, IEEE arithmetic, and `ryu`'s float printing.
+/// [`tests::calibration_is_reproducible_across_platforms_to_the_bit`] pins the calibrated value
+/// for every shape a checked-in fixture is generated from, so a platform that disagrees fails
+/// here rather than silently writing a different golden.
 ///
 /// Two passes: build weights with constrained init and a placeholder `head_scale`, measure the
 /// resulting output RMS over a calibration probe, then rescale `head_scale` so the *calibrated*
@@ -479,7 +551,7 @@ fn build_model(shape: WaveNetShape, weights: Vec<f32>, head_scale: f32) -> NamMo
 /// can't produce a finite, sane RMS (D-19.1's hazard) — the caller should try a different seed.
 pub fn generate(shape: WaveNetShape, seed: u64) -> Result<NamModel, DegenerateFixtureError> {
     let specs = shape.layer_configs();
-    let base_head_scale = 0.02f32;
+    let base_head_scale = BASE_HEAD_SCALE;
 
     let mut rng = rand_pcg::Pcg64::seed_from_u64(seed);
     let weights = build_weights(&specs, &mut rng, base_head_scale);
@@ -938,8 +1010,17 @@ fn build_a2_model(shape: A2Shape, weights: Vec<f32>, head_scale: f32) -> A2Model
 }
 
 /// Generates a deterministic, RMS-calibrated `.nam` A2 fixture: same `(shape, seed)` always
-/// produces byte-identical weights and output. The A2 analogue of [`generate`]; see that
-/// function's doc comment for the two-pass calibration shape this follows unchanged.
+/// produces byte-identical weights and output, on every platform. The A2 analogue of
+/// [`generate`]; see that function's doc comment for the two-pass calibration shape this follows
+/// unchanged, and for the cross-platform claim.
+///
+/// This is the shape that *demonstrated* the problem [`crate::detmath`] fixes. A2 inference is
+/// LeakyReLU throughout — pure arithmetic, no libm — so the only transcendental anywhere in this
+/// function was [`calibration_probe`]'s `sin`, and that alone was enough for M14's CI to
+/// regenerate `a2_full.nam` with a different `head_scale` on all three runners. The committed
+/// bytes now come back identical here; `namir-nam`'s `the_a2_golden_models_match_their_generator`
+/// still compares that one value under a relative tolerance rather than byte for byte, which is
+/// no longer necessary but is harmless.
 pub fn generate_a2(shape: A2Shape, seed: u64) -> Result<A2Model, DegenerateFixtureError> {
     let specs = shape.layer_configs();
     let base_head_scale = 0.02f32;
@@ -1039,8 +1120,11 @@ fn build_lstm_model(shape: LstmShape, weights: Vec<f32>) -> LstmModel {
 }
 
 /// Generates a deterministic, RMS-calibrated `.nam` LSTM fixture: same `(shape, seed)` always
-/// produces byte-identical weights and output. The LSTM counterpart of [`generate`]; see that
-/// function's doc comment for the two-pass shape this follows.
+/// produces byte-identical weights and output, on every platform — the LSTM counterpart of
+/// [`generate`]; see that function's doc comment for the two-pass shape this follows and for what
+/// "on every platform" cost. This architecture reaches the platform libm twice over (`tanh` *and*
+/// the sigmoid's `exp`), and its calibration scales the whole head tail rather than one float, so
+/// a libm difference used to land in several weights rather than one.
 ///
 /// The one structural difference from `generate`: WaveNet has a single trailing `head_scale`
 /// float to rescale for calibration; LSTM has no such scalar (see `build_lstm_weights`'s doc
@@ -1100,6 +1184,81 @@ mod tests {
         ] {
             generate(shape, 1).unwrap_or_else(|e| panic!("{shape:?}: {e}"));
         }
+    }
+
+    /// Determinism *across machines*, not just within one run — the property "same `(shape, seed)`
+    /// gives byte-identical weights" claims and [`generation_is_deterministic_for_a_given_seed`]
+    /// cannot check, because a second call on the same machine reproduces that machine's own libm
+    /// exactly.
+    ///
+    /// Until [`crate::detmath`] landed, the claim was false: `head_scale` is calibrated through a
+    /// full inference pass, so one differing `tanh`/`sin`/`exp` anywhere in it moved that float,
+    /// and M14 watched exactly that happen — the checked-in A2 goldens regenerated to
+    /// `head_scale: 0.15790401` on all three CI runners and `0.15790403` on the machine that wrote
+    /// them. These pins are the tripwire that failure needed: the calibrated value for each shape
+    /// a checked-in fixture is generated from, to the bit. Nothing about the numbers themselves is
+    /// significant — what matters is that every platform agrees on them, so a machine that
+    /// disagrees fails *here*, at the generator, naming the cause, instead of silently writing a
+    /// different golden or corpus file.
+    ///
+    /// If one of these ever fails, do not adjust the constant. The generator has either changed
+    /// (then the paired committed fixtures and their externally-rendered references must be
+    /// regenerated together — see `namir-nam/tests/golden_reference.rs`'s recipe) or something in
+    /// the calibration path has stopped being reproducible (then find it: every operation on that
+    /// path is required to be IEEE-754-specified arithmetic).
+    #[test]
+    fn calibration_is_reproducible_across_platforms_to_the_bit() {
+        // `wavenet_nano.nam` and `fuzz/corpus/load_nam/valid_nano.json`'s shapes and seeds.
+        for (shape, seed, bits) in [
+            (WaveNetShape::Nano, 30u64, 0x3f1c_9606u32),
+            (WaveNetShape::Nano, 1, 0x3e52_e218),
+        ] {
+            let model = generate(shape, seed).unwrap_or_else(|e| panic!("{shape:?}/{seed}: {e}"));
+            assert_eq!(
+                model.config.head_scale.to_bits(),
+                bits,
+                "{shape:?}/{seed}: calibrated head_scale is {} ({:#010x}), not the value every \
+                 platform must agree on",
+                model.config.head_scale,
+                model.config.head_scale.to_bits()
+            );
+            assert_eq!(
+                model.weights.last().copied().map(f32::to_bits),
+                Some(bits),
+                "{shape:?}/{seed}: the trailing weight must mirror head_scale exactly"
+            );
+        }
+
+        // `a2_full.nam` and `a2_lite.nam` — the two shapes whose committed bytes M14's CI could
+        // not reproduce.
+        for (shape, bits) in [
+            (A2Shape::Full, 0x3e21_b198u32),
+            (A2Shape::Lite, 0x3f55_7617),
+        ] {
+            let model = generate_a2(shape, 30).unwrap_or_else(|e| panic!("{shape:?}: {e}"));
+            assert_eq!(
+                model.config.head_scale.to_bits(),
+                bits,
+                "{shape:?}: calibrated head_scale is {} ({:#010x}), not the value every platform \
+                 must agree on",
+                model.config.head_scale,
+                model.config.head_scale.to_bits()
+            );
+        }
+
+        // LSTM calibrates by scaling the head tail rather than a single `head_scale` float, so the
+        // pin is on that tail. `lstm_tiny.nam`'s shape and seed.
+        let lstm = generate_lstm(LstmShape::Tiny, 30).expect("lstm tiny generates");
+        let tail: Vec<u32> = lstm.weights[lstm.weights.len() - 3..]
+            .iter()
+            .map(|w| w.to_bits())
+            .collect();
+        assert_eq!(
+            tail,
+            vec![0x416b_ca35, 0xc186_f4ec, 0x0000_0000],
+            "LSTM head tail is {:?}, not the values every platform must agree on",
+            &lstm.weights[lstm.weights.len() - 3..]
+        );
     }
 
     #[test]

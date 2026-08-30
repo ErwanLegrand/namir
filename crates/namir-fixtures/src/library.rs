@@ -47,9 +47,16 @@
 //! [`generate_shared_corpus`] writes into a content-addressed directory under the workspace
 //! `target/` (this module's private `cache_root` function), not into the repo, and not
 //! regenerated on every run. The directory name is keyed on a hash of `GENERATOR_VERSION`, the
-//! seed, and the composition constants above, so changing any of them (including bumping
-//! `GENERATOR_VERSION` by hand after any change to this module's generation logic) invalidates
-//! stale cached output automatically rather than silently serving last run's corpus. A cache hit
+//! seed, the composition constants above, **and the two generators whose output the corpus
+//! actually is** — [`crate::nam::GENERATOR_VERSION`], [`crate::ir::GENERATOR_VERSION`] and the
+//! serialized `.nam` shape (this module's private `cache_signature` function) — so changing any of
+//! them (including bumping a `GENERATOR_VERSION` by hand after a change to the corresponding
+//! module's generation logic) invalidates stale cached output automatically rather than silently
+//! serving last run's corpus. Naming the two other generators is not decoration: nothing in
+//! `cargo test` re-validates a cached corpus, so before the key folded them in, a change to
+//! `nam/mod.rs`'s weight layout left this cache serving the old layout's files indefinitely and
+//! the failure surfaced as a `namir-library` scan test rejecting them, pointing nowhere near the
+//! cause. A cache hit
 //! reads one small JSON manifest and stats two files (this module's private `try_load_cached`
 //! function) — it never re-walks or re-hashes all 10,000 files. Building is race-safe across
 //! concurrent processes/threads sharing
@@ -112,6 +119,12 @@ const IR_SLOTS_PER_LEAF: usize = 90;
 const _: () = assert!(BANKS * FOLDERS_PER_BANK * FILES_PER_LEAF == TOTAL_COUNT);
 const _: () = assert!(IR_SLOTS_PER_LEAF * BANKS * FOLDERS_PER_BANK == IR_COUNT);
 const _: () = assert!((FILES_PER_LEAF - IR_SLOTS_PER_LEAF) * BANKS * FOLDERS_PER_BANK == NAM_COUNT);
+
+/// The `.nam` shape every model in the corpus is generated from — the cheapest one, per this
+/// module's doc comment on structural uniformity. Named rather than repeated at its two use
+/// sites (`base_nam_model` and `cache_signature`) so the shape the cache key describes cannot
+/// drift from the shape the corpus is actually built with.
+const CORPUS_NAM_SHAPE: WaveNetShape = WaveNetShape::Nano;
 
 /// Each generated IR's length in samples — small deliberately (see this module's doc comment on
 /// tiny files understating real per-file cost).
@@ -178,7 +191,7 @@ const MUTABLE_NAM_COUNT: usize = 4;
 /// degenerate model, which is a bug in the seed choice, not a condition a corpus-scale caller
 /// should have to handle per call.
 fn base_nam_model(seed: u64) -> nam::NamModel {
-    nam::generate(WaveNetShape::Nano, seed)
+    nam::generate(CORPUS_NAM_SHAPE, seed)
         .unwrap_or_else(|e| panic!("library corpus base NAM model is degenerate: {e}"))
 }
 
@@ -233,18 +246,61 @@ fn cache_root() -> PathBuf {
     workspace_target_dir().join("namir-fixtures-cache")
 }
 
-/// The cache key for a shared corpus generated from `seed`: [`namir_core::ContentHash`] of a
-/// string folding in [`GENERATOR_VERSION`] and every constant that affects composition, so a
-/// change to any of them changes the key and therefore the cache directory name, rather than
-/// silently reusing an incompatible directory. Truncated to 16 hex characters (64 bits, ample
-/// collision resistance for a cache-directory name) purely to keep the resulting nested path
-/// short on Windows.
-fn cache_key(seed: u64) -> String {
-    let signature = format!(
+/// Everything the bytes of a cached corpus depend on, as one string — the input [`cache_key`]
+/// hashes. Parameterized over the two *other* modules' generator versions rather than reading
+/// them directly so a test can vary them; [`cache_key`] passes the real ones.
+///
+/// # Why the two generator versions are in here
+///
+/// [`GENERATOR_VERSION`] covers this module's own logic and the constants below cover its
+/// composition, but the corpus's actual file content comes from [`crate::nam::generate`] and
+/// [`crate::ir::decaying_noise`], which this signature named nothing about. Changing the WaveNet
+/// weight layout in `nam/mod.rs` therefore left a warm `target/namir-fixtures-cache` serving the
+/// old layout's `.nam` files under an unchanged key, indefinitely — and no `cargo test` path
+/// re-validates a cached corpus (a hit reads the manifest and stats two files, by design), so the
+/// visible symptom was a `namir-library` scan test failing against files the current parser
+/// rejects, with nothing pointing at the cache. Both generators now carry a
+/// `GENERATOR_VERSION` of their own and both are folded in here.
+///
+/// The `.nam` side additionally folds in the *shape* the corpus is built from, serialized: it is
+/// derived rather than hand-maintained, needs no inference pass to compute (so a cache hit stays
+/// as cheap as it was), and so catches a change to [`WaveNetShape::Nano`]'s topology even if
+/// whoever made it forgets to bump [`crate::nam::GENERATOR_VERSION`].
+fn cache_signature(seed: u64, nam_generator_version: u32, ir_generator_version: u32) -> String {
+    let nam_shape = serde_json::to_string(&nam::shape_signature(CORPUS_NAM_SHAPE))
+        .expect("a layer-config list always serializes (plain numbers, strings and arrays)");
+    let nam_init = nam_weight_fingerprint(seed);
+    format!(
         "namir-fixtures-library-corpus|v{GENERATOR_VERSION}|seed={seed}|ir={IR_COUNT}|\
          nam={NAM_COUNT}|banks={BANKS}|folders={FOLDERS_PER_BANK}|leaf={FILES_PER_LEAF}|\
-         ir_len={IR_LEN_SAMPLES}|ir_tau={IR_TAU_SAMPLES}|ir_rate={IR_SAMPLE_RATE}"
-    );
+         ir_len={IR_LEN_SAMPLES}|ir_tau={IR_TAU_SAMPLES}|ir_rate={IR_SAMPLE_RATE}|\
+         nam_gen=v{nam_generator_version}|ir_gen=v{ir_generator_version}|nam_shape={nam_shape}|\
+         nam_init={nam_init}"
+    )
+}
+
+/// A hash of the weights [`nam::uncalibrated_weights`] produces for this corpus's shape and
+/// `seed` — the layout-sensitive half of the cache key, and the one that needs no hand
+/// maintenance: reordering `build_weights`' sections or changing an initialisation scale changes
+/// these bytes and therefore the cache directory. Costs one seeded RNG pass over the cheapest
+/// shape's ~2,000 weights (microseconds), so a cache hit stays cheap; deliberately not a hash of a
+/// fully generated model, which would put `generate`'s two inference passes on every hit.
+fn nam_weight_fingerprint(seed: u64) -> String {
+    let weights = nam::uncalibrated_weights(CORPUS_NAM_SHAPE, seed);
+    let mut bytes = Vec::with_capacity(weights.len() * 4);
+    for w in &weights {
+        bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    ContentHash::of(&bytes).to_string()[..16].to_string()
+}
+
+/// The cache key for a shared corpus generated from `seed`: [`namir_core::ContentHash`] of
+/// [`cache_signature`], so a change to anything that signature names changes the key and
+/// therefore the cache directory name, rather than silently reusing an incompatible directory.
+/// Truncated to 16 hex characters (64 bits, ample collision resistance for a cache-directory
+/// name) purely to keep the resulting nested path short on Windows.
+fn cache_key(seed: u64) -> String {
+    let signature = cache_signature(seed, nam::GENERATOR_VERSION, ir::GENERATOR_VERSION);
     let hash = ContentHash::of(signature.as_bytes()).to_string();
     hash[..16].to_string()
 }
@@ -455,6 +511,10 @@ const PUBLISH_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 /// permanently block every future attempt. Content is deterministic per `(seed, key)`, so
 /// clearing and re-publishing loses nothing even in the case this turns out to have been a
 /// genuine, resolvable race rather than stale state.
+///
+/// **"Clear whatever is there" means whatever is *known* not to be a valid corpus, never whatever
+/// merely failed to read.** See [`publish_built_corpus`], which this function delegates the
+/// publish half to.
 fn build_and_publish_corpus(dir: &Path, seed: u64, key: &str) -> io::Result<LibraryCorpus> {
     record_build_attempt(seed);
     let nonce = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -477,48 +537,107 @@ fn build_and_publish_corpus(dir: &Path, seed: u64, key: &str) -> io::Result<Libr
         return Err(e);
     }
 
+    publish_built_corpus(&tmp_dir, dir, seed, key)
+}
+
+/// The publish half of [`build_and_publish_corpus`]: claims `dir` for the already-built corpus in
+/// `tmp_dir`, over [`MAX_PUBLISH_ATTEMPTS`] bounded retries, and returns the published corpus.
+/// Separate from the build half so the failure paths below are testable without paying for a
+/// [`TOTAL_COUNT`]-file build first.
+///
+/// # Only a *known-invalid* destination is ever cleared
+///
+/// [`try_load_cached`] answers three ways, and the third is not the second: `Ok(Some)` (a valid
+/// corpus is there), `Ok(None)` (there is demonstrably nothing usable there — absent, corrupt,
+/// stale, or the wrong seed), and `Err` (**the destination could not be read at all**, so nothing
+/// is known about it). Until this was fixed the `Err` arm fell through into the same
+/// `fs::remove_dir_all(dir)` as `Ok(None)`, which turned any transient read failure of
+/// `_manifest.json` — a permission error, an antivirus lock, a Windows sharing violation, all
+/// routine on this project's primary target — into the deletion of a perfectly valid corpus that
+/// another process was, at that moment, reading its 10,000 files out of. Worse, a *published*
+/// corpus could be destroyed by its own publisher: the loop's next iteration re-read `dir`, and
+/// an `Err` there deleted what the previous iteration's `rename` had just successfully put in
+/// place, with `tmp_dir` already consumed by that rename and so nothing left to re-publish from.
+///
+/// So an `Err` readback now clears nothing, renames nothing, and simply retries. A destination
+/// that keeps failing to read is reported as an error (with that read failure named) rather than
+/// resolved by deleting it: this cache holds regenerable content, but *this* caller is not the
+/// only reader of it, and a corpus that can be rebuilt in seconds is still not one to delete out
+/// from under a concurrent reader on no evidence. A genuinely stale destination reads back as
+/// `Ok(None)` — the self-healing path the CI failure this retry loop exists for actually took —
+/// and is still cleared exactly as before.
+///
+/// The loop also stops as soon as a `rename` reports success, rather than looping back around to
+/// re-derive that fact from a second read of `dir`.
+fn publish_built_corpus(
+    tmp_dir: &Path,
+    dir: &Path,
+    seed: u64,
+    key: &str,
+) -> io::Result<LibraryCorpus> {
     // Diagnostics only -- captures the *last* attempt's state so a persistent (not transient)
     // failure reports something actionable instead of the same opaque message every time. Not
     // load-bearing for the retry logic itself.
     let mut last_rename_err: Option<io::Error> = None;
     let mut last_readback_err: Option<io::Error> = None;
+    let mut published = false;
 
     for attempt in 0..MAX_PUBLISH_ATTEMPTS {
         match try_load_cached(dir, seed, key) {
             Ok(Some(corpus)) => {
                 // A valid corpus already sits at `dir` -- ours from an earlier attempt in this
                 // same loop, or a genuine other winner's. Either way, use it.
-                let _ = fs::remove_dir_all(&tmp_dir);
+                let _ = fs::remove_dir_all(tmp_dir);
                 return Ok(corpus);
             }
-            Ok(None) => last_readback_err = None,
+            Ok(None) => {
+                last_readback_err = None;
+                // Nothing valid at `dir`, and that is *known*, not assumed. Clear whatever is
+                // there -- absent, corrupt, or stale -- before trying to claim the path, so a
+                // non-empty-but-invalid destination can never make every future `rename` fail
+                // forever. A `NotFound` error here (the ordinary case: nothing to clear) is
+                // expected and ignored.
+                let _ = fs::remove_dir_all(dir);
+                match fs::rename(tmp_dir, dir) {
+                    Ok(()) => {
+                        published = true;
+                        break;
+                    }
+                    Err(e) => last_rename_err = Some(e),
+                }
+            }
+            // Unreadable, so unknown: never destroy what could not be inspected. Just wait and
+            // look again.
             Err(e) => last_readback_err = Some(e),
         }
-
-        // Nothing valid at `dir`. Clear whatever is there -- absent, corrupt, or stale -- before
-        // trying to claim the path, so a non-empty-but-invalid destination can never make every
-        // future `rename` fail forever. A `NotFound` error here (the ordinary case: nothing to
-        // clear) is expected and ignored.
-        let _ = fs::remove_dir_all(dir);
-        last_rename_err = fs::rename(&tmp_dir, dir).err();
 
         if attempt + 1 < MAX_PUBLISH_ATTEMPTS {
             std::thread::sleep(PUBLISH_RETRY_BACKOFF);
         }
     }
 
-    // One last check: the final iteration's rename may have succeeded even though the loop ran
-    // out of attempts before re-checking.
-    if let Some(corpus) = try_load_cached(dir, seed, key)? {
-        let _ = fs::remove_dir_all(&tmp_dir);
-        return Ok(corpus);
+    // Read back what is now at `dir`: after a successful `rename` this is our own publish, and
+    // otherwise it is a last chance for a concurrent winner's to have become visible.
+    let readback = try_load_cached(dir, seed, key);
+    let _ = fs::remove_dir_all(tmp_dir);
+    match readback {
+        Ok(Some(corpus)) => return Ok(corpus),
+        Ok(None) => {}
+        Err(e) => last_readback_err = Some(e),
     }
 
-    let _ = fs::remove_dir_all(&tmp_dir);
+    if published {
+        return Err(io::Error::other(format!(
+            "corpus directory {} was published but did not read back as a valid corpus (last \
+             try_load_cached error: {last_readback_err:?})",
+            dir.display()
+        )));
+    }
     Err(io::Error::other(format!(
-        "corpus directory missing immediately after publish (after {MAX_PUBLISH_ATTEMPTS} \
-         attempts; last rename error: {last_rename_err:?}; last try_load_cached error: \
-         {last_readback_err:?})"
+        "could not publish the corpus to {} after {MAX_PUBLISH_ATTEMPTS} attempts; the \
+         destination was left untouched if it could not be read (last rename error: \
+         {last_rename_err:?}; last try_load_cached error: {last_readback_err:?})",
+        dir.display()
     )))
 }
 
@@ -633,18 +752,61 @@ mod tests {
     /// differences, so tests share one cache entry instead of each cold-building their own.
     const TEST_SEED: u64 = 12_345;
 
+    /// Determinism, checked against two *independent* builds — deliberately not two
+    /// [`generate_shared_corpus`] calls. That version of this test (through M14) called the
+    /// public entry point twice and compared the results, which cannot fail: the second call is a
+    /// cache hit that re-reads the first call's own `_manifest.json`, so both sides of every
+    /// assertion came from one build and genuine non-determinism anywhere in `derive_seed`,
+    /// `ir_variant_bytes` or `nam_variant_bytes` would have shipped silently. This builds twice
+    /// into two distinct roots via `build_corpus_into` (bypassing the cache entirely), then
+    /// compares the manifests byte-for-byte *and* every generated file's bytes on disk.
+    ///
+    /// It uses its own seed rather than `TEST_SEED` so it never publishes into, reads from, or
+    /// races the shared cache entry the rest of this module's tests share.
     #[test]
     fn generating_twice_with_the_same_seed_is_byte_identical() {
-        let a = generate_shared_corpus(TEST_SEED).expect("first generation");
-        let b = generate_shared_corpus(TEST_SEED).expect("second generation (cache hit)");
+        const DETERMINISM_SEED: u64 = 24_680;
+        let key = cache_key(DETERMINISM_SEED);
+        let base = workspace_target_dir()
+            .join("namir-fixtures-determinism-test")
+            .join("generating_twice_with_the_same_seed_is_byte_identical");
+        let _ = fs::remove_dir_all(&base);
 
-        assert_eq!(a.root, b.root);
-        assert_eq!(a.entries.len(), b.entries.len());
-        for (ea, eb) in a.entries.iter().zip(b.entries.iter()) {
-            assert_eq!(ea.path, eb.path);
-            assert_eq!(ea.kind, eb.kind);
-            assert_eq!(ea.content_hash, eb.content_hash);
+        let roots = ["build_a", "build_b"].map(|name| base.join(name));
+        for root in &roots {
+            fs::create_dir_all(root).expect("create an independent build root");
+            build_corpus_into(root, DETERMINISM_SEED, &key).expect("independent build");
         }
+        let (a, b) = (&roots[0], &roots[1]);
+
+        let manifest_a = fs::read(a.join(MANIFEST_FILE_NAME)).expect("build a's manifest");
+        let manifest_b = fs::read(b.join(MANIFEST_FILE_NAME)).expect("build b's manifest");
+        assert_eq!(
+            manifest_a, manifest_b,
+            "two independent builds of seed {DETERMINISM_SEED} disagree on their manifests"
+        );
+
+        // The manifest agreeing is necessary but not sufficient: it records hashes this generator
+        // computed itself, so the files on disk are compared directly as well.
+        let manifest: Manifest = serde_json::from_slice(&manifest_a).expect("manifest parses back");
+        assert_eq!(manifest.entries.len(), TOTAL_COUNT);
+        for entry in &manifest.entries {
+            let bytes_a = fs::read(a.join(&entry.rel_path)).expect("build a's file");
+            let bytes_b = fs::read(b.join(&entry.rel_path)).expect("build b's file");
+            assert_eq!(
+                bytes_a, bytes_b,
+                "{} differs between two independent builds of the same seed",
+                entry.rel_path
+            );
+            assert_eq!(
+                ContentHash::of(&bytes_a).to_string(),
+                entry.hash,
+                "{}'s manifest hash does not match its bytes on disk",
+                entry.rel_path
+            );
+        }
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     /// Regression test for the CI-only failure this crate's own dev sandbox could never
@@ -669,6 +831,115 @@ mod tests {
             dir.join(MANIFEST_FILE_NAME).exists(),
             "a valid manifest should now be published at the destination"
         );
+    }
+
+    /// The other half of the publish step's failure handling, and the one the self-healing path
+    /// above got wrong: a destination that **cannot be read** is not a destination that is known
+    /// to be junk. `try_load_cached` returns `Err` for any non-`NotFound` I/O failure reading
+    /// `_manifest.json` — a permission error, an antivirus lock, a Windows sharing violation —
+    /// and the publish step used to feed that straight into the same `remove_dir_all(dir)` it
+    /// uses for a stale destination, deleting a valid, published, possibly-being-read corpus on
+    /// the strength of one failed `open`.
+    ///
+    /// The unreadable manifest here is a *directory* where the file belongs: `fs::read` fails on
+    /// it with a non-`NotFound` error on every platform this project builds for (`IsADirectory`
+    /// on Linux/macOS, `PermissionDenied` on Windows), which reproduces the failure shape exactly
+    /// without permission games, an injected fault, or a real race.
+    #[test]
+    fn a_destination_that_cannot_be_read_is_never_deleted() {
+        let base = workspace_target_dir()
+            .join("namir-fixtures-publish-test")
+            .join("a_destination_that_cannot_be_read_is_never_deleted");
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("lib-corpus-unreadable");
+        let tmp_dir = base.join("lib-corpus-unreadable.tmp-0");
+        fs::create_dir_all(&dir).expect("create the destination");
+        fs::create_dir_all(&tmp_dir).expect("create the source");
+        fs::write(tmp_dir.join("payload.bin"), b"freshly built corpus").expect("write the source");
+
+        // Stands in for the 10,000 files a published corpus holds, and for the caller that is
+        // reading them while this publish attempt runs.
+        let published = dir.join("published_file.bin");
+        fs::write(&published, b"a valid corpus another process is mid-read of")
+            .expect("write the published file");
+        fs::create_dir_all(dir.join(MANIFEST_FILE_NAME)).expect("make the manifest unreadable");
+
+        let err = publish_built_corpus(&tmp_dir, &dir, 4_242, "unreadable-destination")
+            .expect_err("an unreadable destination cannot be published to");
+
+        assert!(
+            published.exists(),
+            "the publish step deleted a corpus it could not read ({err})"
+        );
+        assert_eq!(
+            fs::read(&published).expect("the published file is still readable"),
+            b"a valid corpus another process is mid-read of",
+            "the published corpus was replaced rather than left alone"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The complement of the test above: a destination that reads back as *demonstrably* not a
+    /// corpus (`Ok(None)`, not `Err`) is still cleared and claimed — the self-healing behaviour
+    /// the retry loop exists for, checked here at the publish seam rather than through a full
+    /// 10,000-file build.
+    #[test]
+    fn a_destination_that_reads_back_as_junk_is_still_cleared_and_claimed() {
+        const JUNK_SEED: u64 = 4_243;
+        let base = workspace_target_dir()
+            .join("namir-fixtures-publish-test")
+            .join("a_destination_that_reads_back_as_junk_is_still_cleared_and_claimed");
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("lib-corpus-junk");
+        let tmp_dir = base.join("lib-corpus-junk.tmp-0");
+        let key = cache_key(JUNK_SEED);
+        fs::create_dir_all(&dir).expect("create the destination");
+        fs::create_dir_all(&tmp_dir).expect("create the source");
+        fs::write(
+            dir.join("leftover_junk.bin"),
+            b"an interrupted build's leftovers",
+        )
+        .expect("write the stale destination");
+
+        // A minimal but genuinely valid corpus in the source: one file plus a manifest naming it,
+        // which is all `try_load_cached` reads back (it stats the first and last entry, not all
+        // 10,000, by design).
+        let bytes = b"published payload";
+        fs::write(tmp_dir.join("only.bin"), bytes).expect("write the source file");
+        let manifest = Manifest {
+            generator_version: GENERATOR_VERSION,
+            key: key.clone(),
+            seed: JUNK_SEED,
+            entries: (0..TOTAL_COUNT)
+                .map(|_| ManifestEntry {
+                    rel_path: "only.bin".to_string(),
+                    kind: EntryKind::Ir,
+                    hash: ContentHash::of(bytes).to_string(),
+                })
+                .collect(),
+        };
+        fs::write(
+            tmp_dir.join(MANIFEST_FILE_NAME),
+            serde_json::to_vec(&manifest).expect("manifest serializes"),
+        )
+        .expect("write the source manifest");
+
+        let corpus = publish_built_corpus(&tmp_dir, &dir, JUNK_SEED, &key)
+            .expect("a junk destination should be cleared and claimed");
+
+        assert_eq!(corpus.root, dir);
+        assert!(
+            !dir.join("leftover_junk.bin").exists(),
+            "the stale content should have been cleared"
+        );
+        assert!(
+            dir.join("only.bin").exists(),
+            "our build should be at `dir`"
+        );
+        assert!(!tmp_dir.exists(), "the temp directory should be consumed");
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -697,6 +968,64 @@ mod tests {
         let a = generate_shared_corpus(TEST_SEED).expect("seed a");
         let b = generate_shared_corpus(TEST_SEED + 1).expect("seed b");
         assert_ne!(a.root, b.root);
+    }
+
+    /// The corpus is `nam::generate`'s and `ir::decaying_noise`'s output, so a change to either
+    /// of those generators has to change this module's cache key — otherwise a warm cache serves
+    /// the previous generator's files forever, and nothing re-validates a cached corpus to catch
+    /// it. Checked by varying each generator's version through `cache_signature` (the same
+    /// function `cache_key` hashes, taking the versions as arguments precisely so this test can
+    /// move them) rather than by asserting the signature contains a particular substring: what
+    /// matters is that the *key* changes, not how the version is spelled inside it.
+    #[test]
+    fn bumping_either_generators_version_changes_the_cache_key() {
+        let key_of = |s: &str| ContentHash::of(s.as_bytes()).to_string()[..16].to_string();
+        let (nam_v, ir_v) = (nam::GENERATOR_VERSION, ir::GENERATOR_VERSION);
+        let current = cache_signature(TEST_SEED, nam_v, ir_v);
+
+        assert_eq!(
+            key_of(&current),
+            cache_key(TEST_SEED),
+            "cache_key must hash exactly the signature this test varies"
+        );
+        assert_ne!(
+            key_of(&current),
+            key_of(&cache_signature(TEST_SEED, nam_v + 1, ir_v)),
+            "a bump to nam::GENERATOR_VERSION left the cache key unchanged"
+        );
+        assert_ne!(
+            key_of(&current),
+            key_of(&cache_signature(TEST_SEED, nam_v, ir_v + 1)),
+            "a bump to ir::GENERATOR_VERSION left the cache key unchanged"
+        );
+    }
+
+    /// The mechanical half of the same guard: the `.nam` shape the corpus is built from, *and*
+    /// the weights that shape initialises to, are folded into the signature as data — so changing
+    /// the topology, the weight layout or an initialisation scale invalidates the cache even if
+    /// nobody remembers to bump `nam::GENERATOR_VERSION`. That is the issue's own scenario
+    /// ("change the WaveNet weight layout, and a warm cache keeps serving the old layout")
+    /// answered without a hand-maintained constant.
+    #[test]
+    fn the_cache_key_covers_the_nam_shape_the_corpus_is_built_from() {
+        let signature = cache_signature(TEST_SEED, nam::GENERATOR_VERSION, ir::GENERATOR_VERSION);
+        let shape = serde_json::to_string(&nam::shape_signature(CORPUS_NAM_SHAPE)).unwrap();
+        assert!(
+            signature.contains(&shape),
+            "the corpus's own shape is missing from the cache signature: {signature}"
+        );
+        let other = serde_json::to_string(&nam::shape_signature(WaveNetShape::Lite)).unwrap();
+        assert_ne!(shape, other, "two shapes must serialize differently");
+
+        assert!(
+            signature.contains(&nam_weight_fingerprint(TEST_SEED)),
+            "the corpus's initialised weights are missing from the cache signature: {signature}"
+        );
+        assert_ne!(
+            nam_weight_fingerprint(TEST_SEED),
+            nam_weight_fingerprint(TEST_SEED + 1),
+            "the weight fingerprint must depend on the corpus seed"
+        );
     }
 
     #[test]
@@ -732,10 +1061,30 @@ mod tests {
         }
     }
 
+    /// Uniqueness, checked by re-hashing the bytes on disk rather than by trusting the manifest.
+    /// The manifest's hashes are this generator's own claims about files it wrote; hashing what
+    /// is actually there is what makes this a check on the *corpus* instead of a check on the
+    /// manifest's internal consistency (through M14 it was the latter).
     #[test]
     fn every_content_hash_in_the_shared_corpus_is_unique() {
         let corpus = generate_shared_corpus(TEST_SEED).expect("generate");
-        let unique: HashSet<_> = corpus.entries.iter().map(|e| e.content_hash).collect();
+        let mut unique: HashSet<ContentHash> = HashSet::with_capacity(corpus.entries.len());
+        for entry in &corpus.entries {
+            let bytes = fs::read(&entry.path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", entry.path.display()));
+            let hash = ContentHash::of(&bytes);
+            assert_eq!(
+                hash,
+                entry.content_hash,
+                "{}: the manifest's hash does not match the file's actual bytes",
+                entry.path.display()
+            );
+            assert!(
+                unique.insert(hash),
+                "{} shares a content hash with an earlier file",
+                entry.path.display()
+            );
+        }
         assert_eq!(
             unique.len(),
             corpus.entries.len(),

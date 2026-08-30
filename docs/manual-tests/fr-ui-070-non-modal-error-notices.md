@@ -442,3 +442,41 @@ notice names where it went. **Step 9's re-run should check the file is actually 
 that concerns a device tells the user to edit `audio-settings.json` and restart. That is what the
 program can currently do, stated plainly rather than pointing at a control that does not exist;
 FR-IO-070's third clause and roadmap §15 item 16 still own it.
+
+---
+
+## The other axis of finding 7 — 2026-08-28
+
+**Appended, not edited. Nothing above moves, the `Result:` line included.**
+
+Re-reading issue #42 against the code W10 left produced a second instance of the *same* defect, on
+the axis nobody had looked at, and it was **created by W10's own fix rather than left over from
+before it**. Two of that pass's changes cost vertical space — FR-UI-070's remedy line beneath every
+message, and a list capped at sixteen rather than bounded on screen — and the top panel had no
+bound of any kind. Driving the real `namir_ui::render` at the CLAP editor's own 960x640 with a full
+sixteen-notice list measured the result: **thirteen `Dismiss` buttons drawn and three clipped away
+entirely**, in an editor that `can_resize() == false` and a list nothing but `Dismiss` empties — the
+exact sentence step 14 failed on, one rotation round. Worse, the notices had by then taken the whole
+window: **not one FR-UI-020 control was painted**, not the library panel, not a single parameter.
+
+Fixed in `crates/namir-ui/src/notices.rs`: the list is drawn inside a vertical scroll area capped at
+a third of the window's height, which shrinks to its content while the list is short and scrolls
+once it is not. The bound is a *fraction of the window*, not a number of rows, because a row's
+height depends on how far its text wraps — a row count would repeat, one level up, the mistake of a
+button whose position depends on the length of the label beside it.
+
+Three in-process assertions, all at 960x640 and all reading the layout `render` really painted
+rather than a copy of it: `notices::tests::a_full_notice_list_does_not_take_the_whole_editor`
+(nothing drawn outside the editor, and the list stops at its bound),
+`the_last_notice_of_a_full_list_is_reachable_by_scrolling` (the bound hides nothing: scrolled to the
+end, the lowest button belongs to the **last** notice and a real click dismisses it), and
+`app::tests::a_full_notice_list_leaves_the_rest_of_the_screen_on_a_960x640_editor` (the Library
+panel and a parameter control are both still on screen with a full list showing). The first and
+third were confirmed red against the code as W10 left it.
+
+**What a re-run should do about step 14.** The induction that matters is now *many* notices as well
+as a long one: fill the list — sixteen distinct failed loads will do it — and check that the panel
+stops after a few rows and scrolls, that the rest of the screen is still there, and that the last
+notice in the list can be scrolled to and dismissed. A mouse wheel over the notice area is the
+gesture; there is no scrollbar drag to rely on if the host swallows the wheel, and if it does,
+**that** is the finding.

@@ -127,9 +127,75 @@ device" — is **unbuilt**, which this file already recorded as a known gap; wha
 person has now watched it not happen on real hardware. FR-UI-010's "differing only in the presence
 of the audio-device panel" presumes a panel that does not exist either.
 
-**Result: step 2 EXECUTED 2026-08-27, and it fails its naming clause while passing the
-crash/hang/clean-stop clauses. Steps 1 and 3 remain NOT EXECUTED**, step 1 for want of a failable
+**Result: PARTIAL.** Step 2 executed 2026-08-27, and it fails its naming clause while passing the
+crash/hang/clean-stop clauses. **Steps 1 and 3 remain NOT EXECUTED**, step 1 for want of a failable
 device (R-5's residual risk, unchanged) and step 3 because the capability it exercises is unbuilt.
 FR-IO-070 as a whole is therefore **not met**: the requirement's "allow the user to select another
 device" clause has no implementation, and its "report the condition" clause reports a condition
 that names neither the device nor the side.
+
+---
+
+## Appended 2026-08-29 — the failable device now exists, and what it does and does not replace
+
+Recorded as an addition, not a re-verdict: **no verdict line above is edited**, and no manual step
+was re-run this session. What changed is the apparatus, in response to GitHub issue #24 ("FR-IO-070's
+stated verification apparatus — a failable virtual device — does not exist and has no owner").
+
+**Route 1 of that issue is built.** `crates/namir-app/src/stream.rs`'s `FakeBackend` — already the
+crate's no-hardware backend, and already capturing each direction's `cpal` error callback since
+issue #88 — can now be made to fail on demand in both of the shapes FR-IO-070's first sentence
+names: `FakeBackend::failing_to_open(direction)` refuses an open, and the captured
+`input_error`/`output_error` callbacks let a test induce a failure *while the stream is in use*.
+What a stream then did is readable from `FakeStreamLog` (plays, pauses and — the observable that
+mattered — stops, counted as drops, since dropping is what stopping a stream is in this crate).
+
+This makes the requirement's stated method (`I` with a virtual device that can be made to fail on
+demand) literally executable, on a headless container, on every merge. It needs no OS device
+manipulation and no `#[cfg(target_os)]`, which D-5.1 forbids outside `namir-platform` anyway.
+
+**What is now automated, and where.** All three tests are in `crates/namir-app/src/host.rs`:
+
+1. `a_device_lost_mid_stream_is_reported_and_stops_both_streams_cleanly` — opens the duplex path
+   through the production `crate::stream::open`, plays it, drives four output callbacks so the
+   failure is genuinely mid-stream, then fires the output error callback with **this document's own
+   step-2 transcript verbatim**, as `StreamFailure::Other`, which is the shape it really arrived in.
+   Asserts: no crash or hang; exactly one `app.audio_io.device_lost` notice naming the side *and*
+   the device; and both directions' streams stopped exactly once, after the report and not before.
+2. `a_device_that_fails_to_open_reports_and_leaves_no_half_open_stream` — step 1's condition, at
+   last inducible. The output open is refused after the input stream has been built, and what is
+   asserted is the teardown: the half-open capture stream is stopped rather than leaked, the
+   callbacks a refused open was handed are not retained, and the caller gets a reportable
+   `app.audio_io.device_open_failed` rather than a panic.
+3. `after_a_loss_the_next_launch_selects_another_device` — the restart-mediated continuation.
+
+**Two behaviour changes came out of writing them**, both recorded here because this document's step
+2 is the evidence for both:
+
+- `to_stream_failure` now maps `cpal::ErrorKind::StreamInvalidated` to `StreamFailure::DeviceLost`.
+  The note above says the unplug produced an error `cpal` had not classified. Reading the pinned
+  fork's own source says otherwise: its WASAPI `From<windows::core::Error>` maps
+  `AUDCLNT_E_RESOURCES_INVALIDATED` — precisely the code in the transcript — onto
+  `ErrorKind::StreamInvalidated`, a kind Namir's `match` did not name. M14's message-substring
+  recovery rescued this particular case only because the message happened to carry the raw OS
+  number; the fork's `default_device_change_error` returns the same kind with *no message at all*,
+  which no substring can reach.
+- **The stream is now actually stopped.** `app.audio_io.device_lost`'s catalogue text has said "the
+  stream was stopped" since M14 while nothing stopped it. `AppHost` owns the `RunningStreams` and
+  drops them on a device-loss classification — and on that classification only, since `cpal`
+  reports survivable conditions (`RealtimeDenied`, `DeviceChanged`) through the same callback.
+
+**What this does not replace.** Three things stay this document's, and step 1's and step 3's
+**NOT EXECUTED** stand:
+
+- The virtual device is virtual. It proves Namir's response to a failure report; it proves nothing
+  about *what a real OS and a real driver do* on a physical removal — which is R-5's actual subject,
+  and why step 2's transcript above is still the only evidence of that and still worth re-running on
+  hardware.
+- Step 1's real form (a real device refusing a real open — exclusive contention, a disabled
+  endpoint) is untouched: what is automated is Namir's teardown given a refusal, not any OS's
+  refusal.
+- Step 3 is **unbuilt, not merely unexecuted**. There is still no device-selection surface in either
+  shell (issue #26, roadmap §15 item 16), so FR-IO-070's third clause has no implementation for any
+  test to reach. Test 3 above asserts the restart-mediated substitute and says so; the requirement's
+  `// trace-partial:` tag names this clause as its remaining gap and is deliberately not promoted.

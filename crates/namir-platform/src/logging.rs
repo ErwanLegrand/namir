@@ -14,20 +14,35 @@
 //!
 //! **Why a mutex in a logger is acceptable here, and why this module lives in *this* crate.**
 //! D-5.1's table gives `namir-engine` `core, params, dsp, nam, ir` and nothing else, and `cargo
-//! run -p xtask -- layering` checks that edge on every merge — so no code on the audio thread can
-//! so much as *name* this module. The lint is what makes the lock safe; siting the writer in
-//! `namir-platform` is therefore load-bearing rather than incidental. What the lint does not cover
-//! is stated rather than assumed: `namir-app` and `namir-clap` depend on everything and own the
-//! audio callbacks, so those two crates *could* call in from `cpal`'s callback or from
-//! `process()`. Nothing mechanical stops them; the rule that no record is emitted from an audio
-//! callback or a per-frame UI path is held by review plus `namir-worker`'s `assert_no_alloc`
-//! stress harness, which fails on the allocation a record's formatting performs.
+//! run -p xtask -- layering` checks that edge on every merge — so no *production* code on the
+//! audio thread can so much as *name* this module. The lint is what makes the lock safe; siting
+//! the writer in `namir-platform` is therefore load-bearing rather than incidental. Two things the
+//! lint does not cover, stated rather than assumed:
+//!
+//! 1. **The edge check exempts dev-dependencies**, and `crates/namir-engine/Cargo.toml` carries
+//!    `namir-platform` as one (for D-7.4's `DenormalGuard` in `benches/denormal_guard.rs` and
+//!    `benches/rt_invariance.rs`). So `namir-engine`'s own benches and integration tests —
+//!    including the RT harnesses that drive `AudioEngine::process` — *can* name this module, and
+//!    the "cannot so much as name it" guarantee holds for the shipped build, not for the test
+//!    build. Nothing shipped is affected, and no test target does name it today; the carve-out is
+//!    recorded because a guarantee stated without its exception is the kind that gets relied on
+//!    where it does not hold.
+//! 2. **`namir-app` and `namir-clap` depend on everything and own the audio callbacks**, so those
+//!    two crates *could* call in from `cpal`'s callback or from `process()`. `xtask rt-logging`
+//!    (M9b, FR-ERR-030's static half) is what now stops them, per-module: it fails the build if
+//!    any file on its `AUDIO_THREAD_MODULES` list names `logging`, `Logger`, `LogLevel` or
+//!    `record_verbose`. Beyond the names it reads, the rule that no record is emitted from an
+//!    audio callback or a per-frame UI path is held by review plus `namir-worker`'s
+//!    `assert_no_alloc` stress harness, which fails on the allocation a record's formatting
+//!    performs.
 //!
 //! **What this module deliberately does not have.** No `BufWriter`: a half-flushed buffer loses
 //! precisely the records written in the moments a crash makes interesting, so a record is exactly
-//! one `write_all` of a complete line. No logger thread: NFR-PORT-030 forbids assuming a process
-//! can spawn unlimited threads, and a thread parked inside a `.clap` the host may unload would
-//! need a shutdown handshake the synchronous design needs not at all. No `#[cfg(target_os)]`:
+//! one `write_all` of a complete line. No open handle and no byte counter held between records
+//! either — see "Two writers, one file" below, which is the reason. No logger thread:
+//! NFR-PORT-030 forbids assuming a process can spawn unlimited threads, and a thread parked
+//! inside a `.clap` the host may unload would need a shutdown handshake the synchronous design
+//! needs not at all. No `#[cfg(target_os)]`:
 //! every platform difference is absorbed by [`crate::log_file_path`], which yields `None` on
 //! Android and iOS, and on `None` this module builds a **no-op sink** — the level check still
 //! runs, every record is dropped, no file is created, no error is raised. No dependency either:
@@ -35,12 +50,36 @@
 //! a date library. And no `unsafe`, so this crate's `unsafe_code = "deny"` is satisfied without a
 //! third designated module beside `denormal.rs` and `thread_priority.rs`.
 //!
-//! **Two processes share one file.** The standalone application and a DAW hosting the plugin both
-//! write `namir.log`; every plugin instance inside one DAW is covered by the process-global mutex,
-//! but two processes are not. Records stay attributable because each carries its pid. A failed
-//! `fs::rename` is therefore an ordinary outcome here, never an `unwrap` — the writer keeps its
-//! handle and retries the size check on the next record, so the 12 MiB ceiling can be exceeded
-//! transiently by a losing process but not indefinitely.
+//! **Two writers, one file.** The standalone application and a DAW hosting the plugin both write
+//! `namir.log`, and a user running both at once is ordinary rather than exotic. Every plugin
+//! instance inside one DAW is covered by the process-global mutex; two processes are not, and no
+//! lock here can cover them. Records stay attributable because each carries its pid. What makes
+//! the *file* survive the arrangement is that this writer keeps no state about it: an admitted
+//! record opens the path, reads the real length from the file it opened, rotates if this line
+//! would carry that length past [`LOG_MAX_BYTES`], writes exactly one line, and closes. So the cap
+//! is measured against every writer's bytes rather than against one writer's tally of its own, and
+//! each record lands in the file that bears the name at the moment it is written.
+//!
+//! That is not a refinement of an earlier design, it is the repair of a real data-loss path (#145,
+//! finding 11). A writer that seeds a counter at open and increments it by its own writes
+//! rotates late by exactly the other writer's contribution — measured at roughly double the 4 MiB
+//! cap — and a writer that keeps its handle goes on appending into whatever generation another
+//! process's rotation renamed its file into, until its own counter fires and it renames the live
+//! file over the one it was itself writing. Two writers alternating 400 records through the
+//! previous design left **85** of them in the three files, with holes in the middle of the
+//! history; the same run through this one leaves 148, contiguous, newest-first, inside the ceiling.
+//!
+//! What is *not* claimed. Rotation re-measures the file immediately before its renames and gives
+//! up when another writer has already rotated, but the window between that measurement and the
+//! rename is not closed: two writers crossing the cap within microseconds of each other can still
+//! rotate twice in a row, which retires one generation early — history is shortened, nothing is
+//! destroyed. Closing that would take an advisory lock on a file whose name never changes, which
+//! means a fourth file in a directory D-16.5 specifies as three, so it is not taken here. A record
+//! whose write is in flight when another process renames the file lands in the renamed
+//! generation — one record, still on disk. A failed `fs::rename` is an ordinary outcome, never an
+//! `unwrap`: no rotation happens for that record and the size check runs again on the next one.
+//! And the 12 MiB ceiling holds for any number of writers up to the one oversized record each may
+//! have in flight, since each file is measured as it is written rather than remembered.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -271,13 +310,24 @@ impl Logger {
         };
         logger.record(LOG_SESSION_STARTED, &detail);
         if let Some(value) = choice.rejected {
-            logger.record(
-                LOG_BAD_LEVEL,
-                &format!(
-                    "{LEVEL_ENV_VAR}={value} is not one of off/error/info/verbose; using {}",
-                    choice.level
-                ),
-            );
+            // Emitted through `write_locked`, deliberately bypassing `record`'s severity
+            // admission. [`LOG_BAD_LEVEL`] is a `Severity::Warning` (that const's doc comment
+            // argues why it may not be anything else), and `admits` does not pass a `Warning` at
+            // `LogLevel::Error` -- so a user running at `error` who mistyped `NAMIR_LOG` was told
+            // nothing at all by the record whose entire purpose is to tell them. The one check
+            // kept is `Off`, because that level's contract is that the file is never opened or
+            // created; a record forced past *that* would create a log the user switched off.
+            let bits = choice.level as u8;
+            if bits != LogLevel::Off as u8 {
+                logger.write_locked(
+                    bits,
+                    LOG_BAD_LEVEL,
+                    &format!(
+                        "{LEVEL_ENV_VAR}={value} is not one of off/error/info/verbose; using {}",
+                        choice.level
+                    ),
+                );
+            }
         }
         logger
     }
@@ -340,7 +390,7 @@ impl Logger {
             return;
         };
         let SinkState { target, scratch } = &mut *state;
-        let Some(target) = target.as_mut() else {
+        let Some(target) = target.as_ref() else {
             return;
         };
         format_record(
@@ -363,15 +413,14 @@ struct SinkState {
 }
 
 /// The file sink and its two retained generations.
+///
+/// Deliberately holds **no** open handle and **no** byte counter between records: see
+/// [`FileTarget::write_line`]. The whole struct is three paths, so a second writer — in this
+/// process or another — cannot make anything it caches wrong, because it caches nothing.
 struct FileTarget {
     path: PathBuf,
     generation_1: PathBuf,
     generation_2: PathBuf,
-    /// `None` whenever the file is not currently open — before the first admitted record, between
-    /// a rotation and its reopen, and after a write or open failure. Every one of those is
-    /// retried on the next record rather than latched.
-    file: Option<File>,
-    written: u64,
 }
 
 impl FileTarget {
@@ -380,54 +429,73 @@ impl FileTarget {
             generation_1: generation(&path, 1),
             generation_2: generation(&path, 2),
             path,
-            file: None,
-            written: 0,
         }
     }
 
-    /// Opens the sink if it is not open, adopting whatever length the file already has so a second
-    /// session appending to a part-full file still rotates at the right point. A failure to create
-    /// the directory or open the file is not raised anywhere — there is, by construction, nowhere
-    /// to report it *to* — it simply drops this record and is retried on the next one.
-    fn ensure_open(&mut self) -> bool {
-        if self.file.is_some() {
-            return true;
+    /// Opens whatever file currently bears the sink's name, for appending, creating it — and its
+    /// directory, if the first attempt failed for want of one — when it is not there.
+    ///
+    /// The directory is created only on the failure path rather than checked every record: the
+    /// common case is one `open`, and `create_dir_all` on an existing directory is a syscall this
+    /// module would otherwise make per record for nothing.
+    ///
+    /// A failure to create the directory or to open the file is not raised anywhere — there is, by
+    /// construction, nowhere to report it *to* — it simply drops this record and is retried on the
+    /// next one, so a disk that filled up and was then freed starts logging again on its own.
+    fn open(&self) -> Option<File> {
+        let opened = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.path);
+        if let Ok(file) = opened {
+            return Some(file);
         }
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-            && fs::create_dir_all(parent).is_err()
-        {
-            return false;
+        let parent = self.path.parent()?;
+        if parent.as_os_str().is_empty() || fs::create_dir_all(parent).is_err() {
+            return None;
         }
-        let Ok(file) = OpenOptions::new()
+        OpenOptions::new()
             .append(true)
             .create(true)
             .open(&self.path)
-        else {
-            return false;
-        };
-        self.written = file.metadata().map(|m| m.len()).unwrap_or_default();
-        self.file = Some(file);
-        true
+            .ok()
     }
 
     /// Writes one complete line, rotating first if it would carry the file past
     /// [`LOG_MAX_BYTES`].
     ///
-    /// The `written > 0` guard means a single record larger than the whole cap is written rather
-    /// than rotated around forever; that is bounded by the record, not unbounded growth, and
-    /// rotating an empty file would not help.
-    fn write_line(&mut self, bits: u8, line: &str) {
-        if !self.ensure_open() {
+    /// **The file is opened, measured, written and closed inside this one call, every record.**
+    /// That is what makes the size check and the rotation correct when a second process is writing
+    /// the same path (#145, finding 11), and it costs one `open` plus one `metadata` per
+    /// admitted record — paid by a writer whose records are per user action, and never by the
+    /// audio thread, which cannot reach this module at all.
+    ///
+    /// Two properties follow, and neither is available to a writer that keeps a handle. The length
+    /// is read from the file itself, so it counts *every* writer's bytes rather than this one's
+    /// tally of its own — a per-writer counter fires late by exactly the other writer's
+    /// contribution, which measured at roughly double the cap. And each record goes to the file
+    /// that bears the name *now*, so a writer whose file was renamed away by another process's
+    /// rotation cannot go on appending into a retired generation — which is what previously let
+    /// the next rotation rename a live session over the file the other writer was in.
+    ///
+    /// The `len > 0` guard means a single record larger than the whole cap is written rather than
+    /// rotated around forever; that is bounded by the record, not unbounded growth, and rotating
+    /// an empty file would not help.
+    fn write_line(&self, bits: u8, line: &str) {
+        let Some(mut file) = self.open() else {
             return;
-        }
-        let rotated = if self.written > 0 && self.written + line.len() as u64 > LOG_MAX_BYTES {
-            self.rotate()
-        } else {
-            None
         };
-        if !self.ensure_open() {
-            return;
+        let len = file.metadata().map(|m| m.len()).unwrap_or_default();
+        let mut rotated = None;
+        if len > 0 && len + line.len() as u64 > LOG_MAX_BYTES {
+            // Closed before the renames: a rename over a file the *same* process holds open is
+            // the case most likely to fail.
+            drop(file);
+            rotated = self.rotate(len);
+            let Some(reopened) = self.open() else {
+                return;
+            };
+            file = reopened;
         }
         if let Some(previous) = rotated
             && admits(bits, LOG_ROTATED.severity)
@@ -445,45 +513,46 @@ impl FileTarget {
                     file_label(&self.generation_1),
                 ),
             );
-            self.append(&notice);
+            append(&mut file, &notice);
         }
-        self.append(line);
+        append(&mut file, line);
     }
 
     /// Rolls `namir.log.1` to `namir.log.2` and `namir.log` to `namir.log.1`, returning the
-    /// rotated file's length on success.
+    /// rotated file's length when this call is the one that rotated.
     ///
-    /// The handle is dropped before the rename because a rename over a file the *same* process
-    /// holds open is the case most likely to fail; whether it succeeds over a file *another*
-    /// process holds open is inferred rather than measured (D-16.5's honest limitation), which is
-    /// exactly why a failure here returns `None` and leaves the caller to reopen and retry the
-    /// size check on the next record instead of panicking. Never a fourth generation: the first
-    /// rename overwrites `namir.log.2`, so at most three files ever exist.
-    fn rotate(&mut self) -> Option<u64> {
-        let previous = self.written;
-        self.file = None;
+    /// `observed` is the length that decided the rotation. The file at the name is re-measured
+    /// here, immediately before the renames, and the rotation is abandoned when it has since
+    /// *shrunk*: that means another writer rotated in between, and rotating again would retire a
+    /// generation that is one record old and discard the one behind it for nothing. The window
+    /// this leaves — between this measurement and the rename below — is not closed, and cannot be
+    /// without a lock file this module deliberately does not create; see the module doc.
+    ///
+    /// A failure to rename is an ordinary outcome, never an `unwrap`: it means no rotation this
+    /// record, the line is written to the file as it stands, and the size check runs again on the
+    /// next record. Never a fourth generation: the first rename overwrites `namir.log.2`, so at
+    /// most three files ever exist.
+    fn rotate(&self, observed: u64) -> Option<u64> {
+        let current = fs::metadata(&self.path)
+            .map(|m| m.len())
+            .unwrap_or_default();
+        if current < observed {
+            return None;
+        }
         // May legitimately fail because .1 does not exist yet; the outcome that matters is the
         // second rename.
         let _ = fs::rename(&self.generation_1, &self.generation_2);
         if fs::rename(&self.path, &self.generation_1).is_err() {
             return None;
         }
-        self.written = 0;
-        Some(previous)
+        Some(current)
     }
+}
 
-    fn append(&mut self, line: &str) {
-        let Some(file) = self.file.as_mut() else {
-            return;
-        };
-        if file.write_all(line.as_bytes()).is_ok() {
-            self.written += line.len() as u64;
-        } else {
-            // Drop the handle so the next record reopens: a disk that filled up and was then
-            // freed should start logging again on its own.
-            self.file = None;
-        }
-    }
+/// One `write_all` of one complete line. A failed write drops the record: the handle is closed at
+/// the end of the record either way, so there is no latched failure state to clear.
+fn append(file: &mut File, line: &str) {
+    let _ = file.write_all(line.as_bytes());
 }
 
 /// `namir.log` + `.1` / `.2`. Appends to the whole file name rather than replacing an extension,

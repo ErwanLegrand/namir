@@ -2,6 +2,16 @@
 //! as-is from the S-2 spike's `fixtures` module), plus the designed minimum-phase filter D-9.5
 //! lists that neither spike implemented.
 
+/// Bumped by hand whenever anything in this module changes the *bytes* it generates for a given
+/// set of arguments. The counterpart of [`crate::nam::GENERATOR_VERSION`], with the same single
+/// consumer and the same reason: [`crate::library`]'s corpus cache holds `.wav` files this module
+/// produced, and a cache key that does not name this generator will keep serving the previous
+/// version's files after it changes.
+///
+/// Version 1 is the pre-existing generator (introduced, not bumped, when the cache key first
+/// started folding it in).
+pub const GENERATOR_VERSION: u32 = 1;
+
 /// A unit impulse: the simplest possible analytically-known IR. Convolving with it is the
 /// identity, so any deviation in a convolution engine's output shows up as pure engine error.
 pub fn delta(len: usize) -> Vec<f32> {

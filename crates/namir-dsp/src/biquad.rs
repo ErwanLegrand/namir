@@ -35,9 +35,14 @@ pub struct BiquadCoeffs {
 }
 
 /// Frequencies at or above Nyquist, or non-positive, have no meaningful digital-filter design;
-/// clamped rather than made fallible so `design` is infallible at the type level (P1: this runs
-/// on a worker computing coefficients for the RT thread to consume, but the type must not force
-/// a `Result` onto a caller for an out-of-range UI value).
+/// clamped rather than made fallible so `design` is infallible at the type level (P1: this also
+/// runs *on the audio thread* — `AudioEngine::apply_param_direct` reaches `EqStage::retarget`
+/// and `IrStage::retarget_low_cut`, both of which redesign coefficients inline — so the type
+/// must not force a `Result` onto a caller for an out-of-range UI value, and there would be no
+/// sound way to report one from there anyway).
+///
+/// The floor gives way to the ceiling when the two invert, which they do below a 3 Hz sample
+/// rate: see `design`'s own comment (issue #126).
 const MIN_FREQ_HZ: f64 = 1.0;
 const NYQUIST_HEADROOM: f64 = 0.999;
 
@@ -58,9 +63,10 @@ impl BiquadCoeffs {
     }
 
     /// Designs a biquad per the RBJ Audio EQ Cookbook formulas. `freq_hz` is clamped to
-    /// `(MIN_FREQ_HZ, nyquist * NYQUIST_HEADROOM)` and `q` to `>= MIN_Q` before computing, so a
+    /// `(MIN_FREQ_HZ, nyquist * NYQUIST_HEADROOM)` — with the floor lowered to the ceiling at a
+    /// sample rate too low to contain both, below — and `q` to `>= MIN_Q` before computing, so a
     /// caller can never produce an unstable or degenerate design (house rule: clamp, don't fail,
-    /// for anything that could eventually run on the audio thread).
+    /// for anything that could eventually run on the audio thread, which this does).
     ///
     /// Shelf filters use a fixed shelf slope `S = 1`, per this crate's brief.
     pub fn design(
@@ -71,7 +77,15 @@ impl BiquadCoeffs {
         sample_rate: SampleRate,
     ) -> Self {
         let nyquist = sample_rate.hz_f64() / 2.0;
-        let freq_hz = freq_hz.clamp(MIN_FREQ_HZ, nyquist * NYQUIST_HEADROOM);
+        // `SampleRate::new` rejects only zero, so a host reporting 1 or 2 Hz is constructible,
+        // and at those rates the sub-Nyquist ceiling falls below `MIN_FREQ_HZ` -- bounds
+        // `f64::clamp` panics on ("min > max, or either was NaN"), which is what issue #126
+        // caught contradicting this function's documented infallibility. The ceiling is the
+        // bound that has to hold, since a design at or above Nyquist is the meaningless one, so
+        // the floor gives way to it rather than the reverse. Both stay finite and positive for
+        // every constructible rate (`nyquist >= 0.5`), so the clamp cannot panic.
+        let max_freq_hz = nyquist * NYQUIST_HEADROOM;
+        let freq_hz = freq_hz.clamp(MIN_FREQ_HZ.min(max_freq_hz), max_freq_hz);
         let q = q.max(MIN_Q);
 
         let w0 = 2.0 * std::f64::consts::PI * freq_hz / sample_rate.hz_f64();
@@ -504,6 +518,32 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// The degenerate end of the sample-rate axis, which the sweep above does not reach:
+    /// `SampleRate::new` rejects only zero, so a host reporting 1 or 2 Hz is constructible, and
+    /// at those rates Nyquist itself sits below `MIN_FREQ_HZ` — the two clamp bounds invert.
+    /// `design` documents itself infallible, so every kind must still return a finite design
+    /// rather than panicking inside `f64::clamp` (issue #126). 3 Hz is the first rate whose
+    /// bounds are the right way round, included as the neighbouring in-contract case.
+    #[test]
+    fn design_is_infallible_at_a_sample_rate_below_twice_the_minimum_frequency() {
+        let kinds = [
+            FilterKind::LowPass,
+            FilterKind::HighPass,
+            FilterKind::LowShelf,
+            FilterKind::HighShelf,
+            FilterKind::Peaking,
+        ];
+        for hz in [1u32, 2, 3] {
+            for &kind in &kinds {
+                let c = BiquadCoeffs::design(kind, 1000.0, 0.707, 6.0, sr(hz));
+                assert!(
+                    [c.b0, c.b1, c.b2, c.a1, c.a2].iter().all(|v| v.is_finite()),
+                    "non-finite design at {hz} Hz for {kind:?}: {c:?}"
+                );
             }
         }
     }
