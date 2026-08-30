@@ -20,7 +20,11 @@
 //!
 //! `UiIntent::SavePreset` carries "a name, not a path", already trimmed and non-empty, and says
 //! that a name illegal as a filename is *the host's* to reject. [`sanitise_name`] is that rule,
-//! shared so that a name one product accepts is never one the other refuses.
+//! shared so that a name one product accepts is never one the other refuses. It is held to
+//! Windows's naming rules on every platform — illegal characters *and* the reserved device names
+//! `CON`/`NUL`/`COM1`/… — because a preset one platform can write and another cannot open is
+//! exactly the interchangeability FR-STATE-030 claims, failing quietly. What it deliberately does
+//! not cover, and why, is on [`sanitise_name`] itself: names that differ only in case.
 
 use std::path::{Path, PathBuf};
 
@@ -62,10 +66,23 @@ pub fn preset_path(dir: &Path, name: &str) -> Option<PathBuf> {
 /// directory.
 ///
 /// Rejected: anything empty once trimmed, anything containing a path separator of either platform
-/// (so a name can never reach a sibling directory), anything that is `.` or `..`, and anything
-/// containing a character Windows refuses in a filename. The last is checked on every platform on
+/// (so a name can never reach a sibling directory), anything that is `.` or `..`, anything
+/// containing a character Windows refuses in a filename, and anything Win32 resolves as a device
+/// rather than as a file (`names_a_win32_device`, below). The last two are checked on every platform
+/// on
 /// purpose: a preset saved on Linux under a name Windows cannot represent would be a preset the
 /// other half of FR-STATE-030's interchangeability claim cannot open.
+///
+/// # What this rule does *not* cover
+///
+/// Two names differing only in case — `Crunch` and `crunch` — are two files on Linux and one file
+/// on Windows and on a default-configured macOS. This function cannot see that: it is given a name
+/// and no directory, so it has nothing to compare against. Saving `crunch` where `Crunch` already
+/// exists therefore silently replaces it on those platforms, and the recall list shows whichever
+/// spelling the filesystem kept. Closing that needs a directory listing and a decision about what
+/// to do when a collision is found (refuse, or ask the user to confirm an overwrite), both of which
+/// belong to the shells' save flow rather than to a naming predicate. Recorded here rather than
+/// silently left, so the limit is visible at the function every save goes through.
 #[must_use]
 pub fn sanitise_name(name: &str) -> Option<&str> {
     let name = name.trim();
@@ -77,7 +94,59 @@ pub fn sanitise_name(name: &str) -> Option<&str> {
     }) {
         return None;
     }
+    if names_a_win32_device(name) {
+        return None;
+    }
     Some(name)
+}
+
+/// Whether Win32 would resolve `name` as one of its reserved device names rather than as a file.
+///
+/// `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`–`COM9` and `LPT0`–`LPT9`, matched
+/// case-insensitively against the part of the name *before its first `.`* and ignoring trailing
+/// spaces — because that is how Win32 itself resolves them. The extension is irrelevant
+/// (`CON.namirpreset` is the console), and so is the directory
+/// (`%APPDATA%\Namir\Presets\NUL.namirpreset` is the null device). A save under such a name
+/// succeeds against the device, writes nothing to disk, and produces a preset that never appears in
+/// the recall list — a silent data loss, which is why the name is refused before a path is built
+/// rather than after the write appears to succeed.
+///
+/// `COM¹`/`COM²`/`COM³` (and the `LPT` equivalents) are included because Windows folds those
+/// superscript digits onto `COM1`/`COM2`/`COM3`; they are the one non-ASCII case, and they cost one
+/// `matches!` arm rather than an argument about whether anyone would type them.
+///
+/// Checked on every platform, not behind `#[cfg(windows)]`: this function was hoisted into
+/// `namir-platform` precisely so both shells hold one rule, and a preset a Linux user saves under a
+/// name Windows cannot open is FR-STATE-030's interchangeability failing in the direction nobody
+/// tests for.
+fn names_a_win32_device(name: &str) -> bool {
+    // Win32 stops at the first '.' and ignores trailing spaces, so `CON.old` and `CON ` are both
+    // the console. `split('.')` always yields at least one item, so the `unwrap_or` is unreachable
+    // and present only to keep this total.
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
+    {
+        return true;
+    }
+    let mut chars = stem.chars();
+    let (Some(c0), Some(c1), Some(c2), Some(c3), None) = (
+        chars.next(),
+        chars.next(),
+        chars.next(),
+        chars.next(),
+        chars.next(),
+    ) else {
+        return false;
+    };
+    let com = c0.eq_ignore_ascii_case(&'C')
+        && c1.eq_ignore_ascii_case(&'O')
+        && c2.eq_ignore_ascii_case(&'M');
+    let lpt = c0.eq_ignore_ascii_case(&'L')
+        && c1.eq_ignore_ascii_case(&'P')
+        && c2.eq_ignore_ascii_case(&'T');
+    (com || lpt) && matches!(c3, '0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')
 }
 
 /// Every `.namirpreset` directly inside `dir` as a `(name, path)` pair, named by file stem, sorted
@@ -151,6 +220,62 @@ mod tests {
             assert_eq!(preset_path(Path::new("/presets"), name), None);
         }
         assert_eq!(sanitise_name("  Crunch  "), Some("Crunch"));
+    }
+
+    /// Win32 resolves a reserved device stem before it ever reaches the filesystem, whatever the
+    /// extension and whatever the directory, so `CON.namirpreset` opens the console rather than
+    /// creating a file. A save against one of these reports success and leaves nothing behind, and
+    /// the preset never appears in the recall list. Checked on every platform for the same reason
+    /// the illegal-character set is: a name Linux accepts and Windows cannot represent breaks
+    /// FR-STATE-030's interchangeability.
+    #[test]
+    fn a_name_windows_resolves_as_a_device_is_refused_on_every_platform() {
+        for name in [
+            "CON",
+            "con",
+            "Con",
+            "NUL",
+            "nul",
+            "PRN",
+            "aux",
+            "COM1",
+            "com9",
+            "COM0",
+            "LPT1",
+            "lpt9",
+            "LPT0",
+            "CONIN$",
+            "conout$",
+            "CON.old",
+            "com1.backup",
+            "nul   ",
+            "  NUL  ",
+            "CON.namirpreset",
+        ] {
+            assert_eq!(sanitise_name(name), None, "{name:?} must be refused");
+            assert_eq!(preset_path(Path::new("/presets"), name), None, "{name:?}");
+        }
+
+        // Near misses that are ordinary names and must still be accepted -- the rule is the whole
+        // stem, not a prefix.
+        for name in [
+            "CONTROL",
+            "COM",
+            "COM10",
+            "COMA",
+            "Console",
+            "NULL",
+            "Crunch",
+            "LPT",
+            "my CON",
+            "CON2",
+            "AUXILIARY",
+        ] {
+            assert!(
+                sanitise_name(name).is_some(),
+                "{name:?} is not a device name and must be accepted"
+            );
+        }
     }
 
     #[test]

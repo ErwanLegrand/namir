@@ -2075,6 +2075,40 @@ The writer must therefore treat a failed rename as an ordinary outcome — keep 
 retry the size check on the next record — never an `unwrap`. The 12 MiB ceiling can consequently be
 exceeded transiently by a losing process; it cannot be exceeded indefinitely.
 
+*Consequence (added M15, 2026-08-30, from PR #145's review finding 11 — the paragraph above was
+optimistic on both of its claims, and both are now measured).* Two things it states are false of the
+code it describes. "The writer must therefore treat a failed rename as an ordinary outcome — keep
+the current handle, retry the size check on the next record" described a design that was never
+built: `rotate()` dropped the handle *before* attempting either rename. And "cannot be exceeded
+indefinitely" understated the failure: with each writer's byte counter tracking only its own
+appends, neither counter measured the file, so the cap fired late by the other process's whole
+contribution, and once one process renamed `namir.log` the other kept appending into the renamed
+generation until a later rotation renamed a third generation over a file still being written.
+Measured with two writers over one path, 400 records: **85 of 400 records survived**, with holes
+mid-history, and the largest generation reached **8,270,888 bytes against a 4 MiB cap**.
+
+`FileTarget` now holds three paths and no state: each admitted record opens the path, reads the
+length of the file it opened, rotates if the line would carry that length past the cap, writes, and
+closes; `rotate` re-stats immediately before the renames and abandons the rotation if the file has
+shrunk, meaning another writer got there first. The cap becomes a property of the file rather than
+of one writer's tally. Same measurement after: **148 of 400 records, contiguous**, no generation
+past the cap. Cost is 4.4 µs per record, and none of the workspace's twelve `record` call sites is
+in a loop or reachable from the audio thread.
+
+*Rejected:* per-process files, which contradict this decision's own three-file artifact set and the
+12 MiB arithmetic derived from it, and would need a pruning policy nobody has designed; and an
+advisory lock (`File::lock`, stable well below this workspace's MSRV), which to be correct must sit
+on a file whose name never changes — a fourth file where `clause_3` asserts exactly three — and
+would let a diagnostic writer block on another process's stuck rotation.
+
+*What is still open, stated rather than implied:* the window between the pre-rename stat and the
+rename is not closed, so two writers crossing the cap within microseconds rotate twice in a row —
+one generation retired early, nothing destroyed. A record whose write is in flight when another
+process renames lands in the renamed generation. The ceiling holds to within one oversized
+in-flight record per writer. Separately, this decision's "inferred, not measured" note about
+`fs::rename` over a file another process holds open is now **measured**: the test asserts it, so
+Windows CI exercises it on every run.
+
 *Honest limitation — UTC only.* `std` carries no timezone database, so local time is unavailable
 without the dependency D-16.4 declined. Timestamps are UTC and labelled `Z`; a mislabelled local
 time would be worse than a correctly labelled foreign one.
