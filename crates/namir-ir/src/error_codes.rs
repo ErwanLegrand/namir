@@ -43,6 +43,14 @@ pub const INVALID_SAMPLE_RATE: ErrorCode = ErrorCode::new(
 );
 
 /// The file declares zero audio frames — there is no impulse response to load at all.
+///
+/// Raised at two points, for one judgment. `wav::decode` raises it on the declared frame count;
+/// `PreparedIr::from_wav_bytes_with_schedule` raises it again after resampling, for a file that
+/// *has* frames but has none left at the engine rate — one or two frames at a rate far above the
+/// engine's, whose `round(len * to_hz / from_hz)` length rounds below 0.5. The second is the same
+/// D-9 judgment as the first ("an IR with nothing in it is not a usable IR"), applied at the only
+/// rate the convolver ever runs at; without it such a file loaded successfully and convolved to
+/// silence forever with no diagnostic. `detail` names which of the two it was.
 pub const EMPTY_IR: ErrorCode = ErrorCode::new(
     "ir.load.empty_ir",
     Severity::Error,

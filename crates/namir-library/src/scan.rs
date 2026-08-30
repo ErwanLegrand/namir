@@ -151,6 +151,13 @@ const MTIME_SETTLING_WINDOW_NANOS: i128 = 2_000_000_000;
 /// The caller-pumped scan step machine. See this module's doc comment.
 pub struct Scanner {
     pending_dirs: VecDeque<PathBuf>,
+    /// Directory symlinks discovered but not yet expanded, held apart from [`Self::pending_dirs`]
+    /// and drained only once that queue is empty — issue #73's second half. Both spellings of one
+    /// directory cannot be walked (see [`Self::visited_dirs`]), so *which* one survives is a real
+    /// choice, and making it here rather than leaving it to `read_dir`'s unspecified order is
+    /// what makes it the user's actual folder every time rather than whichever name the
+    /// filesystem happened to hand over first.
+    pending_links: VecDeque<PathBuf>,
     pending_files: VecDeque<DirEntryInfo>,
     /// The previous index's `(size, mtime)` per path, consulted for the incremental rule. Built
     /// once from the `prior` snapshot passed to [`Self::new`] — this scanner never mutates the
@@ -165,11 +172,18 @@ pub struct Scanner {
     /// becomes the next scan's baseline (issue #67).
     started_at: FileTime,
     seen: HashSet<PathBuf>,
-    /// Canonical paths of every directory this scan has expanded, plus the targets of every
-    /// directory symlink it has followed — issue #73's cycle guard. Consulted only when deciding
-    /// whether to follow a symlink, so an ordinary directory is never skipped for being in it;
-    /// each distinct target is followed at most once, so a link that leads back into the tree (or
-    /// to another link that does) terminates instead of recursing forever.
+    /// The canonical path of every directory this scan has expanded — issue #73's cycle *and*
+    /// duplicate guard. Consulted at the moment a queued entry is expanded, whatever queued it, so
+    /// one directory is walked at most once however many spellings of it the tree contains: a link
+    /// that leads back into the tree terminates instead of recursing forever, and a link that
+    /// merely names a directory the walk already covered (`Library/Favourites` -> `Library/Amps`,
+    /// an entirely ordinary setup) contributes no second copy of every file underneath it.
+    ///
+    /// Checking here rather than at the point a link is *resolved* is what makes the second half
+    /// true. A link is resolved while its parent's listing is being read; a plain directory is
+    /// only queued then, and canonicalised later — so a sibling link was always resolved before
+    /// its own target had been expanded, found the target unvisited, and was followed, leaving
+    /// both spellings walked in either listing order.
     visited_dirs: HashSet<PathBuf>,
     delta: ScanDelta,
     files_examined: usize,
@@ -187,6 +201,7 @@ impl Scanner {
             .collect();
         Scanner {
             pending_dirs: roots.into_iter().collect(),
+            pending_links: VecDeque::new(),
             pending_files: VecDeque::new(),
             prior: prior_map,
             prior_scan_started_at: prior.last_scan_started_at(),
@@ -212,7 +227,7 @@ impl Scanner {
 
     fn progress(&self) -> ScanProgress {
         ScanProgress {
-            dirs_pending: self.pending_dirs.len(),
+            dirs_pending: self.pending_dirs.len() + self.pending_links.len(),
             files_seen: self.seen.len() + self.pending_files.len(),
             files_examined: self.files_examined,
             files_hashed: self.files_hashed,
@@ -231,18 +246,81 @@ impl Scanner {
             self.expand_dir(fs, &dir);
             return Step::Progressed(self.progress());
         }
+        // Only once no plain directory is left anywhere: see `pending_links`.
+        if let Some(link) = self.pending_links.pop_front() {
+            self.expand_link(fs, &link);
+            return Step::Progressed(self.progress());
+        }
         self.delta.complete = true;
         Step::Finished
     }
 
+    /// Expands one plain directory: the visited-set claim first, then the listing.
+    ///
+    /// The claim is made here, at expansion, rather than where a link is resolved — see
+    /// [`Self::visited_dirs`] for why that distinction is the whole of issue #73's duplicate bug.
+    /// A directory that cannot be canonicalised claims nothing and is listed anyway: the guard
+    /// degrades to "walk it", which still terminates, rather than to "skip it".
+    ///
+    /// A plain directory losing the claim means the scan reached one directory by two names
+    /// without a symlink of its own in the way — overlapping roots, essentially — so nothing is
+    /// warned about; it is the same tree, already walked. The prefix is still recorded, because
+    /// the files under it were `seen` under the *other* spelling and their absence under this one
+    /// is not evidence that anything was deleted.
     fn expand_dir(&mut self, fs: &dyn ScanFs, dir: &Path) {
-        // Recorded before the listing, so a symlink *inside* this directory that points back at
-        // it is recognised straight away rather than expanding a second copy of it (issue #73).
-        // A directory that cannot be canonicalised simply isn't recorded — the guard degrades to
-        // "follow the link", which still terminates, rather than to "skip it".
-        if let Ok(canonical) = fs.canonical_dir(dir) {
-            self.visited_dirs.insert(canonical);
+        if let Ok(canonical) = fs.canonical_dir(dir)
+            && !self.visited_dirs.insert(canonical)
+        {
+            self.delta.unreadable_prefixes.push(dir.to_path_buf());
+            return;
         }
+        self.list_children(fs, dir);
+    }
+
+    /// Expands one directory symlink, popped from [`Self::pending_links`] after every plain
+    /// directory has been expanded.
+    ///
+    /// Issue #73: that a symlink is followed at all was never a decision, only a side effect of
+    /// asking `file_type()` (which does not follow links) and nothing else — and its cost was
+    /// never recorded: a user who symlinks a model collection into the library root saw an empty
+    /// library and no diagnostic at all, which is an entirely ordinary setup on Linux and macOS.
+    /// Following it makes that setup work; [`Self::visited_dirs`] is what replaces the
+    /// loop-safety the old shape got for free, so a link that points at an ancestor, at a sibling
+    /// that points back, or at itself is recognised and skipped rather than recursed into.
+    ///
+    /// Same claim as [`Self::expand_dir`] makes, then, with the two
+    /// outcomes a link has that a directory does not: a target that cannot be resolved at all,
+    /// and a target some other spelling already covered — which, links being expanded last, is
+    /// always genuinely this link being the redundant name for a directory the user has, so
+    /// `SYMLINK_NOT_FOLLOWED` is true of it.
+    fn expand_link(&mut self, fs: &dyn ScanFs, link: &Path) {
+        let canonical = match fs.canonical_dir(link) {
+            Ok(canonical) => canonical,
+            Err(e) => {
+                self.delta
+                    .warnings
+                    .push(LibraryWarning::new(e.code, e.detail));
+                self.delta.unreadable_prefixes.push(link.to_path_buf());
+                return;
+            }
+        };
+        if !self.visited_dirs.insert(canonical) {
+            self.delta.warnings.push(LibraryWarning::new(
+                error_codes::SYMLINK_NOT_FOLLOWED,
+                format!("{}", link.display()),
+            ));
+            // Whatever was indexed under this spelling on an earlier scan is still on disk; this
+            // scan simply reached it by another name. Not a removal.
+            self.delta.unreadable_prefixes.push(link.to_path_buf());
+            return;
+        }
+        self.list_children(fs, link);
+    }
+
+    /// The listing itself, shared by [`Self::expand_dir`] and [`Self::expand_link`] — by this
+    /// point the directory's claim on [`Self::visited_dirs`] has been made and won, so this is
+    /// only ever "read one directory and queue what is in it".
+    fn list_children(&mut self, fs: &dyn ScanFs, dir: &Path) {
         let listing = match fs.read_dir(dir) {
             Ok(listing) => listing,
             Err(e) => {
@@ -284,7 +362,10 @@ impl Scanner {
                 continue;
             }
             if entry.is_dir_symlink {
-                self.expand_dir_symlink(fs, &entry.path);
+                // Queued, not resolved: the visited-set claim belongs at expansion time, and
+                // deferring it behind every plain directory is what makes the real folder rather
+                // than the link the spelling that survives (issue #73).
+                self.pending_links.push_back(entry.path.clone());
                 continue;
             }
             if probe::kind_from_extension(&entry.path).is_some() {
@@ -293,42 +374,6 @@ impl Scanner {
             // Files with an unrecognised extension are neither an error nor indexed -- FR-LIB-010
             // scans "for .nam and IR files", not every file in a directory.
         }
-    }
-
-    /// Issue #73: a symlink to a directory is followed, guarded by a visited set of canonical
-    /// targets.
-    ///
-    /// Not following one was never a decision, only a side effect of asking `file_type()` (which
-    /// does not follow links) and nothing else — and its cost was never recorded: a user who
-    /// symlinks a model collection into the library root saw an empty library and no diagnostic
-    /// at all, which is an entirely ordinary setup on Linux and macOS. Following it makes that
-    /// setup work; the visited set is what replaces the loop-safety the old shape got for free.
-    /// Each canonical target is followed at most once, so a link that points at an ancestor, at a
-    /// sibling that points back, or at itself is expanded once and then recognised and skipped —
-    /// the walk always terminates, and the second spelling is reported rather than silently
-    /// dropped.
-    fn expand_dir_symlink(&mut self, fs: &dyn ScanFs, link: &Path) {
-        let canonical = match fs.canonical_dir(link) {
-            Ok(canonical) => canonical,
-            Err(e) => {
-                self.delta
-                    .warnings
-                    .push(LibraryWarning::new(e.code, e.detail));
-                self.delta.unreadable_prefixes.push(link.to_path_buf());
-                return;
-            }
-        };
-        if !self.visited_dirs.insert(canonical) {
-            self.delta.warnings.push(LibraryWarning::new(
-                error_codes::SYMLINK_NOT_FOLLOWED,
-                format!("{}", link.display()),
-            ));
-            // Whatever was indexed under this spelling on an earlier scan is still on disk; this
-            // scan simply reached it by another name. Not a removal.
-            self.delta.unreadable_prefixes.push(link.to_path_buf());
-            return;
-        }
-        self.pending_dirs.push_back(link.to_path_buf());
     }
 
     fn examine_file(&mut self, fs: &dyn ScanFs, info: DirEntryInfo) {
@@ -1083,6 +1128,77 @@ mod tests {
             delta.warnings[0].code.id,
             error_codes::SYMLINK_NOT_FOLLOWED.id
         );
+    }
+
+    /// **The ordinary case issue #73's guard did not actually cover:** `Library/Favourites` ->
+    /// `Library/Amps`, both spellings inside the scanned tree.
+    ///
+    /// The visited set was consulted only when deciding whether to *follow a link*, and a link is
+    /// resolved the moment its parent's listing is read, while a plain directory is only *queued*
+    /// then and canonicalised later. So a sibling link always reached `expand_dir_symlink` before
+    /// its target had been expanded, found the target's canonical path unvisited, and both
+    /// spellings were walked — in either listing order, `read_dir`'s order not being guaranteed.
+    /// Every file underneath got two `LibraryEntry` rows under two paths: each model listed twice
+    /// in the library, and `paths_for_hash` reporting a duplicate that is not one.
+    ///
+    /// The surviving spelling is the real directory, not whichever the listing happened to name
+    /// first: links are expanded only once every plain directory has been, so the path the user
+    /// actually has on disk is the one indexed and the skipped one is always genuinely a symlink
+    /// — which is what makes the `SYMLINK_NOT_FOLLOWED` warning true of it.
+    #[test]
+    fn a_symlink_beside_its_own_target_indexes_each_file_once() {
+        use crate::fs::FakeFs;
+        for link_listed_first in [true, false] {
+            let root = PathBuf::from("/fake/root");
+            let amps = root.join("amps");
+
+            let mut fake = FakeFs::new();
+            if link_listed_first {
+                fake.add_dir_symlink(&root, "favourites", &amps);
+                fake.add_dir(&root, "amps");
+            } else {
+                fake.add_dir(&root, "amps");
+                fake.add_dir_symlink(&root, "favourites", &amps);
+            }
+            fake.add_file(
+                &amps,
+                "amp.nam",
+                4,
+                FileTime::from_system_time(std::time::UNIX_EPOCH),
+                b"junk".to_vec(),
+            );
+
+            let delta = Scanner::new(vec![root.clone()], &Index::empty()).run_to_completion(&fake);
+            let mut paths: Vec<PathBuf> = delta.upserts.iter().map(|e| e.path.clone()).collect();
+            paths.sort();
+            assert_eq!(
+                paths,
+                vec![amps.join("amp.nam")],
+                "link listed first: {link_listed_first} -- each file indexed once, under the real \
+                 directory rather than once per spelling"
+            );
+            assert_eq!(
+                delta.warnings.len(),
+                1,
+                "link listed first: {link_listed_first} -- the second spelling is reported, not \
+                 silently dropped: {:?}",
+                delta.warnings
+            );
+            assert_eq!(
+                delta.warnings[0].code.id,
+                error_codes::SYMLINK_NOT_FOLLOWED.id
+            );
+
+            // And the duplicate is not one the rest of the library has to live with either.
+            let mut index = Index::empty();
+            index.apply(delta);
+            let hash = namir_core::ContentHash::of(b"junk");
+            assert_eq!(
+                index.paths_for_hash(hash),
+                [amps.join("amp.nam")],
+                "link listed first: {link_listed_first} -- one file on disk is one path"
+            );
+        }
     }
 
     /// A skipped symlink is not a deletion either: whatever an earlier scan indexed under that
