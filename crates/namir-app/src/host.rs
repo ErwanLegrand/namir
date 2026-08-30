@@ -1899,7 +1899,17 @@ mod tests {
         assert_eq!(snapshot.loaded_ir_name.as_deref(), Some("fender.wav"));
 
         host.dispatch(UiIntent::RecallPreset { path });
-        let snapshot = snapshot_until(&mut host, |s| s.params.get(key) == Some(-18.0));
+        // Gate on *both* halves of the recall. The parameter is applied straight from the decoded
+        // document, but the IR is a resource: reloading it is a separate worker job that finishes
+        // later, so waiting on the parameter alone races the thing this test is actually about.
+        // Observed failing on Windows CI, where the slower filesystem lost that race and the
+        // snapshot still showed `fender.wav` -- the file the recall was meant to displace.
+        // `snapshot_until` gives up after 4 s and returns the last snapshot rather than panicking,
+        // so a recall that genuinely never restored the IR still fails on the second assertion
+        // below, carrying its notices.
+        let snapshot = snapshot_until(&mut host, |s| {
+            s.params.get(key) == Some(-18.0) && s.loaded_ir_name.as_deref() == Some("marshall.wav")
+        });
         assert_eq!(
             snapshot.params.get(key),
             Some(-18.0),
