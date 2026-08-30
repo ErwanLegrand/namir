@@ -215,9 +215,9 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
     /// on the day the answer starts being transmitted, and
     /// `tests/clap_host_gui.rs` carries a live record of the swallowing.
     ///
-    /// **Upstream status (issue #144, as of 2026-08-30): not reported.** A search of
-    /// `prokopyl/clack` for `set_size` returns nothing, so there is no upstream ticket to track
-    /// and no released version to move to — crates.io publishes only 0.1.0 and 0.1.1. The fix is
+    /// **Upstream status (issue #144): reported as `prokopyl/clack#101`.** There is now a ticket
+    /// to track, but still no released version to move to — crates.io publishes only 0.1.0 and
+    /// 0.1.1, neither yanked. The fix is
     /// one line in that trampoline (`Ok(...is_ok())`, as its siblings already read). Nor is the
     /// version *pinned*: `Cargo.toml` declares `"0.1.1"`, i.e. `^0.1.1`, and it is the committed
     /// `Cargo.lock` that holds it — so a `cargo update` that picks up a fixed 0.1.2 is what
