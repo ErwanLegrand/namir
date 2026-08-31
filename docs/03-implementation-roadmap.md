@@ -6085,6 +6085,10 @@ NFR-LIC-030, NFR-BUILD-020). Add bundle-and-inspect lanes on all three platforms
   as the benchmark does puts the breach near 10 700 entries**, and FR-LIB-020's 10 000 is a floor on
   what Namir claims to support. No regression test can ever catch this, because nothing regresses.
   Take the index off the instantiation path.
+  *Done at M14 (2026-08-27, issue #22), ahead of this phase — noted here rather than struck from the
+  bullet.* `LibraryService::open` no longer parses the index; a loader thread reads it once per path
+  and shares that across instances. §22 R-18 carries the full note, including what the change does
+  not retire. The rest of this phase — the human sessions — is untouched by it.
 - **R-11 / issue #23 — signing.** If 1.0 is a public release, a quarantined macOS plugin has no
   user-visible load path at all and the CI signing route is unreachable because the keychain import
   is unbuilt. Decide, then build or record.

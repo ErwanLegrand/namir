@@ -59,8 +59,10 @@
 //! spin or deadlock up there can take a machine down. The module now targets the policy minimum
 //! plus a fixed offset -- 11 on Linux, 25 on macOS -- which is the band JACK and PipeWire settled
 //! on for the same reason. The constant and its full argument are in `unix::RT_PRIORITY_ABOVE_MIN`
-//! below; **it is not yet recorded in D-13.2**, whose text still reads "at that policy's maximum
-//! priority", and doing so is the follow-up this change owes `docs/02-architecture.md`.
+//! below, and **D-13.2 now carries the matching `*Consequence*` note** (changelog 0.36). That
+//! decision's original text still reads "at that policy's maximum priority" and deliberately still
+//! does: a decision is superseded by an appended note here, never silently rewritten, so read the
+//! two together. This comment claimed the record was still owed until that note landed.
 //!
 //! **What the macOS path is not (issue #81).** `pthread_setschedparam` with `SCHED_FIFO` is *not*
 //! how Darwin grants an audio thread real-time scheduling. CoreAudio-grade threads there are
