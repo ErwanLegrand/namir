@@ -64,7 +64,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for s in &reference {
         raw.extend_from_slice(&s.to_le_bytes());
     }
-    std::fs::write("fixtures/reference_render_f32le.bin", &raw)?;
+    // `--render-only <path>` writes just this render and stops. That is how the
+    // native-vs-native *control* render is produced: build a second time into an
+    // isolated CARGO_TARGET_DIR with different codegen flags and point it at a
+    // different path. Without the flag a control build would also sit through the
+    // 20-configuration bench for a file it writes in the first second.
+    let render_only = std::env::args().skip_while(|a| a != "--render-only").nth(1);
+    let render_path = render_only
+        .clone()
+        .unwrap_or_else(|| "fixtures/reference_render_f32le.bin".to_string());
+    std::fs::write(&render_path, &raw)?;
+    if render_only.is_some() {
+        println!("wrote {render_path} ({} samples)", PARITY_SAMPLES);
+        return Ok(());
+    }
 
     for (name, model) in [("a1_standard", &a1), ("a2_lite", &a2)] {
         for signal in [Signal::Steady, Signal::Decaying] {

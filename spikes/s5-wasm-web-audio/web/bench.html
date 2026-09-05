@@ -14,10 +14,6 @@
     <option value="decaying">decaying</option>
   </select>
 </p>
-<p>
-  <label><input type="checkbox" id="anyway"> bench anyway if parity is above -100 dB
-  (read RESULTS.md's Parity section first)</label>
-</p>
 <button id="go">Run</button>
 <pre id="out"></pre>
 <script type="module">
@@ -25,7 +21,7 @@
 //   ?auto=1        run on load
 //   &reps=0        parity only, no timing run
 //   &measured=N    override the measured-block count
-//   &model=a2_lite &decaying=1 &anyway=1
+//   &model=a2_lite &decaying=1
 const q = new URLSearchParams(location.search);
 const out = document.getElementById("out");
 document.getElementById("coi").textContent = String(self.crossOriginIsolated);
@@ -38,8 +34,9 @@ const run = () => {
     const d = e.data;
     if (d.kind === "parity") {
       out.textContent +=
-        `parity vs native reference: ${d.parityDb.toFixed(2)} dB ` +
-        `${d.pass ? "(PASS, below -100 dB)" : "(FAIL, at or above -100 dB)"}\n`;
+        `parity: residual ${d.residual.toFixed(2)} dB vs native-vs-native control ` +
+        `${d.control.toFixed(2)} dB -> margin ${d.margin.toFixed(2)} dB ` +
+        `${d.pass ? "(PASS, within 3 dB)" : "(FAIL, worse than the control by >3 dB)"}\n`;
     } else if (d.kind === "stats") {
       out.textContent +=
         `rep ${d.rep}: p50 ${d.p50.toFixed(2)}% | p99 ${d.p99.toFixed(2)}% | ` +
@@ -74,7 +71,6 @@ const run = () => {
     measured: Number(q.get("measured") || 100000),
     decaying: q.has("decaying") || document.getElementById("signal").value === "decaying",
     reps: q.has("reps") ? Number(q.get("reps")) : 5,
-    allowParityFail: q.has("anyway") || document.getElementById("anyway").checked,
   });
 };
 document.getElementById("go").onclick = run;

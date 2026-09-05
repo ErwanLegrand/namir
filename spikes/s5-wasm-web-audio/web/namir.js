@@ -14,20 +14,36 @@ export function writeBytes(mod, bytes) {
   return ptr;
 }
 
-/// Renders PARITY_SAMPLES through the wasm chain and compares against the native
-/// reference render, in dB. Shared by the browser worker and the Node runner so both
-/// report the same number computed the same way.
-export function parityDb(mod, refBytes, samples) {
-  const outPtr = mod.exports.render(samples);
-  const got = new Float32Array(mod.memory.buffer, outPtr, samples);
-  const want = new Float32Array(refBytes.buffer, refBytes.byteOffset, samples);
+/// Error energy of `got` relative to `want`, in dB. `want` all-zero would mean the
+/// reference itself is silent; report that as +Infinity rather than NaN, so it can
+/// never be mistaken for a pass.
+export function dbBetween(got, want, n) {
   let num = 0, den = 0;
-  for (let i = 0; i < samples; i++) {
+  for (let i = 0; i < n; i++) {
     const d = got[i] - want[i];
     num += d * d;
     den += want[i] * want[i];
   }
-  // den == 0 would mean the *native* reference is silent; report that as +Infinity
-  // rather than NaN, so it can never be mistaken for a pass.
   return den === 0 ? Infinity : 10 * Math.log10(num / den);
+}
+
+export function f32(bytes, n) {
+  return new Float32Array(bytes.buffer, bytes.byteOffset, n);
+}
+
+/// The parity criterion (coordinator ruling, fix round 1). The original spec bar was an
+/// absolute -100 dB; it is unreachable by *any* build of this chain, so it tested
+/// nothing. The criterion is relative instead: the wasm-vs-native residual must sit
+/// within CONTROL_MARGIN_DB of the native-vs-native control, and the control is
+/// measured in this same run from two native renders rather than hardcoded.
+export const CONTROL_MARGIN_DB = 3.0;
+
+export function parity(mod, refBytes, controlBytes, samples) {
+  // render() can grow linear memory, so read `.buffer` only after it returns.
+  const ptr = mod.exports.render(samples);
+  const got = new Float32Array(mod.memory.buffer, ptr, samples);
+  const want = f32(refBytes, samples);
+  const control = dbBetween(f32(controlBytes, samples), want, samples);
+  const residual = dbBetween(got, want, samples);
+  return { residual, control, margin: residual - control, pass: residual - control <= CONTROL_MARGIN_DB };
 }
