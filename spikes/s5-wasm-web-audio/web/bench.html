@@ -15,9 +15,11 @@
   </select>
   signal
   <select id="signal">
-    <option value="steady">steady</option>
-    <option value="decaying">decaying</option>
+    <option value="0">steady</option>
+    <option value="1">amp-decay (NOT a denormal test)</option>
+    <option value="2">subnormal-tail (denormal probe)</option>
   </select>
+  <label><input type="checkbox" id="census"> census only (prove subnormals, no timing)</label>
 </p>
 <button id="go">Run</button>
 <pre id="out"></pre>
@@ -27,7 +29,9 @@
 //   &reps=0        parity only, no timing run
 //   &measured=N    override the measured-block count
 //   &wasm=simd128  pick the artefact under web/build/ (default: the <select>)
-//   &model=a2_lite &decaying=1
+//   &model=a2_lite
+//   &signal=0|1|2  0 steady, 1 amplitude-decay, 2 subnormal-tail (default 0)
+//   &census=1      run the untimed subnormal census instead of the timing reps
 const q = new URLSearchParams(location.search);
 const out = document.getElementById("out");
 document.getElementById("coi").textContent = String(self.crossOriginIsolated);
@@ -43,6 +47,12 @@ const run = () => {
         `parity: residual ${d.residual.toFixed(2)} dB vs native-vs-native control ` +
         `${d.control.toFixed(2)} dB -> margin ${d.margin.toFixed(2)} dB ` +
         `${d.pass ? "(PASS, within 3 dB)" : "(FAIL, worse than the control by >3 dB)"}\n`;
+    } else if (d.kind === "census") {
+      out.textContent +=
+        `census ${d.signal}: blocks ${d.blocks} | subnormal-out blocks ${d.subBlocks} ` +
+        `(${(100 * d.subBlocks / d.blocks).toFixed(1)}%) | subnormal-out samples ${d.subSamples} | ` +
+        `min |x| ${d.minAbs.toExponential(3)}
+`;
     } else if (d.kind === "stats") {
       out.textContent +=
         `rep ${d.rep}: p50 ${d.p50.toFixed(2)}% | p99 ${d.p99.toFixed(2)}% | ` +
@@ -76,7 +86,8 @@ const run = () => {
     ir: "../fixtures/ir_48k.wav",
     warmup: 5000,
     measured: Number(q.get("measured") || 100000),
-    decaying: q.has("decaying") || document.getElementById("signal").value === "decaying",
+    signal: Number(q.get("signal") ?? document.getElementById("signal").value),
+    census: q.has("census") ? q.get("census") !== "0" : document.getElementById("census").checked,
     reps: q.has("reps") ? Number(q.get("reps")) : 5,
   });
 };
