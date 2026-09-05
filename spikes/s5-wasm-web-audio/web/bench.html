@@ -1,0 +1,82 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>S-5 bench</title>
+<p>crossOriginIsolated: <b id="coi"></b></p>
+<p>
+  model
+  <select id="model">
+    <option value="../fixtures/a1_standard.nam">a1_standard</option>
+    <option value="../fixtures/a2_lite.nam">a2_lite</option>
+  </select>
+  signal
+  <select id="signal">
+    <option value="steady">steady</option>
+    <option value="decaying">decaying</option>
+  </select>
+</p>
+<p>
+  <label><input type="checkbox" id="anyway"> bench anyway if parity is above -100 dB
+  (read RESULTS.md's Parity section first)</label>
+</p>
+<button id="go">Run</button>
+<pre id="out"></pre>
+<script type="module">
+// Query params, so a headless browser can drive this without a click:
+//   ?auto=1        run on load
+//   &reps=0        parity only, no timing run
+//   &measured=N    override the measured-block count
+//   &model=a2_lite &decaying=1 &anyway=1
+const q = new URLSearchParams(location.search);
+const out = document.getElementById("out");
+document.getElementById("coi").textContent = String(self.crossOriginIsolated);
+const run = () => {
+  if (!self.crossOriginIsolated) {
+    out.textContent = "NOT cross-origin isolated: timer is 100us, results are not quotable.\n";
+  }
+  const w = new Worker("./bench-worker.js", { type: "module" });
+  w.onmessage = (e) => {
+    const d = e.data;
+    if (d.kind === "parity") {
+      out.textContent +=
+        `parity vs native reference: ${d.parityDb.toFixed(2)} dB ` +
+        `${d.pass ? "(PASS, below -100 dB)" : "(FAIL, at or above -100 dB)"}\n`;
+    } else if (d.kind === "stats") {
+      out.textContent +=
+        `rep ${d.rep}: p50 ${d.p50.toFixed(2)}% | p99 ${d.p99.toFixed(2)}% | ` +
+        `p99.9 ${d.p999.toFixed(2)}% | max ${d.max.toFixed(2)}% | ` +
+        `estimator ${d.estimator.toFixed(2)}% | ${d.quotable ? "quotable" : "CONTAMINATED"}\n`;
+    } else if (d.kind === "error") {
+      out.textContent += `ERROR: ${d.message}\n`;
+    } else {
+      out.textContent += "done\n";
+    }
+  };
+  w.onerror = (e) => { out.textContent += `WORKER ERROR: ${e.message}\n`; };
+  // Mirrored into the title so `msedge --headless --dump-dom` picks the results up.
+  // A headless browser cannot be read after the fact: --dump-dom fires long before the
+  // render finishes. Under ?auto=1 each line is also beaconed to the dev server, which
+  // 404s it but logs the query string -- that log is the transcript. Title mirroring is
+  // kept for an interactive headless --dump-dom.
+  setInterval(() => { document.title = "S5 " + out.textContent.split(String.fromCharCode(10)).join(" ~ "); }, 250);
+  if (q.has("auto")) {
+    const beacon = (t) => fetch("/__s5?" + encodeURIComponent(t)).catch(() => {});
+    const inner = w.onmessage;
+    w.onmessage = (e) => {
+      inner(e);
+      beacon(JSON.stringify(e.data));
+      if (e.data.kind === "done" || e.data.kind === "error") beacon("FINISHED");
+    };
+  }
+  w.postMessage({
+    model: `../fixtures/${q.get("model") || document.getElementById("model").value.replace(/.*\//, "").replace(/\.nam$/, "")}.nam`,
+    ir: "../fixtures/ir_48k.wav",
+    warmup: 5000,
+    measured: Number(q.get("measured") || 100000),
+    decaying: q.has("decaying") || document.getElementById("signal").value === "decaying",
+    reps: q.has("reps") ? Number(q.get("reps")) : 5,
+    allowParityFail: q.has("anyway") || document.getElementById("anyway").checked,
+  });
+};
+document.getElementById("go").onclick = run;
+if (q.has("auto")) run();
+</script>
