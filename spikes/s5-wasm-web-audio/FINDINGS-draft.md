@@ -49,10 +49,18 @@ twice the ~30 ms soft reference, before anything the API does not account for.
 | native, x86-64-v3, steady | 6.30–6.65 | 13.60–14.69 | — |
 | Edge 152 / wasm scalar, steady | 38.63–39.00 | **74.44–85.88** | 50.25–50.44 |
 | Edge 152 / wasm simd128, steady (20 000 blocks) | 11.44–11.81 | 28.88–30.94 | 18.00–18.37 |
-| Edge 152 / wasm simd128, steady (100 000 blocks, sustained) | 12.94 | **32.44–33.56** | ~18 |
-| Edge 152 / wasm simd128, subnormal tail | 17.44 | **44.25–58.13** | — |
-| Edge 152 / wasm simd128, A2 Lite, steady (sustained) | 3.00–3.19 | 14.81–16.31 | 9.75–9.94 |
-| Edge 152 / wasm simd128, A2 Lite, subnormal tail | 3.75 | 19.41 | — |
+| Edge 152 / wasm simd128, steady (100 000 blocks, 2 reps) | 13.12–13.31 | **32.44–33.56** | 18.19 |
+| Edge 152 / wasm simd128, steady (100 000 blocks, 5-rep replication, rebuilt artefact) | 12.75–13.13 | 30.00–31.31 | 19.50–19.88 |
+| Edge 152 / wasm simd128, subnormal tail (5 reps) | 17.44–17.81 | **44.25–58.13** | 19.50 |
+| Edge 152 / wasm simd128, A2 Lite, steady (100 000 blocks, 2 reps) | 3.00 | 14.81–16.31 | 9.56–9.75 |
+| Edge 152 / wasm simd128, A2 Lite, subnormal tail (5 reps) | 3.38–3.75 | 18.56–20.81 | 10.12–10.31 |
+
+Each row is one run set; the two 100 000-block steady rows are the same cell measured twice and
+they disagree. The second is a five-rep replication of the first's two reps and lands at the
+20 000-block screening level, but its artefact is a rebuild (the estimator moves with it), so
+neither supersedes the other. The higher figure is quoted above as the conservative one, not as
+the settled one, and the "cost grows with run length" reading that the two-rep set suggested is
+correspondingly weak.
 
 Gate 2, on a PreSonus AudioBox 22VSL at 48 kHz through Chromium's real audio service: **zero
 underruns in every steady-state second of every run**, both signal regimes, three build/model
@@ -66,8 +74,10 @@ the spike's own guard is retracted in place in the spike's log.
 
 Gate 3, API-reported: 10 ms `baseLatency` + 42 ms `outputLatency` + a *declared* 10 ms input
 constant Chromium reports as fixed and uninfluenceable = **62 ms**. `--enable-exclusive-audio`,
-which the spec listed as the unmeasured low-latency condition, is a **2.6x regression** — the
-render quantum halves to 5.33 ms and the device buffer balloons from 42 ms to 128 ms. The
+which the spec listed as the unmeasured low-latency condition, is a **2.6x regression**, defined
+as the ratio of API-reported *output* totals (52.0 -> 133.3 ms) — the render quantum halves to
+5.33 ms while the device buffer balloons from 42 ms to 128 ms, taking the input-inclusive total
+from 62 ms to 143 ms. The
 physical loopback measurement, the one novel number this gate existed to produce, is **PENDING
 RUN**: there is no cable on the machine, and a loopback figure can only exceed the API's, never
 undercut it.
@@ -120,5 +130,5 @@ Two new rows and one downgrade. Status column set as it would be on the day the 
 | ID | Risk | Severity | Mitigation |
 |---|---|---|---|
 | R-nn | **New, from S-5, 2026-09-05.** A browser build has no flush-to-zero: wasm mandates IEEE-754 subnormal handling and `DenormalGuard` is a structural no-op there. Measured: A1 Standard's p99.9 under a subnormal tail (silence after signal — what a guitar input does between notes) is **44.25–58.13%** of the block period against a 50% design bar, one rep of five over, where the same configuration on a steady signal is 32.4–33.6%. Natively the guard removes essentially the whole penalty (1.39x -> 1.00x); in a browser the only remaining levers are inside the DSP itself (anti-denormal dither, or flushing small stage state to zero), which is a `crates/` change no spike may make. Scoped to a prospective browser target only — it does not touch `namir-app` or `namir-clap`. | Medium (browser target only) | Budget the browser build against ~50%, not 33.6%; prefer the smaller model as a demo default (~2.5x headroom in the same regime). Revisit only if phase (b) proceeds. |
-| R-nn | **New, from S-5, 2026-09-05.** Chromium on Windows cannot deliver playable live-input latency on this path: the browser's own accounting is **62 ms** best case (10 ms base + 42 ms output + a 10 ms input constant it declares fixed), roughly twice the ~30 ms soft reference, and `--enable-exclusive-audio` makes it 2.6x worse rather than better. The physical loopback figure — which can only exceed the API's — is **PENDING RUN**, so the true gap is unmeasured. Any browser demo that promises "plug in your guitar" is promising something not shown to work. | Medium (prospective demo only) | A demo ships file-playback-first, which was already the decision; this makes it a constraint rather than a preference. Close the loopback measurement (one cable, ten minutes, procedure written up in the spike) before any live-input claim. |
+| R-nn | **New, from S-5, 2026-09-05.** Chromium on Windows cannot deliver playable live-input latency on this path: the browser's own accounting is **62 ms** best case (10 ms base + 42 ms output + a 10 ms input constant it declares fixed), roughly twice the ~30 ms soft reference, and `--enable-exclusive-audio` makes it worse rather than better — a 2.6x regression on the API-reported output total (52.0 -> 133.3 ms), taking the input-inclusive total to 143 ms. The physical loopback figure — which can only exceed the API's — is **PENDING RUN**, so the true gap is unmeasured. Any browser demo that promises "plug in your guitar" is promising something not shown to work. | Medium (prospective demo only) | A demo ships file-playback-first, which was already the decision; this makes it a constraint rather than a preference. Close the loopback measurement (one cable, ten minutes, procedure written up in the spike) before any live-input claim. |
 | R-nn | **Downgraded — "the DSP chain may not be portable off the desktop" -> Low, by S-5, 2026-09-05.** All six DSP-path crates and their 39-crate transitive graph compile for `wasm32-unknown-unknown` with **no edits under `crates/`**, and the assembled chain holds a real Web Audio deadline. `telemetry_ring.rs`'s `target_has_atomic = "64"` assertion — the one known hazard — holds on that target. Residual risk is not portability but the two rows above plus `xtask layering`'s rejection of `wasm`/`target_arch` outside `namir-platform`, which any in-workspace browser crate would collide with on day one. | Low | D-5.1's layering already keeps the DSP path platform-free; a `wasm32-unknown-unknown` CI job mirroring the existing mobile cross-build jobs would keep it that way at no design cost. |

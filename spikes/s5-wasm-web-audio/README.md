@@ -65,7 +65,10 @@ vendoring cannot answer. `Cargo.lock` still pins the measurement.
   **Drafted into the spike, deliberately not committed into `docs/`**; they land only if and when
   a phase-(b) decision is taken.
 - `edge_task*.txt`, `native_bench_output*.txt`, `coreaudio_task6_rerun.txt` — raw transcripts for
-  every table in `RESULTS.md`, so the figures are re-derivable from logs rather than only stated.
+  Tasks 5, 6, 7 and 8 and for every native run. **Tasks 3 and 4 have no committed beacon log** —
+  the Gate 1 matrix and the sustained confirmation, i.e. the spike's headline figures, are
+  re-derivable only from the 30 per-rep lines transcribed verbatim in `RESULTS.md`'s "Full per-rep
+  results" block, not from a raw transcript.
 - `fixtures/`, `web/build/`, `target/` are gitignored. Fixtures are **generated, not captured**
   (D-19.1) and rebuild in seconds; the two wasm artefacts rebuild in ~40 s.
 
@@ -138,7 +141,9 @@ control. The figures exist because the port was proved correct first.
   leaked in, consistent with D-5.1's layering table.
 - **Gate 1 passes on `simd128` and fails on scalar for A1 Standard.** p99.9 of the 2 666.67 µs
   block period, sustained over 100 000 blocks: A1 **32.4-33.6%**, A2 Lite **14.8-16.3%**, against
-  a <=50% bar. Scalar A1 is **74-86%** — a FAIL. `rustfft`'s `wasm_simd` feature has **no runtime
+  a <=50% bar. (A1's figure is the higher of two disagreeing measurements of that cell — a later
+  five-rep replication on a rebuilt artefact reads 30.0-31.3. The conservative one is quoted;
+  `RESULTS.md` carries both.) Scalar A1 is **74-86%** — a FAIL. `rustfft`'s `wasm_simd` feature has **no runtime
   detection**, so the simd128 artefact traps immediately where simd128 is absent: they are two
   artefacts, not one with a fallback. A browser build of A1 is therefore *gated* on WebAssembly
   SIMD and must fail loudly, not silently, without it.
@@ -185,9 +190,11 @@ control. The figures exist because the port was proved correct first.
   best case (10 ms `baseLatency` + 42 ms `outputLatency` + a *declared* 10 ms input constant that
   Chromium reports as fixed and uninfluenceable), roughly twice the ~30 ms soft reference before
   anything the API does not account for — and a physical loopback can only be larger, never
-  smaller. **`--enable-exclusive-audio` is a 2.6x regression**, not the low-latency condition the
-  spec assumed: the render quantum halves (10 to 5.33 ms) but the device buffer balloons
-  42 to 128 ms. `interactive` and `balanced` are identical here; only `playback` moves, adding
+  smaller. **`--enable-exclusive-audio` is a 2.6x regression** — the ratio of API-reported
+  *output* totals, 52.0 to 133.3 ms, which is the definition used everywhere in this spike; the
+  device buffer alone goes 42 to 128 ms and the input-inclusive total 62 to 143 ms. It is not the
+  low-latency condition the spec assumed: the render quantum halves (10 to 5.33 ms) and the
+  device buffer balloons anyway. `interactive` and `balanced` are identical here; only `playback` moves, adding
   20 ms.
 - **The resampler cost is a one-off load cost.** `load_ir` of a 44.1 kHz IR into a 48 kHz context
   costs **+2.0-2.4 ms (+55-60%)**, reproducibly, because `rubato::FftFixedInOut` is scalar/NEON
@@ -282,15 +289,20 @@ Spec §12, updated with what the spike actually learned:
   evidence that such a job would be green today.
 - **Serve the simd128 artefact and fail loudly without it.** There is no working A1 Standard
   configuration on a simd128-less runtime, and `rustfft`'s feature traps rather than falling back.
-  Every shipping browser has had simd128 by default since 2021 (Chrome/Edge 91, Firefox 89,
-  Safari 16.4), so this is a stated floor rather than a live risk — but it is a floor.
+  Every shipping browser has had simd128 by default since 2021 in Chrome/Edge 91 and Firefox 89,
+  and since Safari 16.4 in March 2023, so this is a stated floor rather than a live risk — but it
+  is a floor.
 - **Budget A1 Standard against ~50%, not 33.6%.** Silence between notes is most of a session and
   costs +17 pp of the block budget with no `DenormalGuard` to claw it back. A2 Lite has ~2.5x
   headroom in the same regime and is the safer default for a demo.
-- **Two things are open that a demo would want closed**: whether A1's ~14% cost growth between
-  20 000 and 100 000 blocks is asymptotic or drifting (112 500 worklet blocks produced no
-  scheduling consequence, which bounds it without measuring it), and the Gate 3 loopback number —
-  the one figure this gate existed to produce and the one it did not get.
+- **Two things are open that a demo would want closed**: A1's run-length behaviour, and the
+  Gate 3 loopback number — the one figure that gate existed to produce and the one it did not
+  get. On the first, be careful what you inherit: Task 4 read a ~14% cost growth from 20 000 to
+  100 000 blocks off **two** reps, and Task 5's **five** reps of the same cell at the same length
+  read 30.00–31.31 — the screening level. Task 5's artefact is a rebuild, so neither supersedes
+  the other; the honest state is a disagreement, not a trend. Budgeting A1 against the higher
+  figure stays the conservative choice, and 112 500 worklet blocks produced no scheduling
+  consequence either way.
 - **Nothing outside Chromium is known.** Every figure is Edge 152. Before a demo is announced as
   working in "a browser", Gate 1 and Gate 2 need one run each on Firefox, whose wasm compiler and
   audio backend are both different code; the exact commands are recorded per task in `RESULTS.md`
