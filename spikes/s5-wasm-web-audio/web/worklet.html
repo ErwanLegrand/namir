@@ -89,6 +89,9 @@ async function checkRenderSizeHint() {
     await ctx.close().catch(() => {});
     if (got === hint) {
       say(`renderSizeHint ${hint}: HONOURED -- ctx.renderQuantumSize ${got}`);
+    } else if (got === undefined) {
+      say(`renderSizeHint ${hint}: NOT honoured -- ctx.renderQuantumSize is undefined ` +
+          `(the property does not exist on this runtime's AudioContext at all)`);
     } else {
       say(`renderSizeHint ${hint}: NOT honoured -- ctx.renderQuantumSize ${got} ` +
           `("hardware"/default; the option was accepted but ignored)`);

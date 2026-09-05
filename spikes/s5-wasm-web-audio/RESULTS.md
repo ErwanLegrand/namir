@@ -2123,15 +2123,19 @@ simd128 build, A1 Standard, steady signal, 20 000 measured blocks, `crossOriginI
 throughout. Parity every run: residual **−81.6906 dB**, control **−82.7158 dB**, margin
 **1.0252 dB**, **PASS**.
 
-| Run (order) | IR | `load_ir` ms, 5 reps | steady-state mean (reps 2–5) | per-block p99.9 %, 5 reps |
+| Run (order) | IR | `load_ir` ms, 5 reps | `load_ir` steady-state mean (reps 2–5) | per-block p99.9 %, 5 reps (contamination marked per rep) |
 |---|---|---|---|---|
-| 1 (1st launch) | ir_44k1 | 9.150, 5.905, 6.165, 6.020, 5.800 | 5.97 ms | 23.81(C), 20.25, 20.25, 20.44, 20.63 |
-| 2 (2nd launch) | ir_48k | 3.940, 3.920, 3.920, 3.755, 3.715 | 3.83 ms | 33.56(C), 30.75, 30.56, 31.31, 30.75 |
-| 3 (3rd launch, ir_44k1 repeated) | ir_44k1 | 9.130, 6.020, 6.060, 5.860, 5.875 | 5.95 ms | 33.37(C), 30.75, 30.75, 30.94, 30.94 |
+| 1 (1st launch) | ir_44k1 | 9.150, 5.905, 6.165, 6.020, 5.800 | 5.97 ms | rep 1 **CONTAMINATED** 23.81; reps 2–5 quotable: 20.25, 20.25, 20.44, 20.63 |
+| 2 (2nd launch) | ir_48k | 3.940, 3.920, 3.920, 3.755, 3.715 | 3.83 ms | **all 5 reps CONTAMINATED**: 33.56, 30.75, 30.56, 31.31, 30.75 |
+| 3 (3rd launch, ir_44k1 repeated) | ir_44k1 | 9.130, 6.020, 6.060, 5.860, 5.875 | 5.95 ms | **all 5 reps CONTAMINATED**: 33.37, 30.75, 30.75, 30.94, 30.94 |
 
-`(C)` = rep flagged `CONTAMINATED` by the page's own `p99.9 - estimator <= 5.0` rule; excluded
-from the "steady-state mean" and per-block ranges above. Each fresh Edge launch used its own
-`--user-data-dir` so no on-disk profile state carried over between runs.
+Contamination read off each rep's own `quotable = p999 - estimator <= 5.0` flag in the raw
+JSON (`edge_task8.txt`), per rep — not assumed uniform across a run. **Only Run 1 produced any
+quotable per-block figure at all; Runs 2 and 3 are contaminated in every rep.** `load_ir`'s
+steady-state mean is a separate metric — there is no contamination flag for a one-off load
+timing — and only excludes rep 1 as the first-call JIT-warmup outlier discussed below. Each
+fresh Edge launch used its own `--user-data-dir` so no on-disk profile state carried over
+between runs.
 
 **Load-time verdict: this IS a one-off load cost, and it reproduces.** `load_ir` alone costs
 ~**3.7–3.9 ms** with no resample (ir_48k) and ~**5.8–6.2 ms** with the 44.1→48 kHz resample
@@ -2146,22 +2150,29 @@ path, not the audio thread's 2 666.67 µs budget, and ~2 ms extra there is immat
 real-time safety. It would matter to a *demo's* perceived load latency if IR loading were ever
 moved onto a path a user waits on synchronously, which is a UX question, not an RT one.
 
-**Per-block verdict: the apparent IR effect is not real — it's session-order contamination.**
-Run 1 (ir_44k1, first launch) measured p99.9 ≈ 20.3–20.6%; Run 2 (ir_48k, second launch)
-measured ≈ 30.6–31.3%; Run 3 (ir_44k1 again, third launch) measured ≈ 30.75–30.94% — matching
-Run 2's *ir_48k* figure, not Run 1's own *ir_44k1* figure from two launches earlier. Re-running
-the identical configuration a second time reproduced the OTHER run's number, not its own: the
-figure tracks which launch position in the session a run occupied, not which IR it loaded. That
-is exactly what the schedule-identity fact above predicts (same 96 000-tap partition shape
-either way, so no schedule-driven reason for a per-block difference) and exactly the kind of
-"shared desktop contamination... 2–3× swings" this repo's own benchmark methodology section
-already documents — repeated headless Chromium launches on this machine (each one paying its
-own SmartScreen DNS timeout and extension-verification overhead, visible in the raw stdout
-logs) are the more likely-shared cause across Runs 2 and 3 than the IR choice. **No credible
-per-block/steady-state cost attributable to the resampler is supported by this data.** A
-firmer answer would need many more interleaved reps (`ir_48k, ir_44k1, ir_48k, ir_44k1, ...`)
-on the pinned reference machine, core-pinned if that affordance is ever extended to a browser
-target — out of scope for this task's budget.
+**Per-block verdict: unanswerable from these runs — not measured, not "measured no effect."**
+Only Run 1 (ir_44k1, first launch) produced any quotable per-block reps at all (rep 1
+CONTAMINATED, reps 2–5 ≈ 20.25–20.63%). Run 2 (ir_48k, second launch, ≈ 30.56–33.56%) and Run 3
+(ir_44k1 again, third launch, ≈ 30.75–33.37%) are contaminated in **every** rep — none of their
+five reps clears the harness's own `quotable` rule. So "Run 3 reproduced Run 2's number" is a
+contaminated-vs-contaminated agreement, not a clean comparison, and there is no clean ir_48k
+(or clean ir_44k1 repeat) figure to set against Run 1's one clean result. That leaves no pair
+of clean measurements to compare — which is a different, and weaker, thing to have than "we
+measured X and found no per-IR difference." The retraction stands (there is no basis here for
+claiming a per-block resampler cost), but the honest reason is that a second clean measurement
+was never obtained, not that a clean comparison came back negative. The schedule-identity fact
+above is corroborating colour for why no per-block difference would be expected even if a clean
+comparison existed — `resample_mono`'s output is bit-identical in length to `ir_48k.wav`'s, so
+`namir_ir::build_schedule` shapes the same partition structure either way — but it is an
+argument from the code, not a substitute for the missing clean data, and it is not what makes
+the retraction correct. The contamination pattern itself (every rep, both post-Run-1 launches)
+is consistent with this repo's own documented "shared desktop contamination... 2–3× swings"
+(repeated headless Chromium launches each pay their own SmartScreen DNS timeout and
+extension-verification overhead, visible in the raw stdout logs), but that is offered as a
+plausible cause, not a proven one. A firmer answer would need enough quotable reps in at least
+two configurations to actually compare — many more interleaved reps (`ir_48k, ir_44k1, ir_48k,
+ir_44k1, ...`) on the pinned reference machine, core-pinned if that affordance is ever extended
+to a browser target — out of scope for this task's budget.
 
 ### Extra 2: render quantum sizes — PENDING RUN, confirmed unavailable here
 
@@ -2197,9 +2208,11 @@ Chrome 153+ or a newer Edge.**
 
 **Extra 1 (kept, real number):** rubato's scalar-only resample of a 44.1 kHz IR into a 48 kHz
 context costs roughly **+2.0–2.4 ms (+55–60%) at `load_ir`, once, off the audio thread** —
-immaterial to real-time safety, plausibly noticeable to a demo's load-time UX. No credible
-per-block cost was found, and the investigation that would have claimed one turned out to be
-measuring session-order contamination instead — worth keeping on the record per this project's
-own stated practice of retracting a finding honestly rather than quietly dropping it.
+immaterial to real-time safety, plausibly noticeable to a demo's load-time UX. **The per-block
+question is unanswered, not answered negatively**: only one of three runs produced any quotable
+per-block rep, so there was never a clean pair of measurements to compare — the investigation
+that would have claimed a clean "no effect" finding turned out to have no clean data on either
+side of the comparison it was about to make. Worth keeping on the record per this project's own
+stated practice of retracting a finding honestly rather than quietly dropping it.
 **Extra 2 (stopped early, per the ruling):** confirmed absent on this machine's only available
 browser (Edge 152.0.4191.62); `PENDING RUN` on Chrome 153+/newer Edge, exact command above.
