@@ -1,5 +1,46 @@
 # S-5 measurement log
 
+## Verdict — 2026-09-05
+
+**Gate 1 (compute): PASS, conditional on `simd128`.** A1 Standard p99.9 **32.4–33.6%** of the
+block period sustained on a steady signal, A2 Lite **15.4–17.3%**, against a <=50% bar. The
+**scalar** artefact FAILS A1 (74–86%), and there is no runtime fallback by design, so a browser
+build of A1 Standard is gated on WebAssembly SIMD. Under a subnormal tail — silence after
+signal, the most ordinary thing a guitar input does — A1 reaches p99.9 **44.25–58.13%**, one rep
+of five above the bar; wasm mandates no flush-to-zero and `DenormalGuard` has no equivalent
+there, so that cost is structural and A1's real margin is a hairline, not 1.5x.
+**Gate 2 (scheduling): PASS.** Zero underruns in every steady-state second of every run, both
+signal regimes, over 60 s and 300 s, on real hardware. The literal "every run zero" reading is
+missed: about a third of runs drop one device callback in the *first second* of the stream's
+life — proven by a three-arm 36-run experiment to be Chromium/WASAPI stream start-up, occurring
+at the same rate and the same second with the chain not running at all.
+**Gate 3 (latency): API figures only, and they are not encouraging.** **62 ms** best-case
+API-reported total (10 ms base + 42 ms output + a *declared* 10 ms input constant), roughly twice
+the ~30 ms soft reference before measuring anything the API does not account for;
+`--enable-exclusive-audio`, which spec §6 assumed would be the low-latency condition, is a
+**2.6x regression** (output 42 -> 128 ms). The physical loopback measurement is **PENDING RUN** —
+no cable on this machine — and it can only be larger than 62 ms, never smaller.
+
+**Recommendation: phase (b) is worth doing, as a file-playback-first demo, and only as that.**
+The compute and scheduling questions the spike was built to answer both came back yes, with the
+denormal condition attached. The latency question came back no for live guitar input in a
+browser on this path, which is the answer that decides the demo's *shape* rather than its
+existence — and file-playback-first was already the plan. What phase (b) must not do is assume
+the numbers below transfer: **every browser figure here is headless Microsoft Edge 152 on one
+machine.** Chrome and Firefox were never installed; SpiderMonkey is a different wasm compiler and
+is entirely unmeasured. **No figure in this file is certified** in `docs/02-architecture.md`
+§2's sense, and a browser figure cannot be — it passes through a JIT, a browser process model
+and an OS audio stack the project does not control.
+
+The record below is the **corrected** one, and it contains retractions kept deliberately in
+place: A1 "doesn't fit in the browser" (a scalar-build artefact, Task 3 -> Task 4); the amp-decay
+penalty being *not* a denormal effect (measurement says it mostly is, Task 5); the first-second
+underrun being this spike's own handover guard (disproved by experiment, Task 6 fix round); and
+a per-block resampler delta (retracted as session-order contamination, Task 8 — and the honest
+reason is that no clean second measurement was ever obtained, not that a clean comparison came
+back negative).
+
+
 ## Task 1 — wasm32-unknown-unknown portability probe, 2026-09-05
 
 Command:
@@ -935,6 +976,14 @@ null timing result rather than an unexplained one.
 SIMD win comes entirely from the `+simd128` build, not from V8's revectorizer**, and
 downstream tasks should treat revectorize as a non-lever — now for a known reason: the
 pass runs and finds nothing to widen.
+
+**Why it finds nothing to widen was investigated separately and is a closed question:
+see `REVECTORIZE.md`.** In short — `wide::f32x8` *is* two adjacent `v128` ops on wasm, so
+the right instruction pairs are being handed to the pass; V8's seeder needs the two stores
+to share one address local differing only by a folded `offset=` immediate, and LLVM's
+strength reduction gives our loops a recomputed base (`i32.const 16; i32.add`) instead.
+Four rewrites of the kernel all failed to seed. Not a `wide` problem, not a `rustfft`
+problem, not a V8 limitation — and not one we have a source-level lever over.
 
 ### Full per-rep results (30 matrix reps)
 
