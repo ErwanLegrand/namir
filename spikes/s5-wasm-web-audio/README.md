@@ -56,8 +56,11 @@ vendoring cannot answer. `Cargo.lock` still pins the measurement.
 - `coreaudio_probe.ps1` — proves the audio endpoint under Gate 2 is real hardware rather than a
   null sink, which was checked rather than assumed.
 - `RESULTS.md` — the measurement log, one section per task, in chronological order.
-- `REVECTORIZE.md` — a closed sub-question: why V8's 128-to-256-bit revectorizer packs nothing on
-  this module. See below.
+- `REVECTORIZE.md` + `revec-probe/` — a closed sub-question: why V8's 128-to-256-bit
+  revectorizer packs nothing on this module. `revec-probe/` is the standalone probe crate the
+  investigation used (its own `[workspace]` and `Cargo.lock`, `target/` gitignored); the eight
+  `run*.mjs` scripts are mapped to what each one showed at the foot of `REVECTORIZE.md`, so the
+  discrimination is re-runnable after a toolchain bump rather than only described. See below.
 - `FINDINGS-draft.md` — the drafted `docs/02-architecture.md` §19 entry and risk-register rows.
   **Drafted into the spike, deliberately not committed into `docs/`**; they land only if and when
   a phase-(b) decision is taken.
@@ -152,14 +155,18 @@ control. The figures exist because the port was proved correct first.
   `offset=` immediates and LLVM's strength reduction gives our loops a recomputed base
   (`i32.const 16; i32.add`) instead. Four rewrites failed the same way. Not a `wide` bug, not a
   `rustfft` bug, not a V8 limitation — and not something Rust gives us a lever over. **The wasm
-  performance story is `+simd128`.**
+  performance story is `+simd128`.** The probe crate is committed (`revec-probe/`) because that
+  conclusion depends on LLVM's codegen and V8's seeder both staying as they are.
 - **Denormals are structural in a browser.** wasm mandates IEEE-754 subnormal handling and has no
   flush-to-zero, so `DenormalGuard` is a no-op there. Kill criterion 3 (>2x penalty) did **not**
   fire — worst 1.57x — but the absolute figure did move: A1 under a subnormal tail reaches p99.9
   **44.25-58.13%**, one rep of five above Gate 1's bar. Natively, FTZ/DAZ removes essentially the
   whole penalty (1.39x to 1.00x); in a browser that saving is not available at any price. A1's
   browser margin under ordinary silence is a hairline, not 1.5x.
-- **Gate 2 passes on real hardware.** Zero underruns in every steady-state second of every run —
+- **Gate 2 passes on real hardware — a reading of the criterion, not its literal text.** The
+  literal bar ("every run zero over 60 s") is missed by the start-up event in the next bullet;
+  the PASS is the spike's judgement that the gate asks about the chain rather than the platform,
+  and it is the coordinator's ruling of 2026-09-05. Zero underruns in every steady-state second of every run —
   60 s and 300 s, both signal regimes, three cells — including 123 750 subnormal-tail blocks, the
   regime Gate 1 flagged as the risk. The scalar build passes too, which was not expected: at a
   40 ms device buffer the 50% budget is not the binding constraint.
