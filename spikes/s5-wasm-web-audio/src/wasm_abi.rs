@@ -19,6 +19,7 @@ thread_local! {
     static HARNESS: RefCell<Option<Harness>> = const { RefCell::new(None) };
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static STATS: RefCell<[f64; 5]> = const { RefCell::new([0.0; 5]) };
+    static CENSUS: RefCell<[f64; 6]> = const { RefCell::new([0.0; 6]) };
     static IO: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
     static RENDER: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
     /// `process` call count since the last `init`, for the one-shot handover check.
@@ -82,13 +83,11 @@ pub extern "C" fn load_ir(_ptr: *const u8, len: usize) -> u32 {
     with_scratch(len, |h, b| h.load_ir(b))
 }
 
+/// `signal`: 0 steady, 1 amplitude-decay, 2 subnormal-tail. Was a `decaying: u32`
+/// boolean until Task 5 added the third mode.
 #[unsafe(no_mangle)]
-pub extern "C" fn bench(warmup: u32, measured: u32, decaying: u32) -> u32 {
-    let signal = if decaying == 0 {
-        Signal::Steady
-    } else {
-        Signal::Decaying
-    };
+pub extern "C" fn bench(warmup: u32, measured: u32, signal: u32) -> u32 {
+    let signal = Signal::from_code(signal);
     let clock = || unsafe { now_us() };
     HARNESS.with(|c| match c.borrow_mut().as_mut() {
         Some(h) => {
@@ -100,6 +99,37 @@ pub extern "C" fn bench(warmup: u32, measured: u32, decaying: u32) -> u32 {
         }
         None => 1,
     })
+}
+
+/// Untimed census pass, same signal generator as `bench`. Writes six f64s to `STATS`'s
+/// sibling buffer: blocks, subnormal-output blocks, subnormal-output samples, MXCSR-DE
+/// blocks, MXCSR-UE blocks, smallest non-zero |output|. **The two MXCSR fields are
+/// always 0 on wasm32** -- there is no such register, which is the entire premise of
+/// this sub-experiment; the wasm witness is the output-side count.
+#[unsafe(no_mangle)]
+pub extern "C" fn census(warmup: u32, measured: u32, signal: u32) -> u32 {
+    HARNESS.with(|c| match c.borrow_mut().as_mut() {
+        Some(h) => {
+            let c = h.census(warmup, measured, Signal::from_code(signal));
+            CENSUS.with(|st| {
+                *st.borrow_mut() = [
+                    c.blocks as f64,
+                    c.subnormal_output_blocks as f64,
+                    c.subnormal_output_samples as f64,
+                    c.denormal_flag_blocks as f64,
+                    c.underflow_flag_blocks as f64,
+                    c.min_abs_nonzero as f64,
+                ]
+            });
+            0
+        }
+        None => 1,
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn census_ptr() -> *const f64 {
+    CENSUS.with(|s| s.borrow().as_ptr())
 }
 
 #[unsafe(no_mangle)]

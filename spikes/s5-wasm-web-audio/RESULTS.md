@@ -139,6 +139,17 @@ reps are reported as-is: **not** discarded as contaminated, and **not** quoted a
 `is_quotable()` had passed — the number is real, and the reason the flag fired is
 stated here rather than left implicit.
 
+**Relabelled and partly re-adjudicated at Task 5 (2026-09-05).** This signal is now
+`Signal::AmplitudeDecay`, logged as `amp-decay`: what it sweeps is amplitude, and the
+figures above are measurements of that. The paragraph immediately above is right that the
+*input* never leaves f32's normal range and wrong about the consequence — Task 5's census
+measures **47.6% of blocks carrying subnormal output samples** (down to 1e-45) and MXCSR
+raising its denormal-operand flag on **52.3%**, and installing FTZ/DAZ collapses the whole
+~44% p50 rise to ~2%. So these figures were, in the main, a denormal measurement after all,
+taken with an instrument that confounds amplitude and subnormality. The figures stand; the
+name and the explanation are corrected in Task 5's section, which also adds
+`Signal::SubnormalTail` — the probe that holds amplitude fixed.
+
 **No `DenormalGuard` is active on this native run.** The spike depends on
 `namir-core`/`namir-params`/`namir-dsp`/`namir-nam`/`namir-ir`/`namir-engine` and
 deliberately excludes `namir-platform` (the only crate that installs FTZ/DAZ), so
@@ -571,7 +582,9 @@ this chain today at A2 Lite, and cannot reliably run it at A1 Standard.**
 2. **No `DenormalGuard` on either side**, same as Task 2 — and wasm32 has no FTZ/DAZ at
    all and cannot get one, so the decaying-signal condition should be expected to be
    *worse* in the browser than in shipped native Namir. That comparison is not made
-   here; only the steady signal was measured in the browser.
+   here; only the steady signal was measured in the browser. **(Task 5 made it: see that
+   section. The signal named here is now `amp-decay`; the denormal probe is
+   `subnormal-tail`, and the browser penalty is 1.35x p50 / 1.57x p99.9 on A1 Standard.)**
 3. **No core pinning in the browser**, and these are not certified figures.
 
 #### PENDING RUN — Step 8's Chrome and Firefox figures
@@ -1097,3 +1110,297 @@ here) would be consumed. Anyone re-running this on a second machine should start
    in the `+simd128` build.
 5. **Chrome, Firefox and the laptop axis are open**, with the exact commands and the
    reasons recorded above. Nothing in this section is a certified figure.
+
+## Task 5 — the denormal sub-experiment, rebuilt, 2026-09-05
+
+**No figure in this section is certified.** Same caveat as Tasks 2–4: no `namir-platform`,
+no core pinning in the browser, D-2.1/D-2.2 apply.
+
+### The sub-experiment as briefed could not have measured what it claimed
+
+The brief pointed kill criterion 3 (">2x penalty on decaying signal") at `Signal::Decaying`,
+on the premise that that signal drives the chain into f32 subnormals. **It does not drive
+the *input* anywhere near them.** The implemented decay is `amp *= 0.999_5` per block, so
+over `MEASURED_BLOCKS` = 100 000 blocks the driving amplitude bottoms out at
+`0.999_5^100_000` ~ **1.9e-22**. The spec's own stated target of ~1e-30 would not have
+sufficed either: f32's smallest **normal** is `f32::MIN_POSITIVE` = **1.175 494 35e-38**.
+Sixteen orders of magnitude short.
+
+Task 5 therefore does four things: adds a signal that provably reaches subnormals,
+**instruments the chain so the premise is measured rather than assumed**, relabels the old
+mode as the amplitude test it is, and prices what FTZ/DAZ would have bought.
+
+### Relabelling: `Decaying` -> `AmplitudeDecay`
+
+`Signal::Decaying` is now `Signal::AmplitudeDecay`, labelled `amp-decay` in every log line,
+and its doc comment states what it is. **Its figures are not deleted and not retracted** —
+Task 2's `a1_standard decaying` numbers are valid measurements of the chain's cost under a
+decaying-amplitude input, and Task 5 re-measured them (below) to within noise. What changed
+is only the claim about *why* they are what they are. Everywhere below, `amp-decay` is the
+old `decaying`.
+
+### The new mode: `Signal::SubnormalTail`
+
+Not a slowly shrinking input — the classic audio denormal shape: **signal, then silence.**
+16 blocks of full-scale noise, then **exact zero** for the remaining 496 blocks of a
+512-block cycle, repeating (`TAIL_BURST_BLOCKS` / `TAIL_PERIOD_BLOCKS` in `harness.rs`).
+96.9% of measured blocks are driven by nothing at all, leaving the chain's own IIR state —
+EQ biquads, gate envelope, gain ramps, the output stage — and the convolution tail to decay
+under their own poles. Warmup runs the measured signal too, so a measured window opens with
+the chain already mid-cycle rather than freshly excited.
+
+### Proving subnormals actually occur — two witnesses, and a control
+
+`Harness::census` re-runs the identical warmup/measured window **untimed** (a separate pass,
+so nothing it does can land inside a timed span) and reports what was numerically present:
+
+1. **Output-side count** (portable — runs natively and in the browser): subnormal f32s in
+   the stereo output buffer, per block and per sample, plus the smallest non-zero |sample|.
+2. **MXCSR status bits** (native x86-64 only): `_mm_getcsr` is cleared before each
+   `process_block` and read after, counting blocks in which the CPU itself raised the
+   **Denormal-operand (DE)** or **Underflow (UE)** flag. This is the strong witness — it
+   sees subnormal arithmetic on *internal* state the harness cannot read back through the
+   output buffer.
+3. **The control for the census itself**: the whole census is repeated with **FTZ/DAZ
+   installed**. Every count that is a real subnormal must collapse to zero; anything that
+   does not was never a subnormal effect.
+
+`set_flush_to_zero()` in `harness.rs` installs FTZ|DAZ with the same two MXCSR bits
+`namir-platform/src/denormal.rs` sets. **The spike still does not depend on
+`namir-platform`, and nothing under `crates/` was touched** — the guard is priced with the
+two bits it comes down to, applied from the spike's own code, which is also the only way to
+keep the native and wasm sides running the same crate graph.
+
+**Census, `a1_standard` and `a2_lite`, 20 000 measured blocks after 5 000 warmup:**
+
+| model | signal | subnormal out blocks | subnormal out samples | MXCSR **DE** blocks | UE blocks | min abs |
+|---|---|---|---|---|---|---|
+| a1_standard | steady | 0 (0.0%) | 0 | 0 (0.0%) | 0 | 9.83e-7 |
+| a1_standard | amp-decay | **9 523 (47.6%)** | 2 436 470 | **10 458 (52.3%)** | 10 468 | **1e-45** |
+| a1_standard | **subnormal** | 0 (0.0%) | 0 | **17 088 (85.4%)** | 18 221 | 1.26e-8 |
+| a2_lite | steady | 0 (0.0%) | 0 | 0 (0.0%) | 0 | 3.05e-5 |
+| a2_lite | amp-decay | 9 525 (47.6%) | 2 437 011 | 10 376 (51.9%) | 10 382 | **1e-45** |
+| a2_lite | **subnormal** | 0 (0.0%) | 0 | **15 291 (76.5%)** | 15 282 | 6.56e-7 |
+
+**The same census with FTZ/DAZ installed** — the control:
+
+| model | signal | subnormal out blocks | MXCSR DE blocks | min abs |
+|---|---|---|---|---|
+| a1_standard | steady | 0 | 0 | 9.83e-7 |
+| a1_standard | amp-decay | **0** | **0** | **1.179 718e-38** (just above `MIN_POSITIVE`) |
+| a1_standard | subnormal | 0 | **0** | 1.26e-8 |
+| a2_lite | amp-decay | **0** | **0** | **1.177 281e-38** |
+| a2_lite | subnormal | 0 | **0** | 6.56e-7 |
+
+Every DE count goes to zero and `amp-decay`'s smallest output moves from 1e-45 to a value
+**immediately above** `f32::MIN_POSITIVE` — i.e. flushed. The counts were real subnormals,
+not an artefact of how they were counted.
+
+**What this establishes, and what it does not.**
+
+- **`SubnormalTail` does what it was built to do**: on `a1_standard` the CPU reports
+  denormal-operand arithmetic inside `process_block` in **85.4% of measured blocks**, with
+  the output staying in normal range (min abs 1.26e-8 — a small DC-ish residue, not a
+  subnormal). That is exactly the shape the ruling asked for: subnormals flowing through
+  *internal* state across most of the measured window. **An output-side census alone would
+  have reported 0.0% and been wrong**, which is why the MXCSR witness was built.
+- **The wasm side has no MXCSR** — there is no such register on wasm32, which is the whole
+  premise of this sub-experiment — so the browser's direct witness is the output-side count
+  only. Run in Edge on the simd128 artefact, `a1_standard`, 20 000 blocks:
+
+      edge simd128 a1_standard census amp-decay: blocks 20000 | sub-out blocks 9521 (47.6%) | sub-out samples 2436620 | min |x| 1.401298e-45
+      edge simd128 a1_standard census subnormal: blocks 20000 | sub-out blocks 0 (0.0%) | sub-out samples 0 | min |x| 2.514571e-08
+
+  The `amp-decay` census is a **direct in-browser measurement that subnormals flow through
+  the wasm chain**: 9 521 blocks against native's 9 523 (0.02% apart), 2 436 620 samples
+  against 2 436 470, and the identical smallest value 1.401 298e-45, the smallest f32
+  subnormal. For `SubnormalTail` the browser census reads 0.0% for the same reason native's
+  does — the subnormals are internal. **That half is an inference, and it is labelled as
+  one**: the same source, the same signal generator and the same fixtures produce output
+  agreeing to −81.69 dB against the native reference, native's MXCSR reports 85.4% of blocks
+  doing denormal arithmetic, and WebAssembly mandates full IEEE-754 subnormal support with
+  no flush mode, so the same intermediates necessarily arise. Nothing measured *inside* the
+  browser observes them directly, and nothing here should be read as if it did.
+
+### Timing — native, 100 000 measured blocks, 5 reps, reference machine
+
+Raw log: `native_bench_task5.txt` (committed). Medians of the five reps.
+
+| model | signal | FTZ/DAZ | p50 % | p99.9 % | estimator % |
+|---|---|---|---|---|---|
+| a1_standard | steady | off | **6.42** | 13.51 | 10.05 |
+| a1_standard | amp-decay | off | **9.23** | 16.73 | 10.23 |
+| a1_standard | **subnormal** | off | **8.93** | 16.36 | 10.09 |
+| a1_standard | steady | **on** | 6.48 | 13.65 | 10.12 |
+| a1_standard | amp-decay | **on** | **6.59** | 13.63 | 10.21 |
+| a1_standard | **subnormal** | **on** | **6.46** | 13.60 | 10.11 |
+| a2_lite | steady | off | 2.04 | 7.66 | 5.63 |
+| a2_lite | amp-decay | off | 2.15 | 7.48 | 5.69 |
+| a2_lite | **subnormal** | off | 2.13 | **9.14** | 5.75 |
+| a2_lite | steady | on | 2.04 | 7.55 | 5.67 |
+| a2_lite | amp-decay | on | 2.04 | 7.50 | 5.69 |
+| a2_lite | **subnormal** | on | 2.04 | 7.51 | 5.70 |
+
+`a1_standard`'s `amp-decay` and `subnormal` reps carry `is_quotable()` CONTAMINATED flags,
+for the same reason Task 2 recorded and did not discard them: the per-residue estimator is
+insensitive to a cost rise that moves the whole distribution, so `p999 − estimator` widens
+without any machine load being present. All five reps of each set agree to ±0.4 pp, and the
+FTZ-on counterparts of the same configurations are all quotable — which is the tell.
+
+### Timing — Edge headless, simd128, 100 000 measured blocks, 5 reps
+
+Runtime: Microsoft Edge (Chromium/V8), `--headless=new --disable-gpu --no-sandbox`,
+`crossOriginIsolated: true`, server `python web/serve.py`, each configuration launched
+alone and sequentially. Raw log: `edge_task5.txt` (committed). The parity gate ran and
+**PASSED before every one of the six runs** (residual −81.6906 dB, control −82.7158 dB,
+margin 1.0252 dB); nothing about the gate, its degenerate-control assertion or the
+`assert_resources_loaded` / `fault_count() == 0` guards was changed, weakened or bypassed.
+
+| model | signal | p50 % | p99.9 % | estimator % | reps retained |
+|---|---|---|---|---|---|
+| a1_standard | steady | 12.75–13.13 (med **12.94**) | 30.00–31.31 (med **30.19**) | 19.50–19.88 | 5/5 |
+| a1_standard | **subnormal** | 17.44–17.81 (med **17.44**) | **44.25–58.13** (med **47.44**) | 19.50 | 5/5 |
+| a2_lite | steady | 3.19 (all five) | 14.63–17.44 (med **15.94**) | 9.75–10.31 | 5/5 |
+| a2_lite | **subnormal** | 3.38–3.75 (med **3.75**) | 18.56–20.81 (med **19.41**) | 10.12–10.31 | 4/5 |
+
+**Discarded repetition, under Task 4's rule, cited as that section states it** ("discard a
+rep whose p50 is >10% above the modal p50 **while** its estimator is <5% above the modal
+estimator" — the implementer's own substitution for `is_quotable()`, which flags every
+browser rep and so cannot discriminate): `a2_lite subnormal rep 3`, p50 **4.13%** against a
+modal 3.75% = **+10.13%** (bar >10%), estimator 10.31% against modal 10.12% = **+1.88%**
+(bar <5%). Both clauses met, marginally on the first. **It would not change the verdict**:
+including it moves the a2 median p99.9 from 19.41% to 19.50%, and the penalty ratio not at
+all to two decimals. Recorded because the rule was applied, not because the number mattered.
+
+### The ratios, and kill criterion 3
+
+Kill criterion 3 now applies to **`SubnormalTail`**, per the ruling, not to `amp-decay`.
+
+| Runtime | Build | Model | steady | subnormal | **penalty** |
+|---|---|---|---|---|---|
+| native | x86-64-v3, **no FTZ** | A1 Standard | p50 6.42 / p99.9 13.51 | p50 8.93 / p99.9 16.36 | **1.39x** p50, **1.21x** p99.9 |
+| native | x86-64-v3, **FTZ/DAZ on** | A1 Standard | p50 6.48 / p99.9 13.65 | p50 6.46 / p99.9 13.60 | **1.00x** p50, **1.00x** p99.9 |
+| **Edge (V8)** | **simd128** | A1 Standard | p50 12.94 / p99.9 30.19 | p50 17.44 / p99.9 47.44 | **1.35x** p50, **1.57x** p99.9 |
+| native | x86-64-v3, no FTZ | A2 Lite | p50 2.04 / p99.9 7.66 | p50 2.13 / p99.9 9.14 | 1.04x p50, 1.19x p99.9 |
+| native | x86-64-v3, FTZ/DAZ on | A2 Lite | p50 2.04 / p99.9 7.55 | p50 2.04 / p99.9 7.51 | 1.00x p50, 0.99x p99.9 |
+| **Edge (V8)** | **simd128** | A2 Lite | p50 3.19 / p99.9 15.94 | p50 3.75 / p99.9 19.41 | 1.18x p50, 1.22x p99.9 |
+| **Chrome** | simd128 | both | — | — | **PENDING RUN** |
+| **Firefox** | simd128 | both | — | — | **PENDING RUN** |
+
+**Kill criterion 3 (>2x penalty on the subnormal mode): NOT FIRED.** The largest penalty
+anywhere is **1.57x** (A1 Standard p99.9, Edge/simd128). Every other cell is between 1.00x
+and 1.39x. **Proceed to Task 6.**
+
+### What FTZ actually buys, and what it does not
+
+The headline comparison the spike can make is **wasm vs native-without-FTZ**, because
+neither side of the ratio has a guard installed (`namir-platform` is out of the crate graph
+on purpose). On that comparison, **wasm's subnormal penalty is not categorically worse than
+x86's without FTZ** — 1.35x against 1.39x on p50 — so the browser's mandated IEEE-754
+subnormal handling is not a qualitatively different beast from an x86 core running with the
+guard off. On p99.9 wasm is worse (1.57x against 1.21x), and that difference is the finding.
+
+Task 5 additionally priced the guard, which the brief did not ask for and which changes the
+reading. **On native, FTZ/DAZ removes essentially the entire penalty of both modes**:
+A1 Standard's subnormal p50 goes 8.93% -> 6.46% against a 6.48% steady baseline (1.00x), and
+its **amp-decay** p50 goes 9.23% -> 6.59% (1.02x). **There is no FTZ on wasm**, so that
+saving is not available in a browser at any price — it is not a tuning knob that was left
+unturned, it is a mode the platform does not have.
+
+**A correction the coordinator's own ruling did not anticipate, stated plainly.** The ruling
+said "the ~42% A1 decaying penalty already recorded natively in Task 2 is **not** a denormal
+effect." **Measurement says it mostly is.** The reasoning behind the ruling was sound as far
+as it went — the *input* never leaves normal range — but the chain's own state does: the
+census finds 47.6% of `amp-decay` blocks carrying subnormal *output* samples down to 1e-45
+and MXCSR raising DE on 52.3% of them, and installing FTZ/DAZ collapses the 1.44x p50 cost
+to 1.02x. So Task 2's `decaying` figures were measuring a denormal effect after all, through
+a signal that happens to produce one as a side effect of its amplitude sweep. The mode is
+still the wrong instrument — amplitude and subnormality are confounded in it, and
+`SubnormalTail` is the one that holds amplitude fixed — but the relabelling is about
+*naming what the signal is*, not about disowning what it measured.
+
+### The Gate 1 consequence — the real finding here, and it is not the ratio
+
+The ratio passes comfortably. The **absolute** number does not, quite:
+
+> **A1 Standard on simd128, under the subnormal-tail signal, reaches p99.9 = 44.25–58.13%
+> of the block period, with one of five reps at 58.13% — above Gate 1's ≤50% bar.**
+
+Task 4 certified Gate 1 for A1 Standard at p99.9 **32.44–33.56%** sustained, against ≤50%.
+That was measured on a steady signal. Silence after signal — the single most ordinary thing
+a guitar amp's input does, between notes and between takes — costs **+17.25 pp** of the
+block budget on this model and takes the headroom from ~1.5x to roughly break-even. Kill
+criterion 2 (>100%, sustained) is nowhere near firing, and the median rep (47.44%) is still
+inside the bar, so **Gate 1's verdict is not retracted**; but it is now conditional on a
+signal condition Task 4 did not exercise, and **the honest statement is that A1 Standard's
+browser margin under realistic silence is a hairline, not the 1.5x Task 4 recorded**.
+
+This compounds Task 4's carried-forward **UNRESOLVED** item (A1's ~14% cost growth from
+20 000 to 100 000 blocks). **These runs shed no light on it**: they are all at 100 000
+blocks, so there is no second run length to compare, and no longer run was made. What they
+add is that the quantity that would have to stay stationary is now a p99.9 sitting at
+44–58% rather than at 29–34%. If the growth turns out to be drifting rather than asymptotic,
+this is the configuration where it bites first.
+
+### What Task 6 should do with this
+
+1. **Budget A1 Standard against ~50%, not 33.6%.** The worklet must survive silence, which
+   is most of a session.
+2. **A2 Lite is unaffected in practice** — 19.41% p99.9 under the same signal, ~2.5x
+   headroom.
+3. There is **no wasm equivalent of `DenormalGuard`**. If the browser build ever needs the
+   17 pp back, the only lever left is inside the DSP (a tiny anti-denormal dither, or
+   flushing small state to zero in the stages themselves) — and that is a `crates/` change,
+   out of scope here and out of scope for this whole spike.
+
+### Reproducing this section
+
+    cd spikes/s5-wasm-web-audio
+    ./run-matrix.sh
+    cargo run --release --bin native_bench            # census + all 60 native timing reps
+    python web/serve.py                               # from the spike root, in another shell
+    # census, in-browser (signal: 0 steady, 1 amp-decay, 2 subnormal-tail):
+    msedge --headless=new --disable-gpu --no-sandbox \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&census=1&measured=20000&wasm=simd128&model=a1_standard&signal=1"
+    # timing:
+    msedge --headless=new --disable-gpu --no-sandbox \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a1_standard&signal=2"
+
+Node runs the same census and bench without a browser (V8, but a nanosecond clock and no
+renderer — informational only, never quoted as a browser figure):
+
+    S5_WASM=web/build/simd128.wasm node web/parity-node.mjs --bench --census --measured 20000 --signal 1
+
+### PENDING RUN — Chrome and Firefox
+
+Neither is installed on this machine and nothing was installed; **no Chrome or Firefox
+number appears above.** Firefox especially matters here: SpiderMonkey is a different wasm
+compiler, and subnormal handling on the wasm32 target is a codegen property. Exact commands,
+on a machine that has them (server started from the spike root, artefacts built first,
+`crossOriginIsolated: true` confirmed on the page before recording anything):
+
+    "C:\Program Files\Google\Chrome\Application\chrome.exe" \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a1_standard&signal=0"
+    #   ... &signal=2   (subnormal-tail; the pair above is the penalty ratio)
+    #   ... &model=a2_lite, both signals
+    #   ... &census=1&measured=20000&signal=1   (the in-browser subnormal witness)
+    "C:\Program Files\Mozilla Firefox\firefox.exe" \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a1_standard&signal=2"
+
+### Task 5 verdict
+
+**Kill criterion 3 does NOT fire (max 1.57x, bar 2x). Proceed to Task 6**, carrying:
+
+1. The sub-experiment as briefed was measuring amplitude decay, not denormals; it now
+   measures both, separately, and proves which is which rather than assuming.
+2. `SubnormalTail` is proved to run subnormal arithmetic in **85.4%** of measured blocks by
+   the CPU's own denormal-operand flag, with an FTZ/DAZ control that collapses every count
+   to zero. In the browser the direct witness is the output-side census (47.6% of
+   `amp-decay` blocks, reproducing native to 0.02%); the internal half is a stated
+   inference, not a browser measurement.
+3. **A1 Standard's Gate 1 margin under silence is a hairline** — p99.9 44.25–58.13% against
+   a ≤50% bar, one rep over. Not a retraction of Gate 1; a condition on it.
+4. `DenormalGuard` would remove the whole cost natively (1.39x -> 1.00x). Wasm has no
+   equivalent, so this cost is structural in a browser.
+5. Task 4's 20 000-vs-100 000-block growth question is **still UNRESOLVED** — nothing here
+   bears on it, all six runs are at one length.

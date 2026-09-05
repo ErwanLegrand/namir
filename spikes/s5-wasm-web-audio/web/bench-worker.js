@@ -18,7 +18,7 @@ async function bytes(url) {
 
 self.onmessage = async (e) => {
   try {
-    const { wasm, model, ir, warmup, measured, decaying, reps } = e.data;
+    const { wasm, model, ir, warmup, measured, signal, census, reps } = e.data;
     const mod = await loadNamir(await bytes(wasm), () => performance.now() * 1000);
 
     const irBytes = await bytes(ir);
@@ -49,10 +49,27 @@ self.onmessage = async (e) => {
       return;
     }
 
+    const SIGNALS = ["steady", "amp-decay", "subnormal"];
+
+    // The untimed census: does this signal actually produce subnormals in this build?
+    // Task 5's premise, measured rather than assumed. Note wasm32 has no MXCSR, so the
+    // browser-side witness is the output-side count only.
+    if (census) {
+      load(modelBytes);
+      if (mod.exports.census(warmup, measured, signal) !== 0) throw new Error("census failed");
+      const c = new Float64Array(mod.memory.buffer, mod.exports.census_ptr(), 6);
+      self.postMessage({
+        kind: "census", signal: SIGNALS[signal] || String(signal),
+        blocks: c[0], subBlocks: c[1], subSamples: c[2], minAbs: c[5],
+      });
+      self.postMessage({ kind: "done" });
+      return;
+    }
+
     // Then the measurement runs.
     for (let rep = 1; rep <= reps; rep++) {
       load(modelBytes);
-      if (mod.exports.bench(warmup, measured, decaying ? 1 : 0) !== 0)
+      if (mod.exports.bench(warmup, measured, signal) !== 0)
         throw new Error("bench failed");
       const s = new Float64Array(mod.memory.buffer, mod.exports.stats_ptr(), 5);
       self.postMessage({

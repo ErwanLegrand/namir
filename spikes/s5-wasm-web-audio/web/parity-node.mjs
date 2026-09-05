@@ -5,7 +5,10 @@
 // AudioWorklet or its cross-origin-isolated clock.
 //
 //   node web/parity-node.mjs [--bench] [--model a1_standard|a2_lite]
-//                            [--decaying] [--reps N] [--measured N] [--warmup N]
+//                            [--signal 0|1|2] [--census] [--reps N] [--measured N]
+//                            [--warmup N]
+// --signal: 0 steady, 1 amplitude-decay, 2 subnormal-tail (Task 5).
+// --census: untimed subnormal census instead of the timing reps.
 //
 // Run from the spike root. Needs both native renders in fixtures/ -- see RESULTS.md's
 // "The native-vs-native reproducibility floor" section for how the control is made.
@@ -92,14 +95,25 @@ if (!p.pass) {
 } else if (flag("--bench")) {
   const warmup = Number(opt("--warmup", 5000));
   const measured = Number(opt("--measured", 100000));
-  const decaying = flag("--decaying") ? 1 : 0;
+  const signal = Number(opt("--signal", 0));
+  const SIGNALS = ["steady", "amp-decay", "subnormal"];
   const reps = Number(opt("--reps", 5));
-  for (let rep = 1; rep <= reps; rep++) {
+  if (flag("--census")) {
     fresh();
-    if (mod.exports.bench(warmup, measured, decaying) !== 0) throw new Error("bench failed");
+    if (mod.exports.census(warmup, measured, signal) !== 0) throw new Error("census failed");
+    const c = new Float64Array(mod.memory.buffer, mod.exports.census_ptr(), 6);
+    console.log(
+      `census ${modelName} ${SIGNALS[signal]}: blocks ${c[0]} | sub-out blocks ${c[1]} ` +
+      `(${(100 * c[1] / c[0]).toFixed(1)}%) | sub-out samples ${c[2]} | min |x| ${c[5].toExponential(6)} ` +
+      `| (wasm32 has no MXCSR: DE/UE unavailable)`,
+    );
+  }
+  for (let rep = 1; !flag("--census") && rep <= reps; rep++) {
+    fresh();
+    if (mod.exports.bench(warmup, measured, signal) !== 0) throw new Error("bench failed");
     const s = new Float64Array(mod.memory.buffer, mod.exports.stats_ptr(), 5);
     console.log(
-      `node ${modelName} ${decaying ? "decaying" : "steady"} rep ${rep}/${reps}: ` +
+      `node ${modelName} ${SIGNALS[signal]} rep ${rep}/${reps}: ` +
       `p50 ${s[0].toFixed(2)}% | p99 ${s[1].toFixed(2)}% | p99.9 ${s[2].toFixed(2)}% | ` +
       `max ${s[3].toFixed(2)}% | estimator ${s[4].toFixed(2)}% | ` +
       (s[2] - s[4] <= 5.0 ? "quotable" : "CONTAMINATED"),

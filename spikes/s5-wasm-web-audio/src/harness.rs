@@ -17,21 +17,143 @@ pub const BLOCK_PERIOD_NS: f64 = BLOCK_SIZE as f64 / SAMPLE_RATE as f64 * 1e9;
 /// uses 128 because its block is 64 samples.
 pub const IR_PERIOD_BLOCKS: usize = 8192 / BLOCK_SIZE;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Signal {
     /// Band-limited noise at a steady level: the ordinary measurement input.
     Steady,
-    /// Exponentially decaying by a fixed 0.999_5-per-block factor (see `run`'s `amp *=
-    /// 0.999_5`). Over `MEASURED_BLOCKS` = 100,000 blocks that reaches only ~2e-22
-    /// (0.999_5^100_000), not the ~1e-30 an earlier revision of this comment claimed --
-    /// and 1e-30 itself is still well above f32's subnormal threshold (`f32::MIN_POSITIVE`
-    /// ~1.18e-38), so the *driving signal* never actually leaves f32's normal range and
-    /// `run`'s `amp < 1e-30` reset branch is dead code at this rep length. The cost rise
-    /// this condition measures (see RESULTS.md's `a1_standard decaying` figures) is
-    /// therefore attributable to *internal* chain state -- e.g. the IR convolver's or
-    /// EQ's own running state decaying into subnormal magnitudes as the signal shrinks --
-    /// not to the input itself going subnormal.
-    Decaying,
+    /// Exponentially decaying by a fixed 0.999_5-per-block factor (see `fill_block`).
+    ///
+    /// **This is an amplitude-decay test, and it was mislabelled `Decaying` until
+    /// Task 5.** Its *driving signal* never leaves f32's normal range: over
+    /// `MEASURED_BLOCKS` = 100,000 blocks the amplitude reaches only
+    /// `0.999_5^100_000` ~ 1.9e-22, sixteen orders of magnitude above f32's smallest
+    /// normal `f32::MIN_POSITIVE` ~ 1.175_494_35e-38.
+    ///
+    /// What Task 5 then measured, and what neither the original comment nor its first
+    /// correction predicted: the *chain* goes subnormal under this signal anyway. Over
+    /// 20 000 blocks with `a1_standard`, **47.6% of blocks carry at least one subnormal
+    /// output sample** (min |x| = 1e-45, the smallest f32 subnormal) and the CPU raises
+    /// MXCSR's denormal-operand flag on **52.3%**. Re-running the same measurement with
+    /// FTZ/DAZ installed removes essentially the whole cost (a1_standard p50
+    /// 9.23% -> 6.59% against a 6.48% steady baseline), so this mode's ~40% penalty is
+    /// **mostly a denormal effect after all** -- the opposite of what Task 2's correction
+    /// concluded from the input amplitude alone.
+    ///
+    /// It is still the wrong probe for the denormal question, because amplitude and
+    /// subnormality move together here and the two cannot be separated by this signal.
+    /// [`Signal::SubnormalTail`] is the one that holds amplitude fixed.
+    AmplitudeDecay,
+    /// Full-scale noise for [`TAIL_BURST_BLOCKS`] blocks, then **exact silence** for the
+    /// rest of a [`TAIL_PERIOD_BLOCKS`] cycle, repeating.
+    ///
+    /// This is the classic audio denormal shape: not a slowly shrinking input, but signal
+    /// followed by nothing, leaving the chain's own IIR state (EQ biquads, gate envelope,
+    /// gain ramps, the DC blocker) and the convolution tail to decay through f32's
+    /// subnormal range under their own poles. Whether that actually happens is *measured*,
+    /// not assumed -- see [`Harness::census`].
+    SubnormalTail,
+}
+
+/// [`Signal::SubnormalTail`]'s burst length, in blocks.
+pub const TAIL_BURST_BLOCKS: u32 = 16;
+/// [`Signal::SubnormalTail`]'s full cycle, in blocks. 16 of every 512 blocks (3.1%) carry
+/// signal; the other 96.9% are exact silence, which is the window the census inspects.
+pub const TAIL_PERIOD_BLOCKS: u32 = 512;
+
+impl Signal {
+    pub fn label(self) -> &'static str {
+        match self {
+            Signal::Steady => "steady",
+            Signal::AmplitudeDecay => "amp-decay",
+            Signal::SubnormalTail => "subnormal",
+        }
+    }
+
+    pub fn from_code(code: u32) -> Signal {
+        match code {
+            1 => Signal::AmplitudeDecay,
+            2 => Signal::SubnormalTail,
+            _ => Signal::Steady,
+        }
+    }
+}
+
+/// What a measured window actually contained, numerically. Task 5's whole point: the
+/// denormal sub-experiment must *prove* subnormals occur rather than assume they do.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Census {
+    pub blocks: u64,
+    /// Blocks whose stereo output carried at least one subnormal (non-zero) f32.
+    pub subnormal_output_blocks: u64,
+    /// Individual subnormal output samples, out of `blocks * BLOCK_SIZE * 2`.
+    pub subnormal_output_samples: u64,
+    /// Blocks during which the CPU itself raised MXCSR's Denormal-operand (DE) or
+    /// Underflow (UE) status bit inside `process_block`. **This is the strong witness**:
+    /// it reports subnormal arithmetic *inside* the chain, including state the harness
+    /// cannot see from the output buffer. Native x86-64 only; always 0 on wasm32, which
+    /// has no such register.
+    pub denormal_flag_blocks: u64,
+    pub underflow_flag_blocks: u64,
+    /// Smallest non-zero |output sample| seen. Below `f32::MIN_POSITIVE` this is itself a
+    /// subnormal witness.
+    pub min_abs_nonzero: f32,
+}
+
+/// Reads and clears MXCSR's exception-status bits, returning what was set.
+/// Native x86-64 only.
+#[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
+#[allow(deprecated)]
+fn take_fp_status() -> u32 {
+    // SAFETY: `_mm_getcsr`/`_mm_setcsr` are unconditionally available on x86-64 (SSE2 is
+    // baseline). Clearing only the six status bits leaves the control bits (rounding
+    // mode, FTZ/DAZ, masks) exactly as found.
+    unsafe {
+        let csr = core::arch::x86_64::_mm_getcsr();
+        core::arch::x86_64::_mm_setcsr(csr & !0x3f);
+        csr & 0x3f
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", not(target_arch = "wasm32"))))]
+fn take_fp_status() -> u32 {
+    0
+}
+
+/// MXCSR Denormal-operand status bit.
+pub const FP_DE: u32 = 0x02;
+/// MXCSR Underflow status bit.
+pub const FP_UE: u32 = 0x10;
+
+/// Installs FTZ + DAZ on this thread, the way `namir-platform`'s `DenormalGuard` does for
+/// shipped native Namir. The spike deliberately does not depend on `namir-platform`
+/// (D-5.1 would allow it, but the wasm side cannot have it, and a guard on one side only
+/// would confound the comparison), so Task 5 prices the guard with the two instructions
+/// it comes down to rather than by taking the dependency. Returns false where there is no
+/// such mode -- notably wasm32, whose whole point here is that it has none.
+#[allow(deprecated)]
+pub fn set_flush_to_zero(on: bool) -> bool {
+    #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
+    {
+        const FTZ: u32 = 0x8000;
+        const DAZ: u32 = 0x0040;
+        // SAFETY: as `take_fp_status`. FTZ|DAZ are the two control bits
+        // `namir-platform/src/denormal.rs` sets; nothing else in MXCSR is touched.
+        unsafe {
+            let csr = core::arch::x86_64::_mm_getcsr();
+            let next = if on {
+                csr | FTZ | DAZ
+            } else {
+                csr & !(FTZ | DAZ)
+            };
+            core::arch::x86_64::_mm_setcsr(next);
+            core::arch::x86_64::_mm_getcsr() & (FTZ | DAZ) == if on { FTZ | DAZ } else { 0 }
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", not(target_arch = "wasm32"))))]
+    {
+        let _ = on;
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -246,6 +368,98 @@ impl Harness {
         &self.left
     }
 
+    /// The one place a measurement signal is generated, shared by `run` and `census` so
+    /// the timed window and the window that proves subnormals occur are the same signal.
+    fn fill_block(&mut self, block: &mut [f32], signal: Signal, i: u32, amp: &mut f32) {
+        match signal {
+            Signal::Steady => {
+                for s in block.iter_mut() {
+                    *s = self.next_sample();
+                }
+            }
+            Signal::AmplitudeDecay => {
+                *amp *= 0.999_5;
+                if *amp < 1e-30 {
+                    *amp = 1.0;
+                }
+                let a = *amp;
+                for s in block.iter_mut() {
+                    *s = self.next_sample() * a;
+                }
+            }
+            Signal::SubnormalTail => {
+                if i % TAIL_PERIOD_BLOCKS < TAIL_BURST_BLOCKS {
+                    for s in block.iter_mut() {
+                        *s = self.next_sample();
+                    }
+                } else {
+                    // Exact zero, not a small number: the phenomenon under test is the
+                    // chain's own state decaying with nothing driving it.
+                    block.fill(0.0);
+                }
+            }
+        }
+    }
+
+    /// Runs the same warmup/measured window as `run`, **untimed**, and reports what was
+    /// numerically present. Kept as a separate pass rather than folded into `run` so that
+    /// nothing in the census -- least of all the MXCSR read-modify-write, which is not
+    /// cheap -- can land inside a timed span.
+    pub fn census(&mut self, warmup: u32, measured: u32, signal: Signal) -> Census {
+        let mut block = vec![0.0f32; BLOCK_SIZE];
+        let mut amp = 1.0f32;
+        for i in 0..warmup {
+            self.fill_block(&mut block, signal, i, &mut amp);
+            self.process_block(&block);
+        }
+        self.assert_resources_loaded();
+
+        let mut c = Census {
+            min_abs_nonzero: f32::MAX,
+            ..Census::default()
+        };
+        for i in 0..measured {
+            self.fill_block(&mut block, signal, i, &mut amp);
+            let _ = take_fp_status(); // clear, then attribute what follows to this block
+            self.process_block(&block);
+            let status = take_fp_status();
+            c.blocks += 1;
+            if status & FP_DE != 0 {
+                c.denormal_flag_blocks += 1;
+            }
+            if status & FP_UE != 0 {
+                c.underflow_flag_blocks += 1;
+            }
+            let mut hit = false;
+            for ch in [&self.left, &self.right] {
+                for &v in ch.iter() {
+                    let a = v.abs();
+                    if a != 0.0 {
+                        if a < c.min_abs_nonzero {
+                            c.min_abs_nonzero = a;
+                        }
+                        if v.is_subnormal() {
+                            c.subnormal_output_samples += 1;
+                            hit = true;
+                        }
+                    }
+                }
+            }
+            if hit {
+                c.subnormal_output_blocks += 1;
+            }
+        }
+        assert_eq!(
+            self.engine.chain().fault_count(),
+            0,
+            "the census run must not have hit FR-CHAIN-080's NaN/Inf fault path"
+        );
+        if c.min_abs_nonzero == f32::MAX {
+            c.min_abs_nonzero = 0.0;
+        }
+        c
+    }
+
     pub fn run(
         &mut self,
         warmup: u32,
@@ -256,10 +470,11 @@ impl Harness {
         let mut block = vec![0.0f32; BLOCK_SIZE];
         let mut amp = 1.0f32;
 
-        for _ in 0..warmup {
-            for s in block.iter_mut() {
-                *s = self.next_sample();
-            }
+        // Warmup always runs the *measured* signal, so a SubnormalTail run enters its
+        // measured window with the chain already in the silent phase of a cycle rather
+        // than freshly excited.
+        for i in 0..warmup {
+            self.fill_block(&mut block, signal, i, &mut amp);
             self.process_block(&block);
         }
 
@@ -270,17 +485,8 @@ impl Harness {
         self.durations_ns.clear();
         self.durations_ns.reserve(measured as usize);
 
-        for _ in 0..measured {
-            if signal == Signal::Decaying {
-                // ~1.0 down to ~1e-30 over the run; restart when it bottoms out.
-                amp *= 0.999_5;
-                if amp < 1e-30 {
-                    amp = 1.0;
-                }
-            }
-            for s in block.iter_mut() {
-                *s = self.next_sample() * amp;
-            }
+        for i in 0..measured {
+            self.fill_block(&mut block, signal, i, &mut amp);
             let start = now_us();
             self.process_block(&block);
             let elapsed_ns = (now_us() - start) * 1000.0;

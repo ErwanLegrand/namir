@@ -1,0 +1,74 @@
+-- census: FTZ/DAZ off --
+census a1_standard steady   : blocks 20000 | sub-out blocks 0 (0.0%) | sub-out samples 0 | DE blocks 0 (0.0%) | UE blocks 0 | min |x| 9.834766e-7
+census a1_standard amp-decay: blocks 20000 | sub-out blocks 9523 (47.6%) | sub-out samples 2436470 | DE blocks 10458 (52.3%) | UE blocks 10468 | min |x| 1e-45
+census a1_standard subnormal: blocks 20000 | sub-out blocks 0 (0.0%) | sub-out samples 0 | DE blocks 17088 (85.4%) | UE blocks 18221 | min |x| 1.2572855e-8
+census a2_lite steady   : blocks 20000 | sub-out blocks 0 (0.0%) | sub-out samples 0 | DE blocks 0 (0.0%) | UE blocks 0 | min |x| 3.0517578e-5
+census a2_lite amp-decay: blocks 20000 | sub-out blocks 9525 (47.6%) | sub-out samples 2437011 | DE blocks 10376 (51.9%) | UE blocks 10382 | min |x| 1e-45
+census a2_lite subnormal: blocks 20000 | sub-out blocks 0 (0.0%) | sub-out samples 0 | DE blocks 15291 (76.5%) | UE blocks 15282 | min |x| 6.556511e-7
+-- census: FTZ/DAZ on --
+census-ftz a1_standard steady   : sub-out blocks 0 | sub-out samples 0 | DE blocks 0 | UE blocks 0 | min |x| 9.834766e-7
+census-ftz a1_standard amp-decay: sub-out blocks 0 | sub-out samples 0 | DE blocks 0 | UE blocks 3893 | min |x| 1.179718e-38
+census-ftz a1_standard subnormal: sub-out blocks 0 | sub-out samples 0 | DE blocks 0 | UE blocks 8859 | min |x| 1.2572855e-8
+census-ftz a2_lite steady   : sub-out blocks 0 | sub-out samples 0 | DE blocks 0 | UE blocks 0 | min |x| 3.0517578e-5
+census-ftz a2_lite amp-decay: sub-out blocks 0 | sub-out samples 0 | DE blocks 0 | UE blocks 3817 | min |x| 1.1772813e-38
+census-ftz a2_lite subnormal: sub-out blocks 0 | sub-out samples 0 | DE blocks 0 | UE blocks 6079 | min |x| 6.556511e-7
+native a1_standard steady    rep 1/5: p50 6.41% | p99 10.55% | p99.9 13.29% | max 52.42% | estimator 10.10% | quotable
+native a1_standard steady    rep 2/5: p50 6.42% | p99 10.51% | p99.9 13.27% | max 16.33% | estimator 10.05% | quotable
+native a1_standard steady    rep 3/5: p50 6.54% | p99 10.73% | p99.9 14.03% | max 22.17% | estimator 10.22% | quotable
+native a1_standard steady    rep 4/5: p50 6.42% | p99 10.49% | p99.9 13.55% | max 16.22% | estimator 10.01% | quotable
+native a1_standard steady    rep 5/5: p50 6.34% | p99 10.54% | p99.9 13.51% | max 17.35% | estimator 9.97% | quotable
+native a1_standard amp-decay rep 1/5: p50 9.01% | p99 14.31% | p99.9 16.73% | max 24.60% | estimator 10.07% | CONTAMINATED
+native a1_standard amp-decay rep 2/5: p50 9.23% | p99 14.55% | p99.9 16.72% | max 34.97% | estimator 10.23% | CONTAMINATED
+native a1_standard amp-decay rep 3/5: p50 9.15% | p99 14.56% | p99.9 16.92% | max 19.22% | estimator 10.26% | CONTAMINATED
+native a1_standard amp-decay rep 4/5: p50 9.43% | p99 14.80% | p99.9 17.03% | max 19.38% | estimator 10.37% | CONTAMINATED
+native a1_standard amp-decay rep 5/5: p50 9.30% | p99 14.56% | p99.9 16.48% | max 20.90% | estimator 10.28% | CONTAMINATED
+native a1_standard subnormal rep 1/5: p50 8.92% | p99 14.27% | p99.9 16.36% | max 25.86% | estimator 10.03% | CONTAMINATED
+native a1_standard subnormal rep 2/5: p50 8.94% | p99 14.37% | p99.9 16.36% | max 19.86% | estimator 10.12% | CONTAMINATED
+native a1_standard subnormal rep 3/5: p50 8.96% | p99 14.44% | p99.9 15.99% | max 19.20% | estimator 10.09% | CONTAMINATED
+native a1_standard subnormal rep 4/5: p50 8.72% | p99 13.94% | p99.9 15.51% | max 28.38% | estimator 9.70% | CONTAMINATED
+native a1_standard subnormal rep 5/5: p50 8.93% | p99 14.41% | p99.9 16.38% | max 22.71% | estimator 10.11% | CONTAMINATED
+native a2_lite steady    rep 1/5: p50 2.04% | p99 6.00% | p99.9 7.60% | max 10.16% | estimator 5.67% | quotable
+native a2_lite steady    rep 2/5: p50 1.90% | p99 5.87% | p99.9 7.22% | max 9.13% | estimator 5.65% | quotable
+native a2_lite steady    rep 3/5: p50 2.04% | p99 5.98% | p99.9 8.01% | max 9.55% | estimator 5.63% | quotable
+native a2_lite steady    rep 4/5: p50 1.95% | p99 5.75% | p99.9 7.66% | max 14.35% | estimator 5.41% | quotable
+native a2_lite steady    rep 5/5: p50 2.04% | p99 6.04% | p99.9 8.10% | max 11.46% | estimator 5.63% | quotable
+native a2_lite amp-decay rep 1/5: p50 2.17% | p99 5.89% | p99.9 7.48% | max 9.18% | estimator 5.41% | quotable
+native a2_lite amp-decay rep 2/5: p50 2.15% | p99 6.10% | p99.9 7.73% | max 9.80% | estimator 5.70% | quotable
+native a2_lite amp-decay rep 3/5: p50 2.19% | p99 6.15% | p99.9 7.82% | max 10.24% | estimator 5.82% | quotable
+native a2_lite amp-decay rep 4/5: p50 2.10% | p99 6.05% | p99.9 7.42% | max 9.69% | estimator 5.66% | quotable
+native a2_lite amp-decay rep 5/5: p50 2.14% | p99 6.09% | p99.9 7.39% | max 18.40% | estimator 5.69% | quotable
+native a2_lite subnormal rep 1/5: p50 2.13% | p99 7.32% | p99.9 9.14% | max 17.41% | estimator 5.75% | quotable
+native a2_lite subnormal rep 2/5: p50 2.32% | p99 8.76% | p99.9 10.35% | max 12.97% | estimator 5.92% | quotable
+native a2_lite subnormal rep 3/5: p50 2.46% | p99 9.62% | p99.9 11.06% | max 14.52% | estimator 5.74% | CONTAMINATED
+native a2_lite subnormal rep 4/5: p50 2.13% | p99 7.03% | p99.9 8.13% | max 10.78% | estimator 5.67% | quotable
+native a2_lite subnormal rep 5/5: p50 2.09% | p99 7.29% | p99.9 8.65% | max 11.78% | estimator 5.70% | quotable
+native-ftz a1_standard steady    rep 1/5: p50 6.34% | p99 10.43% | p99.9 13.22% | max 16.12% | estimator 10.07% | quotable
+native-ftz a1_standard steady    rep 2/5: p50 6.46% | p99 10.39% | p99.9 13.65% | max 15.63% | estimator 9.83% | quotable
+native-ftz a1_standard steady    rep 3/5: p50 6.71% | p99 10.91% | p99.9 13.75% | max 22.88% | estimator 10.29% | quotable
+native-ftz a1_standard steady    rep 4/5: p50 6.48% | p99 10.66% | p99.9 13.50% | max 15.99% | estimator 10.12% | quotable
+native-ftz a1_standard steady    rep 5/5: p50 6.74% | p99 11.05% | p99.9 14.75% | max 16.91% | estimator 10.37% | quotable
+native-ftz a1_standard amp-decay rep 1/5: p50 6.56% | p99 10.80% | p99.9 13.96% | max 16.94% | estimator 10.24% | quotable
+native-ftz a1_standard amp-decay rep 2/5: p50 6.64% | p99 10.82% | p99.9 13.63% | max 16.62% | estimator 10.21% | quotable
+native-ftz a1_standard amp-decay rep 3/5: p50 6.61% | p99 10.92% | p99.9 13.44% | max 24.04% | estimator 10.45% | quotable
+native-ftz a1_standard amp-decay rep 4/5: p50 6.22% | p99 10.39% | p99.9 13.01% | max 16.29% | estimator 9.95% | quotable
+native-ftz a1_standard amp-decay rep 5/5: p50 6.59% | p99 10.83% | p99.9 13.50% | max 16.58% | estimator 10.21% | quotable
+native-ftz a1_standard subnormal rep 1/5: p50 6.38% | p99 10.67% | p99.9 13.25% | max 15.97% | estimator 10.11% | quotable
+native-ftz a1_standard subnormal rep 2/5: p50 6.46% | p99 10.63% | p99.9 13.68% | max 16.53% | estimator 10.06% | quotable
+native-ftz a1_standard subnormal rep 3/5: p50 6.45% | p99 10.67% | p99.9 13.60% | max 22.29% | estimator 10.07% | quotable
+native-ftz a1_standard subnormal rep 4/5: p50 6.49% | p99 10.77% | p99.9 13.31% | max 16.34% | estimator 10.12% | quotable
+native-ftz a1_standard subnormal rep 5/5: p50 6.61% | p99 10.94% | p99.9 13.92% | max 16.41% | estimator 10.33% | quotable
+native-ftz a2_lite steady    rep 1/5: p50 2.07% | p99 6.13% | p99.9 7.91% | max 10.60% | estimator 5.69% | quotable
+native-ftz a2_lite steady    rep 2/5: p50 2.05% | p99 6.08% | p99.9 7.53% | max 9.54% | estimator 5.67% | quotable
+native-ftz a2_lite steady    rep 3/5: p50 1.91% | p99 5.99% | p99.9 7.33% | max 9.38% | estimator 5.67% | quotable
+native-ftz a2_lite steady    rep 4/5: p50 2.04% | p99 6.09% | p99.9 7.55% | max 10.95% | estimator 5.67% | quotable
+native-ftz a2_lite steady    rep 5/5: p50 1.91% | p99 6.04% | p99.9 7.99% | max 10.24% | estimator 5.65% | quotable
+native-ftz a2_lite amp-decay rep 1/5: p50 2.07% | p99 6.08% | p99.9 7.50% | max 9.54% | estimator 5.75% | quotable
+native-ftz a2_lite amp-decay rep 2/5: p50 1.82% | p99 5.79% | p99.9 6.76% | max 20.27% | estimator 5.69% | quotable
+native-ftz a2_lite amp-decay rep 3/5: p50 2.05% | p99 6.03% | p99.9 7.98% | max 9.92% | estimator 5.85% | quotable
+native-ftz a2_lite amp-decay rep 4/5: p50 1.91% | p99 6.03% | p99.9 8.00% | max 9.74% | estimator 5.66% | quotable
+native-ftz a2_lite amp-decay rep 5/5: p50 2.04% | p99 6.01% | p99.9 7.37% | max 9.50% | estimator 5.68% | quotable
+native-ftz a2_lite subnormal rep 1/5: p50 2.09% | p99 6.10% | p99.9 7.51% | max 11.71% | estimator 5.73% | quotable
+native-ftz a2_lite subnormal rep 2/5: p50 2.04% | p99 6.03% | p99.9 8.01% | max 9.61% | estimator 5.82% | quotable
+native-ftz a2_lite subnormal rep 3/5: p50 1.81% | p99 5.73% | p99.9 7.82% | max 10.22% | estimator 5.39% | quotable
+native-ftz a2_lite subnormal rep 4/5: p50 2.00% | p99 5.99% | p99.9 7.12% | max 9.65% | estimator 5.65% | quotable
+native-ftz a2_lite subnormal rep 5/5: p50 2.00% | p99 6.08% | p99.9 7.42% | max 10.51% | estimator 5.70% | quotable
