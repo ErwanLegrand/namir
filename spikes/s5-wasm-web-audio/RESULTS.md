@@ -3,8 +3,9 @@
 ## Verdict — 2026-09-05
 
 **Gate 1 (compute): PASS, conditional on `simd128`.** A1 Standard p99.9 **32.4–33.6%** of the
-block period sustained on a steady signal, A2 Lite **15.4–17.3%**, against a <=50% bar. The
-**scalar** artefact FAILS A1 (74–86%), and there is no runtime fallback by design, so a browser
+block period sustained on a steady signal (see the caveat at Task 5: a five-rep replication
+of that same cell reads 30.00–31.31), A2 Lite **14.81–16.31%** sustained, against a <=50%
+bar. The **scalar** artefact FAILS A1 (74–86%), and there is no runtime fallback by design, so a browser
 build of A1 Standard is gated on WebAssembly SIMD. Under a subnormal tail — silence after
 signal, the most ordinary thing a guitar input does — A1 reaches p99.9 **44.25–58.13%**, one rep
 of five above the bar; wasm mandates no flush-to-zero and `DenormalGuard` has no equivalent
@@ -22,7 +23,9 @@ the PASS is the correct call, which is recorded here rather than left implicit.
 API-reported total (10 ms base + 42 ms output + a *declared* 10 ms input constant), roughly twice
 the ~30 ms soft reference before measuring anything the API does not account for;
 `--enable-exclusive-audio`, which spec §6 assumed would be the low-latency condition, is a
-**2.6x regression** (output 42 -> 128 ms). The physical loopback measurement is **PENDING RUN** —
+**2.6x regression** — defined throughout this spike as the ratio of API-reported *output*
+totals, 52.0 -> 133.3 ms; the device buffer alone goes 42 -> 128 ms, and the input-inclusive
+total 62 -> 143 ms, so quote the definition with the number. The physical loopback measurement is **PENDING RUN** —
 no cable on this machine — and it can only be larger than 62 ms, never smaller.
 
 **Recommendation: phase (b) is worth doing, as a file-playback-first demo, and only as that.**
@@ -520,6 +523,12 @@ always uses `a1_standard` — see the note under the a2 table.)
 
 **A1 Standard — does not fit.**
 
+> **[RETRACTED at Task 4, 2026-09-05.]** This heading and everything under it is the
+> **scalar** artefact. On the `simd128` artefact A1 Standard fits with margin — p99.9
+> 32.44–33.56% sustained against a ≤50% bar. See "`--experimental-wasm-revectorize` changed
+> nothing measurable" and the Gate 1 verdict above it. Left as written, per this project's
+> practice of correcting in place rather than tidying away.
+
 ```
 edge a1_standard steady rep 1/5: p50 39.19% | p99 67.88% | p99.9 86.44% | max 104.44% | estimator 50.62% | CONTAMINATED
 edge a1_standard steady rep 2/5: p50 39.38% | p99 69.37% | p99.9 89.25% | max  93.19% | estimator 50.81% | CONTAMINATED
@@ -589,6 +598,14 @@ the cost. It is also why the 5 µs clock quantum is not a problem — see caveat
 | p50 | 1.83-2.06% | 6.94-7.12% | **≈3.6×** |
 | p99.9 | 7.94-8.41% | 28.87-34.50% | **≈3.8×** |
 | estimator (contamination-immune) | 5.38-5.64% | 18.94% | **≈3.4×** |
+
+> **[RETRACTED at Task 4, 2026-09-05.]** The paragraph below, and the "cannot reliably run
+> it at A1 Standard" sentence three paragraphs down, are both **true only of the scalar
+> artefact**, which Task 3 was the only task to measure. Task 4's `simd128` build puts A1
+> Standard at p99.9 **32.44–33.56%** sustained — a Gate 1 PASS with ~1.5× headroom on a
+> steady signal. The emphasis below ("not to be softened") was written in good faith about a
+> figure that turned out to be a property of the build, not of the browser. Not softened:
+> superseded, and left in place so the correction is visible.
 
 **A1 Standard does not fit in the browser on this machine.** p99.9 at 84-89% of the
 block period, and `max` crossed 100% (104.44%) in one rep of five. Kill criterion 2
@@ -668,7 +685,9 @@ quantum is 100 µs (3.75% of the block period) and the figures are not comparabl
    sample-aligned at unit gain, bounded at ~1e-4, and bit-exact on railed blocks. The
    spec's absolute −100 dB bar was unreachable by any build of this chain and has been
    replaced (fix round 1, coordinator ruling).
-2. **A1 Standard does not fit; A2 Lite does.** A1: p99.9 84-89% of the block period,
+2. **A1 Standard does not fit; A2 Lite does.** **[RETRACTED at Task 4, 2026-09-05 — this
+   carried-forward item is scalar-only. On `simd128`, A1 Standard is a Gate 1 PASS at p99.9
+   32.44–33.56% sustained. See the Gate 1 verdict.]** A1: p99.9 84-89% of the block period,
    `max` 104% in one rep of five, ≈5.0-6.1× native. A2: p99.9 29-35%, `max` ≤57%,
    ≈3.4-3.8× native. Kill criterion 2 has not fired, but A1 has no tail headroom.
 3. **Keep per-block timing.** The 5 µs cross-origin-isolated clock quantum is ~0.5% of a
@@ -852,7 +871,8 @@ Gate 1. No p99.9 in any configuration exceeds 86%.
    fallback. Since the scalar artefact FAILS Gate 1 for A1 Standard, **there is no
    working A1 configuration on a simd128-less runtime**, and A1 Standard in a browser is
    therefore gated on WebAssembly SIMD. Every shipping browser has had simd128 on by
-   default since 2021 (Chrome/Edge 91, Firefox 89, Safari 16.4), so this is a stated
+   default since 2021 (Chrome/Edge 91, Firefox 89) and in Safari since 16.4 [**corrected on
+   review: Safari 16.4 is March 2023, not 2021**], so this is a stated
    floor rather than a live risk, but it is a floor: whatever ships must serve the
    simd128 build and must fail loudly, not silently, where simd128 is absent.
 
@@ -887,6 +907,15 @@ accumulates more scheduler and GC events in the same code.
 **The verdict is unchanged — 33.6% is still comfortably inside the 50% bar — but the
 growth itself is an open question, and it is not closed here.** Two readings fit these
 four reps equally well, and nothing measured distinguishes them:
+
+> **[WEAKENED at Task 5, 2026-09-05, recorded on review.]** Task 5 ran **five** reps of this
+> exact cell at this exact run length and got p99.9 **30.00–31.31 (median 30.19)** — the
+> 20 000-block screening level, not 32.44–33.56. The growth this section reports therefore
+> rests on two reps that five later reps do not reproduce. Task 5's artefact is a rebuild
+> (it adds `SubnormalTail`, and its estimator is 19.50–19.88 against 18.19 here), so this is
+> not a clean re-run and neither figure supersedes the other — but the "drifting" reading
+> below, and the "budget against 33.6%, not 29%" advice, are both weaker than written.
+> The advice is retained as the conservative choice, no longer as a measured trend.
 
 - **Asymptotic.** A longer sample simply catches more of a fixed-rate tail, so the p99.9
   converges somewhere near 34% and stays there. This is the likelier reading and it is
@@ -1417,7 +1446,18 @@ signal condition Task 4 did not exercise, and **the honest statement is that A1 
 browser margin under realistic silence is a hairline, not the 1.5x Task 4 recorded**.
 
 This compounds Task 4's carried-forward **UNRESOLVED** item (A1's ~14% cost growth from
-20 000 to 100 000 blocks). **These runs shed no light on it**: they are all at 100 000
+20 000 to 100 000 blocks) — **and, corrected on review, these runs bear on it directly and
+weaken it.** The steady row above *is* a five-rep replication of exactly Task 4's two-rep
+100 000-block point, and it lands at **p99.9 30.00–31.31 (median 30.19)** — the 20 000-block
+*screening* level, not Task 4's 32.44–33.56. So the "~14% growth" now rests on two reps
+contradicted by five at the same run length, and the "drifting toward the bar over hours"
+reading built on it is weaker than Task 4 wrote it. **One confound, stated rather than
+omitted:** Task 5 rebuilt the artefact to add `SubnormalTail`, and the estimator moved
+18.19 → 19.50–19.88, so these are not the same binary and the disagreement is not a clean
+re-run. **The conservative advice is kept — budget A1 against the higher figure — but on the
+grounds that the disagreement is unresolved, not on a measured growth trend.**
+
+**What these runs still cannot do is measure the growth**: they are all at 100 000
 blocks, so there is no second run length to compare, and no longer run was made. What they
 add is that the quantity that would have to stay stationary is now a p99.9 sitting at
 44–58% rather than at 29–34%. If the growth turns out to be drifting rather than asymptotic,
