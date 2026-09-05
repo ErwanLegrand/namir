@@ -1461,9 +1461,12 @@ direct first.
    known to work and its zero readings are real zeroes. **Evidence:
    `coreaudio_task6_rerun.txt`** — see the provenance note below; that file is a *later
    re-run* of this check, because the original probe's console output was not preserved.
-   Session totals differ between the two runs (3 -> 4 originally, 2 -> 3 in the re-run)
-   because the count includes whatever else the machine happens to have open; the
-   load-bearing part, one new active session and `peak = 0.01`, reproduced exactly.
+   The two runs agree on the transition that matters: in both, the session count goes
+   **3 -> 4 with one active** for the duration of our Edge run. (The re-run's earlier
+   `2 -> 3` step is the `SoundPlayer` positive control opening its own session, not ours.)
+   Session totals are still only ever "one additional active session" as a claim, since the
+   count includes whatever else the machine happens to have open — but nothing here
+   diverged: one new active session and `peak = 0.01` reproduced exactly.
 2. **The endpoint exists and is the one being opened.** The machine's default render
    endpoint is a **PreSonus AudioBox 22VSL** (USB interface), registry mix format
    `WAVE_FORMAT_EXTENSIBLE, 2 ch, 48 000 Hz, 32-bit float` — read from
