@@ -1791,3 +1791,259 @@ Twelve reps per arm is the minimum that separates these rates: at the ~33% incid
 observed, six reps per arm would have produced 3/6 vs 0/6 by chance alone (Fisher one-sided
 p = 0.09), which is exactly what the first half of arm B looked like before the second half
 was run. Six reps would have "confirmed" the wrong conclusion.
+
+---
+
+## Task 7 — Gate 3, round-trip latency on Windows, 2026-09-05
+
+**Gate 3 has no pass/fail.** The soft reference is that ~30 ms round-trip is playable. A bad
+number does not kill S-5; it means a demo ships file-playback-first, which was already
+decided. What follows is what was measured.
+
+**Read the browser line first.** This is **Microsoft Edge 152 (Chromium)**, not Chrome.
+Chrome is not installed on this machine and nothing was installed to run this. Edge is
+Chromium and drives the same Chromium audio service over the same Windows WASAPI path, so
+these figures are informative about Chrome — but they are not a Chrome measurement, and this
+gate exists precisely because Firefox figures were once over-generalised to all browsers. Do
+not repeat that with Edge figures.
+
+**No figure here is certified.** These are dev-machine readings under a browser that cannot
+be core-pinned.
+
+### The measurement page
+
+`web/latency.html` + `web/capture-processor.js`.
+
+The brief specified a `ScriptProcessorNode(4096)` and accepted that its buffering inflates
+the absolute figure by an unknown constant, on the grounds that the constant is the same in
+every condition. That trade is not available for this gate: Gate 3's entire value is an
+**absolute** number, so it may not be measured through a node that corrupts absolute
+numbers. Task 6 established that AudioWorklets run reliably here, so the capture path is an
+`AudioWorkletNode`.
+
+The upgrade buys more than "less buffering". A `ScriptProcessorNode` hands you a buffer with
+no reliable statement of *when*, so the brief's page had to rebuild the timeline by
+concatenating callbacks and counting samples from an assumed origin. Inside an
+`AudioWorkletGlobalScope`, `currentFrame` is the absolute frame index of the quantum being
+rendered, on the same clock as `AudioContext.currentTime` — the clock the click was
+scheduled against. The round trip becomes the subtraction of two frame numbers on one clock:
+no concatenation, no assumed origin, no accumulation.
+
+Two further departures from the brief, both for correctness rather than taste:
+
+- **Onset, not peak.** The brief takes the largest captured sample. Latency is a property of
+  the edge, and the largest sample of a burst can be hundreds of microseconds later — or,
+  through an AC-coupled line input that differentiates a rectangular pulse, an unpredictable
+  amount later. The processor reports the first sample crossing a threshold derived from a
+  *measured* noise floor, because "well above noise, not clipping" is set by a human turning
+  a physical knob and cannot be assumed.
+- **A negative control (`&control=1`).** Arms the detector and emits no click. This turned
+  out to be load-bearing; see below.
+
+### What was measured without a cable
+
+Three reps of each cell, Edge 152 `--headless=new --no-sandbox
+--autoplay-policy=no-user-gesture-required --use-fake-ui-for-media-stream`; AudioBox 22VSL
+at 48 kHz, which is the only endpoint Chromium enumerates on this machine.
+
+| Browser flags | `latencyHint` | baseLatency | outputLatency | API output total | input latency (`getSettings().latency`) |
+|---|---|---|---|---|---|
+| none | interactive | 10.000 ms | 42.000 ms | 52.000 ms | 10.000 ms |
+| none | balanced | 10.000 ms | 42.000 ms | 52.000 ms | 10.000 ms |
+| none | playback | 20.000 ms | 52.000 ms | 72.000 ms | 10.000 ms |
+| `--enable-exclusive-audio` | interactive | 5.333 ms | 128.000 ms | **133.333 ms** | 10.000 ms |
+| `--enable-exclusive-audio` | balanced | 5.333 ms | 128.000 ms | **133.333 ms** | 10.000 ms |
+| `--enable-exclusive-audio` | playback | 21.333 ms | 128.000 ms | **149.333 ms** | 10.000 ms |
+
+Every cell was identical across its three reps, and `outputLatency` sampled ten times within
+each run never moved. Raw transcript: `edge_task7.txt`.
+
+Three findings in that table.
+
+1. **`--enable-exclusive-audio` makes it much worse, not better** — spec §6 listed it as the
+   unmeasured low-latency condition and the expectation was the opposite. It does exactly
+   what it says to the render quantum: `baseLatency` falls from 10 ms (480 frames) to
+   5.333 ms (256 frames). But the device buffer balloons from 42 ms to **128 ms**, so the
+   API output total goes from 52 ms to 133 ms. Whatever Chromium negotiates in exclusive
+   mode on this USB interface, it is not a small buffer. On this machine the flag is a 2.6x
+   latency regression and should not be part of a demo story.
+2. **`interactive` and `balanced` are the same thing here.** Only `playback` moves, and it
+   adds 20 ms.
+3. **Opening a microphone does not change the output buffer.** Task 6 recorded
+   `outputLatency` 40 ms with an output-only graph; this page reads 42 ms with a capture
+   stream open, and the obvious hypothesis was that `getUserMedia` renegotiates the device
+   period. It does not: `&noinput=1` (no capture stream at all, an oscillator into a muted
+   gain to keep the graph running) reads **42.000 ms** in all three reps. The 40-vs-42
+   difference is between-session device state, not the input stream.
+
+**The input side.** There is no standard input-latency accessor, which is why spec §6 wants
+the loopback figure reported beside the API ones. What Chromium does expose is
+`MediaStreamTrack.getSettings().latency`, and it reports **0.01 s = 10 ms** in every cell —
+including both exclusive-audio cells, where the output side changed by 86 ms.
+`getCapabilities().latency` is `{min: 0.01, max: 0.01}`, i.e. Chromium declares the input
+latency to be a fixed constant the page cannot influence. Full settings as reported:
+
+    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,
+     "latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,
+     "voiceIsolation":false}
+
+Note `channelCount: 2` despite `channelCount: 1` being requested — the constraint was not
+honoured, which is why the capture processor reads channel 0 rather than assuming mono.
+
+So the **API-reported** total, input plus output, is **62 ms** in the best available
+configuration (10 input + 10 base + 42 output, `latencyHint: interactive`, no flags). That is
+already twice the ~30 ms soft reference, and it is a lower bound: it is what the browser
+admits to, before any part of the path it does not account for.
+
+### The loopback half: PENDING RUN, and demonstrably so
+
+There is no loopback cable on this machine, and this is established rather than assumed.
+
+The AudioBox 22VSL line input is open and not digitally silent (noise-floor rms 0.00025 to
+0.00246 across runs, i.e. a live preamp). So "no capture" alone would have been weak
+evidence. The control settles it:
+
+| Condition | windows | detections above threshold | peak range |
+|---|---|---|---|
+| control (armed, **no click emitted**) | 40 | 2 | 0.00085 – 0.0308 |
+| click, 64 frames @ 0.5 | 10 | 0 | 0.00106 – 0.00652 |
+| click, 480 frames @ 1.0 (7.5x longer, 2x louder) | 20 | 0 | 0.00080 – 0.00397 |
+
+Click windows are indistinguishable from windows in which **no click was emitted**, and if
+anything the control has the larger excursions. Emitting a 10 ms full-scale burst instead of
+a 1.3 ms half-scale one changed nothing. There is no path from the output to the input.
+
+The two control detections are the more useful half of that table. One reported **−1.06 ms**,
+which is physically impossible, and the other 448.54 ms. Both are ambient noise on an open
+line input landing inside a 700 ms arming window. Had the run been done without a control, a
+run that caught one of these and nothing else would have reported a confident round-trip
+figure that was pure room noise. The page now labels control detections `SPURIOUS`, flags any
+result below 0 ms or above 200 ms as `IMPLAUSIBLE`, and excludes both from the median. The
+original mislabelled transcript is kept in `edge_task7.txt` rather than re-run away — it is
+the evidence that the detector produces false positives.
+
+**Two conditions from the brief could not be run at all, for the same reason.** Chromium
+enumerates exactly one input and one output device here, both the AudioBox (plus its
+`default`/`communications` aliases). The Realtek onboard endpoints are `NOTPRESENT` or
+`UNPLUGGED` in the Windows endpoint registry and Chromium does not offer them, so the brief's
+"onboard/consumer output" condition has no device to run on. The same enumeration rules out
+the one software-loopback route that would not have needed a cable: Realtek "Mixage stéréo"
+(Stereo Mix) exists in the registry but is not exposed to Chromium, so there is no
+`setSinkId` + Stereo Mix pairing to measure. Nothing was installed to create one, per the
+spike's constraints.
+
+### Gate 3 result
+
+| Device | Browser | Config | Median RTT ms | baseLatency ms | outputLatency ms | input latency ms | Unaccounted ms |
+|---|---|---|---|---|---|---|---|
+| AudioBox 22VSL | Edge 152 | interactive, default | **PENDING RUN** (no cable) | 10.000 | 42.000 | 10.000 | — |
+| AudioBox 22VSL | Edge 152 | balanced, default | **PENDING RUN** (no cable) | 10.000 | 42.000 | 10.000 | — |
+| AudioBox 22VSL | Edge 152 | playback, default | **PENDING RUN** (no cable) | 20.000 | 52.000 | 10.000 | — |
+| AudioBox 22VSL | Edge 152 | interactive, `--enable-exclusive-audio` | **PENDING RUN** (no cable) | 5.333 | 128.000 | 10.000 | — |
+| onboard/consumer output | Edge 152 | any | **NOT RUNNABLE** — no such endpoint is exposed to Chromium on this machine | — | — | — | — |
+| any | Chrome | any | **PENDING RUN** — Chrome is not installed | — | — | — | — |
+| any | Firefox | any | **PENDING RUN** — Firefox is not installed; this is the browser the ~70–100 ms cubeb bugs are actually about | — | — | — | — |
+
+**What can be said now:** on this machine, in Chromium, the browser's own accounting for a
+guitar-shaped signal path is **62 ms** at best (`interactive`, no flags), and
+`--enable-exclusive-audio` raises it to 143 ms rather than lowering it. 62 ms is roughly twice
+the ~30 ms soft reference *before* measuring anything the API does not account for, and a
+physical loopback can only be larger than the API figure, never smaller. That is the honest
+reading available without the cable, and it points the same way the file-playback-first demo
+decision already did.
+
+**What cannot be said:** the absolute round trip, and therefore the size of the gap between it
+and the 62 ms the API admits to. That gap is the novel number this gate was created to
+produce, and it is still missing.
+
+### PENDING RUN — how to run the loopback half
+
+Written for someone who has not read this spike. It needs one audio cable and about ten
+minutes.
+
+**What you need.** The PreSonus AudioBox 22VSL that is already connected, and one cable with
+a 1/4-inch TS or TRS jack on **both** ends (a standard instrument/guitar lead is fine).
+
+**1. Cable it.** On the back of the AudioBox, take **LINE OUTPUT 1 (left)**. On the front,
+plug the other end into **INPUT 1**. You are connecting the interface's own output back into
+its own input. Nothing else needs to move.
+
+**2. Set the knobs.** On the front panel:
+
+- Set **INPUT 1's gain knob** to about 9 o'clock — low. It is a line-level signal going into
+  a preamp input, so it needs very little gain, and too much will clip.
+- Set the **MIXER** knob fully to **PLAYBACK** (away from INPUT). This stops the interface
+  monitoring its own input back to the output, which would otherwise create a feedback loop.
+- Set the **MAIN** output knob to about 12 o'clock.
+- Leave **48V phantom power OFF**. It is not needed and a line output does not want it.
+
+**3. Start the server.** In a terminal, from the repository root:
+
+        cd spikes/s5-wasm-web-audio
+        python web/serve.py
+
+Leave it running. It prints a URL for a different page; ignore that.
+
+**4. Run the control first.** This is not optional — see the false-positive table above. Open
+a browser (Edge is at `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`) and go
+to:
+
+        http://127.0.0.1:8080/web/latency.html?control=1&n=20
+
+Press **Measure** and grant microphone access when asked. Wait about 20 seconds.
+
+**A good control run prints `control N: no capture` on every one of the twenty lines**, with
+peaks around 0.001–0.003. If any line says `SPURIOUS`, the room is too noisy or something is
+plugged into INPUT 2 — find it and fix it before going further, because a noise floor that
+trips the detector will corrupt the real run.
+
+**5. Run the measurement.** Same page, reload without the `control` parameter:
+
+        http://127.0.0.1:8080/web/latency.html?n=20
+
+Press **Measure**. It emits 20 clicks over about 15 seconds. You may hear faint ticks.
+
+**A good run looks like this:** every line reads `click N: <number> ms`, the numbers are
+tightly clustered (a spread of more than a few milliseconds means something is wrong), the
+reported `peak` is between roughly 0.05 and 0.9 (below 0.05 the gain is too low; at or above
+1.0 it is clipping — turn INPUT 1's gain knob down and re-run), and no line says
+`IMPLAUSIBLE`. The last lines print the median round trip and the "unaccounted" figure, which
+is the median minus what the API claims. **That unaccounted number is the result this gate
+wants.**
+
+**A bad run looks like this:** every line says `no capture`. Check the cable is in LINE OUTPUT
+1 and not the headphone socket, that INPUT 1's gain is not fully counter-clockwise, and that
+the MAIN knob is up. If a few lines say `IMPLAUSIBLE` and the rest are clustered, the
+clustered ones are the real figure and the control run above is your evidence for saying so.
+
+**6. Repeat for the other conditions**, re-running the control before each:
+
+        http://127.0.0.1:8080/web/latency.html?n=20&hint=playback
+        # and, launching the browser with the flag:
+        "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" ^
+          --enable-exclusive-audio "http://127.0.0.1:8080/web/latency.html?n=20"
+
+**7. Record it** in the Gate 3 table above: replace each `PENDING RUN` cell with the median,
+and keep the `baseLatency`/`outputLatency` columns from the same run rather than from this
+table, since they are what the unaccounted figure is computed against.
+
+The same page and the same instructions apply unchanged if Chrome or Firefox is ever
+installed; add `&tag=chrome` or `&tag=firefox` so the transcript says which.
+
+### Reproducing the no-cable half
+
+    cd spikes/s5-wasm-web-audio
+    python web/serve.py
+    msedge --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required \
+      --use-fake-ui-for-media-stream \
+      "http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=x"
+    #   ...&hint=balanced | &hint=playback      the latencyHint conditions
+    #   ...&noinput=1                           output-only, no capture stream
+    #   --enable-exclusive-audio                the exclusive-mode condition
+    #   ...&auto=measure&control=1&n=10         the negative control
+    #   ...&auto=measure&n=10&amp=1.0&len=480   the loud/long click
+
+`--use-fake-ui-for-media-stream` auto-grants microphone permission; it does **not** substitute
+a fake device (that would be `--use-fake-device-for-media-stream`, which must not be used here
+— it would measure a synthetic capturer rather than the AudioBox). The transcript is recovered
+from `serve.py`'s 404 log lines, the same beacon trick Task 6 used.
