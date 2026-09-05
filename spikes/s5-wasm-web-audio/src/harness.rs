@@ -101,7 +101,7 @@ pub struct Census {
 
 /// Reads and clears MXCSR's exception-status bits, returning what was set.
 /// Native x86-64 only.
-#[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
+#[cfg(target_arch = "x86_64")]
 #[allow(deprecated)]
 fn take_fp_status() -> u32 {
     // SAFETY: `_mm_getcsr`/`_mm_setcsr` are unconditionally available on x86-64 (SSE2 is
@@ -114,7 +114,7 @@ fn take_fp_status() -> u32 {
     }
 }
 
-#[cfg(not(all(target_arch = "x86_64", not(target_arch = "wasm32"))))]
+#[cfg(not(target_arch = "x86_64"))]
 fn take_fp_status() -> u32 {
     0
 }
@@ -132,7 +132,7 @@ pub const FP_UE: u32 = 0x10;
 /// such mode -- notably wasm32, whose whole point here is that it has none.
 #[allow(deprecated)]
 pub fn set_flush_to_zero(on: bool) -> bool {
-    #[cfg(all(target_arch = "x86_64", not(target_arch = "wasm32")))]
+    #[cfg(target_arch = "x86_64")]
     {
         const FTZ: u32 = 0x8000;
         const DAZ: u32 = 0x0040;
@@ -149,7 +149,7 @@ pub fn set_flush_to_zero(on: bool) -> bool {
             core::arch::x86_64::_mm_getcsr() & (FTZ | DAZ) == if on { FTZ | DAZ } else { 0 }
         }
     }
-    #[cfg(not(all(target_arch = "x86_64", not(target_arch = "wasm32"))))]
+    #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = on;
         false

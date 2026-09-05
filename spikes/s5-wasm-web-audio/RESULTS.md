@@ -767,6 +767,17 @@ wasm/native ratio, **scalar**, `p50`: A1 Standard **≈6.0×**, A2 Lite **≈3.5
 | **simd128** | **PASS** — **p99.9 32.4–33.6% sustained** (29–31% at the 20 000-block screening length) | **PASS** — p99.9 14.8–16.3% sustained (15–17% screening) |
 | simd128 + revectorize | **PASS** (p99.9 29–32%) | **PASS** (p99.9 14–17%) |
 
+**Condition added at Task 5 (2026-09-05) — read this before quoting the row above.**
+Every figure in this table was measured on a **steady** signal. Under the subnormal-tail
+signal Task 5 added (signal, then silence — what a guitar input does between notes), the
+same A1 Standard / simd128 configuration reaches **p99.9 44.25–58.13%**, with one of five
+reps *above* this gate's ≤50% bar; A2 Lite goes to 19.41%. **The verdict below is not
+retracted** — the median rep (47.44%) is inside the bar and kill criterion 2 is nowhere
+near firing — but A1 Standard's real margin is a hairline, not the ~1.5× this row implies,
+and **Task 6 must budget A1 against ~50%, not 33.6%**. There is no wasm equivalent of
+`DenormalGuard`, so that cost is structural. See "Task 5 — the denormal sub-experiment,
+rebuilt".
+
 **Verdict: Gate 1 PASSES for both models on the simd128 artefact, and FAILS for A1
 Standard on the scalar artefact.** The scalar/simd128 split is the whole result: it is
 not a tuning margin, it is 3.3× on `p50` and 2.6× on `p99.9` for A1.
@@ -1146,8 +1157,11 @@ Not a slowly shrinking input — the classic audio denormal shape: **signal, the
 512-block cycle, repeating (`TAIL_BURST_BLOCKS` / `TAIL_PERIOD_BLOCKS` in `harness.rs`).
 96.9% of measured blocks are driven by nothing at all, leaving the chain's own IIR state —
 EQ biquads, gate envelope, gain ramps, the output stage — and the convolution tail to decay
-under their own poles. Warmup runs the measured signal too, so a measured window opens with
-the chain already mid-cycle rather than freshly excited.
+under their own poles. Warmup runs the measured signal too, so the chain's state is already
+in the burst-and-silence regime when measurement begins. (Corrected at fix round 1: an
+earlier revision said the measured window "opens mid-cycle". It does not — `fill_block`'s
+block index restarts at 0 for the measured loop, so the window opens on a burst. The part
+that matters is the warm *state*, not the phase.)
 
 ### Proving subnormals actually occur — two witnesses, and a control
 
@@ -1184,17 +1198,30 @@ keep the native and wasm sides running the same crate graph.
 
 **The same census with FTZ/DAZ installed** — the control:
 
-| model | signal | subnormal out blocks | MXCSR DE blocks | min abs |
-|---|---|---|---|---|
-| a1_standard | steady | 0 | 0 | 9.83e-7 |
-| a1_standard | amp-decay | **0** | **0** | **1.179 718e-38** (just above `MIN_POSITIVE`) |
-| a1_standard | subnormal | 0 | **0** | 1.26e-8 |
-| a2_lite | amp-decay | **0** | **0** | **1.177 281e-38** |
-| a2_lite | subnormal | 0 | **0** | 6.56e-7 |
+| model | signal | subnormal out blocks | MXCSR DE blocks | UE blocks | min abs |
+|---|---|---|---|---|---|
+| a1_standard | steady | 0 | 0 | 0 | 9.83e-7 |
+| a1_standard | amp-decay | **0** | **0** | 3 893 | **1.179 718e-38** (just above `MIN_POSITIVE`) |
+| a1_standard | subnormal | 0 | **0** | 8 859 | 1.26e-8 |
+| a2_lite | steady | 0 | 0 | 0 | 3.05e-5 |
+| a2_lite | amp-decay | **0** | **0** | 3 817 | **1.177 281e-38** |
+| a2_lite | subnormal | 0 | **0** | 6 079 | 6.56e-7 |
 
 Every DE count goes to zero and `amp-decay`'s smallest output moves from 1e-45 to a value
 **immediately above** `f32::MIN_POSITIVE` — i.e. flushed. The counts were real subnormals,
 not an artefact of how they were counted.
+
+**One column does not collapse, and it is not supposed to: UE.** Underflow survives at
+3 893 / 8 859 / 3 817 / 6 079 blocks. That is not a hole in the control, it is FTZ working:
+DAZ makes a subnormal *operand* read as zero, so DE stops being raised; FTZ makes a
+subnormal *result* be replaced by zero, and the SSE definition of that substitution is to
+raise **UE** (with PE) as it happens. So UE rising where DE vanishes is the guard reporting
+each flush, and a run with FTZ on and UE at zero would mean nothing had needed flushing.
+The rule stated above — "every count that is a real subnormal must collapse to zero" —
+applies to DE and to the output-side counts, which are counts of subnormals; UE is a count
+of *flushes*, and is stated here rather than omitted precisely because it moves the other
+way. (Recorded at fix round 1: the first revision of this table simply dropped the column,
+which reads as fitting the evidence to the rule even though the explanation is benign.)
 
 **What this establishes, and what it does not.**
 
@@ -1239,7 +1266,7 @@ Raw log: `native_bench_task5.txt` (committed). Medians of the five reps.
 | a2_lite | **subnormal** | off | 2.13 | **9.14** | 5.75 |
 | a2_lite | steady | on | 2.04 | 7.55 | 5.67 |
 | a2_lite | amp-decay | on | 2.04 | 7.50 | 5.69 |
-| a2_lite | **subnormal** | on | 2.04 | 7.51 | 5.70 |
+| a2_lite | **subnormal** | on | 2.00 | 7.51 | 5.70 |
 
 `a1_standard`'s `amp-decay` and `subnormal` reps carry `is_quotable()` CONTAMINATED flags,
 for the same reason Task 2 recorded and did not discard them: the per-residue estimator is
@@ -1282,14 +1309,14 @@ Kill criterion 3 now applies to **`SubnormalTail`**, per the ruling, not to `amp
 | native | x86-64-v3, **FTZ/DAZ on** | A1 Standard | p50 6.48 / p99.9 13.65 | p50 6.46 / p99.9 13.60 | **1.00x** p50, **1.00x** p99.9 |
 | **Edge (V8)** | **simd128** | A1 Standard | p50 12.94 / p99.9 30.19 | p50 17.44 / p99.9 47.44 | **1.35x** p50, **1.57x** p99.9 |
 | native | x86-64-v3, no FTZ | A2 Lite | p50 2.04 / p99.9 7.66 | p50 2.13 / p99.9 9.14 | 1.04x p50, 1.19x p99.9 |
-| native | x86-64-v3, FTZ/DAZ on | A2 Lite | p50 2.04 / p99.9 7.55 | p50 2.04 / p99.9 7.51 | 1.00x p50, 0.99x p99.9 |
+| native | x86-64-v3, FTZ/DAZ on | A2 Lite | p50 2.04 / p99.9 7.55 | p50 2.00 / p99.9 7.51 | 0.98x p50, 0.99x p99.9 |
 | **Edge (V8)** | **simd128** | A2 Lite | p50 3.19 / p99.9 15.94 | p50 3.75 / p99.9 19.41 | 1.18x p50, 1.22x p99.9 |
 | **Chrome** | simd128 | both | — | — | **PENDING RUN** |
 | **Firefox** | simd128 | both | — | — | **PENDING RUN** |
 
 **Kill criterion 3 (>2x penalty on the subnormal mode): NOT FIRED.** The largest penalty
 anywhere is **1.57x** (A1 Standard p99.9, Edge/simd128). Every other cell is between 1.00x
-and 1.39x. **Proceed to Task 6.**
+and 1.39x (0.98x on one guard-on cell, i.e. at noise). **Proceed to Task 6.**
 
 ### What FTZ actually buys, and what it does not
 
@@ -1302,7 +1329,8 @@ guard off. On p99.9 wasm is worse (1.57x against 1.21x), and that difference is 
 
 Task 5 additionally priced the guard, which the brief did not ask for and which changes the
 reading. **On native, FTZ/DAZ removes essentially the entire penalty of both modes**:
-A1 Standard's subnormal p50 goes 8.93% -> 6.46% against a 6.48% steady baseline (1.00x), and
+A1 Standard's subnormal p50 goes 8.93% -> 6.46% against a 6.48% steady baseline (1.00x), A2
+Lite's 2.13% -> 2.00% against 2.04% (0.98x), and
 its **amp-decay** p50 goes 9.23% -> 6.59% (1.02x). **There is no FTZ on wasm**, so that
 saving is not available in a browser at any price — it is not a tuning knob that was left
 unturned, it is a mode the platform does not have.
