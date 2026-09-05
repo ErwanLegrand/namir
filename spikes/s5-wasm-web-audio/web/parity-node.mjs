@@ -1,21 +1,19 @@
 // Runs the same parity check and the same bench as web/bench-worker.js, but under
 // bare Node (V8/TurboFan, same wasm engine family as Edge/Chrome). Chrome is not
 // installed on the reference machine, so this is how Task 3's parity figure was
-// actually obtained; it exercises the ABI and the dB comparison, NOT the browser's
+// obtained; it exercises the ABI and the dB comparison, NOT the browser's
 // AudioWorklet or its cross-origin-isolated clock.
 //
-//   node web/parity-node.mjs [--bench] [--allow-parity-fail]
-//                            [--model a1_standard|a2_lite]
+//   node web/parity-node.mjs [--bench] [--model a1_standard|a2_lite]
 //                            [--decaying] [--reps N] [--measured N] [--warmup N]
 //
-// Run from the spike root.
+// Run from the spike root. Needs both native renders in fixtures/ -- see RESULTS.md's
+// "The native-vs-native reproducibility floor" section for how the control is made.
 import { readFileSync } from "node:fs";
-import { loadNamir, writeBytes, parityDb } from "./namir.js";
+import { loadNamir, writeBytes, parity, CONTROL_MARGIN_DB, dbBetween, f32 } from "./namir.js";
 
 const WASM = "target/wasm32-unknown-unknown/release/s5_wasm_web_audio.wasm";
 const PARITY_SAMPLES = 128 * 256;
-// See web/bench-worker.js for why this is not tuned.
-const PARITY_THRESHOLD_DB = -100;
 
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n);
@@ -26,8 +24,12 @@ const opt = (n, d) => {
 
 const modelName = opt("--model", "a1_standard");
 const modelBytes = new Uint8Array(readFileSync(`fixtures/${modelName}.nam`));
+// The reference renders are made from a1_standard, so parity always renders a1_standard
+// whatever --model is being benchmarked; see web/bench-worker.js's note.
+const parityModelBytes = new Uint8Array(readFileSync("fixtures/a1_standard.nam"));
 const irBytes = new Uint8Array(readFileSync("fixtures/ir_48k.wav"));
 const refBytes = new Uint8Array(readFileSync("fixtures/reference_render_f32le.bin"));
+const controlBytes = new Uint8Array(readFileSync("fixtures/reference_control_f32le.bin"));
 
 // process.hrtime.bigint() is nanosecond-resolution and unthrottled, i.e. strictly
 // better than the browser's 5us performance.now(). Reported as such, never as a
@@ -35,26 +37,29 @@ const refBytes = new Uint8Array(readFileSync("fixtures/reference_render_f32le.bi
 const nowUs = () => Number(process.hrtime.bigint()) / 1000;
 const mod = await loadNamir(readFileSync(WASM), nowUs);
 
-function fresh() {
+function fresh(m = modelBytes) {
   if (mod.exports.init(48000) !== 0) throw new Error("init failed");
-  if (mod.exports.load_nam(writeBytes(mod, modelBytes), modelBytes.length) !== 0)
+  if (mod.exports.load_nam(writeBytes(mod, m), m.length) !== 0)
     throw new Error("load_nam failed");
   if (mod.exports.load_ir(writeBytes(mod, irBytes), irBytes.length) !== 0)
     throw new Error("load_ir failed");
 }
 
-fresh();
-const db = parityDb(mod, refBytes, PARITY_SAMPLES);
-const pass = db < PARITY_THRESHOLD_DB;
-console.log(`parity vs native reference: ${db.toFixed(2)} dB -- ${pass ? "PASS" : "FAIL"} (bar: < ${PARITY_THRESHOLD_DB} dB)`);
+fresh(parityModelBytes);
+const p = parity(mod, refBytes, controlBytes, PARITY_SAMPLES);
+console.log(
+  `parity: residual ${p.residual.toFixed(2)} dB | native-vs-native control ` +
+  `${p.control.toFixed(2)} dB | margin ${p.margin.toFixed(2)} dB -- ` +
+  `${p.pass ? "PASS" : "FAIL"} (bar: margin <= ${CONTROL_MARGIN_DB} dB)`,
+);
 
 // Prove the comparison can actually fail: a silent render must score 0.00 dB, so a
 // chain that produced nothing could never be mistaken for a pass.
 {
-  const want = new Float32Array(refBytes.buffer, refBytes.byteOffset, PARITY_SAMPLES);
-  let n = 0, d = 0;
-  for (let i = 0; i < PARITY_SAMPLES; i++) { n += want[i] * want[i]; d += want[i] * want[i]; }
-  console.log(`control: a silent render scores ${(10 * Math.log10(n / d)).toFixed(2)} dB against this reference`);
+  const silent = new Float32Array(PARITY_SAMPLES);
+  const db = dbBetween(silent, f32(refBytes, PARITY_SAMPLES), PARITY_SAMPLES);
+  console.log(`control: a silent render scores ${db.toFixed(2)} dB against this reference`);
+  if (db < CONTROL_MARGIN_DB + p.control) throw new Error("silence would pass -- the metric is broken");
 }
 
 // Task 6's ABI, smoke-tested here because nothing else exercises it yet: `process()`
@@ -75,8 +80,7 @@ console.log(`parity vs native reference: ${db.toFixed(2)} dB -- ${pass ? "PASS" 
   if (!ok) process.exitCode = 1;
 }
 
-const allow = flag("--allow-parity-fail");
-if (!pass && !allow) {
+if (!p.pass) {
   process.exitCode = 1;
 } else if (flag("--bench")) {
   const warmup = Number(opt("--warmup", 5000));

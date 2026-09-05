@@ -338,58 +338,101 @@ the `io_ptr` buffer, and `web/parity-node.mjs` smoke-tests it:
 
     process() in-place: 128/128 samples written back, out energy 1.10e+2 -- OK
 
-### Parity: −81.48 dB, above the brief's −100 dB bar. **A bar problem, not a chain problem.**
+### The native-vs-native reproducibility floor: **−82.72 dB**
+
+Before the parity verdict, the number it is measured against — because nothing in this
+project had measured it before, and it is arguably the most reusable thing this spike
+has produced.
+
+**Take the same source, the same compiler, the same machine, and change only host
+codegen. The six-stage chain's rendered output differs by −82.72 dB.** That is this
+chain's f32 reproducibility limit, and it means no bit-exactness claim and no absolute
+output-parity bar tighter than about −80 dB can hold for it across builds.
+
+How it was obtained — reproducible, two commands:
+
+    # default codegen
+    cargo run --release --bin native_bench -- \
+      --render-only fixtures/reference_render_f32le.bin
+
+    # control: same source, AVX/AVX2/FMA off, isolated target dir so cargo cannot
+    # reuse fingerprints from the build above
+    CARGO_TARGET_DIR=../../target-s5-control \
+      RUSTFLAGS="-C target-cpu=x86-64 -C target-feature=-avx,-avx2,-fma" \
+      cargo run --release --bin native_bench -- \
+        --render-only fixtures/reference_control_f32le.bin
+
+`--render-only <path>` was added to `native_bench` for exactly this: it writes the
+deterministic reference render and stops, instead of also sitting through the
+20-configuration bench.
+
+Three things make this a real measurement rather than an artefact:
+
+- The `.nam` and `.wav` fixtures the two builds generate are **byte-identical** (md5
+  compared), so the inputs are the same and only the rendering differs.
+- The isolated `CARGO_TARGET_DIR` is load-bearing. A first attempt in the shared target
+  directory produced a stale-fingerprint mix — the "default" build linked
+  control-codegen rlibs — which briefly made this look like a source-level difference.
+  It is not.
+- `--render-only` reproduces the default reference **byte-for-byte** (md5
+  `6b147f09eb4d929400f4d11b532ed850`) against the full `native_bench` run, so the flag
+  changes nothing about what is rendered.
+
+Why a nonlinear amp model amplifies rounding this far is not investigated here; the
+per-block diagnostic below shows the divergence is bounded and non-accumulating, so the
+mechanism is reassociation in a chaotic system, not drift.
+
+### Parity: **PASS** — residual −81.48 dB against a −82.72 dB control, margin 1.24 dB
+
+**The criterion changed in fix round 1, on a coordinator ruling.** The Task 3 brief's
+bar was an absolute **−100 dB**, inherited from the spec. The floor above shows that bar
+is unreachable by *any* build of this chain, native included, so it tested nothing
+achievable — it would have failed a correct port and could not have been passed by a
+correct one. The criterion is now **relative**: the wasm-vs-native residual must sit
+within **3 dB** of the native-vs-native control, and the control is computed from the
+two native renders **in the same run** rather than hardcoded (`parity()` in
+`web/namir.js`; `CONTROL_MARGIN_DB = 3.0`). The old absolute bar is gone from the code,
+and so is the manual opt-in that used to be needed to benchmark past it.
 
 Measured two ways, agreeing to the last printed digit:
 
-| Runtime | `crossOriginIsolated` | parity vs native reference |
-|---|---|---|
-| Node v24.19.0 (V8/TurboFan), `web/parity-node.mjs` | n/a | **−81.4759 dB** |
-| Microsoft Edge headless (Chromium/V8), full module-worker + `fetch` + COOP/COEP path | `true` | **−81.4759 dB** |
+| Runtime | `crossOriginIsolated` | residual | control | margin | verdict |
+|---|---|---|---|---|---|
+| Node v24.19.0 (V8/TurboFan), `web/parity-node.mjs` | n/a | **−81.48 dB** | −82.72 dB | **+1.24 dB** | **PASS** |
+| Microsoft Edge 152.0.4191.62 headless (Chromium/V8), full module-worker + `fetch` + COOP/COEP path | `true` | **−81.48 dB** | −82.72 dB | **+1.24 dB** | **PASS** |
 
-Controls, same machine, same reference render:
+Supporting comparisons:
 
 | Comparison | dB |
 |---|---|
-| **CONTROL** — silence vs the native reference | **0.00** |
-| **CONTROL** — native (default codegen) vs native (`-C target-cpu=x86-64 -C target-feature=-avx,-avx2,-fma`) | **−82.72** |
-| wasm32 vs native (default codegen) | −81.48 |
-| wasm32 vs native (`-avx,-avx2,-fma`) | −83.33 |
+| **silence** vs the native reference | **0.00** |
+| wasm32 vs native (default codegen) — the residual | −81.48 |
+| wasm32 vs native (control codegen) | −83.33 |
 
-Both native builds are the *same source*, the same compiler, on the same machine, and
-produce byte-identical `.nam`/`.wav` fixtures — only the host codegen differs, and they
-still disagree by **−82.72 dB**. (The isolated `CARGO_TARGET_DIR` matters here: an
-earlier attempt in the shared target directory produced a stale-fingerprint mix that
-briefly made this look like a source-level difference. It is not.)
+**If this ruling is wrong, the spike is accepting a real numerical defect as codegen
+noise.** The diagnostics that argue against that, stated so a later reader can weigh
+them rather than take the verdict on trust:
 
-So **the −100 dB bar is unreachable by any build of this chain, native included.** The
-wasm figure sits 1.24 dB from that native-vs-native floor. Read with the 0.00 dB
-silence control, the diagnostic profile below, and the fact that the wasm module is
-*closer* to the no-AVX native build than to the AVX one, the conclusion is that the
-wasm chain computes the same thing and the divergence is float reassociation amplified
-by a nonlinear amp model.
-
-Per-block diagnostic on the wasm-vs-native residual (`a1_standard`, 256 blocks):
-
+- **Silence scores 0.00 dB.** A chain rendering nothing is 81 dB away from passing, and
+  `parity-node.mjs` asserts this in-process on every run — the metric is not one that
+  passes trivially.
 - **No delay and no gain error.** Best-fit gain got/want = `0.999999726`. Shifting the
   wasm output by ±1 sample collapses the figure to −35 dB and by ±2 to −29 dB, so the
-  two renders are sample-aligned; a structural difference would not look like this.
+  two renders are sample-aligned.
 - **Bounded, non-accumulating error.** Max absolute error stays ~1e-4 across the whole
   render (block 4: 7.4e-5, block 40: 2.2e-4, block 255: 0) against a reference RMS of
-  ~0.9-1.0. It does not grow with block index.
+  ~0.9-1.0. It does not grow with block index, which a genuine defect in a stateful
+  chain would.
 - **Several blocks are bit-exact** (max absolute error exactly `0.0`) — every one of
   them a block whose reference RMS is exactly 1.0, i.e. a fully railed block where the
   nonlinearity saturates both implementations to the same value. A structurally
   different chain would not produce bit-exact blocks.
+- **The wasm module is *closer* to the no-AVX native build (−83.33 dB) than to the AVX
+  one (−81.48 dB)**, which is what a scalar target should look like if the difference is
+  vectorised reassociation.
 
-**Verdict: NOT a kill.** The chain ports correctly. What is wrong is the −100 dB bar,
-which was specified without a native-vs-native control. **The threshold is deliberately
-left at −100 dB in both `web/bench-worker.js` and `web/parity-node.mjs`, and both still
-report FAIL** — tuning it to pass was explicitly out of bounds, and the calibration
-evidence for whatever the bar should become belongs to whoever owns the plan, not to
-this task. Both runners refuse to benchmark on a parity failure unless an explicit
-opt-in is given (`?anyway=1` in the page, `--allow-parity-fail` in the Node runner);
-that opt-in is the human act saying the investigation above was read.
+A residual more than 3 dB worse than the control still refuses to benchmark, with no
+bypass.
 
 ### Timing figures
 
@@ -406,15 +449,20 @@ Machine: AMD Ryzen 9 5950X / Windows 11 Pro 26200. **Benchmarks in the browser a
 core-pinned** — `NAMIR_PIN_CORE` is a native-only affordance and there is no browser
 equivalent, which is one more reason none of this is certifiable.
 
-#### Edge headless — `a1_standard`, steady, 20 000 measured blocks, 5 reps
+#### Edge headless — steady signal, 20 000 measured blocks, 5 reps each
 
 Command (`web/serve.py` running from the spike root):
 
     msedge --headless=new --disable-gpu --no-sandbox \
-      "http://127.0.0.1:8080/web/bench.html?auto=1&anyway=1&reps=5&measured=20000"
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000"
+    # and again with &model=a2_lite
 
-`crossOriginIsolated: true`. Parity, reported by the page before it would benchmark:
-**−81.4759 dB** (the `anyway=1` opt-in is why it benchmarked at all — see Parity above).
+`crossOriginIsolated: true` in both runs. Parity, reported by the page before it
+benchmarks: residual **−81.4759 dB**, control **−82.7158 dB**, margin **1.2399 dB**,
+**PASS**. (The a2_lite run reports the same parity figures because the parity render
+always uses `a1_standard` — see the note under the a2 table.)
+
+**A1 Standard — does not fit.**
 
 ```
 edge a1_standard steady rep 1/5: p50 39.19% | p99 67.88% | p99.9 86.44% | max 104.44% | estimator 50.62% | CONTAMINATED
@@ -424,20 +472,38 @@ edge a1_standard steady rep 4/5: p50 39.19% | p99 64.69% | p99.9 85.50% | max  9
 edge a1_standard steady rep 5/5: p50 39.19% | p99 65.63% | p99.9 86.44% | max  93.38% | estimator 50.81% | CONTAMINATED
 ```
 
-**20 000 measured blocks, not the 100 000 the native run used.** A 100 000-block rep
-takes ~11 minutes under headless Edge on this machine (Edge is roughly 5× slower per
-rep than Node for the same work, which is a browser-scheduling artefact, not a wasm
-one), so five of them was not a practical wait. 20 000 blocks still puts 20 samples
-above p99.9 and does not affect the per-residue estimator at all. Two earlier
-five-rep attempts at 100 000 blocks are **discarded and not quoted**: the first had a
-second headless Edge instance still alive and beaconing into the same log, and both
-showed the `p50` spread (39% → 75%) that concurrent load produces. The run above was
-made with nothing else running, and its `p50` is stable to ±0.19 percentage points
-across five reps.
+**A2 Lite — fits, with room.**
+
+```
+edge a2_lite     steady rep 1/5: p50  7.12% | p99 29.81% | p99.9 34.50% | max  56.81% | estimator 18.94% | CONTAMINATED
+edge a2_lite     steady rep 2/5: p50  6.94% | p99 20.25% | p99.9 29.25% | max  35.25% | estimator 18.94% | CONTAMINATED
+edge a2_lite     steady rep 3/5: p50  6.94% | p99 20.06% | p99.9 28.87% | max  38.06% | estimator 18.94% | CONTAMINATED
+edge a2_lite     steady rep 4/5: p50  6.94% | p99 20.06% | p99.9 29.63% | max  36.19% | estimator 18.94% | CONTAMINATED
+edge a2_lite     steady rep 5/5: p50  6.94% | p99 20.63% | p99.9 31.13% | max  34.88% | estimator 18.94% | CONTAMINATED
+```
+
+**The parity render always uses `a1_standard`, whatever model is benchmarked**, because
+the two native reference renders are made from `a1_standard`. This was found the direct
+way: the first a2_lite attempt pointed the parity check at a2_lite and scored **+1.15
+dB** — "completely different signal" — and the gate refused to benchmark. That is the
+relative criterion working exactly as intended on a genuine mismatch, and it is the
+strongest evidence in this document that the check is not a formality. Parity is a
+fidelity check on the port; the benchmarked model is a separate axis.
+
+**20 000 measured blocks, not the 100 000 the native run used.** A 100 000-block
+`a1_standard` rep takes ~11 minutes under headless Edge on this machine (Edge is roughly
+5× slower per rep than Node for the same work — a browser-scheduling artefact, not a
+wasm one), so five of them was not a practical wait. 20 000 blocks still puts 20 samples
+above p99.9 and does not affect the per-residue estimator at all. Two earlier five-rep
+attempts at 100 000 blocks are **discarded and not quoted**: the first had a second
+headless Edge instance still alive and beaconing into the same log, and both showed the
+`p50` spread (39% → 75%) that concurrent load produces. The runs above were each made
+with nothing else running; `p50` is stable to ±0.19 pp (A1) and ±0.19 pp (A2) across
+five reps, and A2's estimator is identical to the last digit in all five.
 
 #### Node v24.19.0 cross-check — `a1_standard`, steady, 100 000 measured blocks, 1 rep
 
-    node web/parity-node.mjs --bench --allow-parity-fail --reps 1
+    node web/parity-node.mjs --bench --reps 1
 
 ```
 node a1_standard steady rep 1/1: p50 44.82% | p99 65.71% | p99.9 83.90% | max 99.73% | estimator 55.61% | CONTAMINATED
@@ -448,34 +514,60 @@ Same V8, no browser scheduler, `process.hrtime.bigint()` instead of
 figures, which is the cross-check's whole job. Wall time 2 m 12 s for the rep, i.e.
 ~1.26 ms of wall per 128-frame block against a 1.21 ms measured p50: the harness's own
 per-block overhead outside the timed span is small, so the measured span is not hiding
-the cost.
+the cost. It is also why the 5 µs clock quantum is not a problem — see caveat 1.
 
-#### The number this task exists to produce
+#### The numbers this task exists to produce
 
-| | native (Task 2, 5 reps) | Edge headless (5 reps) | ratio |
+**A1 Standard** — native (Task 2, 5 reps) vs Edge headless (5 reps):
+
+| | native | Edge | ratio |
 |---|---|---|---|
 | p50 | 6.30-6.65% | 39.19-39.38% | **≈6.1×** |
 | p99.9 | 13.60-14.69% | 84.38-89.25% | **≈6.1×** |
 | estimator (contamination-immune) | 9.92-10.37% | 50.62-50.81% | **≈5.0×** |
 
-**wasm32 is ~5-6× slower than native for the same chain**, and at 128 frames / 48 kHz
-that puts `a1_standard`'s p99.9 at ~86% of the block period with `max` crossing 100% in
-one rep of five. That is not a pass and not a clean fail; it is the number Tasks 4-6
-have to work against. `a2_lite` was not measured in the browser — at ~5.6× its native
-5.4-5.7% estimator it would land near 30%, which is comfortable, but that is an
-extrapolation and is not recorded here as a measurement.
+**A2 Lite** — native (Task 2, 5 reps) vs Edge headless (5 reps):
+
+| | native | Edge | ratio |
+|---|---|---|---|
+| p50 | 1.83-2.06% | 6.94-7.12% | **≈3.6×** |
+| p99.9 | 7.94-8.41% | 28.87-34.50% | **≈3.8×** |
+| estimator (contamination-immune) | 5.38-5.64% | 18.94% | **≈3.4×** |
+
+**A1 Standard does not fit in the browser on this machine.** p99.9 at 84-89% of the
+block period, and `max` crossed 100% (104.44%) in one rep of five. Kill criterion 2
+(>100% of realtime) has **not** fired — that reads on the sustained figure, and the p50
+and the estimator are both comfortably under — so the spike continues; but A1's tail has
+no headroom whatsoever, and a single missed deadline is an audible glitch, not a
+statistic. This is the headline result and is not to be softened.
+
+**A2 Lite fits, with real room**: p99.9 at 29-35%, `max` at worst 57%, estimator 19%.
+The wasm penalty is also smaller for A2 (≈3.4-3.8×) than for A1 (≈5.0-6.1×), so the two
+architectures are not a fixed multiple apart — whatever A1's expense is in wasm, it is
+not uniform across the chain.
+
+Together these two are the number Tasks 4-6 have to work against: **the browser can run
+this chain today at A2 Lite, and cannot reliably run it at A1 Standard.**
 
 #### Three caveats that bound how far these figures can be pushed
 
-1. **Headless timer resolution is not the shipping browser's — the most important
-   methodological finding here.** Every Edge percentage above is an exact multiple of
-   0.1875% of the block period, i.e. **5 ns**. Headless Edge is evidently not applying
-   the 5 µs `performance.now()` coarsening a cross-origin-isolated *interactive* page
-   gets (let alone the 100 µs a non-isolated one gets). An interactive Chrome run will
-   quantize each per-block sample to 5 µs — ~187% of the block period — so per-block
-   percentiles there will be nearly meaningless. **Task 4 needs a batched timing
-   strategy (time N blocks, divide) rather than the per-block `now_us()` pair this
-   harness uses**, or its browser figures will be quantization artefacts.
+1. **Timer resolution is fine, and per-block timing must be kept.** Every Edge
+   percentage above is an exact multiple of 0.1875% of the block period — which is
+   exactly **5 µs**, the `performance.now()` quantum a cross-origin-isolated page gets.
+   So headless Edge coarsened its clock precisely as the shipping isolated browser
+   does, and D-S5.5's stated 0.19% quantisation error is what was observed. Against a
+   wasm block that costs ~1000 µs (below), a 5 µs quantum is ~0.5% of the measured
+   quantity. **Task 4 must keep the per-block `now_us()` pair; do not batch N blocks and
+   divide** — the per-block distribution (p99.9 and the per-residue estimator) is the
+   whole measurement, and batching destroys exactly the information the gate reads. The
+   case that would need care is a *non*-isolated page, where the quantum is 100 µs
+   (3.75%); the bench page ships COOP/COEP for this reason and reports
+   `crossOriginIsolated` so a run without it is visible.
+
+   *(Correction, fix round 1: an earlier revision of this caveat read "5 ns", "~187% of
+   the block period", and recommended batching. All three were the same arithmetic slip
+   — the block period is 2666.67 µs, not 2666.67 ns — and the recommendation they led
+   to was backwards. Recorded rather than silently rewritten.)*
 2. **No `DenormalGuard` on either side**, same as Task 2 — and wasm32 has no FTZ/DAZ at
    all and cannot get one, so the decaying-signal condition should be expected to be
    *worse* in the browser than in shipped native Namir. That comparison is not made
@@ -490,22 +582,37 @@ change is needed:
 
     cd spikes/s5-wasm-web-audio
     cargo build --release --lib --target wasm32-unknown-unknown
-    cargo run --release --bin native_bench    # regenerates fixtures/ if absent
+    # both native renders -- see "The native-vs-native reproducibility floor" for the
+    # second command's flags; the parity check needs both files
+    cargo run --release --bin native_bench -- --render-only fixtures/reference_render_f32le.bin
+    CARGO_TARGET_DIR=../../target-s5-control       RUSTFLAGS="-C target-cpu=x86-64 -C target-feature=-avx,-avx2,-fma"       cargo run --release --bin native_bench -- --render-only fixtures/reference_control_f32le.bin
+    cargo run --release --bin native_bench    # fixtures/ + the native figures
     python web/serve.py
     # then, in each browser, open:
     #   http://127.0.0.1:8080/web/bench.html
-    # confirm "crossOriginIsolated: true", tick "bench anyway" (the parity check fails
-    # against the -100 dB bar by design -- read the Parity section first), click Run.
+    # confirm "crossOriginIsolated: true", pick the model, click Run. Parity must report
+    # PASS before it will benchmark; there is no bypass.
     # Record the browser version and the crossOriginIsolated state with the figures.
 
-Expect interactive Chrome and Firefox figures to differ from the Edge headless numbers
-above for the timer-resolution reason in caveat 1, not only for engine reasons.
+Interactive Chrome and Firefox should be expected to land near the Edge headless
+numbers above: the clock quantum is the same 5 µs under cross-origin isolation, so any
+difference should be engine and scheduler, not timer resolution. Confirm
+`crossOriginIsolated: true` on the page before recording anything — without it the
+quantum is 100 µs (3.75% of the block period) and the figures are not comparable.
 
 ### Task 3 verdict
 
-**Proceed to Task 4, with two things carried forward.** The wasm chain is functionally
-correct (parity −81.48 dB against a −82.72 dB native-vs-native floor, 0.00 dB against
-silence, sample-aligned, unit gain, bit-exact on railed blocks). The −100 dB parity bar
-is wrong and needs re-deciding with the native-vs-native control in hand — that decision
-is not this task's to make, and the threshold is left failing in both runners. The
-timing headline is ~5-6× native, with `a1_standard`'s tail at ~86% of the block period.
+**Proceed to Task 4.** Three things carried forward:
+
+1. **The port is correct.** Parity **PASSES** the relative criterion — residual −81.48
+   dB against a −82.72 dB native-vs-native control, margin 1.24 dB, bar 3 dB — measured
+   identically under Node and headless Edge. Silence scores 0.00 dB, the residual is
+   sample-aligned at unit gain, bounded at ~1e-4, and bit-exact on railed blocks. The
+   spec's absolute −100 dB bar was unreachable by any build of this chain and has been
+   replaced (fix round 1, coordinator ruling).
+2. **A1 Standard does not fit; A2 Lite does.** A1: p99.9 84-89% of the block period,
+   `max` 104% in one rep of five, ≈5.0-6.1× native. A2: p99.9 29-35%, `max` ≤57%,
+   ≈3.4-3.8× native. Kill criterion 2 has not fired, but A1 has no tail headroom.
+3. **Keep per-block timing.** The 5 µs cross-origin-isolated clock quantum is ~0.5% of a
+   ~1000 µs wasm block. Batching would destroy the p99.9 and the estimator, which are
+   the measurement.
