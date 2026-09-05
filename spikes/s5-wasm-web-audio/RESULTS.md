@@ -1432,3 +1432,202 @@ on a machine that has them (server started from the spike root, artefacts built 
    equivalent, so this cost is structural in a browser.
 5. Task 4's 20 000-vs-100 000-block growth question is **still UNRESOLVED** — nothing here
    bears on it, all six runs are at one length.
+
+## Task 6 — AudioWorklet underrun gate, 2026-09-05
+
+**Files added:** `web/worklet.html`, `web/namir-processor.js`. **Modified:** `RESULTS.md`.
+Nothing under `crates/`, `docs/`, `.github/` or `xtask/` was touched.
+
+**No figure in this section is certified.** As in Tasks 2–5, and doubly so here: a browser
+render thread cannot be core-pinned, carries no `DenormalGuard`, and runs at whatever
+priority Chromium gives it. Everything below is informational.
+
+### The audio backend is real hardware — and that was checked, not assumed
+
+A zero-underrun result is worthless if the sink is a null/dummy device: such a sink is
+paced by a software timer and has no deadline in it. Three independent findings, in
+increasing order of strength:
+
+1. **The endpoint exists and is the one being opened.** The machine's default render
+   endpoint is a **PreSonus AudioBox 22VSL** (USB interface), registry mix format
+   `WAVE_FORMAT_EXTENSIBLE, 2 ch, 48 000 Hz, 32-bit float` — read from
+   `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\...\Properties`,
+   value `{f19f064d-...},0`, offset 8. `AudioContext.outputLatency` reads 0 ms before the
+   graph starts and **40 ms** once it is running, i.e. the context binds to a device
+   stream rather than reporting a fixed nominal figure.
+2. **Windows sees the stream.** A CoreAudio probe (`IMMDeviceEnumerator` ->
+   `IAudioMeterInformation` / `IAudioSessionManager2` on the default endpoint) sampled once
+   a second across a headless Edge run shows the endpoint go from `sessions 3 / 0 active,
+   peak 0` to **`sessions 4 / 1 active, peak = 0.0100000`** for exactly the duration of the
+   run, then back. `0.01` is the `gain` query parameter that run was launched with: the
+   chain's own output is arriving at the WASAPI endpoint at exactly the amplitude the page
+   sent it. A positive control (`System.Media.SoundPlayer` playing
+   `C:\Windows\Media\Alarm01.wav`) moves the same meter to ~0.19 a few seconds earlier, so
+   the probe is known to work.
+3. **The device clock is not the system clock.** Over the 300 s run the graph clock drifts
+   -8.1 ms against `performance.now()`, i.e. **~ -27 ppm**, smoothly and monotonically. A
+   timer-paced null sink is driven by the *same* clock the page reads and cannot drift; a
+   crystal in a USB interface can and does. This is the strongest of the three, because it
+   is a property of the run itself rather than of the surrounding OS.
+
+So the numbers below are measured against a hardware deadline. **Headless is not the
+problem here; the earlier `--disable-gpu` attempts that logged "The AudioContext
+encountered an error from the audio device" were a page bug (below), not a dead sink.**
+
+### Two deviations from the brief, both forced
+
+**1. `postMessage` of a compiled `WebAssembly.Module` into an `AudioWorkletGlobalScope` is
+silently dropped in Edge 152.** The brief compiles in the page and posts the `Module`. On
+this runtime that message never arrives: no `DataCloneError` on the sending side, no
+`onmessage` on the receiving side, and a processor that stays un-ready forever while
+`process()` keeps being called — which reads exactly like a dead audio backend and cost
+most of this task's debugging. Isolated with a three-line echo processor (a plain object
+round-trips fine, and `{kind:"boot"}` posted from the processor constructor always
+arrives) and fixed by posting the **bytes** and calling `new WebAssembly.Module(wasm)`
+inside `setup`. Synchronous compilation is legal off the main thread and happens once,
+before the first render callback is answered.
+
+**2. The processor generates its input; it does not read `inputs[0][0]`.** There is no
+microphone in a headless run, so the brief's page would have driven the chain with silence
+— the cheap half of the workload — and Task 5's whole finding is that *silence is the
+expensive regime*. The processor therefore runs `harness.rs`'s own xorshift32 generator
+(same seed, `0x2545F491`) in two regimes and counts them separately: **steady** full-scale
+noise for the first half of the run, then **subnormal-tail** — 16 signal blocks of every
+512, the rest exact silence — which is `Signal::SubnormalTail` reproduced in JS. Output is
+attenuated by `outGain` (default 1e-4) on the way into `outputs`; the DSP is untouched.
+
+### Two underrun witnesses, because one of them might have been blind
+
+- **`currentFrame` gap** (the brief's): the processor's own block count against the graph
+  clock. It was not obvious this could ever fire — an engine that renders every quantum
+  late rather than dropping quanta would never trip it. It **does** fire on this engine:
+  four of the runs below caught a gap, always of exactly 3–4 quanta, i.e. one 480-frame
+  device callback. The witness is live, not decorative.
+- **Graph clock vs wall clock**, sampled on the main thread. If the render thread cannot
+  keep up with a device that keeps consuming, `ctx.currentTime` falls behind
+  `performance.now()` and the lag accumulates. Reported per run as max lag.
+
+`AudioContext.renderCapacity` was feature-detected and is **not exposed** by Edge 152, with
+or without `--enable-blink-features=AudioContextRenderCapacity`. The page keeps the probe;
+it costs nothing and would have been the only in-browser view of render load.
+
+### Gate 2 — worklet scheduling, 2026-09-05
+
+Runtime: Microsoft Edge **152.0.4191.62**, `--headless=new --no-sandbox
+--autoplay-policy=no-user-gesture-required`. Machine: AMD Ryzen 9 5950X / Windows 11 Pro
+26200, default endpoint AudioBox 22VSL @ 48 000 Hz, `baseLatency` 10.00 ms,
+`outputLatency` 40.00 ms (32.00 ms in one run). Each run is 60 s = 22 500 blocks, half
+steady and half subnormal-tail, run alone and sequentially. **This page does not need
+cross-origin isolation** (no `SharedArrayBuffer`, no clock); `serve.py` sends COOP/COEP
+anyway, and the demo path would not ship them.
+
+| Browser | Build | Model | Run | Blocks | Underruns steady | Underruns tail | Missed quanta | max clock lag ms |
+|---|---|---|---|---|---|---|---|---|
+| Edge 152 headless | simd128 | a1_standard | 1 | 22 500 | 0 | 0 | 0 | 2.0 |
+| Edge 152 headless | simd128 | a1_standard | 2 | 22 500 | 0 | 0 | 0 | 1.7 |
+| Edge 152 headless | simd128 | a1_standard | 3 (CONTAMINATED) | 22 500 | 1 | 0 | 4 | 3.1 |
+| Edge 152 headless | simd128 | a1_standard | 3b | 22 500 | 0 | 0 | 0 | 1.9 |
+| Edge 152 headless | simd128 | a1_standard | growth (300 s) | 112 500 | 0 | 0 | 0 | 0.7 |
+| Edge 152 headless | simd128 | a2_lite | 1 | 22 500 | 1 | 0 | 4 | 0.1 |
+| Edge 152 headless | simd128 | a2_lite | 2 | 22 500 | 0 | 0 | 0 | 0.2 |
+| Edge 152 headless | simd128 | a2_lite | 3 | 22 500 | 0 | 0 | 0 | 0.4 |
+| Edge 152 headless | scalar | a1_standard | 1 | 22 500 | 0 | 0 | 0 | 2.3 |
+| Edge 152 headless | scalar | a1_standard | 2 | 22 500 | 1 | 0 | 3 | 3.3 |
+| Edge 152 headless | scalar | a1_standard | 3 | 22 500 | 1 | 0 | 4 | 3.8 |
+
+Run 3 of simd128/a1_standard is **contaminated and is reported, not used**: a second Edge
+process was launched over it by mistake, which is exactly the contamination AGENTS.md's
+benchmark section warns about on this machine. Run 3b is its clean replacement. It is kept
+in the table because it is also the first evidence that the `currentFrame` witness fires at
+all.
+
+**Gate 2 (zero underruns over 60 s): PASS in steady state, with one honest exception.**
+
+- **Every underrun in the whole matrix — 4 of 11 runs, exactly one event each, 3–4 quanta —
+  happened inside the first 10-second window**, and never again for the rest of that run or
+  of the 300-second run. They are a start-up transient, not a deadline the chain cannot
+  hold. The likely mechanism is in this spike's own code: `wasm_abi.rs`'s
+  `HANDOVER_GUARD_BLOCK` fires `assert_resources_loaded()` on block 256 (682 ms in), which
+  drains the telemetry ring into a 2 KB stack buffer on the audio thread — a one-shot cost
+  that lands squarely in that window. Not proved; it is the first thing to check if this
+  matters.
+- **Zero underruns in the subnormal-tail half of every single run**, 123 750 tail blocks in
+  total. Task 5's warning — A1 Standard at p99.9 44.25–58.13% of the block period under
+  silence — did **not** translate into a missed callback. Roughly a 2x margin is enough
+  here, which is the useful part of this result.
+- **The strict reading of the criterion — every run zero — is not met**: 7 of 10 clean runs
+  are zero, 3 carry one start-up event. Taken literally the gate is red. Taken as "does the
+  chain hold the deadline in steady state", it is green with margin, on all three cells
+  measured (simd128/a1_standard, simd128/a2_lite, scalar/a1_standard).
+- The **scalar** build also passes, which was not expected — Task 4 measured it ~3.3x slower
+  than simd128 on p50, and it still holds a 128-frame quantum. The 50% budget Gate 1 argued
+  over is not the binding constraint at this buffer size; the 40 ms device buffer absorbs a
+  great deal of per-quantum jitter.
+
+### The 20 000-vs-100 000-block growth question — partial evidence, not a resolution
+
+Task 4 left this **UNRESOLVED**: A1's cost grew ~14% between 20 000 and 100 000 measured
+blocks with a flat estimator. The 300-second run is 112 500 blocks, 5x the 60-second gate
+and above Task 4's upper point, and it recorded **zero underruns and a max clock lag of
+0.7 ms — the *lowest* of any run in the matrix**, with the per-10-second lag series showing
+only the smooth -27 ppm hardware drift and no accumulating backlog.
+
+What that does and does not establish, stated carefully: this is a **deadline detector, not
+a timer**. There is no clock in an `AudioWorkletGlobalScope`, so no p99.9 over session time
+was measured here and none is claimed. It rules out growth large enough to consume A1
+simd128's remaining headroom within 112 500 blocks; it cannot distinguish "no growth" from
+"14% growth that then flattens", because both stay under the deadline. **The question
+remains open**, and the instrument that would close it is still a timed run — Task 4's
+`bench.html` at a much larger `measured`, not this page.
+
+### Reproducing this section
+
+    cd spikes/s5-wasm-web-audio
+    ./run-matrix.sh                                   # builds web/build/{scalar,simd128}.wasm
+    python web/serve.py                               # from the spike root, in another shell
+    msedge --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required \
+      "http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard"
+    #   &secs=300                 the growth run
+    #   &split=1                  steady only;  &split=0  subnormal-tail only
+    #   &gain=0.01                louder output, for the CoreAudio meter check
+    #   &wasm=scalar &model=a2_lite   the other cells
+
+Under `?auto=1` each line is beaconed to `/__s5?...`, which the dev server 404s and logs;
+that log is the transcript. Without `auto` the page has a Start button and prints to the
+page.
+
+### PENDING RUN — Chrome and Firefox
+
+Neither is installed on this machine and nothing was installed, so **no Chrome or Firefox
+underrun count appears above**. Firefox matters most: SpiderMonkey is a different wasm
+compiler *and* a different audio backend (cubeb), and both halves of this gate depend on
+which. Exact commands, on a machine that has them, server started from the spike root and
+artefacts built first:
+
+    "C:\Program Files\Google\Chrome\Application\chrome.exe" \
+      "http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard"
+    "C:\Program Files\Mozilla Firefox\firefox.exe" \
+      "http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard"
+    #   three reps each, plus &wasm=scalar, &model=a2_lite, and &secs=300
+
+Also **PENDING RUN**: any run at a smaller device buffer. Everything above sits behind a
+40 ms `outputLatency`, which is a generous cushion; a 10 ms or 5 ms endpoint would be the
+real test of the tail regime, and neither Web Audio nor Chromium exposes a way to ask for
+one from the page.
+
+### Task 6 verdict
+
+**Gate 2 passes in steady state on a real audio device, on all three cells measured, with
+zero underruns in 123 750 subnormal-tail blocks — the regime Task 5 flagged as the risk.**
+The literal "every run zero over 60 s" bar is missed by three runs, each by a single
+start-up event in the first 10 seconds, plausibly caused by this spike's own one-shot
+`assert_resources_loaded()` on block 256. Carried forward:
+
+1. The tail regime cost Task 5 measured (44.25–58.13% of the block period) does **not**
+   produce underruns at a 40 ms device buffer. It has not been tested at a smaller one.
+2. Task 4's growth question is **still UNRESOLVED**; 112 500 blocks produced no scheduling
+   consequence, which bounds the effect without measuring it.
+3. This page proves *scheduling*, not *fidelity*. `process()`'s `fault_count() == 0` and
+   `assert_resources_loaded()` guards held in every run (no `onprocessorerror` fired), so
+   the chain really was loaded and computing — but nothing here re-runs Task 3's parity
+   check, and a worklet cannot.
