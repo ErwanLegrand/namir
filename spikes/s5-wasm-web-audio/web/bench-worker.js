@@ -1,6 +1,5 @@
 import { loadNamir, writeBytes, parity, CONTROL_MARGIN_DB } from "./namir.js";
 
-const WASM = "../target/wasm32-unknown-unknown/release/s5_wasm_web_audio.wasm";
 const REF = "../fixtures/reference_render_f32le.bin";
 const CONTROL = "../fixtures/reference_control_f32le.bin";
 // The reference renders are made from a1_standard, so the parity check always renders
@@ -19,8 +18,8 @@ async function bytes(url) {
 
 self.onmessage = async (e) => {
   try {
-    const { model, ir, warmup, measured, decaying, reps } = e.data;
-    const mod = await loadNamir(await bytes(WASM), () => performance.now() * 1000);
+    const { wasm, model, ir, warmup, measured, decaying, reps } = e.data;
+    const mod = await loadNamir(await bytes(wasm), () => performance.now() * 1000);
 
     const irBytes = await bytes(ir);
     const modelBytes = await bytes(model);

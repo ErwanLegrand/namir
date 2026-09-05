@@ -661,3 +661,326 @@ trap.
 ignore `_ptr` and read `SCRATCH` unconditionally; `--render-only` with no argument
 silently writes the default path and then runs the full bench; `bench.html`'s title
 `setInterval` is never cleared.
+
+## Task 4 — build matrix and the Gate 1 verdict, 2026-09-05
+
+**No figure in this section is certified.** This spike does not link `namir-platform`, so
+no denormal guard and no thread priority is installed, and browser runs cannot be
+core-pinned at all (`NAMIR_PIN_CORE` has no browser equivalent). Everything here is
+informational, per D-2.1/D-2.2 and the same caveat Tasks 2 and 3 carry.
+
+### Build — two artefacts, three configurations
+
+`run-matrix.sh` builds two `.wasm` artefacts; the third configuration is the *same*
+simd128 binary run under a V8 flag, not a third build (spec §7's Build axis lists a
+flag, not a build).
+
+    ./spikes/s5-wasm-web-audio/run-matrix.sh
+
+| artefact | build | size |
+|---|---|---|
+| `web/build/scalar.wasm` | `cargo build --release --target wasm32-unknown-unknown --lib` | **859 549 B** |
+| `web/build/simd128.wasm` | `RUSTFLAGS="-C link-arg=--import-undefined -C target-feature=+simd128" cargo build --release --target wasm32-unknown-unknown --lib --features wasm-simd` | **1 646 256 B** |
+
+Toolchain `rustc 1.98.0 (88d9e12ae 2026-08-18)`. `web/build/` is gitignored — both
+artefacts are reproducible from the script in ~40 s and neither belongs in git.
+
+**One correction to the brief's build script.** An *environment* `RUSTFLAGS` replaces
+`.cargo/config.toml`'s `target.wasm32-unknown-unknown.rustflags` wholesale rather than
+appending to it, so the brief's simd128 command as written drops the
+`-C link-arg=--import-undefined` that resolves the `env.now_us` import and fails to
+link. The flag is repeated inside the `RUSTFLAGS` string, with a comment saying why.
+
+### `wide`/simd128 demonstrably engaged — three independent signs
+
+The brief asked for this to be checked prominently, because every downstream conclusion
+depends on it. The two artefacts are not the same code:
+
+1. **Size**: 859 549 B → 1 646 256 B, a 1.9× increase.
+2. **Numerics**: the parity residual moves, **−81.4759 dB** (scalar) → **−81.6906 dB**
+   (simd128), against the same **−82.7158 dB** native-vs-native control. Both **PASS**
+   the relative criterion (margins 1.2399 dB and 1.0252 dB, bar 3 dB). A different f32
+   accumulation order is exactly what a vectorised dot product produces, and it moved
+   the residual slightly *towards* the control, not away from it.
+3. **Speed**: 3.3× on `a1_standard`'s `p50` (below).
+
+### Matrix — headless Edge, steady signal, 20 000 measured blocks, 5 reps each
+
+Runtime: Microsoft Edge **152.0.4191.62** (`--headless=new --disable-gpu --no-sandbox`),
+`crossOriginIsolated: true` in every run, V8/TurboFan. Machine: AMD Ryzen 9 5950X /
+Windows 11 Pro 26200. Server: `python web/serve.py` from the spike root. Each
+configuration was run alone and sequentially.
+
+    msedge --headless=new --disable-gpu --no-sandbox \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=<scalar|simd128>&model=<a1_standard|a2_lite>"
+    # third configuration: the simd128 URL above, plus
+    #   --js-flags=--experimental-wasm-revectorize
+
+`WARMUP_BLOCKS = 5 000` throughout. **20 000 measured blocks, not 100 000** — the same
+deviation Task 3 made and for the same reason (a 100 000-block A1 rep is minutes of wall
+clock and thirty of them was not a practical wait on a machine that also has to stay
+quiet). 20 000 blocks still puts 20 samples above p99.9 and does not touch the
+per-residue estimator at all, and the deviation is closed by the 100 000-block
+confirmation runs below, which reproduce the 20 000-block figures. Per-block timing is
+retained everywhere; nothing is batched.
+
+All percentages are of the 2 666.67 µs block period (128 frames at 48 000 Hz).
+
+| Browser | Build | Model | p50 % | p99.9 % | estimator % | quotable reps |
+|---|---|---|---|---|---|---|
+| Edge headless (V8) | scalar | A1 Standard | 38.63–39.00 | **74.44–85.88** | 50.25–50.44 | 5/5 |
+| Edge headless (V8) | simd128 | A1 Standard | 11.44–11.81 | **28.88–30.94** | 18.00–18.37 | 5/5 |
+| Edge headless (V8) | simd128 + revectorize | A1 Standard | 11.44–12.19 | **29.06–31.88** | 18.00–18.19 | 4/5 (rep 5 discarded) |
+| Edge headless (V8) | scalar | A2 Lite | 6.94–7.12 | **29.25–34.13** | 18.75–18.94 | 5/5 |
+| Edge headless (V8) | simd128 | A2 Lite | 3.00–3.19 | **15.37–17.25** | 9.75–9.94 | 5/5 |
+| Edge headless (V8) | simd128 + revectorize | A2 Lite | 3.19–3.56 | **14.44–17.44** | 9.94–10.13 | 5/5 |
+| **Chrome** | scalar / simd128 / revectorize | both | — | — | — | **PENDING RUN** |
+| **Firefox** | scalar / simd128 | both | — | — | — | **PENDING RUN** |
+
+Native reference (same machine, same fixtures, 128-frame block, Task 2, steady, 5 reps):
+A1 Standard p50 **6.30–6.65%**, p99.9 **13.60–14.69%**; A2 Lite p50 **1.83–2.06%**,
+p99.9 **7.94–8.41%**.
+
+wasm/native ratio, **simd128**, `p50`: A1 Standard **≈1.8×**, A2 Lite **≈1.6×**.
+wasm/native ratio, **scalar**, `p50`: A1 Standard **≈6.0×**, A2 Lite **≈3.5×**.
+
+## Gate 1 — compute, 2026-09-05, reference machine
+
+**Gate 1 (≤50% of realtime on the reference machine):**
+
+| Build | A1 Standard | A2 Lite |
+|---|---|---|
+| scalar | **FAIL** (p99.9 74–86%) | **PASS** (p99.9 29–34%) |
+| **simd128** | **PASS** (p99.9 29–31%) | **PASS** (p99.9 15–17%) |
+| simd128 + revectorize | **PASS** (p99.9 29–32%) | **PASS** (p99.9 14–17%) |
+
+**Verdict: Gate 1 PASSES for both models on the simd128 artefact, and FAILS for A1
+Standard on the scalar artefact.** The scalar/simd128 split is the whole result: it is
+not a tuning margin, it is 3.3× on `p50` and 2.6× on `p99.9` for A1.
+
+**Kill criterion 2 (>100% of realtime, sustained) has NOT fired** in any configuration.
+The only reading above 100% anywhere in the matrix is a single-block `max` of 102.38% in
+`a1-scalar` rep 1 — one block out of 20 000, on the configuration that already fails
+Gate 1. No p99.9 in any configuration exceeds 86%.
+
+### The reasoning behind the verdict
+
+1. **The gate is read off `p99.9`, not `p50` and not `max`.** A block that misses its
+   deadline is an underrun regardless of how many blocks made it, so the median is not
+   the quantity of interest; but a single-block `max` over a 20 000-block run is one
+   scheduler event and is not a property of the code. p99.9 is the figure the brief's
+   table asks for and the one the harness's estimator is built to cross-check.
+2. **The simd128 figures are sustained, not a short-run artefact.** See the 100 000-block
+   confirmation below: 4½ minutes of continuous audio per rep reproduces the verdict.
+3. **Both simd128 configurations pass by a factor of roughly 1.6× on A1 and 3× on A2.**
+   That is real headroom, not a hairline pass, and it is headroom Tasks 5–6 will spend
+   on the AudioWorklet's own scheduling rather than on the DSP.
+4. **The pass is conditional on simd128 being available.** `rustfft`'s `wasm_simd`
+   feature has no runtime detection, so the simd128 artefact traps immediately on a
+   runtime without simd128 — by design, they are different artefacts, not one with a
+   fallback. Since the scalar artefact FAILS Gate 1 for A1 Standard, **there is no
+   working A1 configuration on a simd128-less runtime**, and A1 Standard in a browser is
+   therefore gated on WebAssembly SIMD. Every shipping browser has had simd128 on by
+   default since 2021 (Chrome/Edge 91, Firefox 89, Safari 16.4), so this is a stated
+   floor rather than a live risk, but it is a floor: whatever ships must serve the
+   simd128 build and must fail loudly, not silently, where simd128 is absent.
+
+### The browser penalty is not a fixed multiple — and Task 3's reading of why was incomplete
+
+Task 3 measured the scalar artefact only and reported ≈6.1× for A1 against ≈3.8× for A2,
+concluding that the browser penalty scales with the model. The matrix **confirms that
+observation on the scalar artefact and refutes the explanation it suggested.** With
+simd128 the penalty collapses to ≈1.8× (A1) and ≈1.6× (A2) — nearly uniform. So the
+model-dependent part of the scalar penalty was not "the browser is worse at bigger
+models"; it was that A1 Standard's cost is dominated by dot products the native build
+auto-vectorises and the scalar wasm build does not. Once wasm gets the same vector
+width, the two models sit within 0.2× of each other and the residual ~1.7× is the
+ordinary wasm-vs-native gap (bounds checks, no FMA contraction, no `target-cpu` tuning).
+
+### Sustained-load confirmation — 100 000 measured blocks, simd128, 2 reps each
+
+Each rep is 100 000 × 128 frames at 48 kHz = **4 m 27 s of continuous audio**.
+
+```
+edge a1_standard simd128 100k rep 1/2: p50 13.31% | p99 28.13% | p99.9 33.56% | max 42.19% | estimator 18.19%
+edge a1_standard simd128 100k rep 2/2: p50 13.12% | p99 28.31% | p99.9 32.44% | max 40.87% | estimator 18.19%
+edge a2_lite     simd128 100k rep 1/2: p50  3.00% | p99 12.37% | p99.9 16.31% | max 86.06% | estimator  9.75%
+edge a2_lite     simd128 100k rep 2/2: p50  3.00% | p99 10.31% | p99.9 14.81% | max 22.12% | estimator  9.56%
+```
+
+A2 Lite reproduces the 20 000-block figures to the digit. A1 Standard runs **~14% more
+expensive** over the longer window (p50 13.1–13.3% against 11.4–11.8%, p99.9 32.4–33.6%
+against 28.9–30.9%) while its estimator is unchanged at 18.19% — i.e. a longer run
+accumulates more scheduler and GC events in the same code, which is what a five-times
+longer sample should do. **The verdict is unchanged**: 33.6% is still comfortably inside
+the 50% bar, and the 20 000-block figures are quoted in the matrix table with this
+correction stated rather than folded in silently.
+
+### `--experimental-wasm-revectorize` changed nothing measurable
+
+| Model | simd128 | simd128 + revectorize |
+|---|---|---|
+| A1 Standard, p50 | 11.44–11.81% | 11.44–12.19% |
+| A1 Standard, p99.9 | 28.88–30.94% | 29.06–31.88% |
+| A1 Standard, estimator | 18.00–18.37% | 18.00–18.19% |
+| A2 Lite, p50 | 3.00–3.19% | 3.19–3.56% |
+| A2 Lite, p99.9 | 15.37–17.25% | 14.44–17.44% |
+| A2 Lite, estimator | 9.75–9.94% | 9.94–10.13% |
+
+The estimator — the contamination-immune figure — is identical to within 0.2 pp in both
+models, and every other column overlaps. **The flag was accepted** (V8 prints
+`Error: unrecognized flag` for a flag it does not know, and did not; the run also loaded
+and parity-checked the module normally), so this is "engaged and made no difference"
+rather than "silently ignored" — though those two cannot be told apart from timing alone,
+and no attempt was made to dump V8's generated code to distinguish them. Either way there
+is nothing here to build on: **the SIMD win comes entirely from the `+simd128` build, not
+from V8's revectorizer.** Downstream tasks should treat revectorize as a non-lever.
+
+### Full per-rep results (30 matrix reps)
+
+```
+edge a1_standard scalar    rep 1/5: p50 39.00% | p99 60.19% | p99.9 77.81% | max 102.38% | estimator 50.44%
+edge a1_standard scalar    rep 2/5: p50 38.63% | p99 57.75% | p99.9 76.13% | max  91.50% | estimator 50.44%
+edge a1_standard scalar    rep 3/5: p50 38.81% | p99 59.44% | p99.9 77.62% | max  93.00% | estimator 50.44%
+edge a1_standard scalar    rep 4/5: p50 38.81% | p99 66.00% | p99.9 85.88% | max  91.13% | estimator 50.44%
+edge a1_standard scalar    rep 5/5: p50 38.81% | p99 57.56% | p99.9 74.44% | max  87.37% | estimator 50.25%
+
+edge a1_standard simd128   rep 1/5: p50 11.81% | p99 26.25% | p99.9 30.94% | max  36.94% | estimator 18.00%
+edge a1_standard simd128   rep 2/5: p50 11.63% | p99 20.81% | p99.9 29.06% | max  36.75% | estimator 18.00%
+edge a1_standard simd128   rep 3/5: p50 11.44% | p99 20.63% | p99.9 29.06% | max  30.94% | estimator 18.19%
+edge a1_standard simd128   rep 4/5: p50 11.44% | p99 19.88% | p99.9 28.88% | max  31.31% | estimator 18.19%
+edge a1_standard simd128   rep 5/5: p50 11.62% | p99 21.19% | p99.9 29.44% | max  33.56% | estimator 18.37%
+
+edge a1_standard revector. rep 1/5: p50 12.19% | p99 27.56% | p99.9 31.87% | max  37.87% | estimator 18.00%
+edge a1_standard revector. rep 2/5: p50 11.44% | p99 20.44% | p99.9 29.25% | max  42.56% | estimator 18.19%
+edge a1_standard revector. rep 3/5: p50 11.44% | p99 20.81% | p99.9 29.06% | max  47.25% | estimator 18.19%
+edge a1_standard revector. rep 4/5: p50 12.00% | p99 29.63% | p99.9 31.88% | max  42.56% | estimator 18.19%
+edge a1_standard revector. rep 5/5: p50 16.87% | p99 30.56% | p99.9 32.06% | max  39.38% | estimator 18.56%  <-- DISCARDED
+
+edge a2_lite     scalar    rep 1/5: p50  7.12% | p99 27.94% | p99.9 34.13% | max  95.44% | estimator 18.94%
+edge a2_lite     scalar    rep 2/5: p50  6.94% | p99 20.62% | p99.9 30.19% | max  50.63% | estimator 18.75%
+edge a2_lite     scalar    rep 3/5: p50  6.94% | p99 28.69% | p99.9 33.37% | max  35.25% | estimator 18.94%
+edge a2_lite     scalar    rep 4/5: p50  6.94% | p99 20.06% | p99.9 29.25% | max  33.94% | estimator 18.94%
+edge a2_lite     scalar    rep 5/5: p50  6.94% | p99 20.06% | p99.9 29.44% | max  34.13% | estimator 18.75%
+
+edge a2_lite     simd128   rep 1/5: p50  3.19% | p99 14.25% | p99.9 17.06% | max  86.63% | estimator  9.75%
+edge a2_lite     simd128   rep 2/5: p50  3.00% | p99 14.81% | p99.9 17.25% | max  18.56% | estimator  9.94%
+edge a2_lite     simd128   rep 3/5: p50  3.00% | p99 12.75% | p99.9 16.69% | max  19.69% | estimator  9.94%
+edge a2_lite     simd128   rep 4/5: p50  3.00% | p99 11.06% | p99.9 15.56% | max  18.00% | estimator  9.75%
+edge a2_lite     simd128   rep 5/5: p50  3.00% | p99 10.50% | p99.9 15.37% | max  33.75% | estimator  9.75%
+
+edge a2_lite     revector. rep 1/5: p50  3.19% | p99 11.44% | p99.9 14.44% | max  76.31% | estimator  9.94%
+edge a2_lite     revector. rep 2/5: p50  3.56% | p99 14.25% | p99.9 17.44% | max  23.44% | estimator  9.94%
+edge a2_lite     revector. rep 3/5: p50  3.56% | p99 13.88% | p99.9 17.44% | max  19.87% | estimator 10.13%
+edge a2_lite     revector. rep 4/5: p50  3.38% | p99 12.94% | p99.9 16.50% | max  31.69% | estimator 10.12%
+edge a2_lite     revector. rep 5/5: p50  3.56% | p99 12.94% | p99.9 16.50% | max  25.31% | estimator  9.94%
+```
+
+Parity, reported by the page before it would benchmark, in every one of the eight runs:
+scalar **−81.4759 dB**, simd128 (and revectorize) **−81.6906 dB**, control
+**−82.7158 dB** — **PASS** throughout. The gate is live and there is no bypass; the
+figures above exist because the port was proved correct first.
+
+### Discarded repetitions, and why `is_quotable()` cannot be the rule in a browser
+
+**`Stats::is_quotable()`'s rule (`p999 - estimator <= 5.0`, D-2.4) flags all 30 browser
+reps, including every one quoted above** — as it flagged all ten of Task 3's. That is not
+thirty contaminated runs; it is the rule measuring something it was not built for.
+`is_quotable` was designed to catch *background machine load* inflating a tail against an
+otherwise-flat per-residue baseline. In a browser the tail is structurally fat — GC,
+tier-up and the renderer's own scheduler all land inside the timed span — so
+`p999 − estimator` is 5–35 pp in *every* browser configuration, including the calmest.
+Applying the brief's Step 4 literally would discard the entire matrix and leave no
+verdict, which is plainly not what it is for.
+
+**The rule actually used.** Machine load moves the *typical* block cost, so it shows in
+`p50` while the per-residue estimator (a periodic worst-case-block figure) stays put. A
+repetition is discarded when its `p50` departs from its own configuration's modal `p50`
+by more than 10% while the estimator does not move with it. Exactly one repetition in
+thirty meets that:
+
+| Discarded | Reading | Why |
+|---|---|---|
+| `a1_standard`, simd128 + revectorize, **rep 5** | p50 **16.87%** against that configuration's own modal 11.44% (**+47%**); estimator 18.56%, flat against the other four reps' 18.00–18.19% | Machine load during the rep, not a cost of the code — the flat estimator is the tell, since a real +47% cost increase would move it too. Nothing was deliberately started, but this is a shared desktop and this session's own agent and browser-teardown processes run on it; that is the honest account of what else was running. Its p99.9 (32.06%) is in line with the other four and would not have changed the verdict either way. |
+
+The other 29 are quoted as measured. Across their five reps, `p50` is stable to ±0.37 pp
+(A1 scalar), ±0.37 pp (A1 simd128), ±0.18 pp (A2 scalar) and ±0.19 pp (A2 simd128), and
+the per-residue estimator is stable to ±0.2 pp in every configuration — which is what a
+clean set of repetitions looks like.
+
+**A systematic first-rep `max` outlier, reported rather than discarded.** In four of six
+configurations the largest single-block `max` in the whole set falls in **rep 1**
+(102.38%, 95.44%, 86.63%, 76.31%) while rep 1's `p50`, `p99.9` and estimator sit with the
+others. That is V8 tiering the freshly-instantiated module up, plus the first major GC
+after page load, both inside the first repetition. A shipping worklet would pay the same
+cost on its first blocks, so it is recorded, not discarded — and it is one more reason
+the verdict is read off `p99.9` rather than `max`.
+
+### PENDING RUN — Chrome and Firefox
+
+**Neither Chrome nor Firefox is installed on this machine, and nothing was installed.**
+The matrix was run under headless Microsoft Edge, which is Chromium/V8 — the same engine
+family as Chrome, which is also why the V8 revectorize flag applies to it. **No Chrome or
+Firefox number appears anywhere above; the rows are empty, not estimated.** Firefox in
+particular is SpiderMonkey/Ion, a different wasm compiler with a different vectoriser,
+and nothing here should be read as covering Gecko.
+
+To run them, on a machine that has them (server started from the spike root, artefacts
+built first):
+
+    cd spikes/s5-wasm-web-audio
+    ./run-matrix.sh
+    # both native renders, needed by the parity gate before it will benchmark:
+    cargo run --release --bin native_bench -- --render-only fixtures/reference_render_f32le.bin
+    CARGO_TARGET_DIR=../../target-s5-control \
+      RUSTFLAGS="-C target-cpu=x86-64 -C target-feature=-avx,-avx2,-fma" \
+      cargo run --release --bin native_bench -- --render-only fixtures/reference_control_f32le.bin
+    cargo run --release --bin native_bench    # the native reference figures
+    python web/serve.py
+
+    # then, for each of the four (build x model) combinations:
+    "C:\Program Files\Google\Chrome\Application\chrome.exe" \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=scalar&model=a1_standard"
+    #   ... &wasm=simd128&model=a1_standard
+    #   ... &wasm=scalar&model=a2_lite
+    #   ... &wasm=simd128&model=a2_lite
+    # and the revectorize configuration, Chrome only, launched fresh:
+    "C:\Program Files\Google\Chrome\Application\chrome.exe" \
+      --js-flags=--experimental-wasm-revectorize \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a1_standard"
+
+    # Firefox has no equivalent flag; run the four build x model combinations only:
+    "C:\Program Files\Mozilla Firefox\firefox.exe" \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a1_standard"
+
+Confirm **`crossOriginIsolated: true`** on the page before recording anything — without
+it the `performance.now()` quantum is 100 µs (3.75% of the block period) instead of 5 µs
+(0.1875%) and the figures are not comparable. Record the browser version alongside. Under
+`?auto=1` each result line is also beaconed to the dev server's log, which is the
+transcript for a headless run; interactively, read them off the page.
+
+### NOT RUN — the laptop axis
+
+Spec §7's Machine axis ("Reference | one laptop") and the brief's Step 6 (same procedure,
+own section, ≤100% threshold) were **not run**. **Reason: no second machine is reachable
+from this session.** This is recorded as not-run, not as a pass and not as omitted. Spec
+§11 makes the second machine individually droppable without invalidating the gates, so
+the reference-machine verdict stands on its own — but the ≤100% laptop bar is untested,
+and a mid-range laptop is exactly where the A1-Standard-on-simd128 headroom (33.6% p99.9
+here) would be consumed. Anyone re-running this on a second machine should start there.
+
+### Task 4 verdict
+
+**Proceed to Task 5.** Four things carried forward:
+
+1. **Gate 1 PASSES on the simd128 artefact for both models** — A1 Standard p99.9
+   28.88–30.94% (33.56% sustained over 100 000 blocks), A2 Lite p99.9 15.37–17.25%,
+   against a ≤50% bar. Kill criterion 2 did not fire anywhere.
+2. **Gate 1 FAILS for A1 Standard on the scalar artefact** (p99.9 74–86%), so browser
+   support for A1 Standard is *conditional on WebAssembly SIMD*, with no fallback by
+   design. Task 5 onward must serve the simd128 build and must fail loudly where
+   simd128 is absent.
+3. **Revectorize is a non-lever.** No measurable change in either model; the entire SIMD
+   win is in the `+simd128` build.
+4. **Chrome, Firefox and the laptop axis are open**, with the exact commands and the
+   reasons recorded above. Nothing in this section is a certified figure.

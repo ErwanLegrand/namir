@@ -12,7 +12,8 @@
 import { readFileSync } from "node:fs";
 import { loadNamir, writeBytes, parity, CONTROL_MARGIN_DB, dbBetween, f32 } from "./namir.js";
 
-const WASM = "target/wasm32-unknown-unknown/release/s5_wasm_web_audio.wasm";
+// Default to the scalar artefact `run-matrix.sh` builds; `S5_WASM` picks another.
+const WASM = process.env.S5_WASM || "web/build/scalar.wasm";
 const PARITY_SAMPLES = 128 * 256;
 
 const argv = process.argv.slice(2);
