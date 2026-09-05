@@ -1542,6 +1542,10 @@ in the table because it is also the first evidence that the `currentFrame` witne
 all.
 
 **Gate 2 (zero underruns over 60 s): PASS in steady state, with one honest exception.**
+*(Settled by the fix round below: that exception is a Chromium/WASAPI stream-start
+artefact, not this chain, so the verdict is a plain **PASS**. Note also that `outputLatency`
+was 40.00 ms in every run but scalar rep 2, which negotiated 32.00 ms -- the rows are not
+all measured against the same effective deadline.)*
 
 - **Every underrun in the whole matrix — 4 of 11 runs, exactly one event each, 3–4 quanta —
   happened inside the first 10-second window**, and never again for the rest of that run or
@@ -1550,7 +1554,9 @@ all.
   `HANDOVER_GUARD_BLOCK` fires `assert_resources_loaded()` on block 256 (682 ms in), which
   drains the telemetry ring into a 2 KB stack buffer on the audio thread — a one-shot cost
   that lands squarely in that window. Not proved; it is the first thing to check if this
-  matters.
+  matters. **-- RETRACTED. Tested and disproved; see "Task 6 fix round" below. The
+  event is neither the guard nor the chain: it occurs at the same rate with the guard
+  moved 10x later and with the chain not running at all.**
 - **Zero underruns in the subnormal-tail half of every single run**, 123 750 tail blocks in
   total. Task 5's warning — A1 Standard at p99.9 44.25–58.13% of the block period under
   silence — did **not** translate into a missed callback. Roughly a 2x margin is enough
@@ -1621,7 +1627,9 @@ one from the page.
 zero underruns in 123 750 subnormal-tail blocks — the regime Task 5 flagged as the risk.**
 The literal "every run zero over 60 s" bar is missed by three runs, each by a single
 start-up event in the first 10 seconds, plausibly caused by this spike's own one-shot
-`assert_resources_loaded()` on block 256. Carried forward:
+`assert_resources_loaded()` on block 256. **That attribution was tested in the fix round
+below and is retracted: the event is the runtime's stream start, not this spike's code, and
+the Gate 2 verdict is a plain PASS.** Carried forward:
 
 1. The tail regime cost Task 5 measured (44.25–58.13% of the block period) does **not**
    produce underruns at a 40 ms device buffer. It has not been tested at a smaller one.
@@ -1631,3 +1639,116 @@ start-up event in the first 10 seconds, plausibly caused by this spike's own one
    `assert_resources_loaded()` guards held in every run (no `onprocessorerror` fired), so
    the chain really was loaded and computing — but nothing here re-runs Task 3's parity
    check, and a worklet cannot.
+
+## Task 6 fix round — the start-up underrun, attributed by experiment, 2026-09-05
+
+Task 6 above guessed that the first-second underrun came from this spike's own
+`HANDOVER_GUARD_BLOCK` — `wasm_abi.rs` firing `assert_resources_loaded()` once on block
+256, which drains the telemetry ring into a 2 KB stack buffer on the audio thread, 682 ms
+in. **That guess is wrong, and the experiment that disproves it is below.** The bullet
+above is left as written and marked retracted, per this project's practice of keeping
+corrected findings on the record rather than tidying them away.
+
+### The experiment
+
+Three arms, **12 reps each, 30 s per rep, steady signal only** (`&split=1`), scalar build
+on `a1_standard` — scalar because it had the highest event rate in the Gate 2 matrix, and
+the phenomenon appeared in all three cells. Runs are sequential and alone. The page now
+beacons **one line per second** rather than every ten, so the event can be located to the
+second; the guard fires at 682 ms in arm A and at 6.83 s in arm B.
+
+| Arm | `HANDOVER_GUARD_BLOCK` | chain driven? | runs with an underrun | when |
+|---|---|---|---|---|
+| A — baseline | 256 (682 ms) | yes, from block 0 | **4 / 12** | all at second 1 |
+| B — guard moved 10x later | 2560 (6.83 s) | yes, from block 0 | **3 / 12** | all at second 1 |
+| C — chain not driven for 2 s | 256 | **no** — `preroll=750`, silence, `process()` never called | **5 / 12** | all at second 1 |
+
+Arm B is a rebuild of the same source with the one constant changed (`web/build/scalar-guard2560.wasm`,
+`sed`-edit `src/wasm_abi.rs`, `cargo build --release --target wasm32-unknown-unknown --lib`,
+copy, revert, rebuild — the committed constant is 256). Arm C is the new `&preroll=N` query
+parameter: the processor renders N blocks of silence *without calling into the chain at
+all*, so for the first two seconds nothing of Namir runs.
+
+### What it establishes
+
+1. **It is not the guard.** Moving `assert_resources_loaded()` from 682 ms to 6.83 s did
+   not move the event: arm B still fires it at second 1 and never at second 7. If the guard
+   were the cause the event would have tracked it. 4/12 vs 3/12 is no difference at all.
+2. **It is not the chain.** Arm C does not run a single block of Namir DSP for the first
+   two seconds — the worklet emits silence and returns — and it produces the event at the
+   *same* rate and the *same* second, 5/12. Whatever drops the callback does so while the
+   render thread's only work is `fill(0)` and a copy.
+3. **So it is Chromium's or WASAPI's own audio-stream start-up.** Every event is a single
+   3–4 quantum gap, i.e. one 480-frame device callback, in the first second of the stream's
+   life, at an overall incidence of **12 of 36 runs (33%)** across the three arms — a rate
+   indistinguishable between them. That is a property of the runtime, not of the code under
+   test. What it is *specifically* — the first device callback after `AudioContext` start,
+   V8 tiering the worklet's own JS, the audio service's first-buffer path — is not resolved
+   here and would need Chromium-internal instrumentation this spike cannot reach.
+
+### The consequence for the Gate 2 verdict
+
+**Gate 2: PASS.** The gate asks whether the six-stage chain, compiled to wasm, holds a Web
+Audio deadline for 60 seconds. It does: zero underruns in every steady-state second of
+every run, in both regimes, across three cells, over 60 s and over 300 s — and the only
+events in the whole matrix are proven to occur equally when the chain is not running at
+all.
+
+The literal "every run zero underruns over 60 s" reading is still not met, and that is
+worth stating plainly: **about a third of the time, starting an `AudioContext` in Edge 152
+on this machine costs one dropped device callback in the first second, whatever the graph
+is doing.** A demo would hear a click at start-up and would have to live with it or hide it
+(don't connect the node until the stream is warm, ramp in a gain). It is a real property of
+the platform. It is not a property of Namir's DSP, and Gate 2 is not the gate that should
+fail for it.
+
+### Finding, in its own right: `WebAssembly.Module` over `postMessage` into an AudioWorklet is silently dropped
+
+Recorded here as a platform finding rather than only as a debugging note, because it cost
+most of a task and the failure mode is maximally misleading.
+
+The widely-published AudioWorklet pattern is: `WebAssembly.compile()` in the page, then
+`node.port.postMessage({module})` and `new WebAssembly.Instance(module)` in the processor.
+**On Edge 152 that message never arrives.** There is no `DataCloneError` on the sending
+side, no exception anywhere, and no `onmessage` in the worklet — the processor simply stays
+un-ready while `process()` keeps being called on schedule. The observable result is a graph
+that renders silence forever, which is indistinguishable from a dead or dummy audio
+backend, and sends you looking in exactly the wrong place.
+
+Isolated with a three-line echo processor: a plain object round-trips fine, a message
+posted *from* the processor constructor always arrives, and the identical message carrying
+a `Module` never does. The fix is to post the **bytes** and call `new
+WebAssembly.Module(wasm)` inside the processor — synchronous compilation is legal off the
+main thread and happens once, before the first render callback is answered.
+`web/namir-processor.js` also posts a `{kind:"boot"}` from its constructor and keeps it
+permanently: seeing `boot` but never `ready` localises the fault to inbound message
+delivery rather than to the DSP, which is the distinction that took the longest to make.
+
+### The deadline is not constant across rows of the Gate 2 table
+
+`outputLatency` was **40.00 ms** in most runs and **32.00 ms** in one (scalar rep 2). The
+device buffer Chromium negotiates is not fixed run to run, so rows of that table are not
+all measured against the same effective deadline. Nothing in the results turns on it — the
+steady-state count is zero either way — but a reader comparing rows should know the
+denominator moved.
+
+### Reproducing the fix round
+
+    cd spikes/s5-wasm-web-audio
+    python web/serve.py                                  # from the spike root
+    # arm A (baseline, the committed build):
+    msedge --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required \
+      "http://127.0.0.1:8080/web/worklet.html?auto=1&secs=30&split=1&wasm=scalar&model=a1_standard"
+    # arm C (chain not driven for the first 2 s):
+    #   ...&preroll=750
+    # arm B needs a rebuild with the constant moved:
+    sed -i 's/HANDOVER_GUARD_BLOCK: u32 = 256/HANDOVER_GUARD_BLOCK: u32 = 2560/' src/wasm_abi.rs
+    cargo build --release --target wasm32-unknown-unknown --lib
+    cp target/wasm32-unknown-unknown/release/s5_wasm_web_audio.wasm web/build/scalar-guard2560.wasm
+    git checkout src/wasm_abi.rs && ./run-matrix.sh    # put the tree and web/build/ back
+    #   ...&wasm=scalar-guard2560
+
+Twelve reps per arm is the minimum that separates these rates: at the ~33% incidence
+observed, six reps per arm would have produced 3/6 vs 0/6 by chance alone (Fisher one-sided
+p = 0.09), which is exactly what the first half of arm B looked like before the second half
+was run. Six reps would have "confirmed" the wrong conclusion.

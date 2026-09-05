@@ -35,6 +35,7 @@ class NamirProcessor extends AudioWorkletProcessor {
     this.regime = "steady";
     this.switchBlock = Infinity; // block at which steady -> tail
     this.stopBlock = Infinity;
+    this.preroll = 0;
     this.rng = 0x2545f491; // harness.rs's seed, same generator
     this.port.onmessage = (e) => this.setup(e.data);
     // Proof of life from the render thread, independent of setup. Keep it: a page that
@@ -43,7 +44,7 @@ class NamirProcessor extends AudioWorkletProcessor {
     this.port.postMessage({ kind: "boot" });
   }
 
-  setup({ wasm, model, ir, switchBlock, stopBlock, regime, outGain }) {
+  setup({ wasm, model, ir, switchBlock, stopBlock, regime, outGain, preroll }) {
     try {
       // The bytes are compiled HERE, not handed over as a compiled `WebAssembly.Module`
       // the way the task brief has it. Posting a Module into an AudioWorkletGlobalScope
@@ -70,6 +71,7 @@ class NamirProcessor extends AudioWorkletProcessor {
       if (switchBlock !== undefined) this.switchBlock = switchBlock;
       if (stopBlock !== undefined) this.stopBlock = stopBlock;
       if (outGain !== undefined) this.outGain = outGain;
+      if (preroll !== undefined) this.preroll = preroll;
       this.ready = true;
       this.port.postMessage({ kind: "ready", sampleRate });
     } catch (err) {
@@ -124,7 +126,12 @@ class NamirProcessor extends AudioWorkletProcessor {
       view.fill(0); // exact zero: the chain's own state is what must decay
     }
 
-    this.ex.process(); // in place; also carries the fault-count and resources guards
+    // `preroll` blocks are rendered as silence WITHOUT calling into the chain. It is the
+    // arm of the start-up experiment that separates "our DSP's first blocks are expensive
+    // while V8 is still tiering up" from "the browser/device start-up path drops a buffer
+    // whatever the graph is doing". Default 0 -- every gate run above used 0.
+    if (this.blocks >= this.preroll) this.ex.process(); // in place; carries both guards
+    else view.fill(0);
 
     const g = this.outGain;
     for (const ch of outputs[0]) for (let i = 0; i < BLOCK; i++) ch[i] = view[i] * g;
