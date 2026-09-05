@@ -24,6 +24,8 @@
 //   &wasm=simd128   artefact under web/build/
 //   &model=a1_standard
 //   &gain=0.0001    output attenuation (the DSP is unchanged; only the copy out is scaled)
+//   &preroll=750    render N blocks of silence without calling into the chain first
+//                   (the start-up-transient experiment; 0 for every gate run)
 //
 // This page does NOT need cross-origin isolation -- there is no SharedArrayBuffer and no
 // clock here. `serve.py` sends COOP/COEP anyway, which is harmless; the demo path would
@@ -137,7 +139,7 @@ async function run() {
       `clockLag ${(l * 1000).toFixed(1)} ms (max ${(maxLag * 1000).toFixed(1)} ms) | ` +
       `outputLatency ${(ctx.outputLatency * 1000).toFixed(2)} ms`;
     out.textContent = lastLine + String.fromCharCode(10);
-    if (d.blocks % (375 * 10) === 0) beacon(lastLine);
+    beacon(lastLine); // one line per second: the attribution experiment needs 1 s resolution
     if (d.kind === "final") {
       say("FINAL " + lastLine);
       say(`FINAL renderCapacity: windows ${capWindows} peakLoad ` +
@@ -157,6 +159,7 @@ async function run() {
     switchBlock: Math.round(blocks * split),
     stopBlock: blocks,
     outGain: Number(q.get("gain") || 1e-4),
+    preroll: Number(q.get("preroll") || 0),
   });
   node.connect(ctx.destination);
 
