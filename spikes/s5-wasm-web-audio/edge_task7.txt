@@ -1,0 +1,717 @@
+Task 7 / Gate 3 -- raw beacon transcript.
+Microsoft Edge 152 (Chromium), --headless=new --no-sandbox
+  --autoplay-policy=no-user-gesture-required --use-fake-ui-for-media-stream
+Windows 11 Pro 26200, Ryzen 9 5950X. Default endpoint: PreSonus AudioBox 22VSL @ 48 kHz.
+NOT Chrome: Chrome is not installed on this machine. Edge is Chromium and uses the same
+Windows audio path, but this is not a Chrome measurement.
+No physical loopback cable was present for any of these runs.
+
+Each section is the page's own beacon log, recovered URL-decoded from serve.py's 404 lines.
+
+=== auto=probe&hint=interactive&tag=interactive-default-rep1  [browser flags: none]
+--- probe, latencyHint=interactive, tag=interactive-default-rep1 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 4436158b
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 4436158b
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 4436158b
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 4436158b
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 4436158b
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 4436158b
+outputLatency        42.000 ms
+sampleRate           48000 Hz
+API output total     52.000 ms
+baseLatency          10.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"4436158b835562743bc15d3338c0646897a8043efa5f16810a7aae176868c7a4","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"4436158b835562743bc15d3338c0646897a8043efa5f16810a7aae176868c7a4","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=interactive&tag=interactive-exclusive-rep1  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=interactive, tag=interactive-exclusive-rep1 ---
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group a3c90828
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group a3c90828
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group a3c90828
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group a3c90828
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group a3c90828
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group a3c90828
+sampleRate           48000 Hz
+baseLatency          5.333 ms
+outputLatency        128.000 ms
+API output total     133.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"a3c90828053ff73e5f31fabeafec56a46d4b17a65b29702fd82b82ecde4fc6e3","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"a3c90828053ff73e5f31fabeafec56a46d4b17a65b29702fd82b82ecde4fc6e3","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=interactive&tag=interactive-default-rep2  [browser flags: none]
+--- probe, latencyHint=interactive, tag=interactive-default-rep2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 056debfe
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 056debfe
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 056debfe
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 056debfe
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 056debfe
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 056debfe
+outputLatency        42.000 ms
+baseLatency          10.000 ms
+sampleRate           48000 Hz
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"056debfe7d9a54e51278c83e7d96a9acada34543c5f17bb140d542925d47ac48","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"056debfe7d9a54e51278c83e7d96a9acada34543c5f17bb140d542925d47ac48","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=interactive&tag=interactive-exclusive-rep2  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=interactive, tag=interactive-exclusive-rep2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 074aa56c
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 074aa56c
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 074aa56c
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 074aa56c
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 074aa56c
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 074aa56c
+baseLatency          5.333 ms
+sampleRate           48000 Hz
+outputLatency        128.000 ms
+API output total     133.333 ms
+state                running
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"074aa56c2718d22560b4a222d4a6b7b0bebf81403fb0374de90683112e606908","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"074aa56c2718d22560b4a222d4a6b7b0bebf81403fb0374de90683112e606908","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=interactive&tag=interactive-default-rep3  [browser flags: none]
+--- probe, latencyHint=interactive, tag=interactive-default-rep3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 1b06a9ce
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 1b06a9ce
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 1b06a9ce
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 1b06a9ce
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 1b06a9ce
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 1b06a9ce
+sampleRate           48000 Hz
+outputLatency        42.000 ms
+baseLatency          10.000 ms
+sinkId               ""
+API output total     52.000 ms
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"1b06a9ce6942859d1f8eb3d034aecab80f965887c58f3058d74f2a1593a650b0","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"1b06a9ce6942859d1f8eb3d034aecab80f965887c58f3058d74f2a1593a650b0","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=interactive&tag=interactive-exclusive-rep3  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=interactive, tag=interactive-exclusive-rep3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 6951e647
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 6951e647
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 6951e647
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 6951e647
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 6951e647
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 6951e647
+sampleRate           48000 Hz
+baseLatency          5.333 ms
+outputLatency        128.000 ms
+API output total     133.333 ms
+state                running
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"6951e64796438e7ec47d1976fa9c14776adbfc47ab06a2aa457a07498095ed70","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"6951e64796438e7ec47d1976fa9c14776adbfc47ab06a2aa457a07498095ed70","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=balanced&tag=balanced-default-rep1  [browser flags: none]
+--- probe, latencyHint=balanced, tag=balanced-default-rep1 ---
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 3cd1242d
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 3cd1242d
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 3cd1242d
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 3cd1242d
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 3cd1242d
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 3cd1242d
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"3cd1242de8f4af5e5533b64f9768bd15c07ab4e8eca0b9d5d7c60d1308f4bb41","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"3cd1242de8f4af5e5533b64f9768bd15c07ab4e8eca0b9d5d7c60d1308f4bb41","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=balanced&tag=balanced-exclusive-rep1  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=balanced, tag=balanced-exclusive-rep1 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 336d66b8
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 336d66b8
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 336d66b8
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 336d66b8
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 336d66b8
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 336d66b8
+sampleRate           48000 Hz
+outputLatency        128.000 ms
+baseLatency          5.333 ms
+API output total     133.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"336d66b8af08fb15204212660adf7323e648c86d1446fb54a09693caa0a7d49e","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"336d66b8af08fb15204212660adf7323e648c86d1446fb54a09693caa0a7d49e","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=balanced&tag=balanced-default-rep2  [browser flags: none]
+--- probe, latencyHint=balanced, tag=balanced-default-rep2 ---
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 7b06dd65
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 7b06dd65
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 7b06dd65
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 7b06dd65
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 7b06dd65
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 7b06dd65
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+sinkId               ""
+API output total     52.000 ms
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"7b06dd65f81a3b91cc2d50eaa20120f6b74c60e1666c64f52c25324d5c752f58","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"7b06dd65f81a3b91cc2d50eaa20120f6b74c60e1666c64f52c25324d5c752f58","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=balanced&tag=balanced-exclusive-rep2  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=balanced, tag=balanced-exclusive-rep2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 2e6910cc
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 2e6910cc
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 2e6910cc
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 2e6910cc
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 2e6910cc
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 2e6910cc
+sampleRate           48000 Hz
+baseLatency          5.333 ms
+outputLatency        128.000 ms
+sinkId               ""
+API output total     133.333 ms
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"2e6910cce1d293cebb601f8030fc69216d4cdf668f0776e4cba0728b58ca7d8b","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"2e6910cce1d293cebb601f8030fc69216d4cdf668f0776e4cba0728b58ca7d8b","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=balanced&tag=balanced-default-rep3  [browser flags: none]
+--- probe, latencyHint=balanced, tag=balanced-default-rep3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group ca8e3f5d
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group ca8e3f5d
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group ca8e3f5d
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group ca8e3f5d
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group ca8e3f5d
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group ca8e3f5d
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"ca8e3f5d8f6c45c0f641208ad191d03ebb0fb1b29359c2d59ed1da12b00c37e1","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"ca8e3f5d8f6c45c0f641208ad191d03ebb0fb1b29359c2d59ed1da12b00c37e1","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=balanced&tag=balanced-exclusive-rep3  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=balanced, tag=balanced-exclusive-rep3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group f86f1fda
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group f86f1fda
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group f86f1fda
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group f86f1fda
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group f86f1fda
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group f86f1fda
+baseLatency          5.333 ms
+sampleRate           48000 Hz
+outputLatency        128.000 ms
+API output total     133.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"f86f1fdadc9849be3df822299365437d0de7b369bf0fbec599ecb8867fa661f7","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"f86f1fdadc9849be3df822299365437d0de7b369bf0fbec599ecb8867fa661f7","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=playback&tag=playback-default-rep1  [browser flags: none]
+--- probe, latencyHint=playback, tag=playback-default-rep1 ---
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group fbddeb68
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group fbddeb68
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group fbddeb68
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group fbddeb68
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group fbddeb68
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group fbddeb68
+baseLatency          20.000 ms
+sampleRate           48000 Hz
+API output total     72.000 ms
+outputLatency        52.000 ms
+state                running
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"fbddeb6807b8e17b53184c2b3f10242c791c4a0541116d2c454c53d74d72b1a2","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"fbddeb6807b8e17b53184c2b3f10242c791c4a0541116d2c454c53d74d72b1a2","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+  -> input latency   10.000 ms
+outputLatency x10    52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00
+FINISHED
+
+=== auto=probe&hint=playback&tag=playback-exclusive-rep1  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=playback, tag=playback-exclusive-rep1 ---
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 5d4d76b9
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 5d4d76b9
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 5d4d76b9
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 5d4d76b9
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 5d4d76b9
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 5d4d76b9
+outputLatency        128.000 ms
+API output total     149.333 ms
+sampleRate           48000 Hz
+baseLatency          21.333 ms
+sinkId               ""
+state                running
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"5d4d76b9ed5331e2c70c71e0df7688c1571031d75428a3cad3a50bb3d92252d2","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"5d4d76b9ed5331e2c70c71e0df7688c1571031d75428a3cad3a50bb3d92252d2","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=playback&tag=playback-default-rep2  [browser flags: none]
+--- probe, latencyHint=playback, tag=playback-default-rep2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 9f97549e
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 9f97549e
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 9f97549e
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 9f97549e
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 9f97549e
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 9f97549e
+outputLatency        52.000 ms
+baseLatency          20.000 ms
+API output total     72.000 ms
+sampleRate           48000 Hz
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"9f97549e1c23e982d3383202df04781536abb001bf101661285a682ef478d241","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"9f97549e1c23e982d3383202df04781536abb001bf101661285a682ef478d241","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00
+FINISHED
+
+=== auto=probe&hint=playback&tag=playback-exclusive-rep2  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=playback, tag=playback-exclusive-rep2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 42f13699
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 42f13699
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 42f13699
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 42f13699
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 42f13699
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 42f13699
+sampleRate           48000 Hz
+outputLatency        128.000 ms
+baseLatency          21.333 ms
+API output total     149.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"42f136994d79550717f5f3576538480de4a4f07274e4549fdeeeef8d54aa3394","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"42f136994d79550717f5f3576538480de4a4f07274e4549fdeeeef8d54aa3394","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=playback&tag=playback-default-rep3  [browser flags: none]
+--- probe, latencyHint=playback, tag=playback-default-rep3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 2f81cf35
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 2f81cf35
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 2f81cf35
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 2f81cf35
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 2f81cf35
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 2f81cf35
+API output total     72.000 ms
+outputLatency        52.000 ms
+sampleRate           48000 Hz
+baseLatency          20.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"2f81cf35e7887c15765ba0ba774748d98fca575e9208d0c2a1fed289ee46e90a","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"2f81cf35e7887c15765ba0ba774748d98fca575e9208d0c2a1fed289ee46e90a","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00
+FINISHED
+
+=== auto=probe&hint=playback&tag=playback-exclusive-rep3  [browser flags: --enable-exclusive-audio]
+--- probe, latencyHint=playback, tag=playback-exclusive-rep3 ---
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 113791a0
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 113791a0
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 113791a0
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 113791a0
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 113791a0
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 113791a0
+sampleRate           48000 Hz
+baseLatency          21.333 ms
+outputLatency        128.000 ms
+API output total     149.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"113791a0888ff37f43da34ccb97e54d5851be4525bbcc902a7e2918ae86c2340","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"113791a0888ff37f43da34ccb97e54d5851be4525bbcc902a7e2918ae86c2340","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+  -> input latency   10.000 ms
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== auto=probe&hint=interactive&noinput=1&tag=noinput-rep1  [browser flags: none]
+--- probe, latencyHint=interactive, tag=noinput-rep1 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+sinkId               ""
+API output total     52.000 ms
+state                running
+track.getSettings    {}
+  -> input latency   NOT REPORTED
+track.getConstraints {}
+track.getCapabilities threw: Cannot read properties of null (reading 'getCapabilities')
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=interactive&noinput=1&tag=noinput-rep2  [browser flags: none]
+--- probe, latencyHint=interactive, tag=noinput-rep2 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+  -> input latency   NOT REPORTED
+track.getSettings    {}
+track.getConstraints {}
+track.getCapabilities threw: Cannot read properties of null (reading 'getCapabilities')
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=probe&hint=interactive&noinput=1&tag=noinput-rep3  [browser flags: none]
+--- probe, latencyHint=interactive, tag=noinput-rep3 ---
+(no capture stream open: this is the output-only condition)
+baseLatency          10.000 ms
+sampleRate           48000 Hz
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {}
+  -> input latency   NOT REPORTED
+track.getConstraints {}
+track.getCapabilities threw: Cannot read properties of null (reading 'getCapabilities')
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== auto=measure&hint=interactive&n=10&control=1&tag=control-noclick  [browser flags: none]
+--- CONTROL (no click emitted), latencyHint=interactive, n=10, amp=0.5, len=64, tag=control-noclick ---
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group ccf88170
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group ccf88170
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group ccf88170
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group ccf88170
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group ccf88170
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group ccf88170
+sampleRate           48000 Hz
+outputLatency        42.000 ms
+baseLatency          10.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"ccf881705f2b3d503a71e1c5e362e434807690350adea8e685f4feca6e074f96","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"ccf881705f2b3d503a71e1c5e362e434807690350adea8e685f4feca6e074f96","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00027 (peak 0.00000) -> onset threshold 0.02000
+control 0: no capture (peak 0.00104, threshold 0.02000)
+control 1: no capture (peak 0.00114, threshold 0.02000)
+control 2: no capture (peak 0.00111, threshold 0.02000)
+control 3: no capture (peak 0.00118, threshold 0.02000)
+control 4: no capture (peak 0.00085, threshold 0.02000)
+control 5: no capture (peak 0.00175, threshold 0.02000)
+control 6: no capture (peak 0.00157, threshold 0.02000)
+control 7: no capture (peak 0.00087, threshold 0.02000)
+control 8: no capture (peak 0.00117, threshold 0.02000)
+control 9: no capture (peak 0.00162, threshold 0.02000)
+
+NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
+Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
+FINISHED
+
+=== auto=measure&hint=interactive&n=10&amp=0.5&len=64&tag=click-64f-amp0.5  [browser flags: none]
+--- measure, latencyHint=interactive, n=10, amp=0.5, len=64, tag=click-64f-amp0.5 ---
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 10390326
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 10390326
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 10390326
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 10390326
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 10390326
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 10390326
+API output total     52.000 ms
+baseLatency          10.000 ms
+sampleRate           48000 Hz
+outputLatency        42.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"10390326db39bbed584e04f10ad16bcbe988fa40bbf301c5c39941f657669e0f","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"10390326db39bbed584e04f10ad16bcbe988fa40bbf301c5c39941f657669e0f","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00029 (peak 0.00000) -> onset threshold 0.02000
+click 0: no capture (peak 0.00127, threshold 0.02000)
+click 1: no capture (peak 0.00106, threshold 0.02000)
+click 2: no capture (peak 0.00110, threshold 0.02000)
+click 3: no capture (peak 0.00106, threshold 0.02000)
+click 4: no capture (peak 0.00131, threshold 0.02000)
+click 5: no capture (peak 0.00201, threshold 0.02000)
+click 6: no capture (peak 0.00117, threshold 0.02000)
+click 7: no capture (peak 0.00153, threshold 0.02000)
+click 8: no capture (peak 0.00511, threshold 0.02000)
+click 9: no capture (peak 0.00652, threshold 0.02000)
+
+NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
+Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
+FINISHED
+
+=== auto=measure&hint=interactive&n=10&amp=1.0&len=480&tag=click-480f-amp1.0  [browser flags: none]
+--- measure, latencyHint=interactive, n=10, amp=1, len=480, tag=click-480f-amp1.0 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 3a6d1f3d
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 3a6d1f3d
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 3a6d1f3d
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 3a6d1f3d
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 3a6d1f3d
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 3a6d1f3d
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+state                running
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"3a6d1f3dff98d273c84b8af654afbe8a1090bbc285223b5d60803b45a5ec1283","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"3a6d1f3dff98d273c84b8af654afbe8a1090bbc285223b5d60803b45a5ec1283","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00033 (peak 0.00000) -> onset threshold 0.02000
+click 0: no capture (peak 0.00139, threshold 0.02000)
+click 1: no capture (peak 0.00323, threshold 0.02000)
+click 2: no capture (peak 0.00145, threshold 0.02000)
+click 3: no capture (peak 0.00227, threshold 0.02000)
+click 4: no capture (peak 0.00171, threshold 0.02000)
+click 5: no capture (peak 0.00213, threshold 0.02000)
+click 6: no capture (peak 0.00139, threshold 0.02000)
+click 7: no capture (peak 0.00133, threshold 0.02000)
+click 8: no capture (peak 0.00129, threshold 0.02000)
+click 9: no capture (peak 0.00107, threshold 0.02000)
+
+NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
+Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
+FINISHED
+
+=== auto=measure&hint=interactive&n=10&control=1&tag=control-noclick-2  [browser flags: none]
+--- CONTROL (no click emitted), latencyHint=interactive, n=10, amp=0.5, len=64, tag=control-noclick-2 ---
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 1a6059eb
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 1a6059eb
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 1a6059eb
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 1a6059eb
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 1a6059eb
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 1a6059eb
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"1a6059ebc6b150164037b0be62b2e8ba107fbcf655d8ec676b23dcb5972bef85","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"1a6059ebc6b150164037b0be62b2e8ba107fbcf655d8ec676b23dcb5972bef85","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00025 (peak 0.00000) -> onset threshold 0.02000
+control 0: no capture (peak 0.00189, threshold 0.02000)
+click 1: 448.54 ms (peak 0.0230, onset frame 128154, emit frame 106624)
+click 2: -1.06 ms (peak 0.0308, onset frame 140621, emit frame 140672)
+control 3: no capture (peak 0.00264, threshold 0.02000)
+control 4: no capture (peak 0.00221, threshold 0.02000)
+control 5: no capture (peak 0.00306, threshold 0.02000)
+control 6: no capture (peak 0.00098, threshold 0.02000)
+control 7: no capture (peak 0.00118, threshold 0.02000)
+control 8: no capture (peak 0.00179, threshold 0.02000)
+control 9: no capture (peak 0.00169, threshold 0.02000)
+
+median round-trip     448.54 ms over 2/10 clicks
+API output total      52.00 ms
+min / max             -1.06 / 448.54 ms
+FINISHED
+unaccounted (RTT-API) 396.54 ms   <- the input side plus whatever the API does not expose
+
+--------------------------------------------------------------------------------
+Re-run after the labelling fix. The control-noclick-2 section above printed two
+detections as "click N" because only the no-capture branch knew about control mode; the
+page now labels them SPURIOUS and excludes them from any median. The original section is
+left as it stands -- it is the evidence that the detector produces false positives from
+ambient noise on an open line input, and it is the reason the control run is mandatory.
+--------------------------------------------------------------------------------
+
+=== auto=measure&hint=interactive&n=10&control=1&tag=control-noclick-3  [browser flags: none]
+--- CONTROL (no click emitted), latencyHint=interactive, n=10, amp=0.5, len=64, tag=control-noclick-3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 093f564c
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 093f564c
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 093f564c
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 093f564c
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 093f564c
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 093f564c
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"093f564c0b08d1abe3399a958b74d6e82fe7a94856ed112beb0d5eed2def9435","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"093f564c0b08d1abe3399a958b74d6e82fe7a94856ed112beb0d5eed2def9435","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00024 (peak 0.00000) -> onset threshold 0.02000
+control 0: no capture (peak 0.00085, threshold 0.02000)
+control 1: no capture (peak 0.00091, threshold 0.02000)
+control 2: no capture (peak 0.00095, threshold 0.02000)
+control 3: no capture (peak 0.00094, threshold 0.02000)
+control 4: no capture (peak 0.00082, threshold 0.02000)
+control 5: no capture (peak 0.00108, threshold 0.02000)
+control 6: no capture (peak 0.00077, threshold 0.02000)
+control 7: no capture (peak 0.00069, threshold 0.02000)
+control 8: no capture (peak 0.00092, threshold 0.02000)
+
+NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
+control 9: no capture (peak 0.00083, threshold 0.02000)
+Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
+FINISHED
+
+=== auto=measure&hint=interactive&n=10&control=1&tag=control-noclick-4  [browser flags: none]
+--- CONTROL (no click emitted), latencyHint=interactive, n=10, amp=0.5, len=64, tag=control-noclick-4 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 20c44cf3
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 20c44cf3
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 20c44cf3
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 20c44cf3
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 20c44cf3
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 20c44cf3
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+  -> input latency   10.000 ms
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"20c44cf3a807332483b495394003af7c9a13c71567893d14eef4942a88c9bce8","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"20c44cf3a807332483b495394003af7c9a13c71567893d14eef4942a88c9bce8","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00026 (peak 0.00000) -> onset threshold 0.02000
+control 0: no capture (peak 0.00079, threshold 0.02000)
+control 1: no capture (peak 0.00112, threshold 0.02000)
+control 2: no capture (peak 0.00090, threshold 0.02000)
+control 3: no capture (peak 0.00082, threshold 0.02000)
+control 4: no capture (peak 0.00089, threshold 0.02000)
+control 5: no capture (peak 0.00086, threshold 0.02000)
+control 6: no capture (peak 0.00097, threshold 0.02000)
+control 7: no capture (peak 0.00094, threshold 0.02000)
+control 8: no capture (peak 0.00097, threshold 0.02000)
+control 9: no capture (peak 0.00087, threshold 0.02000)
+
+NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
+Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
+FINISHED
+
+=== auto=measure&hint=interactive&n=10&control=1&tag=control-noclick-5  [browser flags: none]
+--- CONTROL (no click emitted), latencyHint=interactive, n=10, amp=0.5, len=64, tag=control-noclick-5 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 0d697d12
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 0d697d12
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 0d697d12
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 0d697d12
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 0d697d12
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 0d697d12
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+state                running
+API output total     52.000 ms
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"0d697d121062dbd5e7c0f66988c2a4232734605892d54a61c2c8b0f94dceb9dc","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"0d697d121062dbd5e7c0f66988c2a4232734605892d54a61c2c8b0f94dceb9dc","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00021 (peak 0.00000) -> onset threshold 0.02000
+control 0: no capture (peak 0.00090, threshold 0.02000)
+control 1: no capture (peak 0.00147, threshold 0.02000)
+control 2: no capture (peak 0.00085, threshold 0.02000)
+control 3: no capture (peak 0.00098, threshold 0.02000)
+control 4: no capture (peak 0.00087, threshold 0.02000)
+control 5: no capture (peak 0.00079, threshold 0.02000)
+control 6: no capture (peak 0.00105, threshold 0.02000)
+control 7: no capture (peak 0.00091, threshold 0.02000)
+control 8: no capture (peak 0.00090, threshold 0.02000)
+control 9: no capture (peak 0.00123, threshold 0.02000)
+Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
+
+NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
+FINISHED
+
+=== auto=measure&hint=interactive&n=10&amp=1.0&len=480&tag=click-480f-amp1.0-rerun  [browser flags: none]
+--- measure, latencyHint=interactive, n=10, amp=1, len=480, tag=click-480f-amp1.0-rerun ---
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 5ad6cf8f
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 5ad6cf8f
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 5ad6cf8f
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 5ad6cf8f
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 5ad6cf8f
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 5ad6cf8f
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+API output total     52.000 ms
+outputLatency        42.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"5ad6cf8fff54a7d790da270297427a651ec5719282946e06503aa2fbf2550d6f","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"5ad6cf8fff54a7d790da270297427a651ec5719282946e06503aa2fbf2550d6f","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00021 (peak 0.00000) -> onset threshold 0.02000
+click 0: no capture (peak 0.00082, threshold 0.02000)
+click 1: no capture (peak 0.00083, threshold 0.02000)
+click 2: no capture (peak 0.00078, threshold 0.02000)
+click 3: no capture (peak 0.00078, threshold 0.02000)
+click 4: no capture (peak 0.00093, threshold 0.02000)
+click 5: no capture (peak 0.00074, threshold 0.02000)
+click 6: no capture (peak 0.00083, threshold 0.02000)
+click 7: no capture (peak 0.00097, threshold 0.02000)
+click 8: no capture (peak 0.00095, threshold 0.02000)
+
+NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
+click 9: no capture (peak 0.00100, threshold 0.02000)
+Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
+FINISHED
