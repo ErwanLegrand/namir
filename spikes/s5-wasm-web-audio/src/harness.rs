@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use namir_core::{ChannelConfig, SampleRate};
 use namir_engine::{
-    AudioEngine, Command, ParamChange, ParamId, PrepareContext, StageIo, WorkerEndpoint,
-    build_default_engine,
+    AudioEngine, Command, ParamChange, ParamId, PrepareContext, StageIo, TelemetryEntry,
+    WorkerEndpoint, build_default_engine,
 };
 use namir_params::stages::{eq, gate};
 
@@ -21,7 +21,16 @@ pub const IR_PERIOD_BLOCKS: usize = 8192 / BLOCK_SIZE;
 pub enum Signal {
     /// Band-limited noise at a steady level: the ordinary measurement input.
     Steady,
-    /// Exponentially decaying to ~1e-30, to drive the chain into subnormals.
+    /// Exponentially decaying by a fixed 0.999_5-per-block factor (see `run`'s `amp *=
+    /// 0.999_5`). Over `MEASURED_BLOCKS` = 100,000 blocks that reaches only ~2e-22
+    /// (0.999_5^100_000), not the ~1e-30 an earlier revision of this comment claimed --
+    /// and 1e-30 itself is still well above f32's subnormal threshold (`f32::MIN_POSITIVE`
+    /// ~1.18e-38), so the *driving signal* never actually leaves f32's normal range and
+    /// `run`'s `amp < 1e-30` reset branch is dead code at this rep length. The cost rise
+    /// this condition measures (see RESULTS.md's `a1_standard decaying` figures) is
+    /// therefore attributable to *internal* chain state -- e.g. the IR convolver's or
+    /// EQ's own running state decaying into subnormal magnitudes as the signal shrinks --
+    /// not to the input itself going subnormal.
     Decaying,
 }
 
@@ -95,6 +104,46 @@ impl Harness {
                 .map_err(|_| "command ring full while engaging gate/EQ".to_string())?;
         }
         Ok(())
+    }
+
+    /// Positive confirmation that the queued `load_nam`/`load_ir` commands actually
+    /// completed D-8.1's handover, not merely that `try_push` accepted them into the
+    /// ring -- a stage still has to take the offer, and a silently-empty stage would
+    /// produce a plausible-looking but wrong (too-fast) timing figure. Reads
+    /// `telemetry.{nam,ir}.loaded`, which `stages/nam.rs`/`stages/ir.rs`'s own
+    /// `telemetry` impl sets to `1.0` only once `self.slots[self.active].is_some()` --
+    /// i.e. the active slot, not merely an in-flight offer. Called after warmup (by
+    /// construction several thousand blocks, far more than one `HANDOVER_CROSSFADE_MS`
+    /// crossfade needs), so both resources should be fully installed by the time this
+    /// runs; panics loudly if either is not, rather than letting a silently-empty stage
+    /// through as a timing figure.
+    fn assert_resources_loaded(&mut self) {
+        const NAM_LOADED_ID: u32 = namir_params::ParamId::from_key("telemetry.nam.loaded").0;
+        const IR_LOADED_ID: u32 = namir_params::ParamId::from_key("telemetry.ir.loaded").0;
+
+        let mut buf = [TelemetryEntry { id: 0, value: 0.0 }; 256];
+        let drain = self.endpoint.telemetry.drain(&mut buf);
+        let mut nam_loaded = None;
+        let mut ir_loaded = None;
+        for entry in &buf[..drain.read] {
+            if entry.id == NAM_LOADED_ID {
+                nam_loaded = Some(entry.value);
+            } else if entry.id == IR_LOADED_ID {
+                ir_loaded = Some(entry.value);
+            }
+        }
+        assert_eq!(
+            nam_loaded,
+            Some(1.0),
+            "NAM model did not complete its handover before measurement began \
+             (telemetry.nam.loaded != 1.0)"
+        );
+        assert_eq!(
+            ir_loaded,
+            Some(1.0),
+            "IR did not complete its handover before measurement began \
+             (telemetry.ir.loaded != 1.0)"
+        );
     }
 
     /// The per-residue estimator is periodic in the IR schedule's own period. Confirm
@@ -181,6 +230,10 @@ impl Harness {
             self.process_block(&block);
         }
 
+        // D-8.1's handover must have actually completed by now, not merely been queued --
+        // see `assert_resources_loaded`'s own doc comment.
+        self.assert_resources_loaded();
+
         self.durations_ns.clear();
         self.durations_ns.reserve(measured as usize);
 
@@ -200,6 +253,15 @@ impl Harness {
             let elapsed_ns = (now_us() - start) * 1000.0;
             self.durations_ns.push(elapsed_ns);
         }
+
+        // FR-CHAIN-080's NaN/Inf fault path must not have fired during the measured run --
+        // same check, same reason, as six_stage_chain.rs:594-598: a run that hit it cannot
+        // be quoted as a timing figure.
+        assert_eq!(
+            self.engine.chain().fault_count(),
+            0,
+            "the measured run must not have hit FR-CHAIN-080's NaN/Inf fault path"
+        );
 
         self.reduce()
     }
