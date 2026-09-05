@@ -1,0 +1,36 @@
+[package]
+name = "s5-wasm-web-audio"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+namir-core = { path = "../../crates/namir-core" }
+namir-params = { path = "../../crates/namir-params" }
+namir-dsp = { path = "../../crates/namir-dsp" }
+namir-nam = { path = "../../crates/namir-nam" }
+namir-ir = { path = "../../crates/namir-ir" }
+namir-engine = { path = "../../crates/namir-engine" }
+
+# Direct dependency purely so the `wasm_simd` feature can be selected for the SIMD
+# build via feature unification; namir-ir pulls rustfft transitively via realfft.
+rustfft = "6.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+namir-fixtures = { path = "../../crates/namir-fixtures" }
+core_affinity = "0.8"
+
+[features]
+# rustfft's wasm SIMD path has NO runtime detection: a module built with this
+# feature traps immediately on a runtime without simd128. Scalar and SIMD are
+# therefore different artefacts, not one artefact with a fallback.
+wasm-simd = ["rustfft/wasm_simd"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
