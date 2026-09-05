@@ -13,6 +13,12 @@
     <option value="../fixtures/a1_standard.nam">a1_standard</option>
     <option value="../fixtures/a2_lite.nam">a2_lite</option>
   </select>
+  IR
+  <select id="ir">
+    <option value="../fixtures/ir_48k.wav">ir_48k (native rate, no resample)</option>
+    <option value="../fixtures/ir_44k1.wav">ir_44k1 (forces rubato to resample on load)</option>
+  </select>
+  <label><input type="checkbox" id="irtiming"> time load_ir (Task 8 Extra 1: one-off load cost, not per-block)</label>
   signal
   <select id="signal">
     <option value="0">steady</option>
@@ -30,6 +36,12 @@
 //   &measured=N    override the measured-block count
 //   &wasm=simd128  pick the artefact under web/build/ (default: the <select>)
 //   &model=a2_lite
+//   &ir=ir_44k1    IR under ../fixtures/ (default: the <select>, ir_48k). Task 8 Extra 1:
+//                  ir_44k1 forces rubato's scalar (no simd128 path) resample on load.
+//                  The parity gate ALWAYS loads ir_48k regardless of this -- see
+//                  bench-worker.js's PARITY_IR comment.
+//   &irtiming=1    also time load_ir alone, reps times, before the per-block reps
+//                  below (a ONE-OFF LOAD cost; never conflate with the per-block figure)
 //   &signal=0|1|2  0 steady, 1 amplitude-decay, 2 subnormal-tail (default 0)
 //   &census=1      run the untimed subnormal census instead of the timing reps
 const q = new URLSearchParams(location.search);
@@ -47,6 +59,9 @@ const run = () => {
         `parity: residual ${d.residual.toFixed(2)} dB vs native-vs-native control ` +
         `${d.control.toFixed(2)} dB -> margin ${d.margin.toFixed(2)} dB ` +
         `${d.pass ? "(PASS, within 3 dB)" : "(FAIL, worse than the control by >3 dB)"}\n`;
+    } else if (d.kind === "irload") {
+      out.textContent +=
+        `irload (one-off, NOT per-block) rep ${d.rep}: ${d.ir.replace(/.*\//, "")} load_ir ${d.ms.toFixed(3)} ms\n`;
     } else if (d.kind === "census") {
       out.textContent +=
         `census ${d.signal}: blocks ${d.blocks} | subnormal-out blocks ${d.subBlocks} ` +
@@ -83,12 +98,13 @@ const run = () => {
   w.postMessage({
     wasm: q.has("wasm") ? `./build/${q.get("wasm")}.wasm` : document.getElementById("wasm").value,
     model: `../fixtures/${q.get("model") || document.getElementById("model").value.replace(/.*\//, "").replace(/\.nam$/, "")}.nam`,
-    ir: "../fixtures/ir_48k.wav",
+    ir: q.has("ir") ? `../fixtures/${q.get("ir")}.wav` : document.getElementById("ir").value,
     warmup: 5000,
     measured: Number(q.get("measured") || 100000),
     signal: Number(q.get("signal") ?? document.getElementById("signal").value),
     census: q.has("census") ? q.get("census") !== "0" : document.getElementById("census").checked,
     reps: q.has("reps") ? Number(q.get("reps")) : 5,
+    irtiming: q.has("irtiming") ? q.get("irtiming") !== "0" : document.getElementById("irtiming").checked,
   });
 };
 document.getElementById("go").onclick = run;

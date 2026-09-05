@@ -1,0 +1,70 @@
+Task 8 raw transcripts, Microsoft Edge 152.0.4191.62 (Chromium/V8) headless
+(--headless=new --disable-gpu --no-sandbox), decoded from web/serve.py's 404-logged
+/__s5?<json> beacons -- the same recovery trick Task 5/6/7 used. Each run used its own
+--user-data-dir so no on-disk profile state carried across runs.
+
+=== Extra 1, Run 1: ir_44k1, wasm=simd128, model=a1_standard, signal=0 (steady), reps=5,
+    measured=20000 -- first Edge launch of the session ===
+URL: http://127.0.0.1:8080/web/bench.html?auto=1&wasm=simd128&model=a1_standard&ir=ir_44k1&irtiming=1&signal=0&reps=5&measured=20000
+
+parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+irload rep 1: ir_44k1.wav load_ir 9.150 ms
+irload rep 2: ir_44k1.wav load_ir 5.905 ms
+irload rep 3: ir_44k1.wav load_ir 6.165 ms
+irload rep 4: ir_44k1.wav load_ir 6.020 ms
+irload rep 5: ir_44k1.wav load_ir 5.800 ms
+stats rep 1: p50 12.75% | p99 24.19% | p99.9 23.81% | max 30.37% | estimator 18.56% | CONTAMINATED (p999-estimator<=5.0 fails)
+stats rep 2: p50 11.63% | p99 19.69% | p99.9 20.25% | max 27.37% | estimator 18.56% | quotable
+stats rep 3: p50 11.63% | p99 19.12% | p99.9 20.25% | max 23.25% | estimator 18.56% | quotable
+stats rep 4: p50 11.63% | p99 19.31% | p99.9 20.44% | max 22.87% | estimator 18.56% | quotable
+stats rep 5: p50 11.81% | p99 19.50% | p99.9 20.63% | max 22.12% | estimator 18.75% | quotable
+done / FINISHED
+
+=== Extra 1, Run 2: ir_48k (control), same model/build/signal/reps/measured -- second launch ===
+URL: http://127.0.0.1:8080/web/bench.html?auto=1&wasm=simd128&model=a1_standard&ir=ir_48k&irtiming=1&signal=0&reps=5&measured=20000
+
+parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+irload rep 1: ir_48k.wav load_ir 3.940 ms
+irload rep 2: ir_48k.wav load_ir 3.920 ms
+irload rep 3: ir_48k.wav load_ir 3.920 ms
+irload rep 4: ir_48k.wav load_ir 3.755 ms
+irload rep 5: ir_48k.wav load_ir 3.715 ms
+stats rep 1: p50 12.94% | p99 29.81% | p99.9 33.56% | max 40.69% | estimator 19.12% | CONTAMINATED
+stats rep 2: p50 12.19% | p99 22.69% | p99.9 30.75% | max 36.56% | estimator 19.50% | CONTAMINATED
+stats rep 3: p50 12.37% | p99 22.69% | p99.9 30.56% | max 37.69% | estimator 19.69% | CONTAMINATED
+stats rep 4: p50 12.19% | p99 22.12% | p99.9 31.31% | max 36.56% | estimator 19.69% | CONTAMINATED
+stats rep 5: p50 12.37% | p99 21.94% | p99.9 30.75% | max 35.44% | estimator 19.69% | CONTAMINATED
+done / FINISHED
+
+=== Extra 1, Run 3: ir_44k1 again (confirmatory rerun -- order-effect vs IR-content-effect
+    test), same config as Run 1 -- third launch ===
+URL: http://127.0.0.1:8080/web/bench.html?auto=1&wasm=simd128&model=a1_standard&ir=ir_44k1&irtiming=1&signal=0&reps=5&measured=20000
+
+parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+irload rep 1: ir_44k1.wav load_ir 9.130 ms
+irload rep 2: ir_44k1.wav load_ir 6.020 ms
+irload rep 3: ir_44k1.wav load_ir 6.060 ms
+irload rep 4: ir_44k1.wav load_ir 5.860 ms
+irload rep 5: ir_44k1.wav load_ir 5.875 ms
+stats rep 1: p50 13.50% | p99 30.37% | p99.9 33.37% | max 44.44% | estimator 19.69% | CONTAMINATED
+stats rep 2: p50 12.19% | p99 22.31% | p99.9 30.75% | max 34.31% | estimator 19.50% | CONTAMINATED
+stats rep 3: p50 12.37% | p99 22.50% | p99.9 30.75% | max 35.25% | estimator 19.50% | CONTAMINATED
+stats rep 4: p50 12.19% | p99 22.31% | p99.9 30.94% | max 33.38% | estimator 19.50% | CONTAMINATED
+stats rep 5: p50 12.37% | p99 22.50% | p99.9 30.94% | max 33.94% | estimator 19.50% | CONTAMINATED
+done / FINISHED
+
+Note: Run 3 reproduces Run 2's (ir_48k's) per-block figure, not Run 1's own (ir_44k1's)
+figure from two launches earlier -- the per-block number tracks session/launch order, not
+which IR was loaded. See RESULTS.md's Task 8 section for the full analysis; this is why the
+per-block finding is retracted while the load-time finding (consistent across Runs 1 and 3)
+is kept.
+
+=== Extra 2: renderSizeHint availability probe ===
+URL: http://127.0.0.1:8080/web/worklet.html?auto=1&checkRenderSizeHint=256
+
+renderSizeHint 256: NOT honoured -- ctx.renderQuantumSize undefined ("hardware"/default; the
+option was accepted but ignored)
+FINISHED
+
+msedge --version (raw, run separately to confirm the build under test):
+Microsoft Edge 152.0.4191.62
