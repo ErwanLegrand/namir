@@ -81,7 +81,9 @@ seeder needs both stores off one shared address local with folded `offset=` imme
 strength reduction restores a recomputed base every time. Four rewrites of the kernel failed
 identically. Not an upstream `wide` or `rustfft` limitation and not a V8 one; simply not
 something Rust gives a lever over. **The wasm performance story is `+simd128`, which works.** See
-`spikes/s5-wasm-web-audio/REVECTORIZE.md`.
+`spikes/s5-wasm-web-audio/REVECTORIZE.md`, and `spikes/s5-wasm-web-audio/revec-probe/` for the
+probe crate itself — committed because the conclusion depends on LLVM's codegen and V8's seeder
+both staying as they are, and is therefore re-checkable after a toolchain bump.
 
 **Sub-finding, denormals:** wasm mandates IEEE-754 subnormal handling and offers no
 flush-to-zero, so `DenormalGuard` is a no-op there. The kill criterion (>2x penalty) did not fire

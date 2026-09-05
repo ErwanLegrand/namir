@@ -9,11 +9,15 @@ build of A1 Standard is gated on WebAssembly SIMD. Under a subnormal tail — si
 signal, the most ordinary thing a guitar input does — A1 reaches p99.9 **44.25–58.13%**, one rep
 of five above the bar; wasm mandates no flush-to-zero and `DenormalGuard` has no equivalent
 there, so that cost is structural and A1's real margin is a hairline, not 1.5x.
-**Gate 2 (scheduling): PASS.** Zero underruns in every steady-state second of every run, both
-signal regimes, over 60 s and 300 s, on real hardware. The literal "every run zero" reading is
-missed: about a third of runs drop one device callback in the *first second* of the stream's
-life — proven by a three-arm 36-run experiment to be Chromium/WASAPI stream start-up, occurring
-at the same rate and the same second with the chain not running at all.
+**Gate 2 (scheduling): PASS — on a judgement, stated as one.** Zero underruns in every
+steady-state second of every run, both signal regimes, over 60 s and 300 s, on real hardware.
+**The literal "every run zero" reading is not met**: about a third of runs drop one device
+callback in the *first second* of the stream's life. Calling that a PASS rests on reading the
+gate as a question about *the chain* rather than about the platform, and the evidence for the
+reading is a three-arm 36-run experiment in which the event occurs at the same rate and the same
+second with the guard moved 10x later and with the chain not running at all. Both readings are
+kept in the log below so a later reader can weigh them; the coordinator ruled on 2026-09-05 that
+the PASS is the correct call, which is recorded here rather than left implicit.
 **Gate 3 (latency): API figures only, and they are not encouraging.** **62 ms** best-case
 API-reported total (10 ms base + 42 ms output + a *declared* 10 ms input constant), roughly twice
 the ~30 ms soft reference before measuring anything the API does not account for;

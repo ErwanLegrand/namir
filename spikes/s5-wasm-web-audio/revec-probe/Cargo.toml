@@ -1,0 +1,17 @@
+[package]
+name = "revec-probe"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wide = "=1.6.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+
+[workspace]

@@ -8,13 +8,17 @@ Task 4 (`RESULTS.md`) established the *fact*: under `--experimental-wasm-revecto
 visits 16 wasm functions in the simd128 artefact and succeeds on none, with no measurable timing
 change. This file establishes the *cause*, which Task 4 did not.
 
-Investigated 2026-09-05, read-only on the repo. The experiments ran in a throwaway probe crate
-outside the tree (`wide = "=1.6.1"` — 1.6.0 is yanked on crates.io; 1.6.1 has a byte-identical
-`f32x8` definition) which is **not preserved**: everything load-bearing is transcribed below, and
-the probe shapes are described precisely enough to rebuild in an hour if anyone ever needs to.
-Node v24.19.0 / V8 13.6, flags `--experimental-wasm-revectorize --trace-wasm-revectorize
---no-liftoff` (`--no-liftoff` is needed or most functions never reach the TurboFan/Turboshaft
-pipeline the pass lives in).
+Investigated 2026-09-05, read-only on the repo. **The probe crate is preserved at
+`revec-probe/`** — see "Re-running the probe" at the foot of this file. It pins
+`wide = "=1.6.1"` (1.6.0 is yanked on crates.io; 1.6.1 has a byte-identical `f32x8` definition)
+and its own `Cargo.lock`. Node v24.19.0 / V8 13.6, flags `--experimental-wasm-revectorize
+--trace-wasm-revectorize --no-liftoff` (`--no-liftoff` is needed or most functions never reach
+the TurboFan/Turboshaft pipeline the pass lives in).
+
+This conclusion depends on two things staying as they are — LLVM's choice of address-arithmetic
+form for these loops, and V8's seeder wanting a shared base local with folded offsets. Both can
+move under a toolchain bump, which is why the probe is committed rather than only described: the
+discrimination below is re-runnable in about two minutes.
 
 ## The question
 
@@ -111,3 +115,31 @@ browser. Gate 1 already passed at 3.3x over scalar with plain simd128.
 - **Recommendation: don't.** 256-bit on wasm is a V8 lowering detail we cannot reach from Rust
   today. The wasm target's performance story is `+simd128`, which already works and is what
   Gate 1 passed on.
+
+## Re-running the probe
+
+`revec-probe/` is a standalone crate (its own `[workspace]` and `Cargo.lock`; `revec-probe/target`
+is gitignored). Every probe named in the table above is a `#[no_mangle]` export in
+`revec-probe/src/lib.rs`; each `run*.mjs` instantiates the module and calls one group of them in a
+hot loop, so the pass has something to tier up and act on.
+
+    cd spikes/s5-wasm-web-audio/revec-probe
+    RUSTFLAGS="-C target-feature=+simd128" cargo build --release --target wasm32-unknown-unknown
+    node --experimental-wasm-revectorize --trace-wasm-revectorize --no-liftoff run8.mjs
+
+| script | drives | what it showed |
+|---|---|---|
+| `run.mjs` | `canonical`, `straight`, `via_wide`, `accumulate`, `checksum` | `Empty seed` — the `static mut` array shapes, including the `wide::f32x8` one |
+| `run2.mjs` | `base_off`, `base_off_aligned`, `loop_buf` | seeds found, then `IsSideEffectFree: break side effect` -> `Build tree failed!` (gate 2) |
+| `run3.mjs` | `two_ptr`, `one_load_two_store`, `loop_indexed` | tree built but `Save: 1, cost: 1`; first `Decide to vectorize` |
+| `run4.mjs` | `axpy_entry` — `namir-ir`'s kernel verbatim | `Empty seed` |
+| `run5.mjs` | `axpy_out` — out-of-place, three distinct slices | `Empty seed` |
+| `run6.mjs` | `loop_unaligned`, `loop_indexed` | both pack (`6 revectorizable nodes`) — and alignment is not the variable |
+| `run7.mjs` | `axpy_idx` — real semantics, hand-written invariant base + index | `Empty seed` |
+| `run8.mjs` | `loop_norolled` — same shape, `black_box` on the induction variable | packs **inside the hot loop**, the only probe that does |
+
+**The decisive comparison is `run8.mjs` against `run7.mjs`** (equivalently `run4.mjs`): same
+arithmetic, same v128 pairs, one packs and the other reports `Empty seed`. `run6.mjs` is the
+supporting half — it packs, but only in the scalar-remainder block, which is why `run8.mjs` and
+its `black_box` were needed to show the hot loop *can* be seeded at all. If a later toolchain
+makes `run7.mjs` pack, this file's verdict is out of date.
