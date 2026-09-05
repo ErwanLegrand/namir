@@ -53,30 +53,36 @@ console.log(
   `${p.pass ? "PASS" : "FAIL"} (bar: margin <= ${CONTROL_MARGIN_DB} dB)`,
 );
 
-// Prove the comparison can actually fail: a silent render must score 0.00 dB, so a
-// chain that produced nothing could never be mistaken for a pass.
+// Evidence that the comparison can actually fail. The assertion itself now lives in
+// `parity()` so the browser path inherits it too -- this only prints the figure.
 {
-  const silent = new Float32Array(PARITY_SAMPLES);
-  const db = dbBetween(silent, f32(refBytes, PARITY_SAMPLES), PARITY_SAMPLES);
+  const db = dbBetween(new Float32Array(PARITY_SAMPLES), f32(refBytes, PARITY_SAMPLES), PARITY_SAMPLES);
   console.log(`control: a silent render scores ${db.toFixed(2)} dB against this reference`);
-  if (db < CONTROL_MARGIN_DB + p.control) throw new Error("silence would pass -- the metric is broken");
 }
 
 // Task 6's ABI, smoke-tested here because nothing else exercises it yet: `process()`
 // must write the chain's output back over `io_ptr`, or the AudioWorklet would emit its
 // own input and read as a working-but-bypassed plugin.
 {
+  // 300 calls, not 1: process() runs `assert_resources_loaded` on its 256th call, and a
+  // single call would leave that guard untested. Also re-inits first, so the call count
+  // starts from zero rather than continuing the parity render's.
+  fresh(parityModelBytes);
   const io = new Float32Array(mod.memory.buffer, mod.exports.io_ptr(), 128);
-  for (let i = 0; i < 128; i++) io[i] = Math.sin(i * 0.05) * 0.5;
-  const before = io.slice();
-  mod.exports.process();
   let changed = 0, energy = 0;
-  for (let i = 0; i < 128; i++) {
-    if (io[i] !== before[i]) changed++;
-    energy += io[i] * io[i];
+  for (let call = 0; call < 300; call++) {
+    for (let i = 0; i < 128; i++) io[i] = Math.sin((call * 128 + i) * 0.05) * 0.5;
+    const before = io.slice();
+    mod.exports.process();
+    changed = 0;
+    energy = 0;
+    for (let i = 0; i < 128; i++) {
+      if (io[i] !== before[i]) changed++;
+      energy += io[i] * io[i];
+    }
   }
   const ok = changed === 128 && energy > 0 && Number.isFinite(energy);
-  console.log(`process() in-place: ${changed}/128 samples written back, out energy ${energy.toExponential(2)} -- ${ok ? "OK" : "BROKEN"}`);
+  console.log(`process() x300 in-place: last block ${changed}/128 samples written back, out energy ${energy.toExponential(2)} -- ${ok ? "OK" : "BROKEN"} (handover guard at call 256 passed)`);
   if (!ok) process.exitCode = 1;
 }
 
@@ -98,4 +104,42 @@ if (!p.pass) {
       (s[2] - s[4] <= 5.0 ? "quotable" : "CONTAMINATED"),
     );
   }
+}
+
+// --- Negative checks. A guard nobody has seen fire is a guard nobody knows works.
+// These run last: the second one deliberately traps the wasm instance, after which the
+// module is unusable.
+
+// 1. A degenerate control must be refused, not silently trusted. This is the hole that
+//    fix round 2 closed: with control ~ 0 dB the relative bar collapses to an absolute
+//    3 dB, under which a silent chain would PASS. The assertion lives in `parity()`, so
+//    web/bench-worker.js inherits it.
+{
+  const zeroed = new Uint8Array(PARITY_SAMPLES * 4); // a silent control render
+  let threw = null;
+  try {
+    fresh(parityModelBytes);
+    parity(mod, refBytes, zeroed, PARITY_SAMPLES);
+  } catch (e) {
+    threw = String(e.message);
+  }
+  const ok = threw !== null && threw.includes("degenerate control");
+  console.log(`negative: silent control -> ${ok ? "REFUSED (correct)" : `NOT REFUSED (BROKEN): ${threw}`}`);
+  if (!ok) process.exitCode = 1;
+}
+
+// 2. process() against a chain that was never handed a NAM/IR must trap at its
+//    handover-guard call, not emit silence quietly. A wasm panic surfaces in JS as a
+//    catchable RuntimeError; the instance is dead afterwards.
+{
+  let threw = null;
+  try {
+    if (mod.exports.init(48000) !== 0) throw new Error("init failed"); // no load_nam/load_ir
+    for (let call = 0; call < 300; call++) mod.exports.process();
+  } catch (e) {
+    threw = e.constructor.name;
+  }
+  const ok = threw === "RuntimeError";
+  console.log(`negative: process() on an unloaded chain -> ${ok ? "TRAPPED (correct)" : `did not trap (BROKEN): ${threw}`}`);
+  if (!ok) process.exitCode = 1;
 }
