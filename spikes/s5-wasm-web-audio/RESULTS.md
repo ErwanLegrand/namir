@@ -1905,7 +1905,7 @@ evidence. The control settles it:
 
 | Condition | windows | detections above threshold | peak range |
 |---|---|---|---|
-| control (armed, **no click emitted**) | 40 | 2 | 0.00085 – 0.0308 |
+| control (armed, **no click emitted**) | 70 | 2 | 0.00085 – 0.0308 |
 | click, 64 frames @ 0.5 | 10 | 0 | 0.00106 – 0.00652 |
 | click, 480 frames @ 1.0 (7.5x longer, 2x louder) | 20 | 0 | 0.00080 – 0.00397 |
 
@@ -1917,10 +1917,16 @@ The two control detections are the more useful half of that table. One reported 
 which is physically impossible, and the other 448.54 ms. Both are ambient noise on an open
 line input landing inside a 700 ms arming window. Had the run been done without a control, a
 run that caught one of these and nothing else would have reported a confident round-trip
-figure that was pure room noise. The page now labels control detections `SPURIOUS`, flags any
-result below 0 ms or above 200 ms as `IMPLAUSIBLE`, and excludes both from the median. The
-original mislabelled transcript is kept in `edge_task7.txt` rather than re-run away — it is
-the evidence that the detector produces false positives.
+figure that was pure room noise. Two detections in seventy control windows is a **2.9%**
+false-positive rate per window. (The operator bars below were calibrated on the first fifty
+windows, i.e. 4%; the twenty added afterwards to verify the count display were both clean, so
+the bars are if anything slightly conservative. Neither number is known to better than about
+a factor of three — two events give a 95% CI of roughly 0.5%–10%.)
+
+The page now labels control detections `SPURIOUS`, prints a detection count at the end of a
+control run, flags any result below 0 ms or above 200 ms as `IMPLAUSIBLE`, and excludes both
+from the median. The original mislabelled transcript is kept in `edge_task7.txt` rather than
+re-run away — it is the evidence that the detector produces false positives.
 
 **Two conditions from the brief could not be run at all, for the same reason.** Chromium
 enumerates exactly one input and one output device here, both the AudioBox (plus its
@@ -1992,10 +1998,31 @@ to:
 
 Press **Measure** and grant microphone access when asked. Wait about 20 seconds.
 
-**A good control run prints `control N: no capture` on every one of the twenty lines**, with
-peaks around 0.001–0.003. If any line says `SPURIOUS`, the room is too noisy or something is
-plugged into INPUT 2 — find it and fix it before going further, because a noise floor that
-trips the detector will corrupt the real run.
+The page prints a summary line at the end: `control: N detection(s) in 20 windows`.
+
+**Judge it against the measured false-positive rate, not against zero.** Two of the seventy
+control windows recorded above tripped the detector on ambient noise alone — about 3–4%, on a
+rig with nothing wrong with it. Over twenty windows that makes **one `SPURIOUS` line roughly
+as likely as none** (a better-than-even chance of at least one at the 4% figure the bars below
+are set from, and still ~44% at 2.9%). So:
+
+- **0 or 1 `SPURIOUS` — expected. Proceed.** Do not go looking for a fault; there probably
+  isn't one.
+- **2 — borderline.** Run the control again. Two runs in a row at 2 or more is a real signal;
+  a single one is not (2-or-more happens about 19% of the time on a good rig).
+- **3 or more — fix the room.** Something is making noise, or something is plugged into
+  INPUT 2. This is about a 4% event on a good rig, so it is worth acting on.
+
+Also look at the peaks, which discriminate better than the count. A `SPURIOUS` line whose
+peak sits just over the threshold (0.02–0.03, as both of the observed ones did) is a noise
+excursion. A peak well above that is a real sound source in the room, and one line is enough
+to go and find it.
+
+That rate is itself two events out of seventy, so it is known only to about a factor of three
+(95% CI roughly 0.5%–10%). The bars above are deliberately loose because of that. What they
+are protecting against is a stranger spending an hour re-cabling a rig that was already
+correct — the failure a cabling fault actually produces is `no capture` on **every** line of
+the *measurement* run in step 5, which is unambiguous and needs no statistics.
 
 **5. Run the measurement.** Same page, reload without the `control` parameter:
 

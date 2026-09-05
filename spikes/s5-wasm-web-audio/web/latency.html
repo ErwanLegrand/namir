@@ -193,6 +193,7 @@ async function measure() {
   if (cal.rms === 0) say("NOTE: the capture stream is digital silence. No cable, a muted input, or the wrong device.");
 
   const results = [];
+  let spurious = 0;
   for (let i = 0; i < n; i++) {
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     buf.getChannelData(0).fill(amp);
@@ -221,7 +222,8 @@ async function measure() {
     const bad = ms < 0 || ms > 200;
     say(`${control ? "SPURIOUS (control, no click was emitted)" : bad ? "IMPLAUSIBLE" : "click"} ${i}: ` +
         `${ms.toFixed(2)} ms (peak ${r.peak.toFixed(4)}, onset frame ${r.onsetFrame}, emit frame ${emitFrame})`);
-    if (!control && !bad) results.push(ms);
+    if (control) spurious++;
+    else if (!bad) results.push(ms);
   }
 
   if (results.length) {
@@ -232,6 +234,13 @@ async function measure() {
     say(`min / max             ${s[0].toFixed(2)} / ${s[s.length - 1].toFixed(2)} ms`);
     say(`API output total      ${api.toFixed(2)} ms`);
     say(`unaccounted (RTT-API) ${(median - api).toFixed(2)} ms   <- the input side plus whatever the API does not expose`);
+  } else if (control) {
+    // The operator instructions in RESULTS.md set the acceptance bar against this count, so
+    // it is printed rather than left to be counted by eye. At the measured 4% per-window
+    // false-positive rate, one detection in twenty windows is the MORE likely outcome on a
+    // rig with nothing wrong with it; the bar is 2 (run it again) / 3+ (fix the room).
+    say(`\ncontrol: ${spurious} detection(s) in ${n} windows -- 0 or 1 is expected, 2 means ` +
+        `run it again, 3 or more means fix the room. See RESULTS.md, Gate 3.`);
   } else {
     say(`\nNO CAPTURE ON ANY CLICK: nothing on the input crossed ${thresh.toFixed(5)}.`);
     say("Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.");
