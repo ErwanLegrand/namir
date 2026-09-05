@@ -3,6 +3,11 @@
 <title>S-5 bench</title>
 <p>crossOriginIsolated: <b id="coi"></b></p>
 <p>
+  build
+  <select id="wasm">
+    <option value="./build/scalar.wasm">scalar</option>
+    <option value="./build/simd128.wasm">simd128</option>
+  </select>
   model
   <select id="model">
     <option value="../fixtures/a1_standard.nam">a1_standard</option>
@@ -21,6 +26,7 @@
 //   ?auto=1        run on load
 //   &reps=0        parity only, no timing run
 //   &measured=N    override the measured-block count
+//   &wasm=simd128  pick the artefact under web/build/ (default: the <select>)
 //   &model=a2_lite &decaying=1
 const q = new URLSearchParams(location.search);
 const out = document.getElementById("out");
@@ -65,6 +71,7 @@ const run = () => {
     };
   }
   w.postMessage({
+    wasm: q.has("wasm") ? `./build/${q.get("wasm")}.wasm` : document.getElementById("wasm").value,
     model: `../fixtures/${q.get("model") || document.getElementById("model").value.replace(/.*\//, "").replace(/\.nam$/, "")}.nam`,
     ir: "../fixtures/ir_48k.wav",
     warmup: 5000,
