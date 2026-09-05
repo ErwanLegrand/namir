@@ -1445,30 +1445,46 @@ priority Chromium gives it. Everything below is informational.
 ### The audio backend is real hardware — and that was checked, not assumed
 
 A zero-underrun result is worthless if the sink is a null/dummy device: such a sink is
-paced by a software timer and has no deadline in it. Three independent findings, in
-increasing order of strength:
+paced by a software timer and has no deadline in it. Three independent findings, most
+direct first.
 
-1. **The endpoint exists and is the one being opened.** The machine's default render
+1. **Windows sees our stream on the endpoint, at the amplitude we sent.** This is the
+   direct proof and it leads. A CoreAudio probe (`IMMDeviceEnumerator` ->
+   `IAudioMeterInformation` / `IAudioSessionManager2` on the default render endpoint,
+   `coreaudio_probe.ps1`) sampled once a second across a headless Edge run shows one
+   **additional active session appear on the endpoint for exactly the duration of the run**
+   and the endpoint meter read **`peak = 0.0100000`** throughout it, then return to zero.
+   `0.01` is the `gain` query parameter that run was launched with: the chain's own output
+   is arriving at the WASAPI endpoint at exactly the amplitude the page chose. A positive
+   control a few seconds earlier — `System.Media.SoundPlayer` on
+   `C:\Windows\Media\Alarm01.wav` — moves the same meter to ~0.2-0.3, so the probe is
+   known to work and its zero readings are real zeroes. **Evidence:
+   `coreaudio_task6_rerun.txt`** — see the provenance note below; that file is a *later
+   re-run* of this check, because the original probe's console output was not preserved.
+   Session totals differ between the two runs (3 -> 4 originally, 2 -> 3 in the re-run)
+   because the count includes whatever else the machine happens to have open; the
+   load-bearing part, one new active session and `peak = 0.01`, reproduced exactly.
+2. **The endpoint exists and is the one being opened.** The machine's default render
    endpoint is a **PreSonus AudioBox 22VSL** (USB interface), registry mix format
    `WAVE_FORMAT_EXTENSIBLE, 2 ch, 48 000 Hz, 32-bit float` — read from
    `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\...\Properties`,
    value `{f19f064d-...},0`, offset 8. `AudioContext.outputLatency` reads 0 ms before the
    graph starts and **40 ms** once it is running, i.e. the context binds to a device
-   stream rather than reporting a fixed nominal figure.
-2. **Windows sees the stream.** A CoreAudio probe (`IMMDeviceEnumerator` ->
-   `IAudioMeterInformation` / `IAudioSessionManager2` on the default endpoint) sampled once
-   a second across a headless Edge run shows the endpoint go from `sessions 3 / 0 active,
-   peak 0` to **`sessions 4 / 1 active, peak = 0.0100000`** for exactly the duration of the
-   run, then back. `0.01` is the `gain` query parameter that run was launched with: the
-   chain's own output is arriving at the WASAPI endpoint at exactly the amplitude the page
-   sent it. A positive control (`System.Media.SoundPlayer` playing
-   `C:\Windows\Media\Alarm01.wav`) moves the same meter to ~0.19 a few seconds earlier, so
-   the probe is known to work.
-3. **The device clock is not the system clock.** Over the 300 s run the graph clock drifts
-   -8.1 ms against `performance.now()`, i.e. **~ -27 ppm**, smoothly and monotonically. A
-   timer-paced null sink is driven by the *same* clock the page reads and cannot drift; a
-   crystal in a USB interface can and does. This is the strongest of the three, because it
-   is a property of the run itself rather than of the surrounding OS.
+   stream rather than reporting a fixed nominal figure. Evidence: the `backend:` line at
+   the head of every run in `edge_task6.txt`.
+3. **The device clock is not the system clock.** Over the 300 s run the graph clock ends
+   **-8.1 ms** against `performance.now()`, i.e. **~ -27 ppm** taken endpoint-to-endpoint. A
+   timer-paced null sink is driven by the *same* clock the page reads and cannot drift at
+   all; a crystal in a USB interface can and does. **Ranked last, and deliberately: the
+   witness is noisy, and an earlier draft over-claimed on it.** That draft said the drift
+   was "smoothly and monotonically" negative. It is not: the preserved per-10-second series
+   in `edge_task6.txt` reverses direction 10 times, by up to +1.4 ms. What the series does
+   show is a clear linear trend under about 1 ms of jitter — a least-squares fit over its 31
+   samples gives **-19.3 ppm with a residual sd of 0.82 ms, a slope 11.7x its own standard
+   error**. So the conclusion holds comfortably (a null sink's slope would be 0), the
+   endpoint-to-endpoint -27 ppm is the cruder of the two estimates and is left as published,
+   and the correct description of the shape is "a clear linear trend under ~1 ms jitter",
+   not "smooth and monotone". Corroboration for finding 1, not a replacement for it.
 
 So the numbers below are measured against a hardware deadline. **Headless is not the
 problem here; the earlier `--disable-gpu` attempts that logged "The AudioContext
@@ -1534,6 +1550,17 @@ anyway, and the demo path would not ship them.
 | Edge 152 headless | scalar | a1_standard | 1 | 22 500 | 0 | 0 | 0 | 2.3 |
 | Edge 152 headless | scalar | a1_standard | 2 | 22 500 | 1 | 0 | 3 | 3.3 |
 | Edge 152 headless | scalar | a1_standard | 3 | 22 500 | 1 | 0 | 4 | 3.8 |
+| Chrome | simd128 | a1_standard | — | — | **PENDING RUN** | **PENDING RUN** | — | — |
+| Firefox | simd128 | a1_standard | — | — | **PENDING RUN** | **PENDING RUN** | — | — |
+
+**Raw logs.** Every run in this table is preserved verbatim in **`edge_task6.txt`** — the
+beacon transcript exactly as the dev server logged it, one section per run, including the
+contaminated one and the 300 s growth run's full per-10-second `clockLag` series. The fix
+round's 36 attribution runs are in **`edge_task6_attribution.txt`**, one section per rep.
+The CoreAudio endpoint probe is `coreaudio_probe.ps1` with its output in
+`coreaudio_task6_rerun.txt`; that file is a *later re-run* of the check rather than the
+original console capture, and says so in its own header. Chrome and Firefox are PENDING RUN
+rows above: no figure exists for them because neither browser is installed here.
 
 Run 3 of simd128/a1_standard is **contaminated and is reported, not used**: a second Edge
 process was launched over it by mistake, which is exactly the contamination AGENTS.md's
@@ -1599,8 +1626,8 @@ remains open**, and the instrument that would close it is still a timed run — 
     #   &wasm=scalar &model=a2_lite   the other cells
 
 Under `?auto=1` each line is beaconed to `/__s5?...`, which the dev server 404s and logs;
-that log is the transcript. Without `auto` the page has a Start button and prints to the
-page.
+that log is the transcript, and `edge_task6.txt` / `edge_task6_attribution.txt` are exactly
+that log, URL-decoded, for every run reported here.
 
 ### PENDING RUN — Chrome and Firefox
 
@@ -1669,11 +1696,17 @@ copy, revert, rebuild — the committed constant is 256). Arm C is the new `&pre
 parameter: the processor renders N blocks of silence *without calling into the chain at
 all*, so for the first two seconds nothing of Namir runs.
 
+All 36 runs are preserved verbatim in **`edge_task6_attribution.txt`**, one section per rep,
+so the per-arm counts and the second at which each event lands are re-derivable from the log
+rather than only stated here.
+
 ### What it establishes
 
 1. **It is not the guard.** Moving `assert_resources_loaded()` from 682 ms to 6.83 s did
    not move the event: arm B still fires it at second 1 and never at second 7. If the guard
-   were the cause the event would have tracked it. 4/12 vs 3/12 is no difference at all.
+   were the cause the event would have tracked it. 4/12 vs 3/12 is **no detectable
+   difference** — with n=12 an arm cannot exclude a moderate effect, and it is the *timing*
+   that carries the argument, not the rate: the event never once appeared at second 7.
 2. **It is not the chain.** Arm C does not run a single block of Namir DSP for the first
    two seconds — the worklet emits silence and returns — and it produces the event at the
    *same* rate and the *same* second, 5/12. Whatever drops the callback does so while the
@@ -1747,6 +1780,9 @@ denominator moved.
     cp target/wasm32-unknown-unknown/release/s5_wasm_web_audio.wasm web/build/scalar-guard2560.wasm
     git checkout src/wasm_abi.rs && ./run-matrix.sh    # put the tree and web/build/ back
     #   ...&wasm=scalar-guard2560
+    rm web/build/scalar-guard2560.wasm                 # deliberately NOT left behind: it is an
+    #   experiment artefact and would be indistinguishable from a gate artefact to anyone
+    #   re-running run-matrix.sh, which builds only scalar.wasm and simd128.wasm.
 
 Twelve reps per arm is the minimum that separates these rates: at the ~33% incidence
 observed, six reps per arm would have produced 3/6 vs 0/6 by chance alone (Fisher one-sided

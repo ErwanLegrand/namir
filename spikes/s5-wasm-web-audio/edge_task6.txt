@@ -1,0 +1,217 @@
+# Task 6 Gate 2 matrix -- raw beacon transcript, as captured, 2026-09-05.
+# One line per /__s5 beacon, URL-decoded from the dev server's request log.
+# Gate runs beaconed every 10 s; the 300 s growth run's per-10 s clockLag series is its drift evidence.
+
+=== simd128-a1_standard-1
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 0.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 480384 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.8 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 960384 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.8 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1440384 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.8 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1920384 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.3 ms (max 0.8 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2400384 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.0 ms (max 0.8 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2880384 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 2.0 ms (max 2.0 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2880512 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -3.1 ms (max 2.0 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2880512 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -3.1 ms (max 2.0 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+
+=== simd128-a1_standard-2
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 491392 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 1.0 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 971392 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 1.0 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1451392 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 1.0 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1931392 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.2 ms (max 1.7 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2411392 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag 1.2 ms (max 1.7 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891392 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 1.0 ms (max 1.7 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891520 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -2.5 ms (max 1.7 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINAL blocks 22500 | frame 2891520 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -2.5 ms (max 1.7 ms) | outputLatency 40.00 ms
+FINISHED
+
+=== simd128-a1_standard-3
+run: scalar a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 861447 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 7500 | frame 970496 | steady b/u 7500/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 3750 | frame 494336 | steady b/u 3750/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.5 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1450496 | steady b/u 11250/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 974336 | steady b/u 7500/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.5 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1930496 | steady b/u 11250/1 (missed 4) | tail b/u 3750/0 (missed 0) | clockLag 0.9 ms (max 1.7 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1454336 | steady b/u 11250/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -1.1 ms (max 1.3 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2410496 | steady b/u 11250/1 (missed 4) | tail b/u 7500/0 (missed 0) | clockLag 1.4 ms (max 3.1 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1934336 | steady b/u 11250/1 (missed 4) | tail b/u 3750/0 (missed 0) | clockLag -0.2 ms (max 4.0 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2890496 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag 1.0 ms (max 3.1 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2890624 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag -3.1 ms (max 3.1 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2890624 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag -3.1 ms (max 3.1 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+
+=== simd128-a1_standard-3b
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 0.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 480384 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 960384 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1440384 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1920384 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.7 ms (max 1.9 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2400384 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.3 ms (max 1.9 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2880384 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.3 ms (max 1.9 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2880512 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -3.4 ms (max 1.9 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2880512 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -3.4 ms (max 1.9 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+
+=== simd128-a1_standard-growth
+run: simd128 a1_standard 300s split 0.5 (112500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 491392 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 971392 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1451392 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1931392 | steady b/u 15000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2411392 | steady b/u 18750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891392 | steady b/u 22500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 26250 | frame 3371392 | steady b/u 26250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 30000 | frame 3851392 | steady b/u 30000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 33750 | frame 4331392 | steady b/u 33750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 37500 | frame 4811392 | steady b/u 37500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -1.7 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 41250 | frame 5291392 | steady b/u 41250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -1.9 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 45000 | frame 5771392 | steady b/u 45000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -2.1 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 48750 | frame 6251392 | steady b/u 48750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -2.2 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 52500 | frame 6731392 | steady b/u 52500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -2.2 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 56250 | frame 7211392 | steady b/u 56250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -2.5 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 60000 | frame 7691392 | steady b/u 56250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -2.5 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 63750 | frame 8171392 | steady b/u 56250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -1.4 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 67500 | frame 8651392 | steady b/u 56250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -1.4 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 71250 | frame 9131392 | steady b/u 56250/0 (missed 0) | tail b/u 15000/0 (missed 0) | clockLag -3.8 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 75000 | frame 9611392 | steady b/u 56250/0 (missed 0) | tail b/u 18750/0 (missed 0) | clockLag -3.6 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 78750 | frame 10091392 | steady b/u 56250/0 (missed 0) | tail b/u 22500/0 (missed 0) | clockLag -3.0 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 82500 | frame 10571392 | steady b/u 56250/0 (missed 0) | tail b/u 26250/0 (missed 0) | clockLag -4.3 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 86250 | frame 11051392 | steady b/u 56250/0 (missed 0) | tail b/u 30000/0 (missed 0) | clockLag -4.4 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 90000 | frame 11531392 | steady b/u 56250/0 (missed 0) | tail b/u 33750/0 (missed 0) | clockLag -3.0 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 93750 | frame 12011392 | steady b/u 56250/0 (missed 0) | tail b/u 37500/0 (missed 0) | clockLag -4.6 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 97500 | frame 12491392 | steady b/u 56250/0 (missed 0) | tail b/u 41250/0 (missed 0) | clockLag -4.3 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 101250 | frame 12971392 | steady b/u 56250/0 (missed 0) | tail b/u 45000/0 (missed 0) | clockLag -3.1 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 105000 | frame 13451392 | steady b/u 56250/0 (missed 0) | tail b/u 48750/0 (missed 0) | clockLag -4.6 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 108750 | frame 13931392 | steady b/u 56250/0 (missed 0) | tail b/u 52500/0 (missed 0) | clockLag -5.7 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 112500 | frame 14411392 | steady b/u 56250/0 (missed 0) | tail b/u 56250/0 (missed 0) | clockLag -4.5 ms (max 0.7 ms) | outputLatency 40.00 ms
+blocks 112500 | frame 14411520 | steady b/u 56250/0 (missed 0) | tail b/u 56250/0 (missed 0) | clockLag -8.1 ms (max 0.7 ms) | outputLatency 40.00 ms
+FINAL blocks 112500 | frame 14411520 | steady b/u 56250/0 (missed 0) | tail b/u 56250/0 (missed 0) | clockLag -8.1 ms (max 0.7 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+
+=== simd128-a2_lite-1
+run: simd128 a2_lite 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 33800 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 491008 | steady b/u 3750/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 971008 | steady b/u 7500/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1451008 | steady b/u 11250/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1931008 | steady b/u 11250/1 (missed 4) | tail b/u 3750/0 (missed 0) | clockLag -0.9 ms (max 0.1 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2411008 | steady b/u 11250/1 (missed 4) | tail b/u 7500/0 (missed 0) | clockLag -0.7 ms (max 0.1 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891008 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891136 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag 0.6 ms (max 0.6 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2891136 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag 0.6 ms (max 0.6 ms) | outputLatency 40.00 ms
+FINISHED
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+
+=== simd128-a2_lite-2
+run: simd128 a2_lite 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 0.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 33800 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 480384 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 960384 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1440384 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1920384 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2400384 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2880384 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2880512 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -2.0 ms (max 0.2 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2880512 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -2.0 ms (max 0.2 ms) | outputLatency 40.00 ms
+FINISHED
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+
+=== simd128-a2_lite-3
+run: simd128 a2_lite 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 33800 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 491392 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.4 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 971392 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.4 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1451392 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.4 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1931392 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.6 ms (max 0.4 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2411392 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.4 ms (max 0.4 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891392 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.4 ms (max 0.4 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891520 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -1.7 ms (max 0.4 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2891520 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -1.7 ms (max 0.4 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+
+=== scalar-a1_standard-1
+run: scalar a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 861447 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 492928 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 2.3 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 972928 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 2.3 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1452928 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 2.3 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1932928 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag 0.5 ms (max 3.6 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2412928 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag 3.0 ms (max 3.6 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2892928 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 4.5 ms (max 4.5 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2893056 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -3.2 ms (max 4.5 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2893056 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -3.2 ms (max 4.5 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+
+=== scalar-a1_standard-2
+run: scalar a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 861447 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 489472 | steady b/u 3750/1 (missed 3) | tail b/u 0/0 (missed 0) | clockLag 1.0 ms (max 2.1 ms) | outputLatency 32.00 ms
+blocks 7500 | frame 969472 | steady b/u 7500/1 (missed 3) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 2.1 ms) | outputLatency 32.00 ms
+blocks 11250 | frame 1449472 | steady b/u 11250/1 (missed 3) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 2.1 ms) | outputLatency 32.00 ms
+blocks 15000 | frame 1929472 | steady b/u 11250/1 (missed 3) | tail b/u 3750/0 (missed 0) | clockLag 0.2 ms (max 2.6 ms) | outputLatency 32.00 ms
+blocks 18750 | frame 2409472 | steady b/u 11250/1 (missed 3) | tail b/u 7500/0 (missed 0) | clockLag 1.3 ms (max 3.3 ms) | outputLatency 32.00 ms
+blocks 22500 | frame 2889472 | steady b/u 11250/1 (missed 3) | tail b/u 11250/0 (missed 0) | clockLag 1.9 ms (max 3.3 ms) | outputLatency 32.00 ms
+FINAL blocks 22500 | frame 2889600 | steady b/u 11250/1 (missed 3) | tail b/u 11250/0 (missed 0) | clockLag -4.7 ms (max 3.3 ms) | outputLatency 32.00 ms
+blocks 22500 | frame 2889600 | steady b/u 11250/1 (missed 3) | tail b/u 11250/0 (missed 0) | clockLag -4.7 ms (max 3.3 ms) | outputLatency 32.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+
+=== scalar-a1_standard-3
+run: scalar a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 10.000 ms | outputLatency 40.000 ms | state running | sinkId "" | audiooutput devices 1 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 861447 B, model 229479 B, ir 384044 B
+ready at 48000 Hz
+blocks 3750 | frame 491008 | steady b/u 3750/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 3.0 ms) | outputLatency 40.00 ms
+blocks 7500 | frame 971008 | steady b/u 7500/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 3.0 ms) | outputLatency 40.00 ms
+blocks 11250 | frame 1451008 | steady b/u 11250/1 (missed 4) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 3.0 ms) | outputLatency 40.00 ms
+blocks 15000 | frame 1931008 | steady b/u 11250/1 (missed 4) | tail b/u 3750/0 (missed 0) | clockLag 0.6 ms (max 3.8 ms) | outputLatency 40.00 ms
+blocks 18750 | frame 2411008 | steady b/u 11250/1 (missed 4) | tail b/u 7500/0 (missed 0) | clockLag 3.1 ms (max 3.8 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891008 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag 3.5 ms (max 3.8 ms) | outputLatency 40.00 ms
+blocks 22500 | frame 2891136 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag -3.2 ms (max 3.8 ms) | outputLatency 40.00 ms
+FINAL blocks 22500 | frame 2891136 | steady b/u 11250/1 (missed 4) | tail b/u 11250/0 (missed 0) | clockLag -3.2 ms (max 3.8 ms) | outputLatency 40.00 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
