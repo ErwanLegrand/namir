@@ -64,7 +64,8 @@ impl Harness {
     pub fn new(sample_rate: u32, block: usize) -> Result<Self, String> {
         // Same construction as crates/namir-engine/benches/six_stage_chain.rs:439-441.
         let ctx = PrepareContext::new(
-            SampleRate::new(sample_rate).ok_or_else(|| format!("invalid sample rate: {sample_rate}"))?,
+            SampleRate::new(sample_rate)
+                .ok_or_else(|| format!("invalid sample rate: {sample_rate}"))?,
             block,
             ChannelConfig::Stereo,
         )
@@ -192,8 +193,17 @@ impl Harness {
     }
 
     pub fn process_block(&mut self, input: &[f32]) {
-        self.left[..input.len()].copy_from_slice(input);
-        self.right[..input.len()].copy_from_slice(input);
+        // A short chunk is zero-padded, not shortened: `StageIo` would accept a smaller
+        // `frames`, but the IR convolver's partition schedule is built for a fixed
+        // BLOCK_SIZE, so the honest short-block semantics here are pad-with-silence.
+        // Without the `fill` the tail carried the *previous* block's samples, which is
+        // the deferred bug Task 2 left. Web Audio's quantum is exactly BLOCK_SIZE, so
+        // this only bites `render` on a non-multiple length.
+        let n = input.len().min(BLOCK_SIZE);
+        self.left[..n].copy_from_slice(&input[..n]);
+        self.right[..n].copy_from_slice(&input[..n]);
+        self.left[n..].fill(0.0);
+        self.right[n..].fill(0.0);
         let mut chans: [&mut [f32]; 2] = [&mut self.left, &mut self.right];
         let mut io = StageIo::new(&mut chans, BLOCK_SIZE);
         self.engine.process(&mut io);
@@ -211,6 +221,23 @@ impl Harness {
             self.process_block(chunk);
             out.copy_from_slice(&self.left[..out.len()]);
         }
+        // `render` bypasses `run`, so it must carry `run`'s two guards itself: a parity
+        // render from a chain whose NAM/IR never landed, or one that tripped
+        // FR-CHAIN-080's fault path, is exactly the silent-output failure the parity
+        // check exists to catch -- and it would otherwise be compared against a native
+        // reference produced the same broken way, and "pass".
+        self.assert_resources_loaded();
+        assert_eq!(
+            self.engine.chain().fault_count(),
+            0,
+            "the parity render must not have hit FR-CHAIN-080's NaN/Inf fault path"
+        );
+    }
+
+    /// Left output channel of the most recent `process_block`. Lets the wasm `process`
+    /// export be genuinely in-place for Task 6's AudioWorklet.
+    pub fn output_left(&self) -> &[f32] {
+        &self.left
     }
 
     pub fn run(
