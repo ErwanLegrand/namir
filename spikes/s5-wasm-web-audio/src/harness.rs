@@ -118,7 +118,7 @@ impl Harness {
     /// crossfade needs), so both resources should be fully installed by the time this
     /// runs; panics loudly if either is not, rather than letting a silently-empty stage
     /// through as a timing figure.
-    fn assert_resources_loaded(&mut self) {
+    pub fn assert_resources_loaded(&mut self) {
         const NAM_LOADED_ID: u32 = namir_params::ParamId::from_key("telemetry.nam.loaded").0;
         const IR_LOADED_ID: u32 = namir_params::ParamId::from_key("telemetry.ir.loaded").0;
 
@@ -232,6 +232,12 @@ impl Harness {
             0,
             "the parity render must not have hit FR-CHAIN-080's NaN/Inf fault path"
         );
+    }
+
+    /// FR-CHAIN-080's NaN/Inf fault counter. A plain read, so the `process` export can
+    /// afford it per block.
+    pub fn fault_count(&self) -> u64 {
+        self.engine.chain().fault_count()
     }
 
     /// Left output channel of the most recent `process_block`. Lets the wasm `process`

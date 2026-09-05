@@ -5,7 +5,7 @@
 //! Edition 2024 requires `unsafe extern` and `#[unsafe(no_mangle)]`. That is free
 //! here because `spikes/` sits outside the workspace's `unsafe_code = "forbid"`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use crate::harness::{BLOCK_SIZE, Harness, Signal, Stats};
 
@@ -21,7 +21,16 @@ thread_local! {
     static STATS: RefCell<[f64; 5]> = const { RefCell::new([0.0; 5]) };
     static IO: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
     static RENDER: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+    /// `process` call count since the last `init`, for the one-shot handover check.
+    static PROCESSED: Cell<u32> = const { Cell::new(0) };
 }
+
+/// Which `process` call runs `assert_resources_loaded`. D-8.1's crossfade is
+/// `HANDOVER_CROSSFADE_MS` = 20 ms = 960 frames = 7.5 blocks, so 256 blocks (682 ms) is
+/// ~34x the margin needed -- late enough never to false-positive, early enough that a
+/// worklet fed by an unloaded chain traps in the first second instead of quietly
+/// emitting silence and reporting zero underruns.
+const HANDOVER_GUARD_BLOCK: u32 = 256;
 
 /// Returns a pointer to a buffer of `len` bytes for the host to write into.
 /// One buffer at a time: the host must call `alloc` then consume it before the
@@ -42,6 +51,7 @@ pub extern "C" fn init(sample_rate: u32) -> u32 {
         Ok(h) => {
             HARNESS.with(|c| *c.borrow_mut() = Some(h));
             IO.with(|c| *c.borrow_mut() = vec![0.0; BLOCK_SIZE]);
+            PROCESSED.with(|c| c.set(0));
             0
         }
         Err(_) => 1,
@@ -133,6 +143,27 @@ pub extern "C" fn process() {
             if let Some(h) = c.borrow_mut().as_mut() {
                 h.process_block(&io);
                 io.copy_from_slice(h.output_left());
+
+                // `run` and `render` both carry these; without them here, Task 6's
+                // worklet driven against an unloaded chain would emit silence quietly
+                // and report zero underruns -- for exactly the wrong reason. Same
+                // failure mode as the missing `io_ptr` write-back, one layer down.
+                assert_eq!(
+                    h.fault_count(),
+                    0,
+                    "process() hit FR-CHAIN-080's NaN/Inf fault path"
+                );
+                let n = PROCESSED.with(|p| {
+                    let n = p.get().saturating_add(1);
+                    p.set(n);
+                    n
+                });
+                if n == HANDOVER_GUARD_BLOCK {
+                    // Once, not per block: this drains the telemetry ring into a 2 KB
+                    // stack buffer, which is not something to do every 128 frames on an
+                    // audio thread.
+                    h.assert_resources_loaded();
+                }
             }
         });
     });
