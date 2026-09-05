@@ -726,10 +726,10 @@ retained everywhere; nothing is batched.
 
 All percentages are of the 2 666.67 µs block period (128 frames at 48 000 Hz).
 
-| Browser | Build | Model | p50 % | p99.9 % | estimator % | quotable reps |
+| Browser | Build | Model | p50 % | p99.9 % | estimator % | reps retained |
 |---|---|---|---|---|---|---|
 | Edge headless (V8) | scalar | A1 Standard | 38.63–39.00 | **74.44–85.88** | 50.25–50.44 | 5/5 |
-| Edge headless (V8) | simd128 | A1 Standard | 11.44–11.81 | **28.88–30.94** | 18.00–18.37 | 5/5 |
+| Edge headless (V8) | simd128 | A1 Standard | 11.44–11.81 | **28.88–30.94** (**32.44–33.56 sustained**) | 18.00–18.37 | 5/5 |
 | Edge headless (V8) | simd128 + revectorize | A1 Standard | 11.44–12.19 | **29.06–31.88** | 18.00–18.19 | 4/5 (rep 5 discarded) |
 | Edge headless (V8) | scalar | A2 Lite | 6.94–7.12 | **29.25–34.13** | 18.75–18.94 | 5/5 |
 | Edge headless (V8) | simd128 | A2 Lite | 3.00–3.19 | **15.37–17.25** | 9.75–9.94 | 5/5 |
@@ -751,7 +751,7 @@ wasm/native ratio, **scalar**, `p50`: A1 Standard **≈6.0×**, A2 Lite **≈3.5
 | Build | A1 Standard | A2 Lite |
 |---|---|---|
 | scalar | **FAIL** (p99.9 74–86%) | **PASS** (p99.9 29–34%) |
-| **simd128** | **PASS** (p99.9 29–31%) | **PASS** (p99.9 15–17%) |
+| **simd128** | **PASS** — **p99.9 32.4–33.6% sustained** (29–31% at the 20 000-block screening length) | **PASS** — p99.9 14.8–16.3% sustained (15–17% screening) |
 | simd128 + revectorize | **PASS** (p99.9 29–32%) | **PASS** (p99.9 14–17%) |
 
 **Verdict: Gate 1 PASSES for both models on the simd128 artefact, and FAILS for A1
@@ -772,9 +772,11 @@ Gate 1. No p99.9 in any configuration exceeds 86%.
    table asks for and the one the harness's estimator is built to cross-check.
 2. **The simd128 figures are sustained, not a short-run artefact.** See the 100 000-block
    confirmation below: 4½ minutes of continuous audio per rep reproduces the verdict.
-3. **Both simd128 configurations pass by a factor of roughly 1.6× on A1 and 3× on A2.**
-   That is real headroom, not a hairline pass, and it is headroom Tasks 5–6 will spend
-   on the AudioWorklet's own scheduling rather than on the DSP.
+3. **The simd128 margin, measured at the sustained length, is ~1.5× on A1 and ~3× on
+   A2** (33.6% and 16.3% p99.9 against the 50% bar). That is real headroom rather than a
+   hairline pass, and it is headroom Tasks 5–6 will spend on the AudioWorklet's own
+   scheduling rather than on the DSP — but see the growth caveat below: A1's is the
+   smaller margin *and* the one that moved with run length.
 4. **The pass is conditional on simd128 being available.** `rustfft`'s `wasm_simd`
    feature has no runtime detection, so the simd128 artefact traps immediately on a
    runtime without simd128 — by design, they are different artefacts, not one with a
@@ -811,10 +813,30 @@ edge a2_lite     simd128 100k rep 2/2: p50  3.00% | p99 10.31% | p99.9 14.81% | 
 A2 Lite reproduces the 20 000-block figures to the digit. A1 Standard runs **~14% more
 expensive** over the longer window (p50 13.1–13.3% against 11.4–11.8%, p99.9 32.4–33.6%
 against 28.9–30.9%) while its estimator is unchanged at 18.19% — i.e. a longer run
-accumulates more scheduler and GC events in the same code, which is what a five-times
-longer sample should do. **The verdict is unchanged**: 33.6% is still comfortably inside
-the 50% bar, and the 20 000-block figures are quoted in the matrix table with this
-correction stated rather than folded in silently.
+accumulates more scheduler and GC events in the same code.
+
+**The verdict is unchanged — 33.6% is still comfortably inside the 50% bar — but the
+growth itself is an open question, and it is not closed here.** Two readings fit these
+four reps equally well, and nothing measured distinguishes them:
+
+- **Asymptotic.** A longer sample simply catches more of a fixed-rate tail, so the p99.9
+  converges somewhere near 34% and stays there. This is the likelier reading and it is
+  the one the flat estimator supports.
+- **Drifting.** Something accumulates with session length — heap growth, code-cache
+  churn, fragmentation — and the p99.9 keeps climbing. At the observed +14% per 5× of
+  run length, A1 would reach the 50% bar on the order of 10^7 blocks — hours, not
+  minutes, of continuous play, which is not an absurd session for a guitar amp left
+  running. (Order of magnitude only: extrapolating a two-point trend three decades is
+  not a measurement, which is the point.)
+
+**Two 100 000-block reps cannot tell those apart, and no longer run was made.** This
+matters specifically for **Task 6**, whose AudioWorklet runs indefinitely rather than for
+a bounded block count: A1 Standard is both the smaller margin and the only figure that
+moved with run length. A single multi-hour run, or the same run at 10^6 blocks, would
+settle it; until then Task 6 should budget against **33.6%, not 29%**, and should watch
+its own p99.9 over session time rather than assume it is stationary. The 20 000-block
+figures remain quoted in the matrix table alongside the sustained ones rather than being
+folded in silently.
 
 ### `--experimental-wasm-revectorize` changed nothing measurable
 
@@ -828,13 +850,67 @@ correction stated rather than folded in silently.
 | A2 Lite, estimator | 9.75–9.94% | 9.94–10.13% |
 
 The estimator — the contamination-immune figure — is identical to within 0.2 pp in both
-models, and every other column overlaps. **The flag was accepted** (V8 prints
-`Error: unrecognized flag` for a flag it does not know, and did not; the run also loaded
-and parity-checked the module normally), so this is "engaged and made no difference"
-rather than "silently ignored" — though those two cannot be told apart from timing alone,
-and no attempt was made to dump V8's generated code to distinguish them. Either way there
-is nothing here to build on: **the SIMD win comes entirely from the `+simd128` build, not
-from V8's revectorizer.** Downstream tasks should treat revectorize as a non-lever.
+models, and every other column overlaps.
+
+#### Why this is "engaged and did nothing", not "silently ignored"
+
+**A retracted claim first.** An earlier revision of this section argued the flag was
+accepted because *V8 prints `Error: unrecognized flag` for a flag it does not know, and
+did not here*. **That evidence is worthless and the claim is withdrawn**: on this machine
+`msedge --headless=new --js-flags=--totally-bogus-flag` also exits 0 with empty stderr,
+so the tell never fires either way. Chromium does not surface the renderer's V8 stderr
+here. Recorded rather than quietly replaced.
+
+The question was then settled properly, with two checks that do discriminate.
+
+**1. `--js-flags` demonstrably reaches V8 in headless Edge.** Run the bench page under
+`--js-flags=--jitless` and the worker fails with
+
+    ReferenceError: WebAssembly is not defined
+        at loadNamir (http://127.0.0.1:8080/web/namir.js:4:24)
+
+i.e. the flag reached V8 and removed the `WebAssembly` global. A flag string that is
+ignored cannot do that, so the plumbing is proved, not assumed.
+
+**2. The revectorizer provably runs on this artefact, and provably revectorizes nothing.**
+V8 ships `--trace-wasm-revectorize` alongside the feature flag, which is a direct
+observation of the pass rather than an inference from timing. Node v24.19.0
+(V8 **13.6.233.17**) takes V8 flags on the command line:
+
+    S5_WASM=web/build/simd128.wasm       node --experimental-wasm-revectorize --trace-wasm-revectorize web/parity-node.mjs
+
+    Begin revec function _RNvMs1_...namir_ir9convolver...PreparedIr...
+    store seeds:
+    { #4888 Store *(#4850 + #4887) = #4885 [raw, protected, Simd128, NoWriteBarrier]
+      #4893 Store *(#4850 + 16 + #4892) = #4890 [raw, protected, Simd128, ...] }
+    Revec: BuildTreeRec 1052: Added a vector of stores.
+    Revec: NewPackNode 295: PackNode Store(#4888, #4893)
+    Revec: Run 1430: Build tree failed!
+    ...
+
+Over the whole module the pass visits **16 wasm functions** — `namir-ir`'s convolver and
+`rustfft`'s `wasm_simd` radix-4 and butterfly kernels among them — and **succeeds on
+none**: 14 `Build tree failed!` and 9 `Empty seed`, and no successful pack anywhere in
+the trace. **Negative control:** `--trace-wasm-revectorize` *without*
+`--experimental-wasm-revectorize` prints zero `Begin revec function` lines, so the trace
+is the feature's own output and not noise. The flag is also a real, current V8 flag —
+`node --v8-options` lists `--experimental-wasm-revectorize (enable 128 to 256 bit
+revectorization for Webassembly SIMD (experimental))` — whereas a bogus flag is rejected
+outright (`node: bad option: --totally-bogus-flag`), which is the discriminator Edge does
+not give.
+
+**Caveat, stated rather than papered over:** check 2 was made under Node's V8 13.6, not
+under Edge 152's V8, and no equivalent trace was captured from inside Edge (the renderer's
+stdout is not reachable through the dev-server beacon). What check 2 establishes is a
+property of the *artefact* — this wasm module contains no store trees the revectorizer can
+pack — which is determined by the code rustc and rustfft emit, not by which V8 loads it.
+Combined with check 1 (Edge does honour `--js-flags`), that is a solid explanation for the
+null timing result rather than an unexplained one.
+
+**Conclusion, unchanged by all of the above:** there is nothing here to build on. **The
+SIMD win comes entirely from the `+simd128` build, not from V8's revectorizer**, and
+downstream tasks should treat revectorize as a non-lever — now for a known reason: the
+pass runs and finds nothing to widen.
 
 ### Full per-rep results (30 matrix reps)
 
@@ -893,25 +969,43 @@ tier-up and the renderer's own scheduler all land inside the timed span — so
 Applying the brief's Step 4 literally would discard the entire matrix and leave no
 verdict, which is plainly not what it is for.
 
-**The rule actually used.** Machine load moves the *typical* block cost, so it shows in
-`p50` while the per-residue estimator (a periodic worst-case-block figure) stays put. A
-repetition is discarded when its `p50` departs from its own configuration's modal `p50`
-by more than 10% while the estimator does not move with it. Exactly one repetition in
-thirty meets that:
+**The rule actually used is a substitution, and it is mine — not D-2.4's, and not
+anything the project has previously agreed.** It is stated here in full so that a later
+reader can disagree with it rather than inherit it silently, and so that Tasks 5 and 6,
+which will need the same substitution, use the same numbers rather than reinventing them.
+
+> **S-5 browser contamination rule (Task 4).** Machine load moves the *typical* block
+> cost, so it shows in `p50` while the per-residue estimator — a periodic
+> worst-case-block figure, insensitive to a uniform slowdown of the common case — stays
+> put. Discard a repetition when **both** hold:
+>
+> 1. its `p50` departs from its own configuration's modal `p50` by **more than 10%**
+>    (relative), **and**
+> 2. its estimator departs from that configuration's modal estimator by **less than 5%**
+>    (relative).
+>
+> Clause 2 carries a number for the same reason clause 1 does: without one, "the
+> estimator did not move with it" is a judgement call, which makes the rule
+> unreproducible and — worse — tunable per-run to make a figure pass. Both clauses are
+> ratios, so the rule is scale-free across models and builds.
+
+Exactly one repetition in thirty meets both clauses:
 
 | Discarded | Reading | Why |
 |---|---|---|
-| `a1_standard`, simd128 + revectorize, **rep 5** | p50 **16.87%** against that configuration's own modal 11.44% (**+47%**); estimator 18.56%, flat against the other four reps' 18.00–18.19% | Machine load during the rep, not a cost of the code — the flat estimator is the tell, since a real +47% cost increase would move it too. Nothing was deliberately started, but this is a shared desktop and this session's own agent and browser-teardown processes run on it; that is the honest account of what else was running. Its p99.9 (32.06%) is in line with the other four and would not have changed the verdict either way. |
+| `a1_standard`, simd128 + revectorize, **rep 5** | clause 1: p50 **16.87%** against that configuration's modal 11.44% = **+47.5%** (bar: >10%). clause 2: estimator **18.56%** against modal 18.19% = **+2.0%** (bar: <5%) | Machine load during the rep, not a cost of the code — the flat estimator is the tell, since a real +47% cost increase would move it too. Nothing was deliberately started, but this is a shared desktop and this session's own agent and browser-teardown processes run on it; that is the honest account of what else was running. Its p99.9 (32.06%) is in line with the other four and would not have changed the verdict either way. |
 
 The other 29 are quoted as measured. Across their five reps, `p50` is stable to ±0.37 pp
 (A1 scalar), ±0.37 pp (A1 simd128), ±0.18 pp (A2 scalar) and ±0.19 pp (A2 simd128), and
 the per-residue estimator is stable to ±0.2 pp in every configuration — which is what a
 clean set of repetitions looks like.
 
-**A systematic first-rep `max` outlier, reported rather than discarded.** In four of six
-configurations the largest single-block `max` in the whole set falls in **rep 1**
-(102.38%, 95.44%, 86.63%, 76.31%) while rep 1's `p50`, `p99.9` and estimator sit with the
-others. That is V8 tiering the freshly-instantiated module up, plus the first major GC
+**A systematic first-rep `max` outlier, reported rather than discarded.** In **five of the
+six** configurations the largest single-block `max` in the set falls in **rep 1** —
+102.38% (A1 scalar), 95.44% (A2 scalar), 86.63% (A2 simd128), 76.31% (A2 revectorize) and
+36.94% (A1 simd128, where the whole set is tight enough that the pattern is easy to miss).
+Only A1 revectorize breaks it, and that is the configuration whose rep 5 was discarded for
+load. In all five, rep 1's `p50`, `p99.9` and estimator sit with the others. That is V8 tiering the freshly-instantiated module up, plus the first major GC
 after page load, both inside the first repetition. A shipping worklet would pay the same
 cost on its first blocks, so it is recorded, not discarded — and it is one more reason
 the verdict is read off `p99.9` rather than `max`.
@@ -938,20 +1032,27 @@ built first):
     cargo run --release --bin native_bench    # the native reference figures
     python web/serve.py
 
+`measured=100000` below is the spec's full `MEASURED_BLOCKS`, asked for deliberately:
+this section's own Edge figures are a 20 000-block screening plus a 100 000-block
+confirmation, and A1 Standard's p99.9 differs by ~14% between the two, so a Chrome or
+Firefox run at 20 000 would not be comparable to the number Gate 1 is actually decided
+on. If the full length is impractical, run 20 000 for the sweep **and** 100 000 for at
+least `simd128 x a1_standard`, and label which is which.
+
     # then, for each of the four (build x model) combinations:
     "C:\Program Files\Google\Chrome\Application\chrome.exe" \
-      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=scalar&model=a1_standard"
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=scalar&model=a1_standard"
     #   ... &wasm=simd128&model=a1_standard
     #   ... &wasm=scalar&model=a2_lite
     #   ... &wasm=simd128&model=a2_lite
     # and the revectorize configuration, Chrome only, launched fresh:
     "C:\Program Files\Google\Chrome\Application\chrome.exe" \
       --js-flags=--experimental-wasm-revectorize \
-      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a1_standard"
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a1_standard"
 
     # Firefox has no equivalent flag; run the four build x model combinations only:
     "C:\Program Files\Mozilla Firefox\firefox.exe" \
-      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a1_standard"
+      "http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a1_standard"
 
 Confirm **`crossOriginIsolated: true`** on the page before recording anything — without
 it the `performance.now()` quantum is 100 µs (3.75% of the block period) instead of 5 µs
@@ -971,16 +1072,28 @@ here) would be consumed. Anyone re-running this on a second machine should start
 
 ### Task 4 verdict
 
-**Proceed to Task 5.** Four things carried forward:
+**Proceed to Task 5.** Five things carried forward:
 
 1. **Gate 1 PASSES on the simd128 artefact for both models** — A1 Standard p99.9
-   28.88–30.94% (33.56% sustained over 100 000 blocks), A2 Lite p99.9 15.37–17.25%,
-   against a ≤50% bar. Kill criterion 2 did not fire anywhere.
+   **32.44–33.56% sustained** over 100 000 blocks (28.88–30.94% at the 20 000-block
+   screening length), A2 Lite p99.9 14.81–16.31% sustained, against a ≤50% bar. Kill
+   criterion 2 did not fire anywhere.
 2. **Gate 1 FAILS for A1 Standard on the scalar artefact** (p99.9 74–86%), so browser
    support for A1 Standard is *conditional on WebAssembly SIMD*, with no fallback by
    design. Task 5 onward must serve the simd128 build and must fail loudly where
    simd128 is absent.
-3. **Revectorize is a non-lever.** No measurable change in either model; the entire SIMD
-   win is in the `+simd128` build.
-4. **Chrome, Firefox and the laptop axis are open**, with the exact commands and the
+3. **A1 Standard's cost grew ~14% between the 20 000- and 100 000-block runs, and whether
+   that growth is asymptotic is UNRESOLVED.** Two 100 000-block reps cannot separate "a
+   longer sample catches more of a fixed-rate tail" from "something accumulates with
+   session length"; the flat estimator favours the first, nothing rules out the second,
+   and no longer run was made. **This is Task 6's problem specifically**, because an
+   AudioWorklet runs indefinitely rather than for a bounded block count: budget against
+   **33.6%, not 29%**, watch p99.9 over session time rather than assuming it is
+   stationary, and settle it with one multi-hour or 10^6-block run. A1 is both the
+   smaller margin and the only figure that moved with run length.
+4. **Revectorize is a non-lever, for a now-known reason.** V8's revectorizer provably
+   runs on this artefact under `--trace-wasm-revectorize` and succeeds on none of the 16
+   functions it visits (14 `Build tree failed!`, 9 `Empty seed`). The entire SIMD win is
+   in the `+simd128` build.
+5. **Chrome, Firefox and the laptop axis are open**, with the exact commands and the
    reasons recorded above. Nothing in this section is a certified figure.
