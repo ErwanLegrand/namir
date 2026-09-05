@@ -715,3 +715,76 @@ NO CAPTURE ON ANY CLICK: nothing on the input crossed 0.02000.
 click 9: no capture (peak 0.00100, threshold 0.02000)
 Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.
 FINISHED
+
+--------------------------------------------------------------------------------
+Post-review re-run. The control run now prints a detection count, because the operator
+instructions set their acceptance bar against it. Display only -- no measured figure
+changed, and these two runs are appended to the same 50-window control series rather than
+replacing it.
+--------------------------------------------------------------------------------
+
+=== control-noclick-6  [browser flags: none]
+--- CONTROL (no click emitted), latencyHint=interactive, n=10, amp=0.5, len=64, tag=control-noclick-6 ---
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 673431ff
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 673431ff
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 673431ff
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 673431ff
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 673431ff
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 673431ff
+sampleRate           48000 Hz
+outputLatency        42.000 ms
+baseLatency          10.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"673431ff72e175c1103c391cfc66dc1cb4f7506c1a492c300188a5d4180d66af","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"673431ff72e175c1103c391cfc66dc1cb4f7506c1a492c300188a5d4180d66af","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00036 (peak 0.00000) -> onset threshold 0.02000
+control 0: no capture (peak 0.00161, threshold 0.02000)
+control 1: no capture (peak 0.00104, threshold 0.02000)
+control 2: no capture (peak 0.00101, threshold 0.02000)
+control 3: no capture (peak 0.00165, threshold 0.02000)
+control 4: no capture (peak 0.00150, threshold 0.02000)
+control 5: no capture (peak 0.00143, threshold 0.02000)
+control 6: no capture (peak 0.00270, threshold 0.02000)
+control 7: no capture (peak 0.00177, threshold 0.02000)
+control 8: no capture (peak 0.00125, threshold 0.02000)
+control 9: no capture (peak 0.00160, threshold 0.02000)
+
+control: 0 detection(s) in 10 windows -- 0 or 1 is expected, 2 means run it again, 3 or more means fix the room. See RESULTS.md, Gate 3.
+FINISHED
+
+=== control-noclick-7  [browser flags: none]
+--- CONTROL (no click emitted), latencyHint=interactive, n=10, amp=0.5, len=64, tag=control-noclick-7 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 5339b2ec
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 5339b2ec
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 5339b2ec
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 5339b2ec
+  audioinput: Ligne (AudioBox 22VSL) [60697fe5dd92...] group 5339b2ec
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [765acccdb466...] group 5339b2ec
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"5339b2ecf72faedd41c1eba0581871dcb763cdacfec55eca989eca61557ff52f","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+state                running
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"5339b2ecf72faedd41c1eba0581871dcb763cdacfec55eca989eca61557ff52f","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+noise floor rms 0.00046 (peak 0.00000) -> onset threshold 0.02000
+control 0: no capture (peak 0.00274, threshold 0.02000)
+control 1: no capture (peak 0.00592, threshold 0.02000)
+control 2: no capture (peak 0.00206, threshold 0.02000)
+control 3: no capture (peak 0.00098, threshold 0.02000)
+control 4: no capture (peak 0.00099, threshold 0.02000)
+control 5: no capture (peak 0.00120, threshold 0.02000)
+control 6: no capture (peak 0.00911, threshold 0.02000)
+control 7: no capture (peak 0.01033, threshold 0.02000)
+control 8: no capture (peak 0.00304, threshold 0.02000)
+control 9: no capture (peak 0.00192, threshold 0.02000)
+
+control: 0 detection(s) in 10 windows -- 0 or 1 is expected, 2 means run it again, 3 or more means fix the room. See RESULTS.md, Gate 3.
+FINISHED
