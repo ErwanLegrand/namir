@@ -1,0 +1,172 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>S-5 worklet</title>
+<p>
+  build
+  <select id="wasm">
+    <option value="simd128">simd128</option>
+    <option value="scalar">scalar</option>
+  </select>
+  model
+  <select id="model">
+    <option value="a1_standard">a1_standard</option>
+    <option value="a2_lite">a2_lite</option>
+  </select>
+</p>
+<button id="go">Start (60 s)</button>
+<pre id="out"></pre>
+<script type="module">
+// Query params, so a headless browser can drive this without a click:
+//   ?auto=1         start on load
+//   &secs=60        run length (the growth question wants a multi-minute value)
+//   &split=0.5      fraction of the run spent on steady signal before switching to the
+//                   subnormal tail; 1 = steady only, 0 = tail only
+//   &wasm=simd128   artefact under web/build/
+//   &model=a1_standard
+//   &gain=0.0001    output attenuation (the DSP is unchanged; only the copy out is scaled)
+//
+// This page does NOT need cross-origin isolation -- there is no SharedArrayBuffer and no
+// clock here. `serve.py` sends COOP/COEP anyway, which is harmless; the demo path would
+// not ship them.
+//
+// TWO underrun witnesses, because one of them may be structurally blind:
+//   (a) the processor's currentFrame gap. An engine that renders every quantum, merely
+//       late, never trips this.
+//   (b) the graph clock against the wall clock, sampled here on the main thread. If the
+//       render thread cannot keep up with a device that keeps consuming, ctx.currentTime
+//       falls behind performance.now() and the lag accumulates. This is the witness that
+//       can see a soft-real-time failure.
+// Both are reported. Neither is meaningful unless the sink is a real device -- see the
+// backend probe below, which is dumped before any verdict.
+const q = new URLSearchParams(location.search);
+const out = document.getElementById("out");
+const log = (t) => { out.textContent += t + "\n"; };
+const beacon = q.has("auto")
+  ? (t) => fetch("/__s5?" + encodeURIComponent(t)).catch(() => {})
+  : () => {};
+const say = (t) => { log(t); beacon(t); };
+const get = async (u) => {
+  const r = await fetch(u);
+  if (!r.ok) throw new Error(`${u}: ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+};
+
+async function backendProbe(ctx) {
+  // Everything cheaply observable about what is actually driving the render thread. A
+  // null/dummy sink is timer-paced and answers a question with no deadline in it, so the
+  // run is only evidence once these lines say a real endpoint is open.
+  let devices = "enumerateDevices unavailable";
+  try {
+    const d = await navigator.mediaDevices.enumerateDevices();
+    const o = d.filter((x) => x.kind === "audiooutput");
+    devices = `audiooutput devices ${o.length} [${o.map((x) => x.deviceId).join(",")}]`;
+  } catch (e) { devices = `enumerateDevices threw: ${e.message}`; }
+  return [
+    `sampleRate ${ctx.sampleRate}`,
+    `baseLatency ${(ctx.baseLatency * 1000).toFixed(3)} ms`,
+    `outputLatency ${(ctx.outputLatency * 1000).toFixed(3)} ms`,
+    `state ${ctx.state}`,
+    `sinkId ${"sinkId" in ctx ? JSON.stringify(ctx.sinkId) : "unsupported"}`,
+    devices,
+  ].join(" | ");
+}
+
+async function run() {
+  const secs = Number(q.get("secs") || 60);
+  const split = q.has("split") ? Number(q.get("split")) : 0.5;
+  const build = q.get("wasm") || document.getElementById("wasm").value;
+  const model = q.get("model") || document.getElementById("model").value;
+  const blocks = Math.round((secs * 48000) / 128);
+
+  let capLine = "n/a", capPeak = 0, capUnderrun = 0, capWindows = 0;
+  const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
+  // A context created without a user gesture starts suspended in some configurations;
+  // resume() is a no-op when it is already running.
+  await ctx.resume().catch(() => {});
+  say(`run: ${build} ${model} ${secs}s split ${split} (${blocks} blocks)`);
+  say(`backend: ${await backendProbe(ctx)}`);
+
+  // AudioContext.renderCapacity is not enabled by default anywhere, but if the runtime
+  // was started with --enable-blink-features=AudioContextRenderCapacity it reports
+  // averageLoad/peakLoad/underrunRatio per window -- the only in-browser view of how
+  // close the render thread is to its deadline, and the only thing here that can speak
+  // to Task 4's 20k-vs-100k growth question. Feature-detected; absent, nothing is lost.
+  if (ctx.renderCapacity) {
+    ctx.renderCapacity.onupdate = (ev) => {
+      capLine =
+        `renderCapacity avg ${(ev.averageLoad * 100).toFixed(1)}% ` +
+        `peak ${(ev.peakLoad * 100).toFixed(1)}% underrunRatio ${ev.underrunRatio.toFixed(4)}`;
+      capPeak = Math.max(capPeak, ev.peakLoad);
+      capUnderrun += ev.underrunRatio;
+      capWindows++;
+      beacon(`t=${(performance.now() / 1000).toFixed(0)}s ${capLine}`);
+    };
+    ctx.renderCapacity.start({ updateInterval: 1 });
+    say("renderCapacity: available");
+  } else {
+    say("renderCapacity: NOT exposed by this runtime");
+  }
+
+  await ctx.audioWorklet.addModule("./namir-processor.js");
+  const wasmBytes = await get(`./build/${build}.wasm`);
+  const modelBytes = await get(`../fixtures/${model}.nam`);
+  const irBytes = await get("../fixtures/ir_48k.wav");
+  say(`loaded: wasm ${wasmBytes.length} B, model ${modelBytes.length} B, ir ${irBytes.length} B`);
+
+  const node = new AudioWorkletNode(ctx, "namir", { outputChannelCount: [2] });
+  node.onprocessorerror = () => say("PROCESSOR ERROR (a guard trapped, or the module threw)");
+
+  // Wall clock vs graph clock. t0 is taken at the first tick, not here, so worklet
+  // start-up latency is not charged to the drift.
+  let t0 = null, c0 = null, maxLag = 0, lastLine = "";
+  const lag = () => (performance.now() - t0) / 1000 - (ctx.currentTime - c0);
+
+  node.port.onmessage = (e) => {
+    const d = e.data;
+    if (d.kind === "error") { say(`ERROR: ${d.message}`); return; }
+    if (d.kind === "boot") { say("worklet constructed"); return; }
+    if (d.kind === "ready") { say(`ready at ${d.sampleRate} Hz`); return; }
+    if (d.kind !== "tick" && d.kind !== "final") return;
+    if (t0 === null) { t0 = performance.now(); c0 = ctx.currentTime; }
+    const l = lag();
+    if (l > maxLag) maxLag = l;
+    lastLine =
+      `blocks ${d.blocks} | frame ${d.frame} | ` +
+      `steady b/u ${d.steady[0]}/${d.steady[1]} (missed ${d.steady[2]}) | ` +
+      `tail b/u ${d.tail[0]}/${d.tail[1]} (missed ${d.tail[2]}) | ` +
+      `clockLag ${(l * 1000).toFixed(1)} ms (max ${(maxLag * 1000).toFixed(1)} ms) | ` +
+      `outputLatency ${(ctx.outputLatency * 1000).toFixed(2)} ms`;
+    out.textContent = lastLine + String.fromCharCode(10);
+    if (d.blocks % (375 * 10) === 0) beacon(lastLine);
+    if (d.kind === "final") {
+      say("FINAL " + lastLine);
+      say(`FINAL renderCapacity: windows ${capWindows} peakLoad ` +
+          `${(capPeak * 100).toFixed(1)}% summed underrunRatio ${capUnderrun.toFixed(4)}`);
+      node.disconnect();
+      ctx.close();
+      beacon("FINISHED");
+      // Headless: end the process rather than leaving the runner to time it out.
+      if (q.has("auto")) setTimeout(() => window.close(), 500);
+    }
+  };
+
+  node.port.postMessage({
+    wasm: wasmBytes,
+    model: modelBytes,
+    ir: irBytes,
+    switchBlock: Math.round(blocks * split),
+    stopBlock: blocks,
+    outGain: Number(q.get("gain") || 1e-4),
+  });
+  node.connect(ctx.destination);
+
+  // Backstop: if the graph never runs at all (suspended context, dead sink), nothing
+  // above ever fires and a headless run would hang until it is killed.
+  setTimeout(() => {
+    if (t0 === null) { say("NO TICKS: the render thread never ran"); beacon("FINISHED"); }
+  }, Math.max(15000, secs * 1000 + 15000));
+}
+
+document.getElementById("go").onclick = () => run().catch((e) => say(`ERROR: ${e.message}`));
+if (q.has("auto")) run().catch((e) => { say(`ERROR: ${e.message}`); beacon("FINISHED"); });
+</script>
