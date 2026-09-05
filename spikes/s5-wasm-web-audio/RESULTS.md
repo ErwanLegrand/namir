@@ -2074,3 +2074,132 @@ installed; add `&tag=chrome` or `&tag=firefox` so the transcript says which.
 a fake device (that would be `--use-fake-device-for-media-stream`, which must not be used here
 — it would measure a synthetic capturer rather than the AudioBox). The transcript is recovered
 from `serve.py`'s 404 log lines, the same beacon trick Task 6 used.
+
+## Task 8 — optional extras: resampler cost, render quantum, 2026-09-05
+
+Both extras per the coordinator's ruling: Extra 1 gets the real measurement effort (it can
+produce a genuine number); Extra 2 is a one-shot availability check that stops the moment the
+API is confirmed absent, rather than engineering around it. **Nothing here is certified** —
+same caveat as every other figure in this file, and doubly so: browser benchmarks are not
+core-pinned (Task 3's note) and this task's own Extra 1 finding is a demonstration of exactly
+how much that costs.
+
+### Extra 1: resampler cost
+
+`bench.html` gained an IR selector (`ir_48k` default / `ir_44k1`) and an opt-in `irtiming`
+checkbox / `&irtiming=1` query flag. `bench-worker.js` now times `load_ir` alone
+(`performance.now()` wrapped tightly around the single export call, nothing else) and reports
+each timing as its own `irload` message, kept structurally separate from the per-block `stats`
+messages the existing reps loop produces — so a reader of the page output cannot conflate a
+one-off load number with a per-block steady-state one.
+
+**The parity gate does not follow the IR selector.** `bench-worker.js` gained a `PARITY_IR =
+"../fixtures/ir_48k.wav"` constant: the parity render always loads that IR regardless of what
+the timed reps ask for. The reference renders (`reference_render_f32le.bin` /
+`reference_control_f32le.bin`) were made against `ir_48k.wav`; pointing the parity render at
+`ir_44k1.wav` instead would fail it on a real signal difference (resampling changes the taps),
+not a port defect — the same lesson `PARITY_MODEL` already encodes for the model axis. Every
+run below still reports parity **PASS** at the usual figures.
+
+**`ir_44k1.wav` forces the resample.** Both fixtures are 2.0 s, 16-bit PCM, stereo
+(`ir_48k.wav`: 48 000 Hz / 96 000 frames; `ir_44k1.wav`: 44 100 Hz / 88 200 frames — confirmed
+by parsing both WAV headers directly). Loading `ir_44k1.wav` into a 48 000 Hz engine takes
+`PreparedIr::from_wav_bytes` (`crates/namir-ir/src/convolver.rs:730`) through `resample_mono`,
+which is `rubato::FftFixedInOut` — scalar/NEON only, no `simd128` path, so it runs scalar on
+**every** wasm artefact regardless of build. Read, not run: `resample_mono`'s output length is
+`round(88200 * 48000 / 44100) = 96000` exactly (`88200 * 160 / 147 = 96000`, no rounding),
+so the resampled tap count is bit-identical to `ir_48k.wav`'s native length — the convolution
+partition schedule (`namir_ir::build_schedule`) is therefore the same shape either way. That
+fact matters for the per-block result below.
+
+Command (`web/serve.py` running from the spike root):
+
+    msedge --headless=new --disable-gpu --no-sandbox \
+      "http://127.0.0.1:8080/web/bench.html?auto=1&wasm=simd128&model=a1_standard&ir=ir_44k1&irtiming=1&signal=0&reps=5&measured=20000"
+    # &ir=ir_48k for the control
+
+Three same-session runs, Edge **152.0.4191.62** headless (`--disable-gpu --no-sandbox`),
+simd128 build, A1 Standard, steady signal, 20 000 measured blocks, `crossOriginIsolated: true`
+throughout. Parity every run: residual **−81.6906 dB**, control **−82.7158 dB**, margin
+**1.0252 dB**, **PASS**.
+
+| Run (order) | IR | `load_ir` ms, 5 reps | steady-state mean (reps 2–5) | per-block p99.9 %, 5 reps |
+|---|---|---|---|---|
+| 1 (1st launch) | ir_44k1 | 9.150, 5.905, 6.165, 6.020, 5.800 | 5.97 ms | 23.81(C), 20.25, 20.25, 20.44, 20.63 |
+| 2 (2nd launch) | ir_48k | 3.940, 3.920, 3.920, 3.755, 3.715 | 3.83 ms | 33.56(C), 30.75, 30.56, 31.31, 30.75 |
+| 3 (3rd launch, ir_44k1 repeated) | ir_44k1 | 9.130, 6.020, 6.060, 5.860, 5.875 | 5.95 ms | 33.37(C), 30.75, 30.75, 30.94, 30.94 |
+
+`(C)` = rep flagged `CONTAMINATED` by the page's own `p99.9 - estimator <= 5.0` rule; excluded
+from the "steady-state mean" and per-block ranges above. Each fresh Edge launch used its own
+`--user-data-dir` so no on-disk profile state carried over between runs.
+
+**Load-time verdict: this IS a one-off load cost, and it reproduces.** `load_ir` alone costs
+~**3.7–3.9 ms** with no resample (ir_48k) and ~**5.8–6.2 ms** with the 44.1→48 kHz resample
+(ir_44k1) — a delta of roughly **+2.0–2.4 ms, about +55–60%**, consistent across both ir_44k1
+runs (5.97 ms and 5.95 ms steady-state mean, 9.13–9.15 ms first call both times) despite one
+being the very first Edge launch of the session and the other the third. That per-IR
+consistency, against the per-block figure's inconsistency (next paragraph), is the basis for
+calling this one real. It happens **once, at `load_ir`**, per `namir-engine`'s D-8.1 handover
+protocol and this codebase's RT-safety rule (AGENTS.md: "file/network I/O... runs on
+namir-worker's pool"), never per block — so in a real build this cost lands on the load/worker
+path, not the audio thread's 2 666.67 µs budget, and ~2 ms extra there is immaterial to
+real-time safety. It would matter to a *demo's* perceived load latency if IR loading were ever
+moved onto a path a user waits on synchronously, which is a UX question, not an RT one.
+
+**Per-block verdict: the apparent IR effect is not real — it's session-order contamination.**
+Run 1 (ir_44k1, first launch) measured p99.9 ≈ 20.3–20.6%; Run 2 (ir_48k, second launch)
+measured ≈ 30.6–31.3%; Run 3 (ir_44k1 again, third launch) measured ≈ 30.75–30.94% — matching
+Run 2's *ir_48k* figure, not Run 1's own *ir_44k1* figure from two launches earlier. Re-running
+the identical configuration a second time reproduced the OTHER run's number, not its own: the
+figure tracks which launch position in the session a run occupied, not which IR it loaded. That
+is exactly what the schedule-identity fact above predicts (same 96 000-tap partition shape
+either way, so no schedule-driven reason for a per-block difference) and exactly the kind of
+"shared desktop contamination... 2–3× swings" this repo's own benchmark methodology section
+already documents — repeated headless Chromium launches on this machine (each one paying its
+own SmartScreen DNS timeout and extension-verification overhead, visible in the raw stdout
+logs) are the more likely-shared cause across Runs 2 and 3 than the IR choice. **No credible
+per-block/steady-state cost attributable to the resampler is supported by this data.** A
+firmer answer would need many more interleaved reps (`ir_48k, ir_44k1, ir_48k, ir_44k1, ...`)
+on the pinned reference machine, core-pinned if that affordance is ever extended to a browser
+target — out of scope for this task's budget.
+
+### Extra 2: render quantum sizes — PENDING RUN, confirmed unavailable here
+
+`worklet.html` gained a `&checkRenderSizeHint=N` (default 256) cheap-availability probe: it
+constructs a throwaway `AudioContext({ sampleRate: 48000, latencyHint: "interactive",
+renderSizeHint: N })`, reads back `ctx.renderQuantumSize`, reports whether it was **honoured**
+(equals `N`), **ignored** (some other numeric default), or **threw** (`NotSupportedError`, the
+option rejected outright) — then closes the context and returns without starting the worklet.
+No wasm rebuild, no `BLOCK_SIZE`/`IR_PERIOD_BLOCKS` change: per the ruling, that work is only
+worth doing once the hint is confirmed present.
+
+Command:
+
+    msedge --headless=new --disable-gpu --no-sandbox --autoplay-policy=no-user-gesture-required \
+      "http://127.0.0.1:8080/web/worklet.html?auto=1&checkRenderSizeHint=256"
+
+Result on Edge **152.0.4191.62** (Chromium/V8; this machine has no Chrome or Firefox install):
+
+    renderSizeHint 256: NOT honoured -- ctx.renderQuantumSize undefined ("hardware"/default;
+    the option was accepted but ignored)
+
+`renderQuantumSize` is not merely defaulting to 128 here, it is `undefined` — the whole
+property is absent from this runtime's `AudioContext`, not just the option being silently
+ignored. `renderSizeHint` shipped in Chrome 153; this machine's Edge is Chromium-based but
+pinned to 152.0.4191.62 (confirmed via `msedge --version`), one release behind. Nothing else
+in this extra was attempted — no `BLOCK_SIZE` change, no rebuild, no 256/512 measurement — per
+the ruling to stop at the availability check rather than spend effort proving a negative.
+**PENDING RUN, exact command above (plus, once it passes, testing `renderSizeHint: 256` and
+`512` and rebuilding `harness::BLOCK_SIZE`/`IR_PERIOD_BLOCKS` to match per the task brief) on
+Chrome 153+ or a newer Edge.**
+
+### Task 8 verdict
+
+**Extra 1 (kept, real number):** rubato's scalar-only resample of a 44.1 kHz IR into a 48 kHz
+context costs roughly **+2.0–2.4 ms (+55–60%) at `load_ir`, once, off the audio thread** —
+immaterial to real-time safety, plausibly noticeable to a demo's load-time UX. No credible
+per-block cost was found, and the investigation that would have claimed one turned out to be
+measuring session-order contamination instead — worth keeping on the record per this project's
+own stated practice of retracting a finding honestly rather than quietly dropping it.
+**Extra 2 (stopped early, per the ruling):** confirmed absent on this machine's only available
+browser (Edge 152.0.4191.62); `PENDING RUN` on Chrome 153+/newer Edge, exact command above.

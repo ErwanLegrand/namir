@@ -26,6 +26,14 @@
 //   &gain=0.0001    output attenuation (the DSP is unchanged; only the copy out is scaled)
 //   &preroll=750    render N blocks of silence without calling into the chain first
 //                   (the start-up-transient experiment; 0 for every gate run)
+//   &checkRenderSizeHint=1[,N]   Task 8 Extra 2's cheap availability probe. Constructs a
+//                   throwaway AudioContext with `renderSizeHint: N` (default 256), logs
+//                   whether it was honoured (ctx.renderQuantumSize === N) or ignored
+//                   (Chromium returns 128 for "hardware"), or whether construction threw
+//                   NotSupportedError -- then closes the context and returns WITHOUT
+//                   starting the worklet. renderSizeHint shipped in Chrome 153; this is
+//                   only a detector, never a workaround -- see RESULTS.md for the ruling
+//                   that this task stops here if the hint is not honoured.
 //
 // This page does NOT need cross-origin isolation -- there is no SharedArrayBuffer and no
 // clock here. `serve.py` sends COOP/COEP anyway, which is harmless; the demo path would
@@ -71,6 +79,25 @@ async function backendProbe(ctx) {
     `sinkId ${"sinkId" in ctx ? JSON.stringify(ctx.sinkId) : "unsupported"}`,
     devices,
   ].join(" | ");
+}
+
+async function checkRenderSizeHint() {
+  const hint = Number(q.get("checkRenderSizeHint")) || 256;
+  try {
+    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive", renderSizeHint: hint });
+    const got = ctx.renderQuantumSize;
+    await ctx.close().catch(() => {});
+    if (got === hint) {
+      say(`renderSizeHint ${hint}: HONOURED -- ctx.renderQuantumSize ${got}`);
+    } else {
+      say(`renderSizeHint ${hint}: NOT honoured -- ctx.renderQuantumSize ${got} ` +
+          `("hardware"/default; the option was accepted but ignored)`);
+    }
+  } catch (err) {
+    say(`renderSizeHint ${hint}: THREW ${err.name}: ${err.message} (option not supported at all)`);
+  }
+  beacon("FINISHED");
+  if (q.has("auto")) setTimeout(() => window.close(), 500);
 }
 
 async function run() {
@@ -170,6 +197,7 @@ async function run() {
   }, Math.max(15000, secs * 1000 + 15000));
 }
 
-document.getElementById("go").onclick = () => run().catch((e) => say(`ERROR: ${e.message}`));
-if (q.has("auto")) run().catch((e) => { say(`ERROR: ${e.message}`); beacon("FINISHED"); });
+const entry = () => (q.has("checkRenderSizeHint") ? checkRenderSizeHint() : run());
+document.getElementById("go").onclick = () => entry().catch((e) => say(`ERROR: ${e.message}`));
+if (q.has("auto")) entry().catch((e) => { say(`ERROR: ${e.message}`); beacon("FINISHED"); });
 </script>
