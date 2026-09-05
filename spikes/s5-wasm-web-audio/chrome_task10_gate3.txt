@@ -1,0 +1,492 @@
+S-5 Task 10 -- Gate 3 (latency), Google Chrome 152.0.7977.83, no-cable API half.
+Machine: AMD Ryzen 9 5950X / 64 GB / Windows 11 Pro 26200, PreSonus AudioBox 22VSL @ 48 kHz.
+Transcript = serve.py's /__s5 beacon 404 log lines, URL-decoded, one section per run.
+=== gate3 default hint=interactive rep1
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=chrome_interactive_r1
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_interactive_r1 ---
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 2ffa3405
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 2ffa3405
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 2ffa3405
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 2ffa3405
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 2ffa3405
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 2ffa3405
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sampleRate           48000 Hz
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"2ffa3405e7f5639c5c83edd2239f16d0567d5d25050d85748b5a98ff9250b0cb","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"2ffa3405e7f5639c5c83edd2239f16d0567d5d25050d85748b5a98ff9250b0cb","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== gate3 default hint=interactive rep2
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=chrome_interactive_r2
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_interactive_r2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 0ca43b60
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 0ca43b60
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 0ca43b60
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 0ca43b60
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 0ca43b60
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 0ca43b60
+baseLatency          10.000 ms
+sampleRate           48000 Hz
+API output total     52.000 ms
+outputLatency        42.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"0ca43b60c0b14f918e1b9a2baa15f71498199e35ac801f9be214646cbca694ba","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"0ca43b60c0b14f918e1b9a2baa15f71498199e35ac801f9be214646cbca694ba","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== gate3 default hint=interactive rep3
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=chrome_interactive_r3
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_interactive_r3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group d27435d4
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group d27435d4
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group d27435d4
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group d27435d4
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group d27435d4
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group d27435d4
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"d27435d4f06d7072f9ab4ef88c6b7794faf815b8918655c5e0eb927f3af6d1ab","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"d27435d4f06d7072f9ab4ef88c6b7794faf815b8918655c5e0eb927f3af6d1ab","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== gate3 default hint=balanced rep1
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=chrome_balanced_r1
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=balanced, tag=chrome_balanced_r1 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 19cb0747
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 19cb0747
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 19cb0747
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 19cb0747
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 19cb0747
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 19cb0747
+sampleRate           48000 Hz
+API output total     52.000 ms
+outputLatency        42.000 ms
+baseLatency          10.000 ms
+state                running
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"19cb074711f9fdad10adeb1b95fe62c9b0a82e2170a36410242c08950adcc293","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"19cb074711f9fdad10adeb1b95fe62c9b0a82e2170a36410242c08950adcc293","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== gate3 default hint=balanced rep2
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=chrome_balanced_r2
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=balanced, tag=chrome_balanced_r2 ---
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 22f38333
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 22f38333
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 22f38333
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 22f38333
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 22f38333
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 22f38333
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        42.000 ms
+API output total     52.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"22f38333674673e4944d5bd3c083ec82eea093a545b460a79e2f8ab50b310c3e","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"22f38333674673e4944d5bd3c083ec82eea093a545b460a79e2f8ab50b310c3e","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== gate3 default hint=balanced rep3
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=chrome_balanced_r3
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=balanced, tag=chrome_balanced_r3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 71e2b462
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 71e2b462
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 71e2b462
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 71e2b462
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 71e2b462
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 71e2b462
+baseLatency          10.000 ms
+sampleRate           48000 Hz
+API output total     52.000 ms
+outputLatency        42.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"71e2b462fe7081fb08b8acbc8798e7657d47f95f30477d5221b3f9922d9b45ae","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"71e2b462fe7081fb08b8acbc8798e7657d47f95f30477d5221b3f9922d9b45ae","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00 42.00
+FINISHED
+
+=== gate3 default hint=playback rep1
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=chrome_playback_r1
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=playback, tag=chrome_playback_r1 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 5cfe4e83
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 5cfe4e83
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 5cfe4e83
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 5cfe4e83
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 5cfe4e83
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 5cfe4e83
+sinkId               ""
+baseLatency          20.000 ms
+API output total     72.000 ms
+sampleRate           48000 Hz
+state                running
+outputLatency        52.000 ms
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"5cfe4e83116ac473ed0a423c1f761c1ad067f9f304a0b2f9b3834a35641325be","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"5cfe4e83116ac473ed0a423c1f761c1ad067f9f304a0b2f9b3834a35641325be","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00
+FINISHED
+
+=== gate3 default hint=playback rep2
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=chrome_playback_r2
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=playback, tag=chrome_playback_r2 ---
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 5932b2d9
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 5932b2d9
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 5932b2d9
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 5932b2d9
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 5932b2d9
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 5932b2d9
+sampleRate           48000 Hz
+baseLatency          20.000 ms
+outputLatency        52.000 ms
+API output total     72.000 ms
+state                running
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"5932b2d9c0e3bc7434bd7cd878f3915cfaebd165df69e570ed2df72786d04e73","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"5932b2d9c0e3bc7434bd7cd878f3915cfaebd165df69e570ed2df72786d04e73","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00
+FINISHED
+
+=== gate3 default hint=playback rep3
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=chrome_playback_r3
+=== flags: --use-fake-ui-for-media-stream (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=playback, tag=chrome_playback_r3 ---
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 706940de
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 706940de
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 706940de
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 706940de
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 706940de
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 706940de
+sampleRate           48000 Hz
+outputLatency        52.000 ms
+baseLatency          20.000 ms
+API output total     72.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"706940de22d41b9b474b8643b31407fa5f049076e22bdb1e1ad51a4581663cdd","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"706940de22d41b9b474b8643b31407fa5f049076e22bdb1e1ad51a4581663cdd","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00 52.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=interactive rep1
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=chrome_excl_interactive_r1
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_excl_interactive_r1 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 60072d7b
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 60072d7b
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 60072d7b
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 60072d7b
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 60072d7b
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 60072d7b
+sampleRate           48000 Hz
+baseLatency          5.333 ms
+outputLatency        128.000 ms
+API output total     133.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"60072d7ba7083a70c1c8331f1a41f0dde0b5de02fd6a5b4777865a361d8845e0","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"60072d7ba7083a70c1c8331f1a41f0dde0b5de02fd6a5b4777865a361d8845e0","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=interactive rep2
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=chrome_excl_interactive_r2
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_excl_interactive_r2 ---
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group d1eb011c
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group d1eb011c
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group d1eb011c
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group d1eb011c
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group d1eb011c
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group d1eb011c
+sampleRate           48000 Hz
+baseLatency          5.333 ms
+outputLatency        128.000 ms
+API output total     133.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"d1eb011cfefad542a34b73d67ffdcc81988b9e234b60ea356455e7f2dc58334b","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"d1eb011cfefad542a34b73d67ffdcc81988b9e234b60ea356455e7f2dc58334b","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 96.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=interactive rep3
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=chrome_excl_interactive_r3
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_excl_interactive_r3 ---
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 7f5abf1d
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 7f5abf1d
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 7f5abf1d
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 7f5abf1d
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 7f5abf1d
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 7f5abf1d
+sampleRate           48000 Hz
+outputLatency        128.000 ms
+API output total     133.333 ms
+baseLatency          5.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"7f5abf1dcb02dc8c071018bb90353a52bf42a1f9b9f98a5e1e8aca7007a4f9f1","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"7f5abf1dcb02dc8c071018bb90353a52bf42a1f9b9f98a5e1e8aca7007a4f9f1","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 107.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=balanced rep1
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=chrome_excl_balanced_r1
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=balanced, tag=chrome_excl_balanced_r1 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group acac59b2
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group acac59b2
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group acac59b2
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group acac59b2
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group acac59b2
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group acac59b2
+sampleRate           48000 Hz
+baseLatency          5.333 ms
+API output total     133.333 ms
+outputLatency        128.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"acac59b28b8887c9ab8472495715766c20c9b517587daf4169a748db54c82170","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"acac59b28b8887c9ab8472495715766c20c9b517587daf4169a748db54c82170","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=balanced rep2
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=chrome_excl_balanced_r2
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=balanced, tag=chrome_excl_balanced_r2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group aadfe241
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group aadfe241
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group aadfe241
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group aadfe241
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group aadfe241
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group aadfe241
+baseLatency          5.333 ms
+outputLatency        128.000 ms
+sampleRate           48000 Hz
+API output total     133.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"aadfe241a013b1db617b7d1014569ffaa63fc1503d5010d76ff461ba204a128b","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"aadfe241a013b1db617b7d1014569ffaa63fc1503d5010d76ff461ba204a128b","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=balanced rep3
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=chrome_excl_balanced_r3
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=balanced, tag=chrome_excl_balanced_r3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 05a2ee14
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 05a2ee14
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 05a2ee14
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 05a2ee14
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 05a2ee14
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 05a2ee14
+sampleRate           48000 Hz
+baseLatency          5.333 ms
+API output total     133.333 ms
+outputLatency        128.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"05a2ee148197885b60596a3e14a9a8151d096f9bc1ab0348c627f91c0af3763f","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"05a2ee148197885b60596a3e14a9a8151d096f9bc1ab0348c627f91c0af3763f","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=playback rep1
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=chrome_excl_playback_r1
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=playback, tag=chrome_excl_playback_r1 ---
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group 4b0629e4
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group 4b0629e4
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group 4b0629e4
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group 4b0629e4
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group 4b0629e4
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group 4b0629e4
+sampleRate           48000 Hz
+API output total     149.333 ms
+outputLatency        128.000 ms
+baseLatency          21.333 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"4b0629e4a480288e2f5296b8df6c0462713b1ee131e605c49d58e44145505fa7","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"4b0629e4a480288e2f5296b8df6c0462713b1ee131e605c49d58e44145505fa7","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=playback rep2
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=chrome_excl_playback_r2
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=playback, tag=chrome_excl_playback_r2 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group f1b5a10f
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group f1b5a10f
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group f1b5a10f
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group f1b5a10f
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group f1b5a10f
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group f1b5a10f
+sampleRate           48000 Hz
+API output total     149.333 ms
+baseLatency          21.333 ms
+outputLatency        128.000 ms
+sinkId               ""
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"f1b5a10f60c1dfa05e0a341f9a564972255e0e5f07f32c34635b4fb30b1ef4bd","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"f1b5a10f60c1dfa05e0a341f9a564972255e0e5f07f32c34635b4fb30b1ef4bd","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 --enable-exclusive-audio hint=playback rep3
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=chrome_excl_playback_r3
+=== flags: --use-fake-ui-for-media-stream --enable-exclusive-audio (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=playback, tag=chrome_excl_playback_r3 ---
+  audioinput: Par défaut - Ligne (AudioBox 22VSL) [default...] group bd0794d0
+  audioinput: Communications - Ligne (AudioBox 22VSL) [communicatio...] group bd0794d0
+  audioinput: Ligne (AudioBox 22VSL) [6a6b0dea4fae...] group bd0794d0
+  audiooutput: Par défaut - Haut-parleurs (AudioBox 22VSL) [default...] group bd0794d0
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [0366bcfff24c...] group bd0794d0
+  audiooutput: Communications - Haut-parleurs (AudioBox 22VSL) [communicatio...] group bd0794d0
+sampleRate           48000 Hz
+baseLatency          21.333 ms
+outputLatency        128.000 ms
+API output total     149.333 ms
+state                running
+sinkId               ""
+track.getSettings    {"autoGainControl":false,"channelCount":2,"deviceId":"default","echoCancellation":false,"groupId":"bd0794d0153a7a90ec4215c8ed728a058249823f70ba9c0f62d1e8c7c159dc4e","latency":0.01,"noiseSuppression":false,"sampleRate":48000,"sampleSize":16,"voiceIsolation":false}
+  -> input latency   10.000 ms
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"default","echoCancellation":[true,false,"remote-only","all"],"groupId":"bd0794d0153a7a90ec4215c8ed728a058249823f70ba9c0f62d1e8c7c159dc4e","latency":{"max":0.01,"min":0.01},"noiseSuppression":[true,false],"sampleRate":{"max":48000,"min":48000},"sampleSize":{"max":16,"min":16},"voiceIsolation":[true,false]}
+outputLatency x10    128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00 128.00
+FINISHED
+
+=== gate3 noinput=1 hint=interactive rep1
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&noinput=1&tag=chrome_noinput_r1
+=== flags:  (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_noinput_r1 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        40.000 ms
+API output total     50.000 ms
+sinkId               ""
+state                running
+track.getSettings    {}
+  -> input latency   NOT REPORTED
+track.getConstraints {}
+track.getCapabilities threw: Cannot read properties of null (reading 'getCapabilities')
+outputLatency x10    40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00
+FINISHED
+
+=== gate3 noinput=1 hint=interactive rep2
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&noinput=1&tag=chrome_noinput_r2
+=== flags:  (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_noinput_r2 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        40.000 ms
+sinkId               ""
+API output total     50.000 ms
+state                running
+  -> input latency   NOT REPORTED
+track.getSettings    {}
+track.getConstraints {}
+track.getCapabilities threw: Cannot read properties of null (reading 'getCapabilities')
+outputLatency x10    40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00
+FINISHED
+
+=== gate3 noinput=1 hint=interactive rep3
+=== url: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&noinput=1&tag=chrome_noinput_r3
+=== flags:  (plus --headless=new --no-sandbox --autoplay-policy=no-user-gesture-required --user-data-dir=<temp>)
+=== chrome exit: 0
+--- probe, latencyHint=interactive, tag=chrome_noinput_r3 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          10.000 ms
+outputLatency        40.000 ms
+API output total     50.000 ms
+sinkId               ""
+state                running
+  -> input latency   NOT REPORTED
+track.getSettings    {}
+track.getConstraints {}
+track.getCapabilities threw: Cannot read properties of null (reading 'getCapabilities')
+outputLatency x10    40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00 40.00
+FINISHED
+
