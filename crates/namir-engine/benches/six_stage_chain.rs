@@ -272,6 +272,15 @@ impl Rep {
     /// must be discarded, not quoted." A figure that may not be quoted may not be asserted against
     /// either — that is the whole reason this benchmark can carry an absolute threshold without
     /// becoming a coin flip on a shared desktop.
+    ///
+    /// # Steady-state signal assumption
+    ///
+    /// This heuristic assumes a **steady-state driving signal** (such as the fixture produced by
+    /// [`gen_block`]). On a signal-dependent or decaying signal, DSP costs (such as denormal
+    /// handling or input-dependent path costs) can vary across blocks rather than remaining
+    /// schedule-determined. In that case, raw `p99.9` can genuinely exceed the per-residue-minimum
+    /// estimator without any external machine interference or contamination (see issue #149 and
+    /// `docs/02-architecture.md` D-2.4).
     fn is_quotable(&self) -> bool {
         self.p999 - self.estimator <= VALIDITY_MARGIN_PCT
     }
@@ -282,6 +291,16 @@ impl Rep {
 /// The estimator is a function of each block's index, so the ordering must survive to here; every
 /// other benchmark in this workspace sorts in place at the point of measurement and destroys it.
 /// The sort below is on a copy for exactly that reason.
+///
+/// # Steady-state signal assumption
+///
+/// D-2.4's contamination-immune estimator assumes that per-block processing cost is stationary across
+/// identical IR schedule residues, so that each residue's minimum duration isolates the uncontaminated
+/// block. On a signal-dependent or decaying signal, costs (such as denormal handling or input-dependent
+/// path costs) can vary across blocks over time. Under non-steady input, raw `p99.9` can exceed the
+/// per-residue-minimum estimator without machine interference or contamination, because later or
+/// quieter blocks become genuinely more expensive while the minimum remains anchored by cheaper
+/// blocks (see issue #149).
 fn analyse(durations_ns: &[u64], block_period_ns: u64) -> Rep {
     let pct = |v: u64| v as f64 / block_period_ns as f64 * 100.0;
 
