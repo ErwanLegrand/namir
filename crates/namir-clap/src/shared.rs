@@ -261,11 +261,11 @@ impl SharedInner {
     /// #96 was `crate::worker_jobs::spawn_recall` building its resolver with a hardcoded empty
     /// list, so every `library_relative` reference in a preset resolved in the standalone
     /// application and missed in the plugin.
-    pub(crate) fn library_roots(&self) -> Vec<std::path::PathBuf> {
+    pub(crate) fn library_roots(&self) -> Arc<Vec<std::path::PathBuf>> {
         lock(&self.library)
             .as_ref()
             .map(|service| service.roots())
-            .unwrap_or_default()
+            .unwrap_or_else(|| Arc::new(Vec::new()))
     }
 
     pub(crate) fn add_library_root(&self, path: std::path::PathBuf) {
@@ -916,7 +916,7 @@ mod tests {
 
         let roots = inner.library_roots();
         assert_eq!(
-            roots,
+            *roots,
             vec![config.join("Library")],
             "an empty root list here is issue #96: LibraryResolver::resolve_library_relative \
              cannot succeed against one, so FR-STATE-070's first resolution candidate is dead in \

@@ -5915,13 +5915,13 @@ here is a paragraph in a governing document, not code.
 
 The nine Musts whose mechanism does not exist. Scope depends on Phase 0's item 16 answer.
 
-- **FR-STATE-030 — save and recall a named preset.** `AppHost::save_state`/`load_state` exist and
-  their own doc comment says they are wired to no control; their only caller is a test. `namir-clap`
-  has no equivalent. **`namir-app` constructs no `FileRef` anywhere**, so a save wired today would
-  write a state with no model or IR identity and silently break FR-STATE-060 and -070 — the
-  `FileRef` construction is a prerequisite of the save path, not a follow-up. Issue #32.
-- **FR-LIB-010 — nominate library directories.** Roots are hard-coded to `<config_dir>/Library`;
-  `AppSettings` has no roots field. Issue #32.
+- **FR-STATE-030 — save and recall a named preset.** `AppHost` and `ClapUiHost` now implement
+  `UiIntent::SavePreset` and `UiIntent::RecallPreset`, constructing proper `FileRef`s and
+  confirming overwrites (issue #32). View-layer controls remain to be rendered.
+- **FR-LIB-010 — nominate library directories.** `AppSettings.library_roots` is persisted,
+  `LibraryService::roots`/`open_at_with_roots` provide root management, empty-root scans are
+  guarded, and `UiIntent::AddLibraryRoot`/`RemoveLibraryRoot` are bridged (issue #32). View-layer
+  controls remain unbuilt.
 - **FR-STATE-070 — locate a missing file manually.** Also `library_relative: None` on every
   plugin-side `FileRef`, so FR-STATE-070's *first* resolution candidate is never recorded, in the
   shell where project portability matters most. This is not the gap that row's `uncovered:` field

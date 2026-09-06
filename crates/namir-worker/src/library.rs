@@ -136,7 +136,7 @@ pub struct ScanOutcome {
 /// never blocked by one and never observes a half-updated index.
 pub struct LibraryService {
     shared: Arc<SharedIndex>,
-    roots: Mutex<Vec<PathBuf>>,
+    roots: Mutex<Arc<Vec<PathBuf>>>,
     /// Guards against two scans running against the same service at once — see
     /// [`Self::start_scan`]'s doc comment for why that case is refused rather than resolved.
     scanning: Arc<AtomicBool>,
@@ -293,7 +293,7 @@ impl LibraryService {
         (
             LibraryService {
                 shared,
-                roots: Mutex::new(roots),
+                roots: Mutex::new(Arc::new(roots)),
                 scanning: Arc::new(AtomicBool::new(false)),
             },
             Vec::new(),
@@ -340,27 +340,47 @@ impl LibraryService {
     }
 
     /// The library roots this service scans, in configured order.
-    pub fn roots(&self) -> Vec<PathBuf> {
-        lock(&self.roots).clone()
+    pub fn roots(&self) -> Arc<Vec<PathBuf>> {
+        Arc::clone(&lock(&self.roots))
     }
 
     /// Adds `path` as a library root if not already present.
     pub fn add_root(&self, path: PathBuf) {
         let mut guard = lock(&self.roots);
         if !guard.contains(&path) {
-            guard.push(path);
+            let mut updated = (**guard).clone();
+            updated.push(path);
+            *guard = Arc::new(updated);
         }
     }
 
     /// Removes `path` from the configured library roots.
     pub fn remove_root(&self, path: &Path) {
-        lock(&self.roots).retain(|r| r != path);
+        let mut guard = lock(&self.roots);
+        if guard.iter().any(|r| r == path) {
+            let mut updated = (**guard).clone();
+            updated.retain(|r| r != path);
+            *guard = Arc::new(updated);
+        }
     }
 
-    /// Replaces the configured library roots.
-    pub fn set_roots(&self, roots: Vec<PathBuf>) {
-        *lock(&self.roots) = roots;
+    /// Opens the library at `config_dir`, ensuring `<config_dir>/Library` exists, and configuring
+    /// `roots` (or falling back to `[<config_dir>/Library]` if `roots` is empty).
+    pub fn open_at_with_roots(
+        config_dir: &std::path::Path,
+        roots: Vec<PathBuf>,
+    ) -> (LibraryService, Vec<WorkerError>) {
+        let index_path = config_dir.join("library-index.json");
+        let default_root = config_dir.join("Library");
+        let _ = std::fs::create_dir_all(&default_root);
+        let roots = if roots.is_empty() {
+            vec![default_root]
+        } else {
+            roots
+        };
+        Self::open(index_path, roots)
     }
+
     /// The one per-user default location every product shell shares, at an explicitly-supplied
     /// config directory: an index at `<config_dir>/library-index.json` and one root,
     /// `<config_dir>/Library`, created if it doesn't exist yet (a scan over a directory that
@@ -373,10 +393,18 @@ impl LibraryService {
     /// throwaway directory without touching this machine's real per-user config location.
     /// [`Self::open_default`] is the real-environment caller.
     pub fn open_at(config_dir: &std::path::Path) -> (LibraryService, Vec<WorkerError>) {
-        let index_path = config_dir.join("library-index.json");
-        let default_root = config_dir.join("Library");
-        let _ = std::fs::create_dir_all(&default_root);
-        Self::open(index_path, vec![default_root])
+        Self::open_at_with_roots(config_dir, Vec::new())
+    }
+
+    /// [`Self::open_at_with_roots`], resolved against this machine's real `namir_platform::config_dir()`.
+    /// `None` under the same conditions that itself degrades to `None` for.
+    pub fn open_default_with_roots(
+        roots: Vec<PathBuf>,
+    ) -> Option<(LibraryService, Vec<WorkerError>)> {
+        Some(Self::open_at_with_roots(
+            &namir_platform::config_dir()?,
+            roots,
+        ))
     }
 
     /// [`Self::open_at`], resolved against this machine's real `namir_platform::config_dir()`.
@@ -393,7 +421,7 @@ impl LibraryService {
     /// independently, specifically so this can't happen a second time by two crates' bootstrap
     /// logic drifting apart.
     pub fn open_default() -> Option<(LibraryService, Vec<WorkerError>)> {
-        Some(Self::open_at(&namir_platform::config_dir()?))
+        Self::open_default_with_roots(Vec::new())
     }
 
     /// A cheap, point-in-time view of the index — safe from any thread, at any time, including
@@ -440,6 +468,10 @@ impl LibraryService {
         mut on_progress: impl FnMut(ScanProgress) + Send + 'static,
         on_complete: impl FnOnce(ScanOutcome) + Send + 'static,
     ) -> Option<ScanHandle> {
+        let roots = lock(&self.roots).clone();
+        if roots.is_empty() {
+            return None;
+        }
         if self.scanning.swap(true, Ordering::AcqRel) {
             return None;
         }
@@ -447,8 +479,6 @@ impl LibraryService {
         let handle = ScanHandle {
             cancel: Arc::clone(&cancel),
         };
-
-        let roots = lock(&self.roots).clone();
         let shared = Arc::clone(&self.shared);
         // Moved into the job and held for its whole duration, so that an unwind from anywhere
         // inside still clears the flag; released explicitly before `on_complete` below.
@@ -464,7 +494,7 @@ impl LibraryService {
             let store = shared.ensure_loaded();
             let prior = Arc::clone(&lock(&shared.index));
 
-            let mut scanner = Scanner::new(roots, &prior);
+            let mut scanner = Scanner::new((*roots).clone(), &prior);
             let mut last_progress = ScanProgress::default();
             let mut last_reported_at = Instant::now();
             loop {
@@ -662,7 +692,7 @@ mod tests {
         let dir = std::path::PathBuf::from("/config/dir");
         let (service, warnings) = LibraryService::open_at(&dir);
         assert!(warnings.is_empty());
-        assert_eq!(service.roots(), vec![dir.join("Library")]);
+        assert_eq!(*service.roots(), vec![dir.join("Library")]);
     }
 
     /// A first launch (no config directory yet at all) opens cleanly with an empty index and no
@@ -719,6 +749,18 @@ mod tests {
         );
         assert_eq!(second.snapshot().len(), 1);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn start_scan_with_empty_roots_is_refused_and_does_not_wipe_index() {
+        let dir = temp_dir("empty_roots_scan_refused");
+        let pool = ThreadPool::with_threads(1);
+        let index_path = dir.join("library-index.json");
+        let (service, _) = LibraryService::open(index_path, Vec::new());
+        assert!(service.roots().is_empty());
+        assert!(service.start_scan(&pool, |_| {}, |_| {}).is_none());
+        assert!(!service.is_scanning());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

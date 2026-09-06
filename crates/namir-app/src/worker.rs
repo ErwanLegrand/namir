@@ -557,7 +557,7 @@ mod tests {
         let (engine, endpoint) = split(chain, RingCapacities::default());
         let instance = SharedInstance::new(Instance::new(EngineConfig { ctx }, endpoint));
         let (library, _warnings) = LibraryService::open_at(dir);
-        let roots = library.roots().to_vec();
+        let roots = (*library.roots()).clone();
         let handle = WorkerHandle::spawn(WorkerContext {
             instance,
             cache: Arc::new(ResourceCache::new()),

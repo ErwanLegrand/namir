@@ -89,6 +89,7 @@ pub(crate) struct ClapUiHost {
     input_peak_db: f32,
     output_peak_db: f32,
     pending_overwrite: Option<(String, std::time::Instant)>,
+    preset_dir: Option<std::path::PathBuf>,
 }
 
 impl ClapUiHost {
@@ -105,7 +106,13 @@ impl ClapUiHost {
             input_peak_db: f32::NEG_INFINITY,
             output_peak_db: f32::NEG_INFINITY,
             pending_overwrite: None,
+            preset_dir: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watch_presets(&mut self, dir: std::path::PathBuf) {
+        self.preset_dir = Some(dir);
     }
 
     /// Re-clones the telemetry reader when the engine behind it has been replaced.
@@ -165,6 +172,12 @@ impl ClapUiHost {
         }
     }
 
+    /// Whether an existing preset requires confirmation before being overwritten.
+    ///
+    /// Matches [`namir_app::host::AppHost::needs_overwrite_confirmation`]: a save naming an
+    /// existing preset is refused on the first attempt (pushing an FR-STATE-030 `PRESET_EXISTS`
+    /// notice) and allowed if the user presses save with the same name again within
+    /// [`OVERWRITE_CONFIRM_WINDOW`].
     fn needs_overwrite_confirmation(&mut self, path: &std::path::Path, name: &str) -> bool {
         if !path.exists() {
             self.pending_overwrite = None;
@@ -222,7 +235,12 @@ impl UiHost for ClapUiHost {
                 }
             }
             UiIntent::SavePreset { name } => {
-                let Some(dir) = crate::presets::preset_dir() else {
+                let Some(dir) = self
+                    .preset_dir
+                    .as_ref()
+                    .cloned()
+                    .or_else(crate::presets::preset_dir)
+                else {
                     self.inner.push_notice(
                         crate::error_codes::PRESET_UNAVAILABLE,
                         "this system has no per-user configuration directory to keep presets in",
@@ -244,7 +262,14 @@ impl UiHost for ClapUiHost {
                 self.inner.dismiss_notices_matching(|n| {
                     n.code.id == crate::error_codes::PRESET_EXISTS.id && n.detail == name
                 });
-                worker_jobs::spawn_save_preset(Arc::clone(&self.inner), name);
+                worker_jobs::spawn_save_preset(
+                    Arc::clone(&self.inner),
+                    name,
+                    self.preset_dir.clone(),
+                );
+                // Left out of the `mark_dirty` below with `RecallPreset`, and for the mirror-image
+                // reason: a save is what *clears* the dirty flag, and the job that writes the file
+                // is the one that clears it once the bytes are actually on disk.
                 return;
             }
             UiIntent::RecallPreset { path } => {
@@ -265,6 +290,9 @@ impl UiHost for ClapUiHost {
             UiIntent::DismissNotice { id } => self.inner.dismiss_notice(id),
             UiIntent::AddLibraryRoot { path } => {
                 self.inner.add_library_root(path);
+                // Adding a library root updates the configured list immediately for resolution and
+                // UI display, but does not trigger an automatic rescan. Rescanning remains an explicit
+                // user action via `RescanLibraryRequested`.
                 return;
             }
             UiIntent::RemoveLibraryRoot { path } => {
@@ -313,6 +341,16 @@ mod tests {
 
     fn host() -> ClapUiHost {
         ClapUiHost::new(Arc::new(SharedInner::new()))
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "namir-clap-ui-host-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     /// A host wired to a real telemetry ring, plus the producer end to publish into it.
@@ -602,13 +640,13 @@ mod tests {
 
     #[test]
     fn clap_host_saving_over_existing_preset_requires_confirmation() {
+        let dir = temp_dir("preset_overwrite");
+        let preset_dir = crate::presets::preset_dir_under(&dir);
+        let _ = std::fs::create_dir_all(&preset_dir);
         let mut h = host();
-        let Some(dir) = crate::presets::preset_dir() else {
-            return;
-        };
-        let _ = std::fs::create_dir_all(&dir);
+        h.watch_presets(preset_dir.clone());
         let preset_name = "ClapTestExistingPreset";
-        let path = crate::presets::preset_path(&dir, preset_name).unwrap();
+        let path = crate::presets::preset_path(&preset_dir, preset_name).unwrap();
         std::fs::write(&path, b"dummy preset bytes").unwrap();
 
         // First save attempt: refused, PRESET_EXISTS notice pushed
@@ -630,20 +668,20 @@ mod tests {
         let snapshot = h.snapshot();
         assert!(snapshot.notices.is_empty());
 
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn clap_host_overwrite_confirmation_resets_on_different_name() {
+        let dir = temp_dir("preset_overwrite_reset");
+        let preset_dir = crate::presets::preset_dir_under(&dir);
+        let _ = std::fs::create_dir_all(&preset_dir);
         let mut h = host();
-        let Some(dir) = crate::presets::preset_dir() else {
-            return;
-        };
-        let _ = std::fs::create_dir_all(&dir);
+        h.watch_presets(preset_dir.clone());
         let preset1 = "ClapOverwriteReset1";
         let preset2 = "ClapOverwriteReset2";
-        let path1 = crate::presets::preset_path(&dir, preset1).unwrap();
-        let path2 = crate::presets::preset_path(&dir, preset2).unwrap();
+        let path1 = crate::presets::preset_path(&preset_dir, preset1).unwrap();
+        let path2 = crate::presets::preset_path(&preset_dir, preset2).unwrap();
         std::fs::write(&path1, b"p1").unwrap();
         std::fs::write(&path2, b"p2").unwrap();
 
@@ -664,7 +702,6 @@ mod tests {
             2
         );
 
-        let _ = std::fs::remove_file(&path1);
-        let _ = std::fs::remove_file(&path2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

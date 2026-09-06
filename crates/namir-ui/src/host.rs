@@ -175,7 +175,7 @@ pub struct UiSnapshot {
     /// renders disabled rather than vanishing -- see [`crate::render`].
     pub presets: Vec<PresetSummary>,
     /// FR-LIB-010's configured library roots.
-    pub library_roots: Vec<PathBuf>,
+    pub library_roots: Arc<Vec<PathBuf>>,
 }
 
 impl Default for UiSnapshot {
@@ -195,7 +195,7 @@ impl Default for UiSnapshot {
             unsaved_changes: false,
             notices: Vec::new(),
             presets: Vec::new(),
-            library_roots: Vec::new(),
+            library_roots: Arc::new(Vec::new()),
         }
     }
 }
