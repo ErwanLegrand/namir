@@ -12,6 +12,7 @@ use namir_state::ParamValues;
 
 use crate::brand;
 use crate::controls::param_control;
+use crate::host::AudioDevicePanelSnapshot;
 use crate::host::{UiHost, UiSnapshot};
 use crate::library_view::{self, LibraryViewState};
 use crate::notices;
@@ -64,10 +65,11 @@ pub fn render(
                     "The current settings differ from the last saved/recalled state.",
                 );
             }
-            if ui
-                .button("Audio Settings")
-                .on_hover_text("Open audio device configuration and settings.")
-                .clicked()
+            if snapshot.audio_panel.is_some()
+                && ui
+                    .button("Audio Settings")
+                    .on_hover_text("Open audio device configuration and settings.")
+                    .clicked()
             {
                 intents.push(UiIntent::ToggleAudioSettings);
             }
@@ -128,14 +130,20 @@ pub fn render(
             });
     });
 
-    if snapshot.audio_panel_open {
-        audio_settings_panel(ui.ctx(), snapshot, intents);
+    if snapshot.audio_panel_open
+        && let Some(panel) = &snapshot.audio_panel
+    {
+        audio_settings_panel(ui.ctx(), panel, intents);
     }
 }
 
 /// Audio device configuration panel (FR-IO-010/040/070/080).
 /// Renders device selectors for input and output, sample rate, buffer size, and a close button.
-fn audio_settings_panel(ctx: &egui::Context, snapshot: &UiSnapshot, intents: &mut Vec<UiIntent>) {
+fn audio_settings_panel(
+    ctx: &egui::Context,
+    panel: &AudioDevicePanelSnapshot,
+    intents: &mut Vec<UiIntent>,
+) {
     let mut is_open = true;
     let mut close_clicked = false;
     egui::Window::new("Audio Settings")
@@ -149,15 +157,15 @@ fn audio_settings_panel(ctx: &egui::Context, snapshot: &UiSnapshot, intents: &mu
             // Input Device selector
             ui.horizontal(|ui| {
                 ui.label("Input Device:");
-                let current_in = snapshot.current_input_device.as_deref().unwrap_or("None");
-                let has_inputs = !snapshot.input_devices.is_empty();
+                let current_in = panel.current_input_device.as_deref().unwrap_or("None");
+                let has_inputs = !panel.input_devices.is_empty();
                 ui.add_enabled_ui(has_inputs, |ui| {
                     egui::ComboBox::from_id_salt("namir_audio_input_device")
                         .selected_text(current_in)
                         .show_ui(ui, |ui| {
-                            for dev in &snapshot.input_devices {
+                            for dev in &panel.input_devices {
                                 let selected =
-                                    snapshot.current_input_device.as_deref() == Some(dev.as_str());
+                                    panel.current_input_device.as_deref() == Some(dev.as_str());
                                 if ui.selectable_label(selected, dev).clicked() {
                                     intents.push(UiIntent::SelectInputDevice { name: dev.clone() });
                                 }
@@ -169,15 +177,15 @@ fn audio_settings_panel(ctx: &egui::Context, snapshot: &UiSnapshot, intents: &mu
             // Output Device selector
             ui.horizontal(|ui| {
                 ui.label("Output Device:");
-                let current_out = snapshot.current_output_device.as_deref().unwrap_or("None");
-                let has_outputs = !snapshot.output_devices.is_empty();
+                let current_out = panel.current_output_device.as_deref().unwrap_or("None");
+                let has_outputs = !panel.output_devices.is_empty();
                 ui.add_enabled_ui(has_outputs, |ui| {
                     egui::ComboBox::from_id_salt("namir_audio_output_device")
                         .selected_text(current_out)
                         .show_ui(ui, |ui| {
-                            for dev in &snapshot.output_devices {
+                            for dev in &panel.output_devices {
                                 let selected =
-                                    snapshot.current_output_device.as_deref() == Some(dev.as_str());
+                                    panel.current_output_device.as_deref() == Some(dev.as_str());
                                 if ui.selectable_label(selected, dev).clicked() {
                                     intents
                                         .push(UiIntent::SelectOutputDevice { name: dev.clone() });
@@ -192,15 +200,15 @@ fn audio_settings_panel(ctx: &egui::Context, snapshot: &UiSnapshot, intents: &mu
             // Sample Rate selector
             ui.horizontal(|ui| {
                 ui.label("Sample Rate:");
-                let current_sr = format!("{} Hz", snapshot.current_sample_rate);
-                let has_rates = !snapshot.supported_sample_rates.is_empty();
+                let current_sr = format!("{} Hz", panel.current_sample_rate);
+                let has_rates = !panel.supported_sample_rates.is_empty();
                 ui.add_enabled_ui(has_rates, |ui| {
                     egui::ComboBox::from_id_salt("namir_audio_sample_rate")
                         .selected_text(current_sr)
                         .show_ui(ui, |ui| {
-                            for &rate in &snapshot.supported_sample_rates {
+                            for &rate in &panel.supported_sample_rates {
                                 let label = format!("{rate} Hz");
-                                let selected = snapshot.current_sample_rate == rate;
+                                let selected = panel.current_sample_rate == rate;
                                 if ui.selectable_label(selected, label).clicked() {
                                     intents.push(UiIntent::SelectSampleRate { rate });
                                 }
@@ -212,15 +220,15 @@ fn audio_settings_panel(ctx: &egui::Context, snapshot: &UiSnapshot, intents: &mu
             // Buffer Size selector
             ui.horizontal(|ui| {
                 ui.label("Buffer Size:");
-                let current_bs = format!("{} frames", snapshot.current_buffer_size);
-                let has_bufs = !snapshot.supported_buffer_sizes.is_empty();
+                let current_bs = format!("{} frames", panel.current_buffer_size);
+                let has_bufs = !panel.supported_buffer_sizes.is_empty();
                 ui.add_enabled_ui(has_bufs, |ui| {
                     egui::ComboBox::from_id_salt("namir_audio_buffer_size")
                         .selected_text(current_bs)
                         .show_ui(ui, |ui| {
-                            for &buf in &snapshot.supported_buffer_sizes {
+                            for &buf in &panel.supported_buffer_sizes {
                                 let label = format!("{buf} frames");
-                                let selected = snapshot.current_buffer_size == buf;
+                                let selected = panel.current_buffer_size == buf;
                                 if ui.selectable_label(selected, label).clicked() {
                                     intents.push(UiIntent::SelectBufferSize { buffer_size: buf });
                                 }
@@ -1364,17 +1372,31 @@ mod tests {
         let mut view = ViewState::default();
         let snapshot = UiSnapshot {
             audio_panel_open: true,
-            input_devices: vec!["Input 1".to_string(), "Input 2".to_string()],
-            output_devices: vec!["Output 1".to_string(), "Output 2".to_string()],
-            current_input_device: Some("Input 1".to_string()),
-            current_output_device: Some("Output 1".to_string()),
-            supported_sample_rates: vec![44_100, 48_000, 96_000],
-            current_sample_rate: 48_000,
-            supported_buffer_sizes: vec![64, 128, 256, 512],
-            current_buffer_size: 256,
+            audio_panel: Some(AudioDevicePanelSnapshot {
+                input_devices: vec!["Input 1".to_string(), "Input 2".to_string()],
+                output_devices: vec!["Output 1".to_string(), "Output 2".to_string()],
+                current_input_device: Some("Input 1".to_string()),
+                current_output_device: Some("Output 1".to_string()),
+                supported_sample_rates: vec![44_100, 48_000, 96_000],
+                current_sample_rate: 48_000,
+                supported_buffer_sizes: vec![64, 128, 256, 512],
+                current_buffer_size: 256,
+            }),
             ..Default::default()
         };
         let mut intents = Vec::new();
         headless_frame(&mut view, &snapshot, &mut intents);
+    }
+
+    #[test]
+    fn audio_settings_button_omitted_when_audio_panel_none() {
+        let mut view = ViewState::default();
+        let snapshot = UiSnapshot {
+            audio_panel: None,
+            ..Default::default()
+        };
+        let mut intents = Vec::new();
+        headless_frame(&mut view, &snapshot, &mut intents);
+        assert!(intents.is_empty());
     }
 }
