@@ -3220,10 +3220,15 @@ mod tests {
         }
     }
 
-    #[cfg(target_feature = "neon")]
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn neon_is_in_the_baseline_so_wide_is_not_a_scalar_fallback() {
-        assert!(cfg!(target_feature = "neon"));
+        if std::env::consts::ARCH == "aarch64" {
+            assert!(
+                cfg!(target_feature = "neon"),
+                "wide would fall back to scalar f32x4 here"
+            );
+        }
     }
 
     #[test]
