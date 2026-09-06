@@ -67,6 +67,10 @@ healthy `GLXFBConfig`s available, the sRGB flag clear on every one. `namir-ui` n
 headless on every push (`headless-window`, asserting a frame count rather than an exit status). So a
 headless window is no longer a blocker for the `Verify: M` UI scripts; executing them still is.
 
+**Supplementary note (2026-09-06, issue #143).** Xvfb does support GLX via Mesa software rendering
+(`glxinfo` under `xvfb-run` reports Mesa GLX indirect/llvmpipe); the failure under default configuration
+was confirmed to stem from sRGB framebuffer matching rather than GLX unavailability.
+
 ## Executed run on Windows (M12, 2026-08-11)
 
 Run by the author on Windows, which is the only platform where step 2 is possible at all --
