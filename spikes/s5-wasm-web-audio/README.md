@@ -309,8 +309,13 @@ Spec §12, updated with what the spike actually learned:
   get. On the first, be careful what you inherit: Task 4 read a ~14% cost growth from 20 000 to
   100 000 blocks off **two** reps, and Task 5's **five** reps of the same cell at the same length
   read 30.00–31.31 — the screening level. Task 5's artefact is a rebuild, so neither supersedes
-  the other; the honest state is a disagreement, not a trend. Budgeting A1 against the higher
-  figure stays the conservative choice, and 112 500 worklet blocks produced no scheduling
+  the other. **Task 10 settles which way to read that disagreement**: across seven 100 000-block
+  A1 reps on Chrome 152 the p50 is 11.4375% — identical to Chrome's own 20 000-block figure —
+  and the p99.9 moves 26.25–28.87 to 27.37–29.25, i.e. no growth outside rep-to-rep spread on
+  the other Chromium browser. **The ~14% is one two-rep reading that neither of the two later
+  five-and-seven-rep sets reproduces**, so treat it as a measurement artefact rather than as a
+  trend. Budgeting A1 against the higher figure stays the conservative choice — now as a margin
+  of safety, not as something measured — and 112 500 worklet blocks produced no scheduling
   consequence either way.
 - **Nothing outside Chromium is known, and that is now the whole of the gap.** Task 10 measured
   all three gates on Chrome 152 and they reproduce Edge 152 — so "Chromium" is measured twice,

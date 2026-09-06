@@ -38,7 +38,8 @@ one machine.** **Task 10 (2026-09-06) re-ran all three gates on real Google Chro
 152.0.7977.83** — the same Chromium major — and every gate reproduced: Gate 1 PASS on simd128 /
 FAIL on scalar A1, Gate 2 zero steady-state underruns with the same first-second start-up event,
 Gate 3's 62 ms API-reported best case and the same 2.6x `--enable-exclusive-audio` regression, to
-the digit. So the Edge-as-Chrome substitution was sound and the Edge figures stand; what is
+the digit in all six capture-open cells (the seventh, Task 7's `&noinput=1` control, reads 40 ms
+on Chrome against Edge's 42 — a 2 ms split that changes no gate and is annotated in place). So the Edge-as-Chrome substitution was sound and the Edge figures stand; what is
 unmeasured is **Firefox**, still not installed, whose SpiderMonkey wasm compiler *and* cubeb audio
 backend are both different code — and cubeb is what the public Windows latency bugs are about. **No figure in this file is certified** in `docs/02-architecture.md`
 §2's sense, and a browser figure cannot be — it passes through a JIT, a browser process model
@@ -1995,6 +1996,13 @@ Three findings in that table.
    gain to keep the graph running) reads **42.000 ms** in all three reps. The 40-vs-42
    difference is between-session device state, not the input stream.
 
+   > **[WEAKENED at Task 10, 2026-09-06.]** Chrome 152's `&noinput=1` reads **40.000 ms** in
+   > all three reps while its capture-open cells read 42.000 ms — i.e. on the other Chromium
+   > browser this control comes out on the *other* side, consistent with the hypothesis it
+   > refutes here. One 2 ms device-period step, unresolved between the two browsers; it moves
+   > no gate (60 ms rather than 62 ms is still roughly twice the ~30 ms soft reference). **Do
+   > not take this control as still standing on its own** — see Task 10's Gate 3 section.
+
 **The input side.** There is no standard input-latency accessor, which is why spec §6 wants
 the loopback figure reported beside the API ones. What Chromium does expose is
 `MediaStreamTrack.getSettings().latency`, and it reports **0.01 s = 10 ms** in every cell —
@@ -2372,8 +2380,16 @@ beacon 404 lines, URL-decoded, one section per run, each carrying its own URL an
 
 ### Gate 3 in Chrome — the highest-value cell, and it reproduces exactly
 
-Three reps of each cell, `latency.html?auto=probe`. Every cell was identical across its three
-reps and `outputLatency` sampled ten times inside each run never moved, exactly as in Task 7.
+Three reps of each cell, `latency.html?auto=probe`. Every cell's reported figures were identical
+across its three reps. `outputLatency`, sampled ten times inside each run, never moved **in any
+default-flag cell** (60 samples at 42.00 ms, 30 at 52.00 ms, 30 at 40.00 ms for `&noinput=1`) —
+but it is **not stable under `--enable-exclusive-audio`**: two of the 180 exclusive-audio samples
+dipped, `96.00` in interactive rep 2 and `107.00` in interactive rep 3
+(`chrome_task10_gate3.txt:265` and `:289`), the other 178 reading 128.00. It does not move the
+128 / 133.333 ms figures, which are what every rep's summary reported. **It is worth a sentence
+on its own account**: the exclusive path's buffering is not merely larger than the shared path's,
+it is also less predictable, and for a demo an unstable buffer is worse news than a big one. The
+default-flag cells show no such wobble in 120 samples.
 
 | Browser flags | `latencyHint` | baseLatency | outputLatency | API output total | input latency (`getSettings().latency`) | Edge 152 read |
 |---|---|---|---|---|---|---|
@@ -2385,7 +2401,9 @@ reps and `outputLatency` sampled ten times inside each run never moved, exactly 
 | `--enable-exclusive-audio` | playback | 21.333 ms | 128.000 ms | **149.333 ms** | 10.000 ms | identical |
 | none, `&noinput=1` | interactive | 10.000 ms | **40.000 ms** | 50.000 ms | n/a (no capture stream) | Edge read 42.000 |
 
-**Every Gate 3 conclusion of Task 7 is confirmed on Chrome, to the digit.**
+**Every Gate 3 conclusion of Task 7 is confirmed on Chrome, and in the six capture-open cells
+to the digit.** The seventh cell — `&noinput=1`, Task 7's control for finding 3 — does not
+reproduce; it is the divergence below, and a dated note now stands beside Task 7's own text.
 
 - **API-reported total, best case: 10 + 42 + 10 = 62 ms.** Unchanged.
 - **`--enable-exclusive-audio` is a 2.6x regression**, on this spike's definition (the ratio of
