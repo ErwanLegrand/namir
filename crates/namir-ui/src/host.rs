@@ -174,6 +174,8 @@ pub struct UiSnapshot {
     /// when the host knows of none (or has not looked yet), in which case the recall control
     /// renders disabled rather than vanishing -- see [`crate::render`].
     pub presets: Vec<PresetSummary>,
+    /// FR-LIB-010's configured library roots.
+    pub library_roots: Arc<Vec<PathBuf>>,
 }
 
 impl Default for UiSnapshot {
@@ -193,6 +195,7 @@ impl Default for UiSnapshot {
             unsaved_changes: false,
             notices: Vec::new(),
             presets: Vec::new(),
+            library_roots: Arc::new(Vec::new()),
         }
     }
 }
@@ -270,6 +273,16 @@ pub enum UiIntent {
     /// stays unable to name a file of its own.
     RecallPreset {
         /// The chosen [`PresetSummary`]'s `path`, verbatim.
+        path: PathBuf,
+    },
+    /// FR-LIB-010: add `path` to the host's configured library roots.
+    AddLibraryRoot {
+        /// The root directory to add.
+        path: PathBuf,
+    },
+    /// FR-LIB-010: remove `path` from the host's configured library roots.
+    RemoveLibraryRoot {
+        /// The root directory to remove.
         path: PathBuf,
     },
 }

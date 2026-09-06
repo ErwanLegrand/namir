@@ -137,11 +137,15 @@ fn library_relative_reference(shared: &SharedInner, path: &Path) -> Option<RelPa
 /// preset directory on this system, a name that cannot be a filename, a document over
 /// NFR-SEC-020's ceiling, a write the OS refused — becomes an FR-UI-070 notice rather than a
 /// silently dropped click.
-pub(crate) fn spawn_save_preset(shared: Arc<SharedInner>, name: String) {
+pub(crate) fn spawn_save_preset(
+    shared: Arc<SharedInner>,
+    name: String,
+    custom_dir: Option<PathBuf>,
+) {
     let inner = Arc::clone(&shared);
     shared.pool.spawn(move || {
         let shared = inner;
-        let Some(dir) = crate::presets::preset_dir() else {
+        let Some(dir) = custom_dir.or_else(crate::presets::preset_dir) else {
             shared.push_notice(
                 crate::error_codes::PRESET_UNAVAILABLE,
                 "this system has no per-user configuration directory to keep presets in",
