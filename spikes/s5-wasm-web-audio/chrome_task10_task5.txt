@@ -1,0 +1,66 @@
+S-5 Task 10 -- Task 5's denormal cells, Google Chrome 152.0.7977.83, headless.
+simd128, 100 000 measured blocks, 5 reps, signal 0 (steady) and 2 (subnormal tail),
+plus the in-browser subnormal census (signal 1, 20 000 blocks). Beacon transcript, URL-decoded.
+
+=== task5 100k simd128 a1_standard signal=0 reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a1_standard&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":11.437500268220901,"p99":20.06250098347664,"p999":29.249998927116394,"max":100.31250044703484,"estimator":18.000000715255737,"quotable":false}
+{"kind":"stats","rep":2,"p50":11.437500268220901,"p99":19.687501341104507,"p999":28.49999964237213,"max":37.312500178813934,"estimator":18.37499812245369,"quotable":false}
+{"kind":"stats","rep":3,"p50":11.437500268220901,"p99":19.312501698732376,"p999":27.37499848008156,"max":37.5,"estimator":18.187498301267624,"quotable":false}
+{"kind":"stats","rep":4,"p50":11.437500268220901,"p99":19.499999284744263,"p999":27.937500178813934,"max":42.374999821186066,"estimator":18.187498301267624,"quotable":false}
+{"kind":"stats","rep":5,"p50":11.437500268220901,"p99":20.06249874830246,"p999":28.874999284744263,"max":36.56250089406967,"estimator":18.187498301267624,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+=== task5 100k simd128 a1_standard signal=2 reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a1_standard&signal=2
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":16.499999910593033,"p99":39.93750214576721,"p999":44.062500447034836,"max":94.68749910593033,"estimator":18.187500536441803,"quotable":false}
+{"kind":"stats","rep":2,"p50":16.312500089406967,"p99":38.62500116229057,"p999":42.56249964237213,"max":60.3750005364418,"estimator":18.37499812245369,"quotable":false}
+{"kind":"stats","rep":3,"p50":16.312500089406967,"p99":34.687500447034836,"p999":42.000000178813934,"max":51.93749964237213,"estimator":18.37500035762787,"quotable":false}
+{"kind":"stats","rep":4,"p50":16.312500089406967,"p99":38.624998927116394,"p999":42.1875,"max":61.31249964237213,"estimator":18.37500035762787,"quotable":false}
+{"kind":"stats","rep":5,"p50":16.312500089406967,"p99":39.5625002682209,"p999":43.50000098347664,"max":105.56249991059303,"estimator":18.37500035762787,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+=== task5 100k simd128 a2_lite signal=0 reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a2_lite&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":2.9999993741512303,"p99":10.312501341104507,"p999":14.999999105930328,"max":87.93749883770943,"estimator":9.562499821186066,"quotable":false}
+{"kind":"stats","rep":2,"p50":2.9999993741512303,"p99":10.312501341104507,"p999":14.624999463558197,"max":20.250000804662704,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":3,"p50":2.9999993741512303,"p99":10.312501341104507,"p999":14.624999463558197,"max":79.87499982118607,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":4,"p50":2.9999993741512303,"p99":10.312501341104507,"p999":14.250002056360245,"max":24.562501162290577,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":5,"p50":2.9999993741512303,"p99":10.312499105930328,"p999":14.624999463558197,"max":20.43749839067459,"estimator":9.749999642372131,"quotable":true}
+{"kind":"done"}
+FINISHED
+
+=== task5 100k simd128 a2_lite signal=2 reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=100000&wasm=simd128&model=a2_lite&signal=2
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":3.7500008940696716,"p99":15.187498927116394,"p999":18.562500178813934,"max":82.8749991953373,"estimator":9.562499821186066,"quotable":false}
+{"kind":"stats","rep":2,"p50":3.7500008940696716,"p99":15.187501162290573,"p999":18.75,"max":34.12499874830246,"estimator":9.749999642372131,"quotable":false}
+{"kind":"stats","rep":3,"p50":3.1874991953372955,"p99":13.500000536441803,"p999":17.06249937415123,"max":85.87499856948853,"estimator":9.562499821186066,"quotable":false}
+{"kind":"stats","rep":4,"p50":3.374999016523361,"p99":14.812499284744263,"p999":18.187500536441803,"max":26.624999195337296,"estimator":9.749999642372131,"quotable":false}
+{"kind":"stats","rep":5,"p50":4.125000536441803,"p99":15.562500804662704,"p999":18.75,"max":27.18750089406967,"estimator":9.749999642372131,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+=== task5 census simd128 a1_standard signal=1 20k
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&census=1&measured=20000&wasm=simd128&model=a1_standard&signal=1
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"census","signal":"amp-decay","blocks":20000,"subBlocks":9521,"subSamples":2436620,"minAbs":1.401298464324817e-45}
+FINISHED
+{"kind":"done"}
+
+TASK5 COMPLETE
