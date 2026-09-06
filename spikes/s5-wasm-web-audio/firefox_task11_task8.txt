@@ -1,0 +1,65 @@
+# S-5 Task 11 -- Task 8's extras, Mozilla Firefox 155.0.1, headless.
+# Four run sections: the &checkRenderSizeHint=256 availability probe, then three same-session
+# bench runs in launch order (ir_44k1, ir_48k, ir_44k1) with &irtiming=1, simd128 / a1_standard /
+# steady / 20 000 blocks / 5 reps. All fifteen per-block reps report quotable:true, which is the
+# clean pair Task 8's Edge runs never produced.
+# Machine: AMD Ryzen 9 5950X / 64 GB / Windows 11 Pro 26200, PreSonus AudioBox 22VSL @ 48 kHz.
+# Runtime: firefox.exe --headless --no-remote --new-instance --profile <fresh temp profile>, one
+# run at a time. Profile prefs: media.autoplay.default=0, media.autoplay.blocking_policy=0,
+# media.navigator.permission.disabled=true, privacy.reduceTimerPrecision=false (Firefox has no
+# --autoplay-policy / --use-fake-ui-for-media-stream switches; media.navigator.streams.fake was
+# left at its default false, so every device below is the real one). Gecko's performance.now()
+# quantum is 20 us here regardless of prefs, so every figure is a multiple of 0.75% of the block
+# period. Artefacts: the committed web/build/{scalar,simd128}.wasm, not rebuilt.
+# Beacon transcript, URL-decoded; each run's own "[GFX1-] RenderCompositorSWGL" line is Firefox's
+# headless stderr and is left in place rather than filtered.
+
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== rsh :: http://127.0.0.1:8080/web/worklet.html?auto=1&checkRenderSizeHint=256
+renderSizeHint 256: NOT honoured -- ctx.renderQuantumSize is undefined (the property does not exist on this runtime's AudioContext at all)
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== t8 :: http://127.0.0.1:8080/web/bench.html?auto=1&wasm=simd128&model=a1_standard&ir=ir_44k1&irtiming=1&signal=0&reps=5&measured=20000
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"irload","rep":1,"ir":"../fixtures/ir_44k1.wav","ms":10.060000000000002}
+{"kind":"irload","rep":2,"ir":"../fixtures/ir_44k1.wav","ms":9}
+{"kind":"irload","rep":3,"ir":"../fixtures/ir_44k1.wav","ms":6.860000000000014}
+{"kind":"irload","rep":4,"ir":"../fixtures/ir_44k1.wav","ms":6.439999999999998}
+{"kind":"irload","rep":5,"ir":"../fixtures/ir_44k1.wav","ms":6.439999999999998}
+{"kind":"stats","rep":1,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":81,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":2,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":30.75,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":3,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":28.500000000000004,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":4,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":32.25,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":5,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":27,"estimator":18.75,"quotable":true}
+{"kind":"done"}
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== t8 :: http://127.0.0.1:8080/web/bench.html?auto=1&wasm=simd128&model=a1_standard&ir=ir_48k&irtiming=1&signal=0&reps=5&measured=20000
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"irload","rep":3,"ir":"../fixtures/ir_48k.wav","ms":4.380000000000024}
+{"kind":"irload","rep":2,"ir":"../fixtures/ir_48k.wav","ms":5.219999999999999}
+{"kind":"irload","rep":1,"ir":"../fixtures/ir_48k.wav","ms":5.100000000000023}
+{"kind":"irload","rep":4,"ir":"../fixtures/ir_48k.wav","ms":4.0800000000000125}
+{"kind":"irload","rep":5,"ir":"../fixtures/ir_48k.wav","ms":4.200000000000017}
+{"kind":"stats","rep":1,"p50":12.000000000000002,"p99":19.5,"p999":21.000000000000004,"max":85.50000000000001,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":2,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":24.750000000000004,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":3,"p50":12.000000000000002,"p99":20.25,"p999":20.25,"max":22.5,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":4,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":21.75,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":5,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":21.000000000000004,"estimator":18.75,"quotable":true}
+{"kind":"done"}
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== t8 :: http://127.0.0.1:8080/web/bench.html?auto=1&wasm=simd128&model=a1_standard&ir=ir_44k1&irtiming=1&signal=0&reps=5&measured=20000
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"irload","rep":1,"ir":"../fixtures/ir_44k1.wav","ms":9.820000000000022}
+{"kind":"irload","rep":2,"ir":"../fixtures/ir_44k1.wav","ms":8.139999999999986}
+{"kind":"irload","rep":3,"ir":"../fixtures/ir_44k1.wav","ms":6.860000000000014}
+{"kind":"irload","rep":4,"ir":"../fixtures/ir_44k1.wav","ms":6.3799999999999955}
+{"kind":"irload","rep":5,"ir":"../fixtures/ir_44k1.wav","ms":6.300000000000011}
+{"kind":"stats","rep":1,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":82.5,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":2,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":24.750000000000004,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":3,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":23.25,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":4,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":24.750000000000004,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":5,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":22.5,"estimator":18.75,"quotable":true}
+{"kind":"done"}
+FINISHED
