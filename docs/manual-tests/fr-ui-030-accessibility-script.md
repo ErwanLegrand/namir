@@ -34,7 +34,7 @@ Run this against a real, visible `namir-ui` window (see
 `docs/manual-tests/fr-ui-010-standalone-window-renders.md` for how to get one — the
 `manual_window_smoke` example, with its auto-close block commented out).
 
-1. **Mouse operation.** For each control type present (a continuous `DragValue` like Input Trim,
+1. **Mouse operation.** For each control type present (a continuous `DragValue` like Input Level,
    and a stepped one like Gate Enabled): click and drag to change the value; click once to enter
    text-edit mode and type a value, then press Enter; double-click the control's *name* to reset it
    to its default. Confirm all three work and the displayed value updates each time.

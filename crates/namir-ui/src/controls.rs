@@ -177,14 +177,14 @@ mod tests {
         // widget code first.
         let mut label_rect = None;
         let _ = ctx.run_ui(frame_input(0.0, Vec::new()), |ui| {
-            label_rect = Some(add_name_label(ui, "Input Trim", "0.0").rect);
+            label_rect = Some(add_name_label(ui, "Input Level", "0.0").rect);
         });
         let pos = label_rect.expect("label laid out in frame 0").center();
 
         // Frame 1: first click. Not yet a double-click.
         let mut first_double_clicked = None;
         let _ = ctx.run_ui(frame_input(0.0, click_events(pos)), |ui| {
-            first_double_clicked = Some(add_name_label(ui, "Input Trim", "0.0").double_clicked());
+            first_double_clicked = Some(add_name_label(ui, "Input Level", "0.0").double_clicked());
         });
         assert_eq!(
             first_double_clicked,
@@ -195,7 +195,7 @@ mod tests {
         // Frame 2: second click, well inside egui's default 0.3s double-click window.
         let mut second_double_clicked = None;
         let _ = ctx.run_ui(frame_input(0.05, click_events(pos)), |ui| {
-            second_double_clicked = Some(add_name_label(ui, "Input Trim", "0.0").double_clicked());
+            second_double_clicked = Some(add_name_label(ui, "Input Level", "0.0").double_clicked());
         });
         assert_eq!(
             second_double_clicked,

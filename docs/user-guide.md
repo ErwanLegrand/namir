@@ -150,21 +150,23 @@ settings automatically.
 
 Namir's engine runs six fixed stages, always in this order, and it is not user-reorderable:
 
-**Gate → Trim → NAM → IR → EQ → Output**
+**Input → Gate → NAM → IR → EQ → Output**
 
-This order is deliberate and worth knowing about, because it differs from the "obvious" order you
-might expect (trim before gate): the noise gate's detector runs on the raw input, *before* your
-input trim is applied. That way the gate's threshold is referenced to your interface's actual
-noise floor and doesn't shift when you adjust trim — turning trim up or down doesn't require
-re-tuning the gate.
+The one consequence worth knowing about: the gate's detector sees the signal *after* your Input
+Level, so raising the input raises what the gate hears. If you change Input Level by a lot, expect
+to move the gate threshold by about the same amount. (Namir shipped the other order — gate first,
+threshold referenced to your interface's raw noise floor — up to and including the previous
+release. Putting Input first is what lets a stereo input reach the amp as both channels summed
+rather than as its left channel alone.)
 
 One sentence on what each stage does:
 
-1. **Gate** — a noise gate with threshold, attack, hold, and release controls (defaults: −70 dBFS,
+1. **Input** — input gain (−24 dB to +24 dB) with a level meter and clip indicator, applied before
+   everything else, and a DC blocker. A stereo input is summed here to the single channel the amp
+   model runs on, at −6 dB per side.
+2. **Gate** — a noise gate with threshold, attack, hold, and release controls (defaults: −70 dBFS,
    1 ms, 30 ms, 100 ms), with hysteresis so a signal hovering near the threshold doesn't chatter
    open and closed.
-2. **Trim** — input gain trim (−24 dB to +24 dB) with a level meter and clip indicator, applied
-   before the amp model.
 3. **NAM** — loads a `.nam` model file and runs neural-network inference to emulate an amp/pedal;
    displays the model's declared metadata (name, author, gear, tone type, description) where
    present, and applies the model's declared loudness normalisation so different models sound
@@ -176,6 +178,11 @@ One sentence on what each stage does:
    shelf), plus a defeatable high-pass/low-pass filter pair.
 6. **Output** — output level and metering, plus a global bypass that routes input straight to
    output at unity gain.
+
+Input Level and Output Level sit side by side at the top of the screen, each with its meter
+directly beneath it. Both meters read the signal *after* their own control, so they show the result
+of the setting rather than what arrived before it — which is what makes them usable for setting the
+level in the first place. Everything between them (gate, model, IR, EQ) is below.
 
 Any stage with nothing loaded (no model, no IR) behaves as if bypassed — it won't mute your signal
 or throw an error. Swapping a model or IR while playing crossfades smoothly (an equal-power fade

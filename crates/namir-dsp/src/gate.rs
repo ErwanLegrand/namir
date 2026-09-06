@@ -1,9 +1,11 @@
 //! Noise gate with hysteresis (FR-GATE-010..040).
 //!
-//! This primitive is intentionally trim-agnostic: it knows nothing about D-9.8's "gate before
-//! input trim" ordering decision. That ordering is a chain-assembly concern for `namir-engine`
-//! to apply when it wires this gate into a stage — not something this crate should encode or
-//! re-litigate, since a primitive DSP block has no notion of "before" or "after" anything.
+//! This primitive is intentionally trim-agnostic: it knows nothing about where the input trim sits
+//! relative to it. That ordering is a chain-assembly concern for `namir-engine` to apply when it
+//! wires this gate into a stage — not something this crate should encode or re-litigate, since a
+//! primitive DSP block has no notion of "before" or "after" anything. (It has in fact moved once:
+//! FR-CHAIN-010 puts the trim first, D-9.8 put the gate first from M2 to M15, and nothing in this
+//! file changed either time — which is the point.)
 
 use namir_core::{SampleRate, linear_to_db};
 

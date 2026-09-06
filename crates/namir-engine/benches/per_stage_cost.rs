@@ -310,11 +310,11 @@ fn main() {
 
     let mut rng_state = 0xC0DE_CAFEu64 ^ 0x9E37_79B9_7F4A_7C15;
 
-    // Measured in the chain's own runtime order (D-9.8: gate before trim), purely so the output
-    // table reads in the same order as `six_stage_chain.rs`'s description of the chain.
+    // Measured in the chain's own runtime order (FR-CHAIN-010: trim before gate), purely so the
+    // output table reads in the same order as `six_stage_chain.rs`'s description of the chain.
     let results = vec![
-        measure("gate", &mut gate_stage, &mut rng_state),
         measure("trim", &mut trim_stage, &mut rng_state),
+        measure("gate", &mut gate_stage, &mut rng_state),
         measure("nam", &mut nam_stage, &mut rng_state),
         measure("ir", &mut ir_stage, &mut rng_state),
         measure("eq", &mut eq_stage, &mut rng_state),
