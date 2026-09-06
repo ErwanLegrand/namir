@@ -180,25 +180,34 @@ impl DenormalGuard {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn read_fpcr() -> u64 {
+    let val: u64;
+    // SAFETY: `mrs` against `fpcr` reads a CPU control register directly, the same way the x86_64
+    // MXCSR intrinsics do — the instruction touches no memory, so it cannot violate memory safety.
+    // The only output is a plain 64-bit integer with no aliasing implications, and `fpcr` reads
+    // affect neither the stack pointer nor the NZCV condition flags, so
+    // `nomem, nostack, preserves_flags` accurately describe this asm block's effects.
+    unsafe {
+        core::arch::asm!(
+            "mrs {0}, fpcr",
+            out(reg) val,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    val
+}
+
+#[cfg(target_arch = "aarch64")]
 impl DenormalGuard {
     /// Engages FZ immediately, capturing the current FPCR so `Drop` can restore it exactly.
     pub fn new() -> Self {
-        let previous_fpcr: u64;
-        // SAFETY: `mrs`/`msr` against `fpcr` read/write a CPU control register directly, the same
-        // way the x86_64 MXCSR intrinsics do — the instruction touches no memory, so it cannot
-        // violate memory safety. The only output is a plain 64-bit integer with no aliasing
-        // implications, and `fpcr` writes affect neither the stack pointer nor the NZCV
-        // condition flags, so `nomem, nostack, preserves_flags` accurately describe this asm
-        // block's effects.
-        unsafe {
-            core::arch::asm!(
-                "mrs {0}, fpcr",
-                out(reg) previous_fpcr,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
+        let previous_fpcr = read_fpcr();
         let new_fpcr = previous_fpcr | FZ_MASK;
-        // SAFETY: same argument as the read above.
+        // SAFETY: `msr` against `fpcr` writes a CPU control register directly. The instruction
+        // touches no memory, so it cannot violate memory safety, and `fpcr` writes affect neither
+        // the stack pointer nor the NZCV condition flags, so `nomem, nostack, preserves_flags`
+        // accurately describe this asm block's effects.
         unsafe {
             core::arch::asm!(
                 "msr fpcr, {0}",
@@ -435,28 +444,11 @@ mod tests {
     mod aarch64_tests {
         use super::*;
 
-        // Direct FPCR read for tests observing what the guard observes/restores on AArch64.
-        fn read_fpcr() -> u64 {
-            let fpcr: u64;
-            // SAFETY: `mrs` against `fpcr` reads a CPU control register directly. It touches no
-            // memory and has no side effects, so `nomem, nostack, preserves_flags` are sound.
-            unsafe {
-                core::arch::asm!(
-                    "mrs {0}, fpcr",
-                    out(reg) fpcr,
-                    options(nomem, nostack, preserves_flags),
-                );
-            }
-            fpcr
-        }
-
-        use read_fpcr as fpcr;
-
         #[test]
         fn engaging_sets_fz_bit() {
-            let before = fpcr();
+            let before = read_fpcr();
             let guard = DenormalGuard::new();
-            let during = fpcr();
+            let during = read_fpcr();
             assert_eq!(
                 during,
                 before | FZ_MASK,
@@ -467,16 +459,16 @@ mod tests {
 
         #[test]
         fn dropping_restores_exact_prior_fpcr() {
-            let before = fpcr();
+            let before = read_fpcr();
             let guard = DenormalGuard::new();
             assert_ne!(
-                fpcr(),
+                read_fpcr(),
                 before,
                 "guard should have changed something to restore"
             );
             drop(guard);
             assert_eq!(
-                fpcr(),
+                read_fpcr(),
                 before,
                 "drop should restore the exact prior bit pattern"
             );
@@ -484,39 +476,43 @@ mod tests {
 
         #[test]
         fn sequential_cycles_do_not_leak_bits() {
-            let baseline = fpcr();
+            let baseline = read_fpcr();
             for _ in 0..5 {
                 let guard = DenormalGuard::new();
-                assert_eq!(fpcr() & FZ_MASK, FZ_MASK);
+                assert_eq!(read_fpcr() & FZ_MASK, FZ_MASK);
                 drop(guard);
-                assert_eq!(fpcr(), baseline, "a prior cycle leaked bits into this one");
+                assert_eq!(
+                    read_fpcr(),
+                    baseline,
+                    "a prior cycle leaked bits into this one"
+                );
             }
         }
 
         #[test]
         fn nested_guards_restore_in_reverse_order_without_leaking() {
-            let baseline = fpcr();
+            let baseline = read_fpcr();
             let outer = DenormalGuard::new();
-            let engaged = fpcr();
+            let engaged = read_fpcr();
             assert_eq!(engaged, baseline | FZ_MASK);
 
             let inner = DenormalGuard::new();
             assert_eq!(
-                fpcr(),
+                read_fpcr(),
                 engaged,
                 "re-engaging while already engaged is idempotent"
             );
 
             drop(inner);
             assert_eq!(
-                fpcr(),
+                read_fpcr(),
                 engaged,
                 "dropping the inner guard must restore the outer's engaged state, not leak past it"
             );
 
             drop(outer);
             assert_eq!(
-                fpcr(),
+                read_fpcr(),
                 baseline,
                 "dropping the outer guard must restore the true baseline"
             );
