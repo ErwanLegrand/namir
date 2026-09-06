@@ -139,6 +139,17 @@ The estimator is therefore promoted to a permanent part of the methodology — n
 as the instrument that tells you whether the gate's reading means anything. Reporting p99.9 without
 it is how M3 lost several days to a GPU driver.
 
+*Consequence (added 2026-09-06, from issue #149)* — **The validity check heuristic assumes a
+steady-state driving signal.** The per-residue-minimum estimator assumes that per-block processing
+cost across identical IR schedule residues is stationary, so that the minimum duration per residue
+isolates the uncontaminated execution time. On a signal-dependent or decaying driving signal,
+per-block DSP costs (such as denormal handling or input-dependent path costs) can vary across blocks
+over time. Under non-steady input, raw p99.9 can substantially exceed the per-residue-minimum
+estimator without any external machine interference or contamination occurring, because later or
+quieter blocks become genuinely more expensive while the minimum remains anchored by earlier or
+cheaper blocks. Benchmarks driving non-steady signals must not treat the gap between raw p99.9 and
+the estimator as evidence of machine contamination.
+
 *Rejected:* replacing p99.9 with the estimator (drops a real property — that the *observed* worst
 case matters to users — and departs from the FRS's own wording for no reason once the metric is
 measured properly); gating on end-to-end latency including OS interference (that is a property of
