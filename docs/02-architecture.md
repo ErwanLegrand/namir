@@ -1830,6 +1830,11 @@ parameter-change intents. It never reads engine state directly and never blocks 
 frames. Adding a library root updates the configured list immediately but does not trigger an
 automatic rescan.
 
+*Consequence (added M15, 2026-09-06)* — Audio device configuration overlay panel (FR-UI-020). The
+audio device settings window is rendered as an overlay panel over the main view in accordance with
+FR-UI-020 (all controls accessible without navigating away from the main view). In embedded plugin
+hosts (`namir-clap`), `UiSnapshot::audio_panel` is `None`, omitting the button and panel entirely.
+
 ---
 
 ## 16. Errors and diagnostics

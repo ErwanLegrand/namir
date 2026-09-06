@@ -500,7 +500,7 @@ pub trait AudioStream: Send {
 /// D-13.1's Namir-owned trait over `cpal`. Every method is deliberately synchronous and may
 /// block briefly (device enumeration and stream construction are not RT-safe operations and are
 /// never called from the audio thread) — see [`crate::worker`] for where these calls actually run.
-pub trait AudioBackend: Send {
+pub trait AudioBackend: Send + Sync {
     /// Every host API this build was compiled with support for, in no particular order.
     fn hosts(&self) -> Vec<HostInfo>;
     /// The host `cpal` itself would pick with no configuration at all — FR-IO-080's "working
