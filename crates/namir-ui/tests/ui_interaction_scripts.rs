@@ -361,7 +361,7 @@ impl HeadlessUiDriver {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_fr_ui_040_numeric_display_on_demand() {
+fn numeric_display_shows_formatted_values_without_interaction() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
     // Continuous control displays value text without interaction
     let (trim_text, _) = driver.locate_value_for_control("Input Trim");
@@ -382,7 +382,7 @@ fn test_fr_ui_040_numeric_display_on_demand() {
 }
 
 #[test]
-fn test_fr_ui_040_continuous_typed_entry() {
+fn numeric_value_entry_via_keyboard_updates_continuous_parameter() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
     driver.type_into_control_value("Input Trim", "6.0");
     let intents = driver.dispatched_intents();
@@ -400,7 +400,7 @@ fn test_fr_ui_040_continuous_typed_entry() {
 }
 
 #[test]
-fn test_fr_ui_040_stepped_typed_entry() {
+fn numeric_value_entry_via_keyboard_updates_stepped_parameter() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
 
     // Type name "off"
@@ -433,7 +433,7 @@ fn test_fr_ui_040_stepped_typed_entry() {
 }
 
 #[test]
-fn test_fr_ui_040_out_of_range_clamping() {
+fn numeric_value_entry_clamps_out_of_range_inputs() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
 
     // Input trim range is -24.0..=+24.0. Type 999.0 -> clamped to 24.0
@@ -466,7 +466,7 @@ fn test_fr_ui_040_out_of_range_clamping() {
 }
 
 #[test]
-fn test_fr_ui_040_non_numeric_rejection() {
+fn numeric_value_entry_rejects_non_numeric_input() {
     let mut params = ParamValues::defaults();
     params.set(trim::GAIN_DB.key, 6.0).unwrap();
     let mut driver = HeadlessUiDriver::new(UiSnapshot {
@@ -486,7 +486,7 @@ fn test_fr_ui_040_non_numeric_rejection() {
 }
 
 #[test]
-fn test_fr_ui_040_escape_cancels_edit() {
+fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
     let mut params = ParamValues::defaults();
     params.set(trim::GAIN_DB.key, 6.0).unwrap();
     let mut driver = HeadlessUiDriver::new(UiSnapshot {
@@ -506,7 +506,7 @@ fn test_fr_ui_040_escape_cancels_edit() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_fr_ui_050_reset_gesture_continuous_control() {
+fn reset_gesture_double_clicking_label_restores_continuous_default() {
     let mut params = ParamValues::defaults();
     params.set(trim::GAIN_DB.key, 12.0).unwrap();
     let mut driver = HeadlessUiDriver::new(UiSnapshot {
@@ -540,7 +540,7 @@ fn test_fr_ui_050_reset_gesture_continuous_control() {
 }
 
 #[test]
-fn test_fr_ui_050_reset_gesture_stepped_control() {
+fn reset_gesture_double_clicking_label_restores_stepped_default() {
     let mut params = ParamValues::defaults();
     // Default is 1.0 (On), set to 0.0 (Off)
     params.set(gate::ENABLED.key, 0.0).unwrap();
@@ -566,7 +566,7 @@ fn test_fr_ui_050_reset_gesture_stepped_control() {
 }
 
 #[test]
-fn test_fr_ui_050_reset_gesture_does_not_fire_on_value() {
+fn reset_gesture_double_clicking_value_does_not_reset_parameter() {
     let mut params = ParamValues::defaults();
     params.set(trim::GAIN_DB.key, 12.0).unwrap();
     let mut driver = HeadlessUiDriver::new(UiSnapshot {
@@ -588,7 +588,7 @@ fn test_fr_ui_050_reset_gesture_does_not_fire_on_value() {
 }
 
 #[test]
-fn test_fr_ui_050_fine_adjustment_shift_drag() {
+fn reset_and_fine_adjust_shift_drag_scales_increments() {
     // Standard drag without Shift
     let mut driver1 = HeadlessUiDriver::new(UiSnapshot::default());
     let (_, rect1) = driver1.locate_value_for_control("Input Trim");
@@ -622,18 +622,19 @@ fn test_fr_ui_050_fine_adjustment_shift_drag() {
 }
 
 // ---------------------------------------------------------------------------
-// FR-UI-030: Keyboard Operability & AccessKit data-level associations
+// FR-UI-030: Keyboard Operability
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_fr_ui_030_keyboard_tab_traversal_and_arrow_keys() {
+fn keyboard_arrow_keys_on_focused_control_adjust_value() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
 
-    // Focus Input Trim by sending a click or Tab
+    // Focus Input Trim by clicking its value control
     let (_, rect) = driver.locate_value_for_control("Input Trim");
     driver.click_at(rect.center());
+    driver.clear_dispatched();
 
-    // Send ArrowUp key to increment value
+    // Send ArrowUp key to step its value
     driver.frame(vec![Event::Key {
         key: Key::ArrowUp,
         pressed: true,
@@ -643,10 +644,18 @@ fn test_fr_ui_030_keyboard_tab_traversal_and_arrow_keys() {
     }]);
 
     let intents = driver.dispatched_intents();
-    // Arrow keys on focused DragValue change the parameter
+    assert_eq!(
+        intents.len(),
+        1,
+        "arrow key on focused control must dispatch exactly one SetParam intent"
+    );
+    let UiIntent::SetParam { key, value } = intents[0] else {
+        panic!("expected SetParam intent, got {:?}", intents[0]);
+    };
+    assert_eq!(key, trim::GAIN_DB.key);
     assert!(
-        !intents.is_empty(),
-        "arrow key on focused control should modify value"
+        value > 0.0,
+        "ArrowUp on focused control must increment parameter value above default 0.0 (got {value})"
     );
 }
 
@@ -655,7 +664,7 @@ fn test_fr_ui_030_keyboard_tab_traversal_and_arrow_keys() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_fr_ui_020_single_screen_layout_elements() {
+fn single_screen_layout_paints_all_major_sections() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
     // Verify all major controls and section headers exist on one screen
     let sections = [
@@ -683,7 +692,7 @@ const SAMPLE_NOTICE: ErrorCode = ErrorCode::new(
 );
 
 #[test]
-fn test_fr_ui_070_notice_dismissal() {
+fn notice_dismiss_button_dispatches_dismiss_intent() {
     let snapshot = UiSnapshot {
         notices: vec![UiNotice {
             id: 42,

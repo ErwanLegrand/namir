@@ -52,19 +52,30 @@ Run this against a real, visible `namir-ui` window (see
    adapter — recorded as a data-level check, not represented as equivalent to an actual assistive-
    technology pass.
 
-## Automated coverage (issue #143)
-
-The interactive steps of this script are covered by automated headless tests in
-`crates/namir-ui/tests/ui_interaction_scripts.rs`:
-- `test_fr_ui_030_keyboard_tab_traversal_and_arrow_keys`: exercises focusing a control and stepping
-  its value via arrow keys in a headless `RawInput` event loop.
-
 ## Executed run (this session)
 
-**Not executed manually by a human.** While headless automated driver tests cover the interaction
-logic, this agent session has not opened a visible desktop window.
+**Not executed.** This agent session has no way to interact with a real window (click, drag, type,
+Tab) or run a screen reader — only to run processes and read stdout/exit codes (see
+`fr-ui-010-standalone-window-renders.md`'s own note on the same limitation). What *is* verified by
+automated test, and stands in for part of step 1/2 here: `controls.rs`'s headless tests prove the
+double-click-reset gesture and the label/value `Id` pairing both function correctly against real
+`egui` widget/interaction logic (not a mock), via synthetic `egui::RawInput` pointer events run
+through `egui::Context::run_ui`. What those tests do **not** and cannot cover: an actual mouse drag
+changing a `DragValue`'s value (covered instead by `egui::DragValue`'s own upstream test suite,
+not re-verified here), Tab-key focus traversal across this crate's specific screen layout, and
+anything screen-reader-observable.
 
 **Result: NOT EXECUTED this session — script above is ready to run by a person with a display,
 keyboard, and mouse against a real `namir-ui` window.** The one substantive finding worth acting on
 before this is run for real: **wiring a real `accesskit` platform adapter is still open work**,
 tracked here rather than silently assumed done because `Response::labelled_by` is called correctly.
+
+### Supplementary headless driver coverage (2026-09-06, issue #143)
+
+Supplementary automated headless tests in `crates/namir-ui/tests/ui_interaction_scripts.rs` exercise
+the widget keyboard interaction layer end-to-end:
+- `keyboard_arrow_keys_on_focused_control_adjust_value`: exercises focusing a control and stepping
+  its value via arrow keys in a headless `RawInput` event loop.
+
+Full Tab-key focus traversal across the complete screen layout and screen-reader observations remain
+manual checks (steps 2 and 3 above).

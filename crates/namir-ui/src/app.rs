@@ -292,6 +292,10 @@ impl<H: UiHost> NamirUi<H> {
     /// One frame: fetch a snapshot, render FR-UI-020's screen from it, dispatch every intent that
     /// interaction produced, then request another repaint (meters and scan progress both need
     /// continuous updates even with no user input).
+    ///
+    /// Hidden from public docs because this is an internal per-frame driving entry point, exposed
+    /// as `pub` solely for integration test drivers (such as `tests/ui_interaction_scripts.rs`).
+    #[doc(hidden)]
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let snapshot = self.host.snapshot();
         let mut intents = Vec::new();

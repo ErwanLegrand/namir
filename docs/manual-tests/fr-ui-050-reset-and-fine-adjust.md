@@ -52,24 +52,35 @@ Run this against a real, visible `namir-ui` window (see
    discoverable from inside the running application, not only from source comments or external
    documentation.
 
-## Automated coverage (issue #143)
-
-The interactive steps of this script are covered by automated headless tests in
-`crates/namir-ui/tests/ui_interaction_scripts.rs`:
-- `test_fr_ui_050_reset_gesture_continuous_control`: asserts single-click on label does not reset,
-  while double-click dispatches `ResetParamToDefault` and restores default.
-- `test_fr_ui_050_reset_gesture_stepped_control`: asserts double-click on stepped control label
-  resets state to default ("On").
-- `test_fr_ui_050_reset_gesture_does_not_fire_on_value`: asserts double-clicking on the value
-  widget itself does not trigger `ResetParamToDefault`.
-- `test_fr_ui_050_fine_adjustment_shift_drag`: asserts dragging with Shift modifier produces finer
-  value adjustment than normal dragging.
-
 ## Executed run (this session)
 
-**Not executed manually by a human.** While headless automated driver tests cover the interaction
-logic end-to-end (including the Shift+drag fine adjustment), this agent session has not opened a
-visible desktop window.
+**Not executed.** This agent session has no way to interact with a real window (double-click, drag,
+hold a modifier key) — only to run processes and read stdout/exit codes (see
+`fr-ui-010-standalone-window-renders.md`'s and `fr-ui-030-accessibility-script.md`'s own notes on
+the same limitation). What *is* verified by automated test, and stands in for part of steps 1–3
+here: `controls.rs`'s headless tests prove the double-click-on-label-only-resets dispatch logic is
+correct against real `egui` widget/interaction logic driven by synthetic pointer events, through the
+same `Context::run_ui` entry point `egui-baseview` itself calls per frame. What those tests do not
+and cannot cover, and what remains genuinely unverified pending this script actually being run: an
+actual human double-click through a real window landing correctly, the visual/audible confirmation
+of a reset, and — most notably, since it has zero automated coverage of any kind — whether
+Shift+drag fine adjustment (steps 4–5) actually works against Namir's real controls at all, as
+opposed to being merely assumed correct because `egui::DragValue` documents the behaviour upstream.
 
 **Result: NOT EXECUTED this session — script above is ready to run by a person with a display,
-keyboard, and mouse against a real `namir-ui` window.**
+keyboard, and mouse against a real `namir-ui` window.** The fine-adjustment gesture (steps 4–5) is
+the higher-priority half to run first once a human is available: it is the only part of FR-UI-050
+with no automated coverage of any kind today.
+
+### Supplementary headless driver coverage (2026-09-06, issue #143)
+
+Supplementary automated headless tests in `crates/namir-ui/tests/ui_interaction_scripts.rs` drive
+real widget layout and interaction via synthetic `RawInput` events through `egui::Context::run_ui`:
+- `reset_gesture_double_clicking_label_restores_continuous_default`: asserts single-click on label
+  does not reset, while double-click dispatches `ResetParamToDefault` and restores default.
+- `reset_gesture_double_clicking_label_restores_stepped_default`: asserts double-click on a stepped
+  control's label resets to default state.
+- `reset_gesture_double_clicking_value_does_not_reset_parameter`: verifies double-clicking on the
+  value itself does not fire reset.
+- `reset_and_fine_adjust_shift_drag_scales_increments`: performs unmodified drag vs Shift+drag and
+  asserts Shift+drag yields a strictly smaller parameter delta for identical pointer displacement.

@@ -49,26 +49,35 @@ Run this against a real, visible `namir-ui` window (see
    happens if it differs from this expectation, since this is `DragValue`'s own upstream behaviour
    and has not previously been observed against a real Namir control.
 
-## Automated coverage (issue #143)
-
-The interactive steps of this script are covered by automated headless tests in
-`crates/namir-ui/tests/ui_interaction_scripts.rs`:
-- `test_fr_ui_040_numeric_display_on_demand`: verifies continuous and stepped controls display their
-  formatted values numerically without requiring click or hover.
-- `test_fr_ui_040_continuous_typed_entry`: drives click-to-edit, typing `6.0`, committing via Enter,
-  and asserts `SetParam { key: "trim.gain_db", value: 6.0 }` is dispatched and rendered.
-- `test_fr_ui_040_stepped_typed_entry`: exercises typed entry for named states (`"off"`) and raw
-  indices (`"1"`).
-- `test_fr_ui_040_out_of_range_clamping`: asserts typing out-of-range values (`999`, `-999`) clamps
-  to bounds (`24.0`, `-24.0`).
-- `test_fr_ui_040_non_numeric_rejection`: asserts non-numeric input (`loud`) is rejected and does
-  not corrupt parameter state.
-- `test_fr_ui_040_escape_cancels_edit`: asserts pressing Escape discards uncommitted edits.
-
 ## Executed run (this session)
 
-**Not executed manually by a human.** While headless automated driver tests cover the interaction
-logic end-to-end, this agent session has not opened a visible desktop window.
+**Not executed.** This agent session has no way to interact with a real window (click, type, read
+back a rendered value) — only to run processes and read stdout/exit codes (see
+`fr-ui-010-standalone-window-renders.md`'s and `fr-ui-030-accessibility-script.md`'s own notes on
+the same limitation). What *is* verified by automated test, and stands in for the parsing logic
+underlying steps 3–5 here: `crates/namir-ui/src/format.rs`'s `parse_value` tests prove named-value
+matching, raw-index parsing, range clamping, and rejection of non-numeric/NaN/infinity text all
+function correctly as pure functions. What those tests do not and cannot cover: the display half
+actually painting on screen, `DragValue`'s click-to-edit/Enter-to-commit/Escape-to-cancel UX against
+a real control, and whether a real OS text-input event reaches `custom_parser` the same way a
+synthetic call does.
 
 **Result: NOT EXECUTED this session — script above is ready to run by a person with a display and
 keyboard against a real `namir-ui` window.**
+
+### Supplementary headless driver coverage (2026-09-06, issue #143)
+
+Supplementary automated headless tests in `crates/namir-ui/tests/ui_interaction_scripts.rs` drive
+real widget layout and interaction via synthetic `RawInput` events through `egui::Context::run_ui`:
+- `numeric_display_shows_formatted_values_without_interaction`: verifies continuous and stepped
+  controls display their formatted values numerically without requiring click or hover.
+- `numeric_value_entry_via_keyboard_updates_continuous_parameter`: exercises click-to-edit, typing
+  `6.0`, pressing Enter, and verifies `SetParam` dispatch.
+- `numeric_value_entry_via_keyboard_updates_stepped_parameter`: exercises typing state names ("off")
+  and raw indices ("1") on stepped controls.
+- `numeric_value_entry_clamps_out_of_range_inputs`: exercises typing out-of-range values (e.g. `999`)
+  and verifies clamping at the widget boundary.
+- `numeric_value_entry_rejects_non_numeric_input`: exercises typing non-numeric text (`loud`) and
+  verifies the parameter value is preserved.
+- `numeric_value_entry_escape_key_cancels_in_progress_edit`: exercises pressing Escape during text
+  editing and verifies the in-progress edit is discarded.
