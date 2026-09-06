@@ -121,11 +121,13 @@ pub fn render(
 
                 ui.separator();
                 render_single(ui, &GLOBAL_BYPASS, &snapshot.params, intents);
-                // Prototype (`INDEPENDENT_CHANNELS`'s own doc comment): the one control this
-                // in-progress feature gets on the main screen, alongside the other chain-wide
-                // `global.*` controls rather than folded into any one stage's section, since it
-                // affects Gate/Trim/Nam/Ir all at once.
-                render_single(ui, &INDEPENDENT_CHANNELS, &snapshot.params, intents);
+                // Prototype (`INDEPENDENT_CHANNELS`'s own doc comment): only where the session's
+                // channel configuration gives it anything real to do -- see
+                // `UiSnapshot::independent_channels_relevant`'s own doc comment for why this
+                // crate reads that flag instead of asking which product it is running inside.
+                if snapshot.independent_channels_relevant {
+                    render_single(ui, &INDEPENDENT_CHANNELS, &snapshot.params, intents);
+                }
             });
     });
 
@@ -757,6 +759,25 @@ mod tests {
         let mut intents = Vec::new();
         headless_frame(&mut view, &snapshot, &mut intents);
         assert!(intents.is_empty());
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`): the control is conditionally drawn, per
+    /// `UiSnapshot::independent_channels_relevant`'s own doc comment -- this asserts the frame
+    /// still renders cleanly with the flag either way, the same shape
+    /// `rendering_with_an_audio_mode_indicator_present_does_not_panic` above proves for its own
+    /// `Option` field.
+    #[test]
+    fn rendering_with_independent_channels_relevant_either_way_does_not_panic() {
+        for relevant in [false, true] {
+            let mut view = ViewState::default();
+            let snapshot = UiSnapshot {
+                independent_channels_relevant: relevant,
+                ..UiSnapshot::default()
+            };
+            let mut intents = Vec::new();
+            headless_frame(&mut view, &snapshot, &mut intents);
+            assert!(intents.is_empty(), "relevant={relevant}");
+        }
     }
 
     /// A minimal [`UiHost`] that counts `snapshot` calls (`Arc<AtomicU32>` rather than

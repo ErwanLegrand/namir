@@ -201,6 +201,22 @@ pub struct UiSnapshot {
     /// Audio device configuration panel state, or `None` if device configuration is not available
     /// (e.g. in a plugin host where audio devices are managed externally).
     pub audio_panel: Option<AudioDevicePanelSnapshot>,
+    /// Prototype (`namir_params::global::INDEPENDENT_CHANNELS`): whether this session's channel
+    /// configuration is genuinely two independently-captured input channels (`ChannelConfig::
+    /// Stereo`), the only shape the control this flag gates has anything real to do. `false` means
+    /// "hide it," not "force it off" — the parameter itself is unaffected either way, only whether
+    /// [`crate::render`] draws a control for it.
+    ///
+    /// This crate cannot ask `namir-engine` for the real `ChannelConfig` itself (D-5.1's layering
+    /// table forbids the dependency — see this crate's own top doc comment), so each `UiHost`
+    /// states the answer for its own session instead, the same way [`Self::audio_mode`] already
+    /// does for a different host-shape fact. `namir-clap` always negotiates `Stereo` (its
+    /// `audio-ports` extension declares exactly one, two-channel port) and sets this `true`;
+    /// `namir-app` never captures two independently-captured channels today (only `Mono` or
+    /// `MonoToStereo`, one captured channel duplicated) and sets it `false` — see `stream.rs`'s own
+    /// documented gap. If the standalone ever gains real stereo capture, this is the one place
+    /// that needs to start answering truthfully instead of a fixed `false`.
+    pub independent_channels_relevant: bool,
 }
 
 impl Default for UiSnapshot {
@@ -223,6 +239,7 @@ impl Default for UiSnapshot {
             library_roots: Arc::new(Vec::new()),
             audio_panel_open: false,
             audio_panel: None,
+            independent_channels_relevant: false,
         }
     }
 }

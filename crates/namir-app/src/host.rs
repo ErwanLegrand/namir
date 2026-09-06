@@ -1320,6 +1320,10 @@ impl UiHost for AppHost {
                 supported_buffer_sizes: self.supported_buffer_sizes.clone(),
                 current_buffer_size: self.current_buffer_size,
             }),
+            // See `UiSnapshot::independent_channels_relevant`'s own doc comment: this build never
+            // captures two independently-captured input channels (`stream.rs`'s documented gap --
+            // only `Mono`/`MonoToStereo`), so the control has nothing real to do here.
+            independent_channels_relevant: false,
         }
     }
 
