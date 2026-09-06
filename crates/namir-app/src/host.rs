@@ -856,14 +856,12 @@ impl UiHost for AppHost {
                     let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = state.params.set(key, value);
                 }
-                self.instance.with(|i| {
-                    // "What the UI thread uses" -- see `Instance::try_submit_param`'s own doc
-                    // comment. One attempt, never blocks; D-15.3 doesn't think a knob turn is worth
-                    // stalling a GUI frame for.
-                    let _ = i.try_submit_param(ParamChange {
-                        id: EngineParamId(descriptor.id.0),
-                        value,
-                    });
+                // "What the UI thread uses" -- see `namir_worker::Instance::try_submit_param`'s own
+                // doc comment. One attempt, never blocks; D-15.3 doesn't think a knob turn is worth
+                // stalling a GUI frame for.
+                let _ = self.instance.try_submit_param(ParamChange {
+                    id: EngineParamId(descriptor.id.0),
+                    value,
                 });
             }
             UiIntent::ResetParamToDefault { key } => {
@@ -875,11 +873,9 @@ impl UiHost for AppHost {
                     let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = state.params.set(key, default);
                 }
-                self.instance.with(|i| {
-                    let _ = i.try_submit_param(ParamChange {
-                        id: EngineParamId(descriptor.id.0),
-                        value: default,
-                    });
+                let _ = self.instance.try_submit_param(ParamChange {
+                    id: EngineParamId(descriptor.id.0),
+                    value: default,
                 });
             }
             UiIntent::SavePreset { name } => {

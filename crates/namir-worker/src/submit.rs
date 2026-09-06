@@ -41,10 +41,10 @@
 //!
 //! What is given up is the strict first-come ordering the old convoy gave two *concurrent*
 //! blocking submitters on a full ring: whichever thread wins the lock when room appears goes
-//! first. No caller depends on that — an `Instance` owns its submitter and is reached through
-//! `&mut self`, so both shells already serialise every submitter access through their own
-//! `Mutex<Instance>` — and the commands in question (a parameter change, a resource offer) carry
-//! no ordering relation to each other. Serialised *access*, which is what D-7.2 asks for, is
+//! first. No caller depends on that — GUI parameter submissions take `&self` / use a shared
+//! `Arc<CommandSubmitter>` while worker asset operations run on background threads — and the
+//! commands in question (a parameter change, a resource offer) carry no ordering relation to
+//! each other. Serialised *access*, which is what D-7.2 asks for, is
 //! unchanged: every push still happens under the mutex.
 
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
@@ -176,9 +176,10 @@ impl CommandSubmitter {
     ///
     /// Two worker threads submitting to a full ring therefore interleave rather than convoy, and
     /// whichever wins the mutex when room appears goes first. Submitters are per-instance
-    /// (unrelated instances never contend) and an `Instance` is reached through `&mut self`, so in
-    /// both shells that case does not arise at all; where it could, the two commands carry no
-    /// ordering relation.
+    /// (unrelated instances never contend). GUI parameter submissions take `&self` / use shared
+    /// `Arc<CommandSubmitter>`, so concurrent submitter access between GUI and worker is now
+    /// possible and is safely serialised by the `CommandSubmitter` mutex; where concurrent commands
+    /// arise, they carry no ordering relation.
     ///
     /// **The one hard rule for callers: never hold the resource cache's lock across this call.**
     /// A full ring on one instance would otherwise stall every other instance's cache lookup, which
