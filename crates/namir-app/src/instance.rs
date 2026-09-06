@@ -34,16 +34,24 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use namir_worker::Instance;
+use namir_engine::{Command, ParamChange};
+use namir_worker::{CommandSubmitter, Instance, SubmitError};
 
 /// See this module's doc comment.
 #[derive(Clone)]
-pub struct SharedInstance(Arc<Mutex<Instance>>);
+pub struct SharedInstance {
+    instance: Arc<Mutex<Instance>>,
+    submitter: Arc<CommandSubmitter>,
+}
 
 impl SharedInstance {
     /// Wraps a freshly built `Instance` for sharing between the GUI-adjacent and worker threads.
     pub fn new(instance: Instance) -> Self {
-        Self(Arc::new(Mutex::new(instance)))
+        let submitter = instance.submitter();
+        Self {
+            instance: Arc::new(Mutex::new(instance)),
+            submitter,
+        }
     }
 
     /// Runs `f` against the instance under the lock. P8: a panic elsewhere while holding this lock
@@ -51,8 +59,14 @@ impl SharedInstance {
     /// `namir-clap::shared::lock` both use) — the poison is discarded, not propagated.
     pub fn with<R>(&self, f: impl FnOnce(&mut Instance) -> R) -> R {
         let mut guard: MutexGuard<'_, Instance> =
-            self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            self.instance.lock().unwrap_or_else(PoisonError::into_inner);
         f(&mut guard)
+    }
+
+    /// Submits one parameter change via the non-blocking [`CommandSubmitter`], without acquiring
+    /// the instance mutex.
+    pub fn try_submit_param(&self, change: ParamChange) -> Result<(), SubmitError> {
+        self.submitter.try_submit(Command::Param(change))
     }
 }
 
@@ -76,5 +90,36 @@ mod tests {
         let other = shared.clone();
         let freed = other.with(|i| i.drain_retired());
         assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn try_submit_param_does_not_block_while_instance_mutex_is_held() {
+        let c =
+            PrepareContext::new(SampleRate::new(48_000).unwrap(), 64, ChannelConfig::Mono).unwrap();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let shared = SharedInstance::new(Instance::new(EngineConfig { ctx: c }, endpoint));
+
+        let (lock_acquired_tx, lock_acquired_rx) = std::sync::mpsc::channel();
+        let (release_lock_tx, release_lock_rx) = std::sync::mpsc::channel();
+        let other = shared.clone();
+
+        let handle = std::thread::spawn(move || {
+            other.with(|_| {
+                lock_acquired_tx.send(()).unwrap();
+                release_lock_rx.recv().unwrap();
+            });
+        });
+
+        lock_acquired_rx.recv().unwrap();
+
+        // Submitting parameter change must succeed non-blockingly while another thread holds the instance lock.
+        let result = shared.try_submit_param(ParamChange {
+            id: namir_engine::ParamId(10),
+            value: -3.0,
+        });
+        assert!(result.is_ok());
+
+        release_lock_tx.send(()).unwrap();
+        handle.join().unwrap();
     }
 }

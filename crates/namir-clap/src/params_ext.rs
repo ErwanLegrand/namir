@@ -336,9 +336,7 @@ impl<'a> PluginMainThreadParams for NamirMainThread<'a> {
         let mirror = &shared.inner.params;
         apply_flush_events(input_parameter_changes, |id, value| {
             mirror.set_by_id(id.0, value);
-            shared.inner.with_instance(|instance| {
-                let _ = instance.try_submit_param(ParamChange { id, value });
-            });
+            let _ = shared.inner.try_submit_param(ParamChange { id, value });
         });
         // The outbound half (issue #94). This is the *only* channel a GUI-originated change has
         // while the plugin is inactive, which is why `crate::main_thread`'s

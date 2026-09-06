@@ -72,14 +72,14 @@ use std::time::{Duration, Instant};
 
 use clack_plugin::plugin::PluginShared;
 use namir_core::ErrorCode;
-use namir_engine::TelemetryReader;
+use namir_engine::{Command, ParamChange, TelemetryReader};
 use namir_library::ScanProgress;
 use namir_platform::ThreadPriorityOutcome;
 use namir_state::{Document, FileRef, State};
 use namir_ui::{PresetSummary, UiNotice};
 use namir_worker::library::{LibraryService, ScanHandle};
 use namir_worker::pool::ThreadPool;
-use namir_worker::{Instance, ResourceCache};
+use namir_worker::{CommandSubmitter, Instance, ResourceCache, SubmitError};
 
 use crate::param_mirror::ParamMirror;
 use crate::params_ext::GestureState;
@@ -94,6 +94,7 @@ pub(crate) struct SharedInner {
     pub(crate) cache: Arc<ResourceCache>,
     pub(crate) pool: ThreadPool,
     pub(crate) instance: Mutex<Option<Instance>>,
+    submitter: Mutex<Option<Arc<CommandSubmitter>>>,
     nam_ref: Mutex<Option<FileRef>>,
     ir_ref: Mutex<Option<FileRef>>,
     doc: Mutex<Document>,
@@ -206,6 +207,7 @@ impl SharedInner {
             cache: ResourceCache::shared(),
             pool: ThreadPool::new(),
             instance: Mutex::new(None),
+            submitter: Mutex::new(None),
             nam_ref: Mutex::new(None),
             ir_ref: Mutex::new(None),
             doc: Mutex::new(Document::empty()),
@@ -642,7 +644,9 @@ impl SharedInner {
     /// calls this exactly once (see `crate::audio`'s module doc comment for why the whole engine
     /// is rebuilt on every activation rather than mutated in place).
     pub(crate) fn install_instance(&self, instance: Instance) {
+        let submitter = instance.submitter();
         *self.lock_instance() = Some(instance);
+        *lock(&self.submitter) = Some(submitter);
     }
 
     /// Drops the current `Instance` — called by `deactivate()`. The `WorkerEndpoint` (and thus
@@ -651,6 +655,18 @@ impl SharedInner {
     /// abandoned ring (`SubmitError::Abandoned`), not a panic.
     pub(crate) fn clear_instance(&self) {
         *self.lock_instance() = None;
+        *lock(&self.submitter) = None;
+    }
+
+    /// Submits one parameter change via the non-blocking [`CommandSubmitter`], without acquiring
+    /// the instance mutex.
+    pub(crate) fn try_submit_param(&self, change: ParamChange) -> Result<(), SubmitError> {
+        let submitter = lock(&self.submitter).clone();
+        if let Some(submitter) = submitter {
+            submitter.try_submit(Command::Param(change))
+        } else {
+            Err(SubmitError::Abandoned(Command::Param(change)))
+        }
     }
 
     /// Ends this instance's off-thread work and returns only once every worker thread it started
@@ -1054,5 +1070,42 @@ mod tests {
             "a completed interaction with the live engine is exactly what the carried-latency \
              claim in `crate::audio` waits for"
         );
+    }
+
+    #[test]
+    fn try_submit_param_does_not_block_on_instance_mutex() {
+        let inner = Arc::new(SharedInner::new());
+        let ctx = namir_engine::PrepareContext::new(
+            namir_core::SampleRate::new(48_000).expect("48 kHz is a valid sample rate"),
+            64,
+            namir_core::ChannelConfig::Stereo,
+        )
+        .expect("the prepare context must build");
+        let (_engine, endpoint) =
+            namir_engine::build_default_engine(&ctx).expect("the engine must build");
+        inner.install_instance(Instance::new(namir_worker::EngineConfig { ctx }, endpoint));
+
+        // Hold the instance mutex on another thread to simulate a heavy asset load / model parse.
+        let (lock_acquired_tx, lock_acquired_rx) = std::sync::mpsc::channel();
+        let (release_lock_tx, release_lock_rx) = std::sync::mpsc::channel();
+        let inner_clone = Arc::clone(&inner);
+
+        let handle = std::thread::spawn(move || {
+            let _guard = inner_clone.lock_instance();
+            lock_acquired_tx.send(()).unwrap();
+            release_lock_rx.recv().unwrap();
+        });
+
+        lock_acquired_rx.recv().unwrap();
+
+        // Submitting a parameter change must succeed non-blockingly without waiting for the instance lock.
+        let result = inner.try_submit_param(ParamChange {
+            id: namir_engine::ParamId(100),
+            value: 0.75,
+        });
+        assert!(result.is_ok());
+
+        release_lock_tx.send(()).unwrap();
+        handle.join().unwrap();
     }
 }
