@@ -64,6 +64,7 @@ use namir_core::SampleRate;
 use namir_dsp::{Biquad, BiquadCoeffs, FilterKind, GainRamp};
 use namir_ir::{IrState, PreparedIr};
 use namir_params::ParamKind;
+use namir_params::global::INDEPENDENT_CHANNELS;
 use namir_params::stages::ir::{
     ENABLED, HIGH_CUT_ENABLED, HIGH_CUT_FREQ_HZ, LEVEL_DB, LOW_CUT_ENABLED, LOW_CUT_FREQ_HZ,
     NORMALIZE_ENABLED,
@@ -108,6 +109,10 @@ const LOW_CUT_FREQ_HZ_ID: ParamId = ParamId(LOW_CUT_FREQ_HZ.id.0);
 const HIGH_CUT_ENABLED_ID: ParamId = ParamId(HIGH_CUT_ENABLED.id.0);
 /// See [`ENABLED_ID`].
 const HIGH_CUT_FREQ_HZ_ID: ParamId = ParamId(HIGH_CUT_FREQ_HZ.id.0);
+/// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
+/// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
+/// stage just happens to be one of the four (with `gate.rs`/`trim.rs`/`nam.rs`) that owns this id.
+const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
 
 /// Telemetry signal id: whether `slots[active]` currently holds an IR (post-handover; see
 /// `nam.rs`'s identical `TELEMETRY_LOADED` for why this is deliberately `slots[active]`, not
@@ -204,9 +209,17 @@ impl StagePrep for IrPrep {
             mix: 0.0,
             mix_target: 0.0,
             mix_coeff,
+            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
+            // default -- this stage's existing shared-convolution behaviour, unchanged, until a
+            // caller actively turns this on.
+            independent: false,
             dry: vec![vec![0.0; max_block]; channel_count],
-            crossfade_outgoing: [vec![0.0; max_block], vec![0.0; max_block]],
-            crossfade_incoming: [vec![0.0; max_block], vec![0.0; max_block]],
+            crossfade_outgoing: (0..channel_count)
+                .map(|_| [vec![0.0; max_block], vec![0.0; max_block]])
+                .collect(),
+            crossfade_incoming: (0..channel_count)
+                .map(|_| [vec![0.0; max_block], vec![0.0; max_block]])
+                .collect(),
             prepared_for: *ctx,
             retired: None,
             level_db: level_db_default,
@@ -245,9 +258,12 @@ pub(crate) struct IrSlot {
     /// Immutable per-partition FFT machinery (D-9.1); cheap to clone (`Arc`) into a future cache
     /// or a crossfaded-out slot's replacement.
     ir: Arc<PreparedIr>,
-    /// This instance's own ring buffers/input accumulators/stream-time counter. Sized (via
-    /// `PreparedIr::new_state`) to exactly what `ir` needs.
-    state: IrState,
+    /// This instance's own ring buffers/input accumulators/stream-time counter, one per *physical*
+    /// channel this stage was prepared for — not only for the prototype `INDEPENDENT_CHANNELS`
+    /// mode (`states[1..]` simply sit idle in `Linked` mode, matching this stage's own default
+    /// cost exactly, the same reason `nam.rs`'s `NamSlot::states` is per-channel). Each is sized
+    /// (via `PreparedIr::new_state`) to exactly what `ir` needs.
+    states: Vec<IrState>,
     /// FR-IR-090: this IR's own measured correction toward unity broadband power, in dB
     /// (`PreparedIr::normalize_gain_db`). Read once here, at construction, since it depends only
     /// on the loaded taps and never on a live parameter — `nam.rs`'s `base_normalize_gain_db`
@@ -284,17 +300,17 @@ pub(crate) struct IrSlot {
 impl IrSlot {
     /// **Not RT-safe. This is D-8.1 step 1, and from M4 on it runs on a worker thread** —
     /// `PreparedIr::new_state` allocates every per-channel ring buffer/accumulator the convolution
-    /// needs. `pub(crate)` so [`crate::Command::load_ir`] can do this work off the audio thread,
-    /// mirroring `NamSlot::new`'s identical contract and rationale.
-    pub(crate) fn new(ir: Arc<PreparedIr>, sample_rate: SampleRate) -> Self {
-        let state = ir.new_state();
+    /// needs, once per physical channel. `pub(crate)` so [`crate::Command::load_ir`] can do this
+    /// work off the audio thread, mirroring `NamSlot::new`'s identical contract and rationale.
+    pub(crate) fn new(ir: Arc<PreparedIr>, channel_count: usize, sample_rate: SampleRate) -> Self {
+        let states = (0..channel_count).map(|_| ir.new_state()).collect();
         let base_normalize_gain_db = ir.normalize_gain_db();
         let normalize = (0..ir.channel_count())
             .map(|_| GainRamp::new(sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS))
             .collect();
         Self {
             ir,
-            state,
+            states,
             base_normalize_gain_db,
             normalize,
             settled: false,
@@ -315,11 +331,19 @@ impl IrSlot {
         self.ir.len_samples() as u32
     }
 
-    /// Runs this slot's convolution on `mono_input`, writing exactly `ir.channel_count()`
-    /// channels of `mono_input.len()` frames into the front of `wet` (`wet[..channel_count()]`,
-    /// each sliced to `n`). `wet` is fixed-capacity-2 scratch owned by [`IrStage`] (an IR is mono
-    /// or stereo only, so 2 channels of scratch always suffices) — see this struct's doc comment
-    /// for why there is no resampling step here, unlike `nam.rs`'s `NamSlot::process_wet`.
+    /// Runs this slot's convolution, against physical channel `ch`'s own state, on `input`,
+    /// writing exactly `ir.channel_count()` channels of `input.len()` frames into the front of
+    /// `wet` (`wet[..channel_count()]`, each sliced to `n`). `wet` is fixed-capacity-2 scratch
+    /// (an IR is mono or stereo only, so 2 channels of scratch always suffices) — see this
+    /// struct's doc comment for why there is no resampling step here, unlike `nam.rs`'s
+    /// `NamSlot::process_wet`.
+    ///
+    /// In `Linked` mode `ch` is always `0` and `input` is `self.dry[0]` (this stage's own mono
+    /// wet-path input); in `Independent` mode this is called once per physical channel, each with
+    /// that channel's own `input` and its own `states[ch]`, so — unlike `Linked` mode, where one
+    /// call's up-to-two outputs are read back for *every* physical channel via
+    /// [`wet_channel_index`] — each call's outputs are read back only for the one physical channel
+    /// that produced them.
     ///
     /// RT-safe once constructed: every buffer this touches was sized in `IrSlot::new`/`wet`'s own
     /// allocation in `IrPrep::prepare`. Building the `[&mut [f32]; 2]` array below is a stack
@@ -328,7 +352,8 @@ impl IrSlot {
     /// dynamically-many output channels.
     fn process_wet(
         &mut self,
-        mono_input: &[f32],
+        ch: usize,
+        input: &[f32],
         wet: &mut [Vec<f32>; 2],
         n: usize,
         normalize_enabled: bool,
@@ -337,7 +362,7 @@ impl IrSlot {
         let (w0, w1) = wet.split_at_mut(1);
         let mut outs: [&mut [f32]; 2] = [&mut w0[0][..n], &mut w1[0][..n]];
         self.ir
-            .process_block(&mut self.state, mono_input, &mut outs[..ir_channels]);
+            .process_block(&mut self.states[ch], input, &mut outs[..ir_channels]);
 
         // FR-IR-090, immediately after the convolution and before anything blends this slot with
         // another: retargeted every block so a live toggle glides. `0.0 dB` — not a skipped
@@ -421,20 +446,27 @@ pub struct IrStage {
     /// One-pole coefficient for the `mix` crossfade, computed once in `prepare` from
     /// [`BYPASS_CROSSFADE_TIME_CONSTANT_MS`] and the sample rate.
     mix_coeff: f32,
+    /// Prototype (`namir_params::global::INDEPENDENT_CHANNELS`): `false` (Linked) reproduces this
+    /// stage's existing "one shared convolution, read back per physical channel via
+    /// `wet_channel_index`" behaviour exactly (`render_channel` called once, for channel 0, via
+    /// `process_wet`); `true` (Independent) calls `render_channel` once per physical channel, each
+    /// against its own `IrSlot` state and its own dry input.
+    independent: bool,
     /// Per-physical-channel pre-stage signal, captured at the top of every `process` call — both
-    /// the shared bypass blend's dry reference *and*, `dry[0]`, the wet path's own mono input
-    /// (every channel is identical entering this stage, per the chain's own invariant, so reusing
-    /// channel 0 rather than a second copy is correct, not merely convenient).
+    /// the shared bypass blend's dry reference *and*, in `Linked` mode, `dry[0]` alone as the wet
+    /// path's own mono input (every channel is identical entering this stage in that mode, per the
+    /// chain's own invariant); in `Independent` mode, every channel's own.
     dry: Vec<Vec<f32>>,
     /// Handover-fade scratch: `slots[active]`'s (fading-out) wet output for the current block, one
-    /// `Vec` per potential IR channel (fixed capacity 2 — an IR is mono or stereo only, this
-    /// module's doc comment) — or a dry passthrough copy of the mono input in `[0]` when that
-    /// slot is `None` (`nam.rs`'s doc comment: "a slot that is `None` inside a crossfade
-    /// contributes its input directly").
-    crossfade_outgoing: [Vec<f32>; 2],
+    /// `[Vec<f32>; 2]` pair (fixed capacity 2 — an IR is mono or stereo only, this module's doc
+    /// comment) *per physical channel* — not only for `Independent` mode (see `prepare`'s own
+    /// comment); only index `[0]` is ever touched in `Linked` mode. A `None` slot's dry passthrough
+    /// copy lands in each pair's own `[0]` (`nam.rs`'s doc comment: "a slot that is `None` inside a
+    /// crossfade contributes its input directly").
+    crossfade_outgoing: Vec<[Vec<f32>; 2]>,
     /// Handover-fade scratch: `slots[1 - active]`'s (fading-in) wet output for the current block,
     /// symmetric to `crossfade_outgoing`.
-    crossfade_incoming: [Vec<f32>; 2],
+    crossfade_incoming: Vec<[Vec<f32>; 2]>,
     /// The whole `PrepareContext` this stage was built against, so an incoming offer's own context
     /// can be checked rather than trusted. This matters more here than in `nam.rs`:
     /// `PreparedIr::process_block` **asserts** the block it is given is no longer than the one its
@@ -486,7 +518,11 @@ impl IrStage {
     /// `active` is unaffected, matching `nam.rs`'s `load_model`'s identical rule.
     pub fn load_ir(&mut self, ir: Arc<PreparedIr>) {
         let ctx = self.prepared_for;
-        self.install(Box::new(IrSlot::new(ir, self.sample_rate)), ctx);
+        let channel_count = ctx.channel_config().output_channels() as usize;
+        self.install(
+            Box::new(IrSlot::new(ir, channel_count, self.sample_rate)),
+            ctx,
+        );
     }
 
     /// **RT-safe.** Installs an already-built slot and starts the handover fade — D-8.1 step 3's
@@ -643,15 +679,17 @@ impl IrStage {
         }
     }
 
-    /// The wet path (this module's doc comment): writes this block's convolved (or, with nothing
-    /// loaded, dry-passthrough) result into every physical channel of `io`, reading mono input
-    /// from `self.dry[0]` (already captured by `process` before this is called). Handles the same
-    /// three shapes `nam.rs`'s `process_channel0` does — no handover (single slot, or pure
-    /// passthrough if `slots[active]` is `None`); a handover in progress (equal-power blend, per
-    /// physical channel, of both slots' wet output — see [`wet_channel_index`] for how a channel-
-    /// count mismatch between the two slots, or between a slot and the chain, is resolved); and a
-    /// handover completing partway through this block — but generalizes the blend itself to run
-    /// once per physical channel rather than once on channel 0, per this module's doc comment.
+    /// The wet path in `Linked` mode (this module's doc comment): writes this block's convolved
+    /// (or, with nothing loaded, dry-passthrough) result into every physical channel of `io`,
+    /// reading mono input from `self.dry[0]` (already captured by `process` before this is
+    /// called), via `states[0]`. Handles the same three shapes `nam.rs`'s `process_channel0` does
+    /// — no handover (single slot, or pure passthrough if `slots[active]` is `None`); a handover
+    /// in progress (equal-power blend, per physical channel, of both slots' wet output — see
+    /// [`wet_channel_index`] for how a channel-count mismatch between the two slots, or between a
+    /// slot and the chain, is resolved); and a handover completing partway through this block —
+    /// but generalizes the blend itself to run once per physical channel rather than once on
+    /// channel 0, per this module's doc comment. See [`Self::render_channel_independent`] for the
+    /// prototype's per-channel-input counterpart.
     fn process_wet(&mut self, io: &mut StageIo<'_>, n: usize) {
         let physical_channels = io.channel_count();
 
@@ -662,15 +700,16 @@ impl IrStage {
             if let Some(slot) = &mut self.slots[self.active] {
                 let produced = slot.channel_count();
                 slot.process_wet(
+                    0,
                     &self.dry[0][..n],
-                    &mut self.crossfade_outgoing,
+                    &mut self.crossfade_outgoing[0],
                     n,
                     self.normalize_enabled,
                 );
                 for ch in 0..physical_channels {
                     let idx = wet_channel_index(ch, produced);
                     io.channel(ch)
-                        .copy_from_slice(&self.crossfade_outgoing[idx][..n]);
+                        .copy_from_slice(&self.crossfade_outgoing[0][idx][..n]);
                 }
             }
             return;
@@ -694,15 +733,16 @@ impl IrStage {
             if let Some(slot) = &mut self.slots[incoming_idx] {
                 let produced = slot.channel_count();
                 slot.process_wet(
+                    0,
                     &self.dry[0][..n],
-                    &mut self.crossfade_incoming,
+                    &mut self.crossfade_incoming[0],
                     n,
                     self.normalize_enabled,
                 );
                 for ch in 0..physical_channels {
                     let idx = wet_channel_index(ch, produced);
                     io.channel(ch)
-                        .copy_from_slice(&self.crossfade_incoming[idx][..n]);
+                        .copy_from_slice(&self.crossfade_incoming[0][idx][..n]);
                 }
             }
             return;
@@ -712,15 +752,16 @@ impl IrStage {
             Some(slot) => {
                 let produced = slot.channel_count();
                 slot.process_wet(
+                    0,
                     &self.dry[0][..n],
-                    &mut self.crossfade_outgoing,
+                    &mut self.crossfade_outgoing[0],
                     n,
                     self.normalize_enabled,
                 );
                 produced
             }
             None => {
-                self.crossfade_outgoing[0][..n].copy_from_slice(&self.dry[0][..n]);
+                self.crossfade_outgoing[0][0][..n].copy_from_slice(&self.dry[0][..n]);
                 1
             }
         };
@@ -728,15 +769,16 @@ impl IrStage {
             Some(slot) => {
                 let produced = slot.channel_count();
                 slot.process_wet(
+                    0,
                     &self.dry[0][..n],
-                    &mut self.crossfade_incoming,
+                    &mut self.crossfade_incoming[0],
                     n,
                     self.normalize_enabled,
                 );
                 produced
             }
             None => {
-                self.crossfade_incoming[0][..n].copy_from_slice(&self.dry[0][..n]);
+                self.crossfade_incoming[0][0][..n].copy_from_slice(&self.dry[0][..n]);
                 1
             }
         };
@@ -757,8 +799,8 @@ impl IrStage {
             let out = io.channel(ch);
             for ((o, &outgoing), &incoming) in out
                 .iter_mut()
-                .zip(self.crossfade_outgoing[o_idx][..n].iter())
-                .zip(self.crossfade_incoming[i_idx][..n].iter())
+                .zip(self.crossfade_outgoing[0][o_idx][..n].iter())
+                .zip(self.crossfade_incoming[0][i_idx][..n].iter())
             {
                 let progress = (total - remaining).min(total);
                 let theta = (progress as f32 / total as f32) * FRAC_PI_2;
@@ -777,6 +819,132 @@ impl IrStage {
                 // this finalization on every block until the pen clears -- issue #56). D-8.1's
                 // "degradation, not failure (P8)". Dropping the outgoing slot here to make
                 // progress is the exact bug this milestone removes.
+                self.crossfade = Some(crossfade);
+            }
+        } else {
+            self.crossfade = Some(crossfade);
+        }
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`): [`Self::process_wet`]'s per-physical-channel
+    /// counterpart, called once per channel with `commit` true for exactly one call per block
+    /// (the last channel) — same reason and same idiom as `nam.rs`'s `render_channel`: the
+    /// per-block crossfade state (`remaining`) must advance once per block, not once per channel,
+    /// so every call recomputes the same trajectory from the same starting point and only the
+    /// committing call writes anything back to `self`.
+    ///
+    /// Unlike `process_wet`, this reads `self.dry[ch]` (that physical channel's own signal) and
+    /// runs the convolution against `states[ch]`, producing this channel's own up-to-two outputs
+    /// into `crossfade_outgoing[ch]`/`crossfade_incoming[ch]` — read back only for `ch` itself via
+    /// [`wet_channel_index`], not fanned out to every physical channel the way one shared
+    /// `Linked`-mode call is. A mono IR (the common case) therefore applies identically to every
+    /// channel's own independent signal (dual mono); a stereo IR applies its channel 0 to physical
+    /// channel 0's own signal and its channel 1 to physical channel 1's own signal.
+    fn render_channel_independent(
+        &mut self,
+        io: &mut StageIo<'_>,
+        ch: usize,
+        n: usize,
+        commit: bool,
+    ) {
+        let Some(mut crossfade) = self.crossfade else {
+            if let Some(slot) = &mut self.slots[self.active] {
+                let produced = slot.channel_count();
+                slot.process_wet(
+                    ch,
+                    &self.dry[ch][..n],
+                    &mut self.crossfade_outgoing[ch],
+                    n,
+                    self.normalize_enabled,
+                );
+                let idx = wet_channel_index(ch, produced);
+                io.channel(ch)
+                    .copy_from_slice(&self.crossfade_outgoing[ch][idx][..n]);
+            }
+            return;
+        };
+
+        let outgoing_idx = self.active;
+        let incoming_idx = 1 - self.active;
+
+        if crossfade.remaining == 0 {
+            if commit {
+                self.try_finalize_handover();
+            }
+            if let Some(slot) = &mut self.slots[incoming_idx] {
+                let produced = slot.channel_count();
+                slot.process_wet(
+                    ch,
+                    &self.dry[ch][..n],
+                    &mut self.crossfade_incoming[ch],
+                    n,
+                    self.normalize_enabled,
+                );
+                let idx = wet_channel_index(ch, produced);
+                io.channel(ch)
+                    .copy_from_slice(&self.crossfade_incoming[ch][idx][..n]);
+            }
+            return;
+        }
+
+        let outgoing_channels = match &mut self.slots[outgoing_idx] {
+            Some(slot) => {
+                let produced = slot.channel_count();
+                slot.process_wet(
+                    ch,
+                    &self.dry[ch][..n],
+                    &mut self.crossfade_outgoing[ch],
+                    n,
+                    self.normalize_enabled,
+                );
+                produced
+            }
+            None => {
+                self.crossfade_outgoing[ch][0][..n].copy_from_slice(&self.dry[ch][..n]);
+                1
+            }
+        };
+        let incoming_channels = match &mut self.slots[incoming_idx] {
+            Some(slot) => {
+                let produced = slot.channel_count();
+                slot.process_wet(
+                    ch,
+                    &self.dry[ch][..n],
+                    &mut self.crossfade_incoming[ch],
+                    n,
+                    self.normalize_enabled,
+                );
+                produced
+            }
+            None => {
+                self.crossfade_incoming[ch][0][..n].copy_from_slice(&self.dry[ch][..n]);
+                1
+            }
+        };
+
+        let o_idx = wet_channel_index(ch, outgoing_channels);
+        let i_idx = wet_channel_index(ch, incoming_channels);
+        let total = crossfade.total.max(1);
+        let out = io.channel(ch);
+        for ((o, &outgoing), &incoming) in out
+            .iter_mut()
+            .zip(self.crossfade_outgoing[ch][o_idx][..n].iter())
+            .zip(self.crossfade_incoming[ch][i_idx][..n].iter())
+        {
+            let progress = (total - crossfade.remaining).min(total);
+            let theta = (progress as f32 / total as f32) * FRAC_PI_2;
+            *o = outgoing * theta.cos() + incoming * theta.sin();
+            if crossfade.remaining > 0 {
+                crossfade.remaining -= 1;
+            }
+        }
+
+        if !commit {
+            return;
+        }
+
+        if crossfade.remaining == 0 {
+            if !self.try_finalize_handover() {
                 self.crossfade = Some(crossfade);
             }
         } else {
@@ -811,12 +979,22 @@ impl Stage for IrStage {
         let channel_count = io.channel_count();
 
         // Capture dry input for every channel -- for the shared bypass blend below, and (channel
-        // 0 only) as the wet path's own mono input, per `process_wet`'s doc comment.
+        // 0 only in `Linked` mode, every channel in `Independent` mode) as the wet path's own
+        // input, per `process_wet`'s/`render_channel_independent`'s doc comments.
         for ch in 0..channel_count {
             self.dry[ch][..n].copy_from_slice(io.channel(ch));
         }
 
-        self.process_wet(io, n);
+        if self.independent && channel_count > 1 {
+            // Prototype: every channel through its own `IrSlot` state, no shared-convolution
+            // fan-out -- the same shape `gate.rs`/`trim.rs`/`nam.rs` use for the identical reason.
+            let last = channel_count - 1;
+            for ch in 0..channel_count {
+                self.render_channel_independent(io, ch, n, ch == last);
+            }
+        } else {
+            self.process_wet(io, n);
+        }
 
         // FR-IR-070: low-cut -> high-cut -> level, all on the wet path, before the outer dry/wet
         // bypass blend (this module's doc comment).
@@ -912,6 +1090,10 @@ impl Stage for IrStage {
         } else if change.id == HIGH_CUT_FREQ_HZ_ID {
             self.high_cut_freq_hz = change.value;
             self.retarget_high_cut();
+        } else if change.id == INDEPENDENT_CHANNELS_ID {
+            // Stepped param value is the index as f32; index 1 is "Independent" per
+            // `INDEPENDENT_CHANNELS`'s descriptor.
+            self.independent = change.value >= 0.5;
         }
     }
 
@@ -1558,6 +1740,103 @@ mod tests {
             }
         }
         assert!(any_diff, "expected left/right channels to differ");
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`): the double-tracking claim this exists for. With a
+    /// **mono** IR loaded (the common real-world cabinet capture, unlike
+    /// `stereo_ir_into_stereo_chain_channels_are_independent` above) and the mode switched on,
+    /// two genuinely different input signals must each be convolved against that same mono IR
+    /// independently — dual mono applied to two different sources, not `mono_ir_into_stereo_chain
+    /// _is_dual_mono`'s "one shared input, duplicated". Verified against
+    /// `namir_ir::direct_convolve`, the same independent reference the loaded-IR tests above use.
+    #[test]
+    fn independent_mode_with_a_mono_ir_convolves_each_channels_own_signal() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0, // "Independent"
+        });
+        let h = vec![0.5f32, 0.0, 0.25, -0.1];
+        let ir = mono_ir(sample_rate, &h, 64);
+        stage.load_ir(ir);
+
+        let total = 48_000usize;
+        let mut left_in = vec![0.0f32; total];
+        let mut right_in = vec![0.0f32; total];
+        for i in 0..total {
+            left_in[i] = 0.2 * ((i as f32) * 0.03).sin();
+            right_in[i] = 0.15 * ((i as f32) * 0.011).sin();
+        }
+
+        let mut left_out = Vec::with_capacity(total);
+        let mut right_out = Vec::with_capacity(total);
+        let mut offset = 0usize;
+        while offset < total {
+            let end = (offset + 64).min(total);
+            let n = end - offset;
+            let mut left = left_in[offset..end].to_vec();
+            let mut right = right_in[offset..end].to_vec();
+            let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+            let mut io = StageIo::new(&mut channels, n);
+            audio_section(|| stage.process(&mut io));
+            left_out.extend_from_slice(io.channel(0));
+            right_out.extend_from_slice(io.channel(1));
+            offset = end;
+        }
+
+        let expected_left = namir_ir::direct_convolve(&h, &left_in);
+        let expected_right = namir_ir::direct_convolve(&h, &right_in);
+
+        let settle = 19_200usize; // 400 ms.
+        for i in settle..total {
+            assert!(
+                (left_out[i] - expected_left[i]).abs() < 1e-4,
+                "left sample {i}: stage {} vs its own signal convolved with the mono IR {}",
+                left_out[i],
+                expected_left[i]
+            );
+            assert!(
+                (right_out[i] - expected_right[i]).abs() < 1e-4,
+                "right sample {i}: stage {} vs its own signal convolved with the mono IR {}",
+                right_out[i],
+                expected_right[i]
+            );
+        }
+        // Non-vacuous: the two *inputs* really did differ, ruling out a test that would pass even
+        // if both channels silently collapsed onto the same one.
+        assert!(
+            left_in
+                .iter()
+                .zip(right_in.iter())
+                .any(|(l, r)| (l - r).abs() > 0.05),
+            "the two probe signals are too similar for this comparison to mean anything"
+        );
+    }
+
+    /// [`crossfade_in_progress_does_not_allocate`]'s counterpart with the prototype mode on.
+    #[test]
+    fn independent_mode_crossfade_in_progress_does_not_allocate() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0,
+        });
+        let h = vec![0.4f32, 0.1, -0.2];
+        stage.load_ir(mono_ir(sample_rate, &h, 64));
+        let mut left = [0.1f32; 64];
+        let mut right = [0.2f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+
+        stage.load_ir(mono_ir(sample_rate, &[-0.3f32, 0.2, 0.15], 64)); // second handover, mid-first.
+        let mut left = [0.1f32; 64];
+        let mut right = [0.2f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
     }
 
     #[test]
