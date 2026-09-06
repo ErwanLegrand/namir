@@ -10,23 +10,28 @@ milliseconds."
 
 [`crate::latency::estimate_round_trip`] computes the *buffer-based* figure (input buffer frames +
 output buffer frames + bridge prefill frames, converted to ms at the negotiated sample rate) —
-FR-IO-050's own second clause, "driver-reported latency where measurement is not possible." The
-prefill term is the one block of silence `crate::stream`'s `open` pushes into the bridge ring
-ahead of the first pull, so a rendered block crosses three buffers (input, prefill, output). Its
+FR-IO-050's own second clause, "driver-reported latency where measurement is not possible." Its
 arithmetic is fully unit tested (`crates/namir-app/src/latency.rs`, 6 tests) and was exercised for
-real in this session: the executed run in `fr-io-010-device-enumeration.md` printed `~30.0 ms
-estimated round-trip latency` for a real 480-frame buffer at 48 kHz on each side (480 + 480 + 480
-= 1440 samples = 30.0 ms — matches the formula exactly).
+real in this session: the executed run in `fr-io-010-device-enumeration.md` printed `~20.0 ms
+estimated round-trip latency` for a real 480-frame buffer at 48 kHz on each side (480 + 480 = 960
+samples = 20.0 ms under the two-term formula in effect when that run was recorded).
+
+### Supplementary note (2026-09-06, PR #163)
+
+`crate::stream::open` now prefills the input→output bridge with one block of silence to absorb
+callback scheduling jitter, and `crate::latency::estimate_round_trip` accounts for that block as a
+third term (`input + output + prefill`). Under the updated formula, that same 480-frame configuration
+at 48 kHz yields 480 + 480 + 480 = 1440 samples = ~30.0 ms (**unexecuted** against real hardware in
+this session).
 
 ## What is not built: a true *measured* loopback figure
 
 FR-IO-050's first clause ("measured round-trip latency") means playing a known impulse out through
 the output device and timing its arrival back on the input device — the actual round trip through
-the OS mixer, the driver, and the hardware's own buffering, which is *not* fully captured by the three-term buffer estimate
-(`input_buffer_frames + output_buffer_frames + bridge_prefill_frames`; WASAPI shared mode in
-particular adds its own internal buffering beyond the requested period, which `cpal` 0.18.1 does
-not expose a portable way to query — see `crate::latency`'s own module doc comment). Building this
-needs:
+the OS mixer, the driver, and the hardware's own buffering, which is *not* fully captured by
+`buffer_frames × 3` (WASAPI shared mode in particular adds its own internal buffering beyond the
+requested period, which `cpal` 0.18.1 does not expose a portable way to query — see
+`crate::latency`'s own module doc comment). Building this needs:
 
 - A physical or virtual loopback path (a cable from a line output back into a line input, or a
   virtual audio cable driver on the test machine).
