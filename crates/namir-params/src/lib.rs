@@ -97,6 +97,9 @@ pub const REGISTRY: &[ParamDescriptor] = &[
     // now.
     global::GLOBAL_BYPASS,
     global::OUTPUT_CEILING_DB,
+    // Prototype (this branch only, not yet ratified against FR-CHAIN-050 -- see its own doc
+    // comment in `global.rs`): independent per-channel Gate/Nam/Trim processing.
+    global::INDEPENDENT_CHANNELS,
 ];
 
 #[cfg(test)]

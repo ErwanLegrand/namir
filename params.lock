@@ -32,6 +32,7 @@ gate.hold_ms 3834628618 continuous live min=0.0 max=500.0 default=30.0
 gate.release_ms 4133041258 continuous live min=1.0 max=2000.0 default=100.0
 gate.threshold_db 746066514 continuous live min=-100.0 max=0.0 default=-70.0
 global.bypass 2600577824 stepped live steps=2 default=0 values=1d6b388a
+global.independent_channels 1908871755 stepped live steps=2 default=0 values=5531ef6d
 global.output_ceiling_db 2553390476 continuous live min=-60.0 max=12.0 default=0.0
 ir.enabled 4045421189 stepped live steps=2 default=1 values=1d6b388a
 ir.high_cut_enabled 1597249221 stepped live steps=2 default=0 values=1d6b388a

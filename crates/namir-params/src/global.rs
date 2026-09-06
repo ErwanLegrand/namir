@@ -52,6 +52,34 @@ pub const OUTPUT_CEILING_DB: ParamDescriptor = ParamDescriptor::new(
     SmoothingCategory::GainLike,
 );
 
+/// Prototype control for independent per-channel processing (double-tracking use case: a stereo
+/// input whose two channels carry genuinely different signals — e.g. a REAPER parent bus summing
+/// two panned, double-tracked guitar takes — rather than one mono source merely widened by the IR).
+///
+/// **Off by default, and this default is load-bearing, not cosmetic.** With this at "Linked" every
+/// existing FR-CHAIN-050 guarantee holds unchanged (Gate/Nam mono-core, Trim's downmix establishes
+/// the identical-channel invariant) — this descriptor changes nothing about the shipped product
+/// until a caller actively turns it on. "Independent" is a genuine, deliberate departure from
+/// FR-CHAIN-050's text ("the engine core shall process a single channel"): Gate and Nam each run a
+/// full, separate instance per physical channel instead of mono-core-then-duplicate, and Trim skips
+/// its downmix in favour of per-channel gain/DC-block/metering (the same shape `eq.rs` already
+/// uses). Only meaningful when the chain has more than one channel; a `Mono` chain ignores it.
+///
+/// Not yet reconciled with FR-CHAIN-050's own text or priority — this is this branch's working
+/// prototype of the idea, not a ratified decision. See `stages::gate`/`stages::nam`/`stages::trim`
+/// in `namir-engine` for where it is actually read.
+pub const INDEPENDENT_CHANNELS: ParamDescriptor = ParamDescriptor::new(
+    "global.independent_channels",
+    "Stereo Channels",
+    Unit::None,
+    ParamKind::Stepped {
+        values: &["Linked", "Independent"],
+        default_index: StepIndex(0),
+    },
+    ValueFormat::Named,
+    SmoothingCategory::Stepped,
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,6 +87,16 @@ mod tests {
     #[test]
     fn descriptors_have_distinct_keys() {
         assert_ne!(GLOBAL_BYPASS.key, OUTPUT_CEILING_DB.key);
+        assert_ne!(GLOBAL_BYPASS.key, INDEPENDENT_CHANNELS.key);
+        assert_ne!(OUTPUT_CEILING_DB.key, INDEPENDENT_CHANNELS.key);
+    }
+
+    #[test]
+    fn independent_channels_default_is_linked() {
+        let ParamKind::Stepped { default_index, .. } = INDEPENDENT_CHANNELS.kind else {
+            panic!("expected Stepped");
+        };
+        assert_eq!(default_index, StepIndex(0));
     }
 
     #[test]

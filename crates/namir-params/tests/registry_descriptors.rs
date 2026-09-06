@@ -228,6 +228,13 @@ const SECTION_5_DISCRETE: &[(&str, &str)] = &[
     ("global.bypass", "FR-CHAIN-030"),
 ];
 
+/// Stepped `REGISTRY` entries with **no** FRS §5 citation, by design: each is a working prototype
+/// of an idea not yet ratified as a requirement (see the descriptor's own doc comment in
+/// `global.rs` for the full context) — listed here, by name, rather than silently loosening the
+/// count check below, so a real regression (a shipped discrete choice FRS §5 forgot to mention)
+/// still fails loudly.
+const PROTOTYPE_DISCRETE_NOT_YET_IN_FRS: &[&str] = &["global.independent_channels"];
+
 fn find(key: &str) -> &'static ParamDescriptor {
     REGISTRY
         .iter()
@@ -408,11 +415,12 @@ fn every_shipped_continuous_descriptor_carries_all_seven_required_properties() {
 #[test]
 fn every_section_5_discrete_choice_is_a_stepped_parameter_with_named_values() {
     let registry_stepped = REGISTRY.iter().filter(|d| continuous(d).is_none()).count();
+    let prototype_stepped = PROTOTYPE_DISCRETE_NOT_YET_IN_FRS.len();
     assert_eq!(
-        registry_stepped,
+        registry_stepped - prototype_stepped,
         SECTION_5_DISCRETE.len(),
-        "REGISTRY holds {registry_stepped} stepped parameters but FRS §5 identifies {} discrete \
-         choices",
+        "REGISTRY holds {registry_stepped} stepped parameters ({prototype_stepped} of them \
+         explicitly not-yet-in-the-FRS prototypes) but FRS §5 identifies {} discrete choices",
         SECTION_5_DISCRETE.len()
     );
 
