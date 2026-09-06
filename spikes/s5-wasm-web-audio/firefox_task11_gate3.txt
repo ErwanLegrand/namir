@@ -1,0 +1,217 @@
+# S-5 Task 11 -- Gate 3 (latency), Mozilla Firefox 155.0.1, headless, probe half only.
+# Twelve runs: three reps each of latencyHint interactive / balanced / playback with a real capture
+# stream open, then three of &noinput=1. The physical loopback half is still PENDING RUN -- there is
+# no cable on this machine. There is no Gecko equivalent of --enable-exclusive-audio, so that
+# condition is NOT RUNNABLE rather than pending.
+# Machine: AMD Ryzen 9 5950X / 64 GB / Windows 11 Pro 26200, PreSonus AudioBox 22VSL @ 48 kHz.
+# Runtime: firefox.exe --headless --no-remote --new-instance --profile <fresh temp profile>, one
+# run at a time. Profile prefs: media.autoplay.default=0, media.autoplay.blocking_policy=0,
+# media.navigator.permission.disabled=true, privacy.reduceTimerPrecision=false (Firefox has no
+# --autoplay-policy / --use-fake-ui-for-media-stream switches; media.navigator.streams.fake was
+# left at its default false, so every device below is the real one). Gecko's performance.now()
+# quantum is 20 us here regardless of prefs, so every figure is a multiple of 0.75% of the block
+# period. Artefacts: the committed web/build/{scalar,simd128}.wasm, not rebuilt.
+# Beacon transcript, URL-decoded; each run's own "[GFX1-] RenderCompositorSWGL" line is Firefox's
+# headless stderr and is left in place rather than filtered.
+
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=firefox155-interactive-rep1
+--- probe, latencyHint=interactive, tag=firefox155-interactive-rep1 ---
+  audioinput: Ligne (AudioBox 22VSL) [Zhu5yUCw+WGa...] group Gja5CVA8
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [dxUBKC0N+w5k...] group Gja5CVA8
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        39.104 ms
+API output total     39.104 ms
+sinkId               unsupported
+state                running
+  -> input latency   NOT REPORTED
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"Zhu5yUCw+WGaP9919Ru2cSa2gbFXfWpzRt+tohL1lik=","echoCancellation":false,"groupId":"Gja5CVA8/n58tBJRD2J7EzsgI2tQ60B/u0jJxyf1sdQ=","noiseSuppression":false}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"Zhu5yUCw+WGaP9919Ru2cSa2gbFXfWpzRt+tohL1lik=","echoCancellation":[true,false],"groupId":"Gja5CVA8/n58tBJRD2J7EzsgI2tQ60B/u0jJxyf1sdQ=","noiseSuppression":[true,false]}
+outputLatency x10    39.10 39.10 39.10 39.10 39.10 39.10 39.10 39.10 39.10 39.10
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=firefox155-interactive-rep2
+--- probe, latencyHint=interactive, tag=firefox155-interactive-rep2 ---
+  audioinput: Ligne (AudioBox 22VSL) [rL0dAv/k5siL...] group MhxkY7ea
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [ss67NQskSWOo...] group MhxkY7ea
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        33.667 ms
+API output total     33.667 ms
+sinkId               unsupported
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"rL0dAv/k5siLdb9ixWajuNUY9GQ0lJmtia7ujurS9rY=","echoCancellation":false,"groupId":"MhxkY7ea1tNIugu31olOGDQfjpiZgXKXh5YcDH/ppjU=","noiseSuppression":false}
+state                running
+  -> input latency   NOT REPORTED
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"rL0dAv/k5siLdb9ixWajuNUY9GQ0lJmtia7ujurS9rY=","echoCancellation":[true,false],"groupId":"MhxkY7ea1tNIugu31olOGDQfjpiZgXKXh5YcDH/ppjU=","noiseSuppression":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+outputLatency x10    33.67 33.67 33.67 33.67 33.67 33.67 33.67 33.67 33.67 33.67
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&tag=firefox155-interactive-rep3
+--- probe, latencyHint=interactive, tag=firefox155-interactive-rep3 ---
+  audioinput: Ligne (AudioBox 22VSL) [UVMcRqoRhLej...] group ZKe9maRy
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [tc0WQdvQiNly...] group ZKe9maRy
+baseLatency          0.000 ms
+sampleRate           48000 Hz
+outputLatency        38.354 ms
+API output total     38.354 ms
+state                running
+sinkId               unsupported
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"UVMcRqoRhLej370kw2sG+Z2Cb4VAtN6xG4elnMJb7EY=","echoCancellation":[true,false],"groupId":"ZKe9maRypYpuYTBA4T3+W8hn6Cq+sjFfe8SJwmRmhuI=","noiseSuppression":[true,false]}
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"UVMcRqoRhLej370kw2sG+Z2Cb4VAtN6xG4elnMJb7EY=","echoCancellation":false,"groupId":"ZKe9maRypYpuYTBA4T3+W8hn6Cq+sjFfe8SJwmRmhuI=","noiseSuppression":false}
+  -> input latency   NOT REPORTED
+outputLatency x10    38.35 38.35 38.35 38.35 38.35 38.35 38.35 38.35 38.35 38.35
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=firefox155-balanced-rep1
+--- probe, latencyHint=balanced, tag=firefox155-balanced-rep1 ---
+  audioinput: Ligne (AudioBox 22VSL) [ds6lXCOyGRnK...] group Bpe0TIO/
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [NzVFSuc3dQUQ...] group Bpe0TIO/
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        39.583 ms
+API output total     39.583 ms
+sinkId               unsupported
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"ds6lXCOyGRnKZy8iR3zQQDixm6dQL9N6W3hzftKxkrE=","echoCancellation":false,"groupId":"Bpe0TIO/Wey673m3AKkPhHGf0Kdj6jFADOhot3T/1js=","noiseSuppression":false}
+state                running
+  -> input latency   NOT REPORTED
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"ds6lXCOyGRnKZy8iR3zQQDixm6dQL9N6W3hzftKxkrE=","echoCancellation":[true,false],"groupId":"Bpe0TIO/Wey673m3AKkPhHGf0Kdj6jFADOhot3T/1js=","noiseSuppression":[true,false]}
+outputLatency x10    39.58 39.58 39.58 39.58 39.58 39.58 39.58 39.58 39.58 39.58
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=firefox155-balanced-rep2
+--- probe, latencyHint=balanced, tag=firefox155-balanced-rep2 ---
+  audioinput: Ligne (AudioBox 22VSL) [MRmhVlMEA6Ym...] group oa5S0BjD
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [6m7a78b0Vuo+...] group oa5S0BjD
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        34.271 ms
+sinkId               unsupported
+API output total     34.271 ms
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"MRmhVlMEA6Ymia9lcCnDSpMW7vNvbcV54400nBtm1tE=","echoCancellation":false,"groupId":"oa5S0BjDb5TnvxRk/seJMJCci0ouDQ/Mliw++CjRnm4=","noiseSuppression":false}
+  -> input latency   NOT REPORTED
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"MRmhVlMEA6Ymia9lcCnDSpMW7vNvbcV54400nBtm1tE=","echoCancellation":[true,false],"groupId":"oa5S0BjDb5TnvxRk/seJMJCci0ouDQ/Mliw++CjRnm4=","noiseSuppression":[true,false]}
+outputLatency x10    34.27 34.27 34.27 34.27 34.27 34.27 34.27 34.27 34.27 34.27
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=balanced&tag=firefox155-balanced-rep3
+--- probe, latencyHint=balanced, tag=firefox155-balanced-rep3 ---
+  audioinput: Ligne (AudioBox 22VSL) [/5vUizrD5ayl...] group T8v5qeVj
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [IO/JR9rQyvc5...] group T8v5qeVj
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        38.375 ms
+API output total     38.375 ms
+sinkId               unsupported
+state                running
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"/5vUizrD5ayl2738xnW52f7d+EaSvdxUBiVmy6xRWYI=","echoCancellation":[true,false],"groupId":"T8v5qeVjq9vQpshUi8jgYLPZYGndpVAkQseT36568OM=","noiseSuppression":[true,false]}
+  -> input latency   NOT REPORTED
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"/5vUizrD5ayl2738xnW52f7d+EaSvdxUBiVmy6xRWYI=","echoCancellation":false,"groupId":"T8v5qeVjq9vQpshUi8jgYLPZYGndpVAkQseT36568OM=","noiseSuppression":false}
+outputLatency x10    38.38 38.38 38.38 38.38 38.38 38.38 38.38 38.38 38.38 38.38
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=firefox155-playback-rep1
+--- probe, latencyHint=playback, tag=firefox155-playback-rep1 ---
+  audioinput: Ligne (AudioBox 22VSL) [DkOE8as3q1iR...] group b9liCvQ5
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [x+a3sMmS6ICK...] group b9liCvQ5
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        37.188 ms
+API output total     37.188 ms
+sinkId               unsupported
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"DkOE8as3q1iRgSbEITgIEfwwfSaSSAijVgchKLpHOGk=","echoCancellation":false,"groupId":"b9liCvQ5FtF6afeWg9G7rCELow0SDXDMubdWUa216gE=","noiseSuppression":false}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"DkOE8as3q1iRgSbEITgIEfwwfSaSSAijVgchKLpHOGk=","echoCancellation":[true,false],"groupId":"b9liCvQ5FtF6afeWg9G7rCELow0SDXDMubdWUa216gE=","noiseSuppression":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+  -> input latency   NOT REPORTED
+state                running
+outputLatency x10    37.19 37.19 37.19 37.19 37.19 37.19 37.19 37.19 37.19 37.19
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=firefox155-playback-rep2
+--- probe, latencyHint=playback, tag=firefox155-playback-rep2 ---
+  audioinput: Ligne (AudioBox 22VSL) [tD5ED3Uz4Sud...] group g0Hnk9+p
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [xCZGJEHuTnEW...] group g0Hnk9+p
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        38.438 ms
+API output total     38.438 ms
+sinkId               unsupported
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"tD5ED3Uz4Sud6bb4mcP0vYvwQ7ZOmC9OE27rSi8axAk=","echoCancellation":false,"groupId":"g0Hnk9+pgf68Ql1Qn7Aw8426p8Ytn1XguPYvjoQP5u4=","noiseSuppression":false}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"tD5ED3Uz4Sud6bb4mcP0vYvwQ7ZOmC9OE27rSi8axAk=","echoCancellation":[true,false],"groupId":"g0Hnk9+pgf68Ql1Qn7Aw8426p8Ytn1XguPYvjoQP5u4=","noiseSuppression":[true,false]}
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+  -> input latency   NOT REPORTED
+outputLatency x10    38.44 38.44 38.44 38.44 38.44 38.44 38.44 38.44 38.44 38.44
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3 :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=playback&tag=firefox155-playback-rep3
+--- probe, latencyHint=playback, tag=firefox155-playback-rep3 ---
+  audioinput: Ligne (AudioBox 22VSL) [ty9xBbSXTAvG...] group LyE4i9ve
+  audiooutput: Haut-parleurs (AudioBox 22VSL) [iBAyXthyb0XF...] group LyE4i9ve
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        35.375 ms
+API output total     35.375 ms
+sinkId               unsupported
+state                running
+track.getSettings    {"autoGainControl":false,"channelCount":1,"deviceId":"ty9xBbSXTAvGEvdp+RMRgStaKqFiX0XMWnleQ8E8pzI=","echoCancellation":false,"groupId":"LyE4i9vetqUaxs+9GEdYLLFo1dThfjg5hF7kKojaETg=","noiseSuppression":false}
+  -> input latency   NOT REPORTED
+track.getConstraints {"autoGainControl":{"exact":false},"channelCount":1,"echoCancellation":{"exact":false},"mediaSource":"microphone","noiseSuppression":{"exact":false}}
+track.getCapabilities {"autoGainControl":[true,false],"channelCount":{"max":2,"min":1},"deviceId":"ty9xBbSXTAvGEvdp+RMRgStaKqFiX0XMWnleQ8E8pzI=","echoCancellation":[true,false],"groupId":"LyE4i9vetqUaxs+9GEdYLLFo1dThfjg5hF7kKojaETg=","noiseSuppression":[true,false]}
+outputLatency x10    35.38 35.38 35.38 35.38 35.38 35.38 35.38 35.38 35.38 35.38
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3ni :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&noinput=1&tag=firefox155-noinput-rep1
+--- probe, latencyHint=interactive, tag=firefox155-noinput-rep1 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        35.042 ms
+API output total     35.042 ms
+sinkId               unsupported
+state                running
+track.getSettings    {}
+  -> input latency   NOT REPORTED
+track.getConstraints {}
+track.getCapabilities threw: can't access property "getCapabilities", track is null
+outputLatency x10    35.04 35.04 35.04 35.04 35.04 35.04 35.04 35.04 35.04 35.04
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3ni :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&noinput=1&tag=firefox155-noinput-rep2
+--- probe, latencyHint=interactive, tag=firefox155-noinput-rep2 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        36.271 ms
+API output total     36.271 ms
+track.getSettings    {}
+state                running
+sinkId               unsupported
+  -> input latency   NOT REPORTED
+track.getConstraints {}
+track.getCapabilities threw: can't access property "getCapabilities", track is null
+outputLatency x10    36.27 36.27 36.27 36.27 36.27 36.27 36.27 36.27 36.27 36.27
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g3ni :: http://127.0.0.1:8080/web/latency.html?auto=probe&hint=interactive&noinput=1&tag=firefox155-noinput-rep3
+--- probe, latencyHint=interactive, tag=firefox155-noinput-rep3 ---
+(no capture stream open: this is the output-only condition)
+sampleRate           48000 Hz
+baseLatency          0.000 ms
+outputLatency        36.042 ms
+API output total     36.042 ms
+sinkId               unsupported
+state                running
+track.getSettings    {}
+track.getConstraints {}
+track.getCapabilities threw: can't access property "getCapabilities", track is null
+  -> input latency   NOT REPORTED
+outputLatency x10    36.04 36.04 36.04 36.04 36.04 36.04 36.04 36.04 36.04 36.04
+FINISHED

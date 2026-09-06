@@ -11,10 +11,13 @@ whose first section is the verdict. This file is the reproduction record.
 **Every browser figure in Tasks 3–8 is headless Microsoft Edge 152.0.4191.62 on one machine**,
 used as a stand-in because Chrome was not installed. **Task 10 re-ran all three gates on real
 Google Chrome 152.0.7977.83 — the same Chromium major — and every one reproduced** (raw logs
-`chrome_task10*.txt`), so the substitution is now evidenced rather than assumed. **Firefox is
-still not installed**; Firefox / SpiderMonkey — a different wasm compiler, with cubeb as a
-different audio backend — is entirely unmeasured. **No figure produced here is
-certified** in `docs/02-architecture.md` §2's sense, and a browser figure cannot be: it is
+`chrome_task10*.txt`), so the substitution is now evidenced rather than assumed. **Task 11 then
+ran all three gates, plus Task 5's and Task 8's cells, on Firefox 155.0.1** (raw logs
+`firefox_task11*.txt`) — SpiderMonkey, a different wasm compiler, with cubeb as a different audio
+backend. **Gates 1 and 2 reproduce on Gecko; Gate 3 does not, and cannot** — Firefox reports no
+input latency and a zero `baseLatency`, so the 62 ms accounting is a Chromium construction. What
+is now unmeasured is **Safari/WebKit**, and every non-desktop runtime. **No figure produced here
+is certified** in `docs/02-architecture.md` §2's sense, and a browser figure cannot be: it is
 measured through a JIT, a browser process model and an OS audio stack the project does not
 control. Nothing under `crates/`, `docs/`, `.github/` or `xtask/` was modified by this spike.
 
@@ -69,6 +72,10 @@ vendoring cannot answer. `Cargo.lock` still pins the measurement.
   a phase-(b) decision is taken.
 - `chrome_task10_gate1.txt`, `chrome_task10_gate2.txt`, `chrome_task10_gate3.txt`,
   `chrome_task10_task5.txt` — Task 10's Chrome transcripts, same beacon-log form as the Edge ones.
+- `firefox_task11_gate1.txt`, `firefox_task11_gate2.txt`, `firefox_task11_gate3.txt`,
+  `firefox_task11_task5.txt`, `firefox_task11_task8.txt` — Task 11's Firefox transcripts, same
+  form again; `firefox_task11_backend.txt` (+ `_run.txt`) is the CoreAudio endpoint probe that
+  proves headless Firefox drove the real device, with the meter reading back the exact `&gain`.
 - `edge_task*.txt`, `native_bench_output*.txt`, `coreaudio_task6_rerun.txt` — raw transcripts for
   Tasks 5, 6, 7 and 8 and for every native run. **Tasks 3 and 4 have no committed beacon log** —
   the Gate 1 matrix and the sustained confirmation, i.e. the spike's headline figures, are
@@ -128,6 +135,25 @@ from **LINE OUTPUT 1** on the back to **INPUT 1** on the front, and about ten mi
 `RESULTS.md`'s "PENDING RUN — how to run the loopback half" section is written for someone who
 has not read the spike.
 
+**Task 11 ran the same URLs on Firefox 155**, which takes prefs where Chromium takes flags.
+Write a throwaway profile whose `user.js` sets `media.autoplay.default=0`,
+`media.autoplay.blocking_policy=0` and `media.navigator.permission.disabled=true` (the last
+replaces `--use-fake-ui-for-media-stream`; leave `media.navigator.streams.fake` at `false`, it is
+the fake-*device* switch and must not be set), then run each gate's URL unchanged:
+
+```bash
+"C:\Program Files\Mozilla Firefox\firefox.exe" --headless --no-remote --new-instance \
+  --profile <that profile> "<the same URL>"
+```
+
+Three Chromium-only things have no Firefox form: `--js-flags=--experimental-wasm-revectorize`
+(so `REVECTORIZE.md` stays a V8 result), `--enable-exclusive-audio` (Gate 3's exclusive
+condition is NOT RUNNABLE, not pending), and `--disable-gpu`/`--no-sandbox`, which are simply
+unnecessary. Firefox's `performance.now()` quantum under the same COOP/COEP headers is **20 µs**,
+not Chromium's 5 µs, and no `privacy.reduceTimerPrecision*` pref moves it — so no Firefox figure
+resolves finer than 0.75% of the block period, and a p50 landing on a 0.75% multiple at all is
+the proof the page was cross-origin isolated (a non-isolated Gecko context clamps to 1 ms).
+
 The revectorizer trace is a Node run, not a browser one (Chromium does not surface the
 renderer's V8 stderr here):
 
@@ -148,6 +174,14 @@ control. The figures exist because the port was proved correct first.
   `target_has_atomic = "64"` assertion holds there — LLVM legalises 64-bit atomics to plain
   loads/stores on this single-threaded target. No `cpal`, no `clack`, nothing platform-specific
   leaked in, consistent with D-5.1's layering table.
+- **Gates 1 and 2 hold on two engines and two audio backends; Gate 3 does not transfer.**
+  Task 11 ran everything on Firefox 155/SpiderMonkey/cubeb. Gate 1 PASSES with the **best tail
+  measured anywhere** — A1 `simd128` p99.9 **20.25–24.75%** against Chrome's 26.25–28.87% — and
+  scalar A1 still FAILS but at **56.25–57.75%**, ~25 pp less severe than V8's, so carry the
+  verdict and not the number. Gate 2 passes on the *literal* criterion Chromium needed a
+  judgement for: zero underruns, zero missed quanta, nine 60 s runs, **no first-second start-up
+  event at all** (0/9 against Edge's 4/11 and Chrome's 1/9 — Fisher p = 0.153, i.e. suggestive of
+  nothing on its own). Gate 3 is the one that breaks: see the Gate 3 bullet below.
 - **Gate 1 passes on `simd128` and fails on scalar for A1 Standard.** p99.9 of the 2 666.67 µs
   block period, sustained over 100 000 blocks: A1 **32.4-33.6%**, A2 Lite **14.8-16.3%**, against
   a <=50% bar. (A1's figure is the higher of two disagreeing measurements of that cell — a later
@@ -173,10 +207,17 @@ control. The figures exist because the port was proved correct first.
   conclusion depends on LLVM's codegen and V8's seeder both staying as they are.
 - **Denormals are structural in a browser.** wasm mandates IEEE-754 subnormal handling and has no
   flush-to-zero, so `DenormalGuard` is a no-op there. Kill criterion 3 (>2x penalty) did **not**
-  fire — worst 1.57x — but the absolute figure did move: A1 under a subnormal tail reaches p99.9
-  **44.25-58.13%**, one rep of five above Gate 1's bar. Natively, FTZ/DAZ removes essentially the
+  fire — worst **1.93x, on Firefox** (Task 11; 1.57x was the worst on V8) — but the absolute
+  figure did move: A1 under a subnormal tail reaches p99.9 **44.25-58.13%** on Edge, one rep of
+  five above Gate 1's bar. Natively, FTZ/DAZ removes essentially the
   whole penalty (1.39x to 1.00x); in a browser that saving is not available at any price. A1's
-  browser margin under ordinary silence is a hairline, not 1.5x.
+  browser margin under ordinary silence is a hairline, not 1.5x. **The ratio is worst on the
+  fastest browser, which is a property of the criterion**: Firefox's absolute subnormal-tail
+  figure (38.25–39.00%) is the *lowest* of the three, and 1.93x is high only because its steady
+  baseline is 8–10 pp lower than V8's. At Gecko's 20 µs clock both terms carry ±0.75 pp, so read
+  it as "roughly 1.8–2.1x, not fired on the measured medians". The in-browser subnormal census
+  agrees between the two engines to every digit (9 521 blocks / 2 436 620 samples /
+  1.401298e−45), which makes this the chain's arithmetic rather than either engine's codegen.
 - **Gate 2 passes on real hardware — a reading of the criterion, not its literal text.** The
   literal bar ("every run zero over 60 s") is missed by the start-up event in the next bullet;
   the PASS is the spike's judgement that the gate asks about the chain rather than the platform,
@@ -195,6 +236,14 @@ control. The figures exist because the port was proved correct first.
   forever, which is indistinguishable from a dead audio backend. Post the **bytes** and call
   `new WebAssembly.Module()` inside the processor; synchronous compilation is legal off the main
   thread. This cost most of a task and the failure mode is maximally misleading.
+- **Gate 3's accounting is Chromium-shaped and does not survive the engine change.** Firefox
+  reports `baseLatency` **0.000 ms**, **no input latency by any accessor**, and ignores
+  `latencyHint` entirely; its `outputLatency` is per-stream (33.0–39.6 ms across twenty-one
+  streams, fixed within each). So the 62 ms figure has no Firefox analogue — not a smaller number, an
+  unconstructable one. On the one term both browsers disclose, the device buffer, Gecko is
+  33–39 ms against Chromium's 42. **That is less accounted, not proven less latency**, and the
+  physical loopback — still uncabled — is the only thing that can tell the difference. Firefox
+  makes that measurement more load-bearing, not less.
 - **Gate 3 says no for live guitar input on this path.** The browser's own accounting is **62 ms**
   best case (10 ms `baseLatency` + 42 ms `outputLatency` + a *declared* 10 ms input constant that
   Chromium reports as fixed and uninfluenceable), roughly twice the ~30 ms soft reference before
@@ -208,15 +257,26 @@ control. The figures exist because the port was proved correct first.
 - **The resampler cost is a one-off load cost.** `load_ir` of a 44.1 kHz IR into a 48 kHz context
   costs **+2.0-2.4 ms (+55-60%)**, reproducibly, because `rubato::FftFixedInOut` is scalar/NEON
   only with no `simd128` path. It lands on the load path, never per block, so it is immaterial to
-  real-time safety and only matters to a demo's perceived load time. **The per-block question is
-  unanswered, not answered negatively** — only one of three runs produced any quotable rep, so
-  there was never a clean pair to compare.
-- **`renderSizeHint` is absent on Edge 152 *and* Chrome 152.** `ctx.renderQuantumSize` is
-  `undefined`, not merely defaulting to 128 — the property is not in either runtime. It shipped
-  in Chrome 153; this machine is one release behind on both browsers. `PENDING RUN`.
+  real-time safety and only matters to a demo's perceived load time. **The per-block question was
+  unanswered, not answered negatively** — only one of three Edge runs produced any quotable rep,
+  so there was never a clean pair to compare. **Task 11 answers it on
+  Firefox**: all fifteen reps across three runs are quotable and the per-block figure is identical
+  between a resampled and a native-rate IR (p50 12.00%, p99.9 20.25% in fourteen of fifteen), so
+  there is no per-block resampler cost on that runtime. The Chromium half stays unanswered — and
+  the reason the comparison worked on Gecko is issue #149's other half: its tail is tight enough
+  that `is_quotable()` passes reps the same rule rejects on V8.
+- **`renderSizeHint` is absent on Edge 152, Chrome 152 *and* Firefox 155.**
+  `ctx.renderQuantumSize` is `undefined`, not merely defaulting to 128 — the property is not in
+  any of the three runtimes. It shipped in Chrome 153, so the two Chromium reads are "one release
+  behind"; Firefox 155 is well past that release, which makes this a **Blink-only feature Gecko
+  has not implemented**. `PENDING RUN` is therefore specifically a Chrome-153+/newer-Edge item, and
+  no newer Firefox will close it.
 - **`is_quotable()` (D-2.4) cannot be applied literally in a browser.** It flags all 30 matrix
   reps, including the calmest, because a browser's tail is structurally fat (GC, tier-up, the
-  renderer's scheduler all land inside the timed span). Applying it as written would discard the
+  renderer's scheduler all land inside the timed span). **Firefox sharpens issue #149 rather than
+  softening it**: there the rule passes 48 of the 49 steady reps taken and then flags 9 of the 10
+  subnormal-tail reps — i.e. on the one browser where it can discriminate, the only thing it discriminates
+  against is a real, signal-dependent cost increase. Applying it as written would discard the
   whole matrix and leave no verdict. `RESULTS.md` states the substitution used, in full, as the
   author's rather than the project's — and the same weakness in the native benchmark is now
   issue **#149**.
@@ -246,7 +306,16 @@ each case the correction is the finding:
 4. **"There is a per-block resampler cost."** Retracted in Task 8 as session-order contamination —
    and then the retraction's own reasoning was corrected too: the honest statement is that only
    one of three runs produced any quotable rep, so a clean comparison was never made. "Not
-   measured" is a weaker and different thing to have than "measured, no effect."
+   measured" is a weaker and different thing to have than "measured, no effect." **Task 11 finally
+   measured it, on Firefox**: fifteen quotable reps over three runs, the same p50 and p99.9 with a
+   resampled IR as with a native-rate one. So the retraction was right and is now backed by data
+   on one runtime — the Chromium half is still the weaker statement.
+
+A fifth was added at Task 11: Task 3 predicted that Chrome and Firefox would see "the same 5 µs
+clock quantum under cross-origin isolation, so any difference should be engine and scheduler, not
+timer resolution". Chrome's half held; **Firefox's is 20 µs**, four times coarser, and no pref
+moves it — so a Gecko-vs-Chromium difference under ~0.75 pp of the block period is timer
+resolution and nothing else. Annotated in place at Task 3's own text.
 
 Two smaller retractions are recorded in place in `RESULTS.md`: the claim that V8 accepting
 `--experimental-wasm-revectorize` could be inferred from the absence of an error message (it
@@ -317,9 +386,15 @@ Spec §12, updated with what the spike actually learned:
   trend. Budgeting A1 against the higher figure stays the conservative choice — now as a margin
   of safety, not as something measured — and 112 500 worklet blocks produced no scheduling
   consequence either way.
-- **Nothing outside Chromium is known, and that is now the whole of the gap.** Task 10 measured
-  all three gates on Chrome 152 and they reproduce Edge 152 — so "Chromium" is measured twice,
-  not once, and no Edge-based conclusion is left resting on the substitution. Before a demo is
-  announced as working in "a browser", Gate 1 and Gate 2 still need one run each on **Firefox**,
-  whose wasm compiler and audio backend are both different code; the exact commands are recorded
-  per task in `RESULTS.md` as `PENDING RUN` rows.
+- **Two engines are now measured, and the remaining gap is Safari and the loopback.** Task 10
+  measured all three gates on Chrome 152 and they reproduce Edge 152; Task 11 measured them on
+  Firefox 155, where Gates 1 and 2 reproduce and Gate 3 turns out to be a Chromium construction.
+  So a demo can be announced as working on Chromium *and* Gecko for the compute and scheduling
+  claims — and must not make any latency claim at all, on either. **WebKit/Safari is unmeasured**
+  (not installable here), and the physical loopback is unmeasured on all three, which is the one
+  number that would let a latency claim be made. Firefox raises that item's value rather than
+  lowering it: it is the only way to see the terms Gecko does not declare.
+- **Prefer the smaller model on the browser you cannot choose.** The engine spread on the same
+  bytes is real — A1 `simd128` p99.9 ranges 20.25% (Firefox) to 33.56% (Edge), and scalar A1
+  ranges 56% to 86% — and a demo does not pick its visitor's browser. A2 Lite is under 21% of the
+  block period on every runtime measured, in every regime, including the subnormal tail.

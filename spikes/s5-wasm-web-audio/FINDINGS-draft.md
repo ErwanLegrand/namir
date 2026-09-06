@@ -52,8 +52,11 @@ twice the ~30 ms soft reference, before anything the API does not account for.
 | Edge 152 / wasm simd128, steady (100 000 blocks, 2 reps) | 13.12–13.31 | **32.44–33.56** | 18.19 |
 | Edge 152 / wasm simd128, steady (100 000 blocks, 5-rep replication, rebuilt artefact) | 12.75–13.13 | 30.00–31.31 | 19.50–19.88 |
 | **Chrome 152** / wasm simd128, steady (20 000 / 100 000 blocks, 5+7 reps) | 11.44–11.63 | 26.25–29.25 | 18.00–18.37 |
+| **Firefox 155** / wasm scalar, steady (20 000 blocks, 5 reps) | 43.50 | **56.25–57.75** | 53.25–54.00 |
+| **Firefox 155** / wasm simd128, steady (20 000 / 100 000 blocks, 5+7 reps) | 12.00 | **20.25–24.75** | 18.75 |
 | Edge 152 / wasm simd128, subnormal tail (5 reps) | 17.44–17.81 | **44.25–58.13** | 19.50 |
 | **Chrome 152** / wasm simd128, subnormal tail (5 reps) | 16.31–16.50 | **42.00–44.06** | 18.19–18.38 |
+| **Firefox 155** / wasm simd128, subnormal tail (5 reps) | 19.50–22.50 | **38.25–39.00** | 18.75 |
 | Edge 152 / wasm simd128, A2 Lite, steady (100 000 blocks, 2 reps) | 3.00 | 14.81–16.31 | 9.56–9.75 |
 | Edge 152 / wasm simd128, A2 Lite, subnormal tail (5 reps) | 3.38–3.75 | 18.56–20.81 | 10.12–10.31 |
 
@@ -115,16 +118,41 @@ exercises D-8.1's handover, so live model switching in a browser is unproven. `n
 The laptop axis was never run, and Gate 3's loopback half was never run.
 
 **Browser scope note, which bounds every figure above:** the figures quoted above are **headless
-Microsoft Edge 152.0.4191.62**. **All three gates were re-run on real Google Chrome
-152.0.7977.83 (Task 10, 2026-09-06) and every one of them reproduced** — Gate 1 PASS on simd128 /
+Microsoft Edge 152.0.4191.62** unless a row says otherwise. **All three gates were re-run on
+real Google Chrome 152.0.7977.83 (Task 10, 2026-09-06) and every one of them reproduced** — Gate 1 PASS on simd128 /
 FAIL on scalar A1 (Chrome's p99.9 runs 2–3 pp *below* Edge's), Gate 2 zero steady-state underruns
 with the same one-in-several first-second start-up event, Gate 3 identical to the digit including
 the 2.6x `--enable-exclusive-audio` regression. So the Edge-as-Chrome substitution these figures
-rested on is now evidenced rather than assumed. **Firefox remains entirely unmeasured**:
-SpiderMonkey is a different wasm compiler and cubeb a different audio backend, and cubeb is the
-backend the public ~70–100 ms Windows latency reports are about. This project has
-over-generalised a Firefox figure to all browsers once before; the same mistake is available in
-the other direction, and Gecko is where it is still available.
+rested on is now evidenced rather than assumed. **Firefox 155.0.1 was then measured too
+(Task 11, 2026-09-06), and it splits the result.** SpiderMonkey is a different wasm compiler and
+cubeb a different audio backend, and the two compute-side gates survive both changes: Gate 1
+PASSES on `simd128` with the tightest tail of the three browsers (A1 p99.9 20.25–24.75%) and
+FAILS on scalar A1 at 56.25–57.75% — the same verdict, ~25 pp less severe, so the verdict
+transfers and the number does not. Gate 2 passes on the *literal* criterion, with zero underruns,
+zero missed quanta and no first-second start-up event in nine 60 s runs (0/9 against Chromium's
+combined 5/20; Fisher p = 0.153, so this weakens nothing and proves nothing on its own).
+
+**Gate 3 does not transfer, and that is the finding.** Firefox reports `baseLatency` **0.000 ms**,
+**no input latency through any accessor**, and ignores `latencyHint`; `outputLatency` is chosen
+per stream (33.0–39.6 ms) rather than per machine. The 62 ms accounting above is therefore a
+Chromium construction with no Gecko analogue — not a smaller number on Firefox, an unconstructable
+one. On the single term both engines disclose, the device buffer, Gecko is 33–39 ms against
+Chromium's 42 ms: **less accounted for, not shown to be less latency**. The physical loopback,
+already the number this gate most needs, is the only instrument that can separate the two, and it
+remains `PENDING RUN` on all three browsers.
+
+Two smaller Firefox results are load-bearing for the rows below. The subnormal penalty **ratio**
+is the highest measured anywhere — **1.93x against the 2x kill criterion** — while Firefox's
+*absolute* subnormal-tail figure (38.25–39.00%) is the **lowest** of the three: the ratio is high
+because the steady baseline is low, which is a property of a ratio-shaped criterion rather than of
+the runtime, and at Gecko's 20 µs clock quantum (four times Chromium's) the reading is not
+distinguishable from the bar. And the in-browser subnormal census agrees between the two engines
+to every digit reported (9 521 blocks / 2 436 620 samples / 1.401298e−45), which makes the
+denormal finding an arithmetic property of the chain rather than one engine's codegen.
+
+**What remains unmeasured is WebKit/Safari** — no macOS or iOS device is reachable here — and
+every non-desktop runtime. This project has over-generalised a Firefox figure to all browsers
+once before; two engines measured is not three, and the mobile direction is untouched.
 
 **Not certified:** no figure here was measured under `docs/02-architecture.md` §2's conditions,
 and a browser figure cannot be — it passes through a JIT, a browser process model and an OS audio
@@ -139,6 +167,6 @@ Two new rows and one downgrade. Status column set as it would be on the day the 
 
 | ID | Risk | Severity | Mitigation |
 |---|---|---|---|
-| R-nn | **New, from S-5, 2026-09-05.** A browser build has no flush-to-zero: wasm mandates IEEE-754 subnormal handling and `DenormalGuard` is a structural no-op there. Measured: A1 Standard's p99.9 under a subnormal tail (silence after signal — what a guitar input does between notes) is **44.25–58.13%** of the block period against a 50% design bar on Edge 152, one rep of five over, and **42.00–44.06%** on Chrome 152, no rep over — where the same configuration on a steady signal is 32.4–33.6% (Edge) / 28.1–29.3% (Chrome). The bar is not breached on the browser measured second, but the margin is a hairline on both. Natively the guard removes essentially the whole penalty (1.39x -> 1.00x); in a browser the only remaining levers are inside the DSP itself (anti-denormal dither, or flushing small stage state to zero), which is a `crates/` change no spike may make. Scoped to a prospective browser target only — it does not touch `namir-app` or `namir-clap`. | Medium (browser target only) | Budget the browser build against ~50%, not 33.6%; prefer the smaller model as a demo default (~2.5x headroom in the same regime). Revisit only if phase (b) proceeds. |
-| R-nn | **New, from S-5, 2026-09-05.** Chromium on Windows cannot deliver playable live-input latency on this path: the browser's own accounting is **62 ms** best case (10 ms base + 42 ms output + a 10 ms input constant it declares fixed), roughly twice the ~30 ms soft reference, and `--enable-exclusive-audio` makes it worse rather than better — a 2.6x regression on the API-reported output total (52.0 -> 133.3 ms), taking the input-inclusive total to 143 ms. The physical loopback figure — which can only exceed the API's — is **PENDING RUN**, so the true gap is unmeasured. Any browser demo that promises "plug in your guitar" is promising something not shown to work. | Medium (prospective demo only) | A demo ships file-playback-first, which was already the decision; this makes it a constraint rather than a preference. Close the loopback measurement (one cable, ten minutes, procedure written up in the spike) before any live-input claim. |
+| R-nn | **New, from S-5, 2026-09-05.** A browser build has no flush-to-zero: wasm mandates IEEE-754 subnormal handling and `DenormalGuard` is a structural no-op there. Measured: A1 Standard's p99.9 under a subnormal tail (silence after signal — what a guitar input does between notes) is **44.25–58.13%** of the block period against a 50% design bar on Edge 152, one rep of five over, **42.00–44.06%** on Chrome 152 and **38.25–39.00%** on Firefox 155, no rep over on either — where the same configuration on a steady signal is 32.4–33.6% (Edge) / 28.1–29.3% (Chrome) / 20.3–21.0% (Firefox). The bar is breached by one rep on one browser only, but the margin is a hairline on all three. Note that the *ratio* runs the other way from the absolute figure: Firefox is the fastest runtime in both regimes and yet has the highest penalty ratio measured anywhere (**1.93x** against the spike's 2x kill criterion), because a ratio-shaped criterion rewards a slow baseline. Budget against the absolute number, not the ratio. Natively the guard removes essentially the whole penalty (1.39x -> 1.00x); in a browser the only remaining levers are inside the DSP itself (anti-denormal dither, or flushing small stage state to zero), which is a `crates/` change no spike may make. Scoped to a prospective browser target only — it does not touch `namir-app` or `namir-clap`. | Medium (browser target only) | Budget the browser build against ~50%, not 33.6%; prefer the smaller model as a demo default (~2.5x headroom in the same regime, and under 21% of the block period on every runtime measured). Revisit only if phase (b) proceeds. |
+| R-nn | **New, from S-5, 2026-09-05.** Chromium on Windows cannot deliver playable live-input latency on this path: the browser's own accounting is **62 ms** best case (10 ms base + 42 ms output + a 10 ms input constant it declares fixed), roughly twice the ~30 ms soft reference, and `--enable-exclusive-audio` makes it worse rather than better — a 2.6x regression on the API-reported output total (52.0 -> 133.3 ms), taking the input-inclusive total to 143 ms. The physical loopback figure — which can only exceed the API's — is **PENDING RUN**, so the true gap is unmeasured. **Firefox 155 does not offer an escape and makes the gap harder to see, not easier**: Gecko reports `baseLatency` 0, no input latency through any accessor, and ignores `latencyHint`, so the 62 ms accounting has no Gecko analogue at all; on the one comparable term, the device buffer, it reads 33–39 ms against Chromium's 42. That is less *accounted for*, not shown to be less latency. Any browser demo that promises "plug in your guitar" is promising something not shown to work, on either engine. | Medium (prospective demo only) | A demo ships file-playback-first, which was already the decision; this makes it a constraint rather than a preference. Close the loopback measurement (one cable, ten minutes, procedure written up in the spike) before any live-input claim — on Firefox it is the *only* instrument that can see the terms the API does not declare. |
 | R-nn | **Downgraded — "the DSP chain may not be portable off the desktop" -> Low, by S-5, 2026-09-05.** All six DSP-path crates and their 39-crate transitive graph compile for `wasm32-unknown-unknown` with **no edits under `crates/`**, and the assembled chain holds a real Web Audio deadline. `telemetry_ring.rs`'s `target_has_atomic = "64"` assertion — the one known hazard — holds on that target. Residual risk is not portability but the two rows above plus `xtask layering`'s rejection of `wasm`/`target_arch` outside `namir-platform`, which any in-workspace browser crate would collide with on day one. | Low | D-5.1's layering already keeps the DSP path platform-free; a `wasm32-unknown-unknown` CI job mirroring the existing mobile cross-build jobs would keep it that way at no design cost. |
