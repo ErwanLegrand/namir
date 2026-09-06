@@ -551,6 +551,15 @@ fn resolve_activation_kind(
 //    of every `p99.9` figure in the superseded analysis above was the GPU driver rather than this
 //    file. See `pin_to_measurement_core` in any of this workspace's benchmarks.
 //
+// 3. **AArch64 / NEON vectorization (2026-09-06, Issue #148).** On `target_arch = "aarch64"`,
+//    NEON is part of the standard baseline. `wide` 1.7.0's `pick!` macro selects `core::arch::aarch64`
+//    NEON intrinsics (`float32x4_t`) for `f32x4`, and `wide::f32x8` is composed of `{ a: f32x4, b: f32x4 }`,
+//    confirming vectorization at the source dependency level rather than a scalar fallback. Because
+//    NEON registers are 128-bit wide, each 8-lane operation compiles to two paired 128-bit NEON vector
+//    operations (`fmul v.4s`, `fadd v.4s`, `fsub v.4s`, etc.) with 128-bit load/store pairs
+//    (`ldp q, q` / `stp q, q`). Performance on AArch64 remains unmeasured without an ARM reference
+//    benchmarking rig.
+//
 // **Still true, and worth keeping:** this benchmark's `p50` is stable and trustworthy; its raw
 // `p99.9` is not reproducible run-to-run on a general-purpose desktop even after both fixes
 // (measured varying 17%-52% across ten identical runs of the chain benchmark, with `p50` pinned).
@@ -3076,5 +3085,157 @@ mod tests {
         rt_harness::audio_section(|| {
             prepared.process_block(&mut state, &input, &mut output);
         });
+    }
+
+    #[test]
+    fn axpy_vectorization_matches_scalar_across_all_buffer_lengths() {
+        let w = 2.5f32;
+        for len in 0..=65 {
+            let input: Vec<f32> = (0..len).map(|i| (i as f32 * 0.73).sin()).collect();
+            let mut actual: Vec<f32> = (0..len).map(|i| (i as f32 * 0.31).cos()).collect();
+            let mut expected = actual.clone();
+
+            for (o, &i) in expected.iter_mut().zip(input.iter()) {
+                *o += w * i;
+            }
+
+            axpy(&mut actual, &input, w);
+
+            for (idx, (&act, &exp)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(act, exp, "len {len}, index {idx}: axpy mismatch");
+            }
+        }
+    }
+
+    fn scalar_activation_ref(act: &Activation, input: &[f32], n: usize) -> Vec<f32> {
+        match act {
+            Activation::Tanh => input.iter().map(|&x| x.tanh()).collect(),
+            Activation::ReLU => input.iter().map(|&x| x.max(0.0)).collect(),
+            Activation::Sigmoid => input.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect(),
+            Activation::Identity => input.to_vec(),
+            Activation::LeakyReLU { negative_slope } => input
+                .iter()
+                .map(|&x| if x > 0.0 { x } else { negative_slope * x })
+                .collect(),
+            Activation::SiLU => input.iter().map(|&x| x / (1.0 + (-x).exp())).collect(),
+            Activation::Hardswish => input
+                .iter()
+                .map(|&x| {
+                    let t = (x + 3.0).clamp(0.0, 6.0);
+                    x * t * (1.0 / 6.0)
+                })
+                .collect(),
+            Activation::Softsign => input.iter().map(|&x| x / (1.0 + x.abs())).collect(),
+            Activation::LeakyHardtanh {
+                min_val,
+                max_val,
+                min_slope,
+                max_slope,
+            } => input
+                .iter()
+                .map(|&x| {
+                    if x < *min_val {
+                        (x - min_val) * min_slope + min_val
+                    } else if x > *max_val {
+                        (x - max_val) * max_slope + max_val
+                    } else {
+                        x
+                    }
+                })
+                .collect(),
+            Activation::PReLU(PReluSlopes::Scalar(slope)) => input
+                .iter()
+                .map(|&x| if x > 0.0 { x } else { slope * x })
+                .collect(),
+            Activation::PReLU(PReluSlopes::PerChannel(slopes)) => {
+                if n == 0 {
+                    return Vec::new();
+                }
+                let mut out = input.to_vec();
+                for (row, &slope) in out.chunks_exact_mut(n).zip(slopes.iter()) {
+                    for v in row.iter_mut() {
+                        *v = if *v > 0.0 { *v } else { slope * *v };
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    #[test]
+    fn activation_vectorization_matches_scalar_across_all_variants_and_lengths() {
+        let activations = [
+            Activation::Tanh,
+            Activation::ReLU,
+            Activation::Sigmoid,
+            Activation::Identity,
+            Activation::SiLU,
+            Activation::Hardswish,
+            Activation::Softsign,
+            Activation::LeakyHardtanh {
+                min_val: -1.0,
+                max_val: 1.0,
+                min_slope: 0.01,
+                max_slope: 0.02,
+            },
+            Activation::LeakyReLU {
+                negative_slope: DEFAULT_LEAKY_SLOPE,
+            },
+            Activation::PReLU(PReluSlopes::Scalar(DEFAULT_LEAKY_SLOPE)),
+            Activation::PReLU(PReluSlopes::PerChannel(vec![0.01, 0.05, 0.1, 0.2])),
+        ];
+
+        let test_lengths = [0, 1, 3, 7, 8, 9, 15, 16, 17, 32, 63, 64, 65];
+
+        for act in &activations {
+            let num_channels = if let Activation::PReLU(PReluSlopes::PerChannel(slopes)) = act {
+                slopes.len()
+            } else {
+                1
+            };
+
+            for &n in &test_lengths {
+                let total_len = num_channels * n;
+                let original: Vec<f32> = (0..total_len).map(|i| (i as f32 * 0.25) - 4.0).collect();
+                let mut actual = original.clone();
+                act.apply(&mut actual, n);
+
+                let expected = scalar_activation_ref(act, &original, n);
+                assert_eq!(actual.len(), expected.len());
+
+                let tol = match act {
+                    Activation::Tanh | Activation::Sigmoid | Activation::SiLU => 1e-4,
+                    _ => 1e-6,
+                };
+
+                for (idx, (&act_val, &exp_val)) in actual.iter().zip(expected.iter()).enumerate() {
+                    assert!(
+                        (act_val - exp_val).abs() <= tol,
+                        "act: {:?}, n: {n}, idx: {idx}: actual {act_val} vs expected {exp_val} (diff {})",
+                        act,
+                        (act_val - exp_val).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn neon_is_in_the_baseline_so_wide_is_not_a_scalar_fallback() {
+        if std::env::consts::ARCH == "aarch64" {
+            assert!(
+                cfg!(target_feature = "neon"),
+                "wide would fall back to scalar f32x4 here"
+            );
+        }
+    }
+
+    #[test]
+    fn simd_vector_layout_and_alignment() {
+        assert_eq!(std::mem::size_of::<wide::f32x8>(), 32);
+        assert_eq!(std::mem::align_of::<wide::f32x8>(), 32);
+        assert_eq!(std::mem::size_of::<wide::f32x4>(), 16);
+        assert_eq!(std::mem::align_of::<wide::f32x4>(), 16);
     }
 }
