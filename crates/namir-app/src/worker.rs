@@ -18,13 +18,14 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use namir_core::ContentHash;
+use namir_core::{ChannelConfig, ContentHash, SampleRate};
+use namir_engine::{PrepareContext, build_default_engine};
 use namir_library::LibraryResolver;
 use namir_state::{FileRef, RelPath, State};
 use namir_worker::library::{LibraryService, ScanHandle, ScanOutcome};
 use namir_worker::pool::ThreadPool;
 use namir_worker::recall::{RecallOutcome, ResourceRecall};
-use namir_worker::{JobResult, LoadSource, ResourceCache, Target};
+use namir_worker::{EngineConfig, Instance, JobResult, LoadSource, ResourceCache, Target};
 
 use crate::instance::SharedInstance;
 
@@ -44,6 +45,23 @@ pub enum AppCommand {
     /// back as [`AppEvent::PresetsListed`]. Off-thread because it reads a directory, which
     /// [`crate::host::AppHost::snapshot`] may not do.
     ListPresets(PathBuf),
+    /// Rebuild the audio engine and recall current state off the GUI thread.
+    /// After rebuilding, the engine and telemetry reader are placed in `slot` and
+    /// `AppEvent::AudioStreamReady` is sent; the host then opens the stream.
+    ReopenAudioStream {
+        /// Generation counter pairing this command with its `AppEvent::AudioStreamReady`: a
+        /// ready event whose generation does not match the host's pending reopen is stale and
+        /// ignored, so a rebuild overtaken by a newer one cannot open the wrong stream.
+        generation: u64,
+        /// The negotiated sample rate in Hz.
+        sample_rate_hz: u32,
+        /// Maximum block size in frames for the new engine.
+        max_block_size: usize,
+        /// Channel configuration for the new engine.
+        channel_config: ChannelConfig,
+        /// Slot into which the built engine and telemetry reader are placed.
+        slot: crate::host::EngineSlot,
+    },
     /// Stops the worker thread. Sent automatically by [`WorkerHandle`]'s `Drop`.
     Shutdown,
 }
@@ -111,6 +129,15 @@ pub enum AppEvent {
         failure: crate::audio_io::StreamFailure,
         /// A human-readable description, naming the direction and the device.
         detail: String,
+    },
+    /// The worker rebuilt the engine and recalled state; the host should open new streams.
+    /// The `(AudioEngine, TelemetryReader)` pair is in the `EngineSlot` from the matching command.
+    /// `generation` matches the `AppCommand::ReopenAudioStream` this event answers; the host
+    /// ignores the event when a newer reopen is pending. The event is sent even on rebuild
+    /// failure (with an empty slot) so the host always settles `pending_reopen`.
+    AudioStreamReady {
+        /// Generation of the `AppCommand::ReopenAudioStream` this event answers.
+        generation: u64,
     },
 }
 
@@ -522,6 +549,48 @@ fn run(ctx: WorkerContext, commands: mpsc::Receiver<AppCommand>, events: mpsc::S
                     outcome: Some(outcome.into()),
                     error: None,
                 });
+            }
+            AppCommand::ReopenAudioStream {
+                generation,
+                sample_rate_hz,
+                max_block_size,
+                channel_config,
+                slot,
+            } => {
+                // Every exit path answers the command with `AppEvent::AudioStreamReady` — even a
+                // failure, with nothing put in `slot` — so the host always settles
+                // `pending_reopen`: on failure that means clearing `audio_mode` and posting the
+                // error notice instead of leaving the app silent with no event (PR #159).
+                let Some(sample_rate) = SampleRate::new(sample_rate_hz) else {
+                    let _ = events.send(AppEvent::AudioStreamReady { generation });
+                    continue;
+                };
+                let prepare_ctx =
+                    match PrepareContext::new(sample_rate, max_block_size, channel_config) {
+                        Ok(c) => c,
+                        Err(_) => {
+                            let _ = events.send(AppEvent::AudioStreamReady { generation });
+                            continue;
+                        }
+                    };
+                let (engine, endpoint) = match build_default_engine(&prepare_ctx) {
+                    Ok(pair) => pair,
+                    Err(_) => {
+                        let _ = events.send(AppEvent::AudioStreamReady { generation });
+                        continue;
+                    }
+                };
+                let telemetry = endpoint.telemetry.clone();
+                let state_snapshot = ctx.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                ctx.instance.with(|inst| {
+                    *inst = Instance::new(EngineConfig { ctx: prepare_ctx }, endpoint);
+                    let snapshot = ctx.library.snapshot();
+                    let roots = ctx.library.roots();
+                    let resolver = LibraryResolver::new(&snapshot, &roots);
+                    let _ = inst.recall(&ctx.cache, &state_snapshot, &resolver);
+                });
+                slot.put(engine, telemetry);
+                let _ = events.send(AppEvent::AudioStreamReady { generation });
             }
         }
     }

@@ -222,6 +222,8 @@ impl UiHost for ClapUiHost {
             unsaved_changes: self.inner.is_dirty(),
             notices: self.inner.notices(),
             library_roots: self.inner.library_roots(),
+            audio_panel_open: false,
+            audio_panel: None,
         }
     }
 
@@ -299,6 +301,11 @@ impl UiHost for ClapUiHost {
                 self.inner.remove_library_root(&path);
                 return;
             }
+            UiIntent::ToggleAudioSettings
+            | UiIntent::SelectInputDevice { .. }
+            | UiIntent::SelectOutputDevice { .. }
+            | UiIntent::SelectSampleRate { .. }
+            | UiIntent::SelectBufferSize { .. } => return,
         }
         self.inner.mark_dirty();
     }

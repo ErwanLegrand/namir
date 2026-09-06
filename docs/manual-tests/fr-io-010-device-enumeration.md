@@ -89,3 +89,8 @@ the amp/cab screen; FR-IO has no UI owner yet in this codebase — see this crat
 Today's negotiation is fully automatic (remembered choice, else system default, else first
 enumerated), which is a real, working, but non-interactive implementation of FR-IO-010's *outcome*
 without its *mechanism*. Flagged as a known gap, not silently passed over.
+
+*Update (M14, 2026-09-06):* The "Audio Settings" overlay panel in `namir-ui` (FR-UI-020) now provides
+an interactive control for selecting input and output devices, sample rates, and buffer sizes, and
+dynamically reconfigures the running audio stream. Interactive testing on real hardware remains
+manual and is specified in `fr-io-010-device-selection.md` and `fr-io-040-sample-rate-and-buffer-size.md`.

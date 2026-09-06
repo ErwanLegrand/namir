@@ -137,6 +137,26 @@ pub struct PresetSummary {
     /// this crate never reads it, only hands it back.
     pub path: PathBuf,
 }
+/// FR-IO-010/040: Audio device configuration panel state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioDevicePanelSnapshot {
+    /// Available input device names.
+    pub input_devices: Vec<String>,
+    /// Available output device names.
+    pub output_devices: Vec<String>,
+    /// Currently selected input device name, or `None` if default/unset.
+    pub current_input_device: Option<String>,
+    /// Currently selected output device name, or `None` if default/unset.
+    pub current_output_device: Option<String>,
+    /// Supported sample rates in Hz for the current configuration.
+    pub supported_sample_rates: Vec<u32>,
+    /// Currently active sample rate in Hz.
+    pub current_sample_rate: u32,
+    /// Supported buffer sizes in frames for the current configuration.
+    pub supported_buffer_sizes: Vec<u32>,
+    /// Currently active buffer size in frames.
+    pub current_buffer_size: u32,
+}
 
 /// Everything [`crate::render`] needs to draw one frame of FR-UI-020's screen -- a single,
 /// self-contained, read-only picture of engine/library/preset state at one instant. Built fresh by
@@ -176,6 +196,11 @@ pub struct UiSnapshot {
     pub presets: Vec<PresetSummary>,
     /// FR-LIB-010's configured library roots.
     pub library_roots: Arc<Vec<PathBuf>>,
+    /// Whether the audio settings / device panel is open.
+    pub audio_panel_open: bool,
+    /// Audio device configuration panel state, or `None` if device configuration is not available
+    /// (e.g. in a plugin host where audio devices are managed externally).
+    pub audio_panel: Option<AudioDevicePanelSnapshot>,
 }
 
 impl Default for UiSnapshot {
@@ -196,6 +221,8 @@ impl Default for UiSnapshot {
             notices: Vec::new(),
             presets: Vec::new(),
             library_roots: Arc::new(Vec::new()),
+            audio_panel_open: false,
+            audio_panel: None,
         }
     }
 }
@@ -284,6 +311,28 @@ pub enum UiIntent {
     RemoveLibraryRoot {
         /// The root directory to remove.
         path: PathBuf,
+    },
+    /// Toggle the visibility of the audio device / audio settings panel.
+    ToggleAudioSettings,
+    /// Select an audio input device by name.
+    SelectInputDevice {
+        /// The selected input device name.
+        name: String,
+    },
+    /// Select an audio output device by name.
+    SelectOutputDevice {
+        /// The selected output device name.
+        name: String,
+    },
+    /// Select an audio sample rate in Hz.
+    SelectSampleRate {
+        /// The selected sample rate in Hz.
+        rate: u32,
+    },
+    /// Select an audio buffer size in frames.
+    SelectBufferSize {
+        /// The selected buffer size in frames.
+        buffer_size: u32,
     },
 }
 

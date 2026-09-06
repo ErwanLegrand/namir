@@ -56,13 +56,13 @@ fn resolve_config_dir() -> Option<PathBuf> {
 /// negotiation to check against (`crate::device_state::negotiate_shared_sample_rate`) — kept
 /// separate from applying the choice so the caller can negotiate the shared sample rate before
 /// picking a final buffer size per direction.
-struct DirectionSetup {
-    device: DeviceInfo,
-    fell_back_from: Option<String>,
-    configs: Vec<crate::audio_io::SupportedConfigRange>,
+pub(crate) struct DirectionSetup {
+    pub(crate) device: DeviceInfo,
+    pub(crate) fell_back_from: Option<String>,
+    pub(crate) configs: Vec<crate::audio_io::SupportedConfigRange>,
 }
 
-fn setup_direction(
+pub(crate) fn setup_direction(
     backend: &dyn AudioBackend,
     host: &HostInfo,
     devices: Result<Vec<DeviceInfo>, crate::audio_io::AudioIoError>,
@@ -89,11 +89,11 @@ fn setup_direction(
 /// FR-IO-020's settled answer for one session: the share mode both streams open with, and — when
 /// exclusive mode was asked for and not granted — the notice detail explaining why the session is
 /// running shared instead.
-struct ShareModeDecision {
-    mode: ShareMode,
+pub(crate) struct ShareModeDecision {
+    pub(crate) mode: ShareMode,
     /// `None` whenever the answer needs no explanation: exclusive was never requested, or it was
     /// requested and granted.
-    refusal_detail: Option<String>,
+    pub(crate) refusal_detail: Option<String>,
 }
 
 /// FR-IO-020: asks both devices whether they can provide exclusive mode and **ANDs the answers**,
@@ -109,7 +109,7 @@ struct ShareModeDecision {
 ///
 /// Asked before any stream is opened; see [`AudioBackend::supports_exclusive`] for why a pre-flight
 /// query rather than an open-and-retry.
-fn negotiate_share_mode(
+pub(crate) fn negotiate_share_mode(
     backend: &dyn AudioBackend,
     host: &HostInfo,
     input_device: &DeviceInfo,
@@ -177,7 +177,7 @@ fn negotiate_share_mode(
 /// is failing repeatedly needs one notice, not sixteen, and [`crate::host::AppHost`] drains this
 /// every frame. Small enough that both rings together are a few kilobytes allocated once, at
 /// stream open, and never again.
-const STREAM_FAILURE_RING_SLOTS: usize = 16;
+pub(crate) const STREAM_FAILURE_RING_SLOTS: usize = 16;
 
 /// Builds one direction's `cpal` error callback (FR-IO-070), and the reason it is a function with
 /// its own tests rather than a closure inlined into [`run`].
@@ -243,12 +243,12 @@ pub fn run() {
 
     let config_dir = resolve_config_dir();
 
-    let (mut settings, settings_warning) = match &config_dir {
+    let (settings, settings_warning) = match &config_dir {
         Some(dir) => settings::load(&settings::settings_path(dir)),
         None => (AppSettings::default(), None),
     };
 
-    let backend = CpalBackend::new();
+    let backend = Arc::new(CpalBackend::new());
     let host_info = match &settings.host_name {
         Some(name) => backend
             .hosts()
@@ -259,14 +259,14 @@ pub fn run() {
     };
 
     let input = setup_direction(
-        &backend,
+        backend.as_ref(),
         &host_info,
         backend.input_devices(&host_info),
         settings.input_device_name.as_deref(),
         |h, d| backend.input_configs(h, d),
     );
     let output = setup_direction(
-        &backend,
+        backend.as_ref(),
         &host_info,
         backend.output_devices(&host_info),
         settings.output_device_name.as_deref(),
@@ -323,7 +323,7 @@ pub fn run() {
         share_mode: ShareMode::Shared,
     };
     let share_mode = negotiate_share_mode(
-        &backend,
+        backend.as_ref(),
         &host_info,
         &input.device,
         input_params,
@@ -408,10 +408,12 @@ pub fn run() {
         cache: Arc::clone(&cache),
         library: Arc::clone(&library),
         pool: ThreadPool::new(),
-        library_roots,
+        library_roots: library_roots.clone(),
         state: Arc::clone(&state),
     };
     let worker = WorkerHandle::spawn(worker_ctx);
+
+    let xruns = Arc::new(XrunCounter::new());
 
     // FR-IO-020's mode indicator: the mode actually granted, never the one requested. The output
     // device names it -- see `namir_ui::AudioModeStatus::device_name` for why one name is enough
@@ -427,6 +429,43 @@ pub fn run() {
         Arc::clone(&library),
         state,
         audio_mode,
+    );
+    let reopen_ctx = crate::host::AudioReopenContext {
+        backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+        host_info: host_info.clone(),
+        xruns: Arc::clone(&xruns),
+    };
+    host.enable_audio_reopen(reopen_ctx);
+    let input_device_names: Vec<String> = backend
+        .input_devices(&host_info)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    let output_device_names: Vec<String> = backend
+        .output_devices(&host_info)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    let supported_sample_rates =
+        crate::device_state::supported_sample_rates(&input.configs, &output.configs);
+    let supported_buffer_sizes = crate::device_state::supported_buffer_sizes(
+        &input.configs,
+        &output.configs,
+        sample_rate_hz,
+    );
+    host.configure_audio_devices(
+        config_dir.clone(),
+        settings.clone(),
+        input_device_names,
+        output_device_names,
+        Some(input.device.name.clone()),
+        Some(output.device.name.clone()),
+        supported_sample_rates,
+        sample_rate_hz,
+        supported_buffer_sizes,
+        buffer_frames.unwrap_or(256),
     );
     // FR-STATE-030: `<config_dir>/Presets`, the one directory `namir-clap` must also resolve --
     // see `crate::presets`' module doc comment for why that rule is written twice today and where
@@ -458,9 +497,8 @@ pub fn run() {
         host.report(crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE, detail);
     }
 
-    let xruns = Arc::new(XrunCounter::new());
     let stream_setup = StreamSetup {
-        backend: &backend,
+        backend: backend.as_ref(),
         input_host: host_info.clone(),
         input_device: input.device.clone(),
         input_params,
@@ -520,6 +558,15 @@ pub fn run() {
                     startup_probe::audible(library_index_entries, default_state_params);
                     eprintln!("namir: audio stream started");
                     host.hold_streams(running);
+                    // FR-IO-080: persist the negotiated values immediately — including any fallback
+                    // from the default-device path — so the next launch starts from what worked.
+                    host.persist_negotiated_audio(
+                        &host_info.name,
+                        &input.device.name,
+                        &output.device.name,
+                        sample_rate_hz,
+                        buffer_frames,
+                    );
                 }
                 Err(e) => {
                     // The detail is carried on the marker, not left to the notice alone: a probed
@@ -571,20 +618,17 @@ pub fn run() {
 
     xrun_log.stop();
 
-    // FR-IO-080: persist whatever was actually negotiated -- including a fallback -- so the next
-    // launch starts from what worked this time.
+    // FR-IO-080: device/rate/buffer are now persisted at the point of negotiation (see
+    // `host.persist_negotiated_audio` called right after `play()` above, and
+    // `apply_audio_reopen`). Only library_roots needs updating here: it tracks mid-session
+    // changes (add/remove via panel) that `persist_negotiated_audio` does not touch.
     if let Some(dir) = &config_dir {
-        settings.host_name = Some(host_info.name.clone());
-        settings.input_device_name = Some(input.device.name.clone());
-        settings.output_device_name = Some(output.device.name.clone());
-        settings.sample_rate_hz = Some(sample_rate_hz);
-        settings.buffer_size_frames = buffer_frames;
-        settings.library_roots = (*library.roots()).clone();
+        let settings_path = settings::settings_path(dir);
+        let (mut final_settings, _) = settings::load(&settings_path);
+        final_settings.library_roots = (*library.roots()).clone();
         // The one report in this function that cannot become a notice: the window is already
-        // closed, so there is no FR-UI-070 list left to push onto. It was `let _ =` — a settings
-        // file that silently failed to save is precisely the "why did it forget my device again?"
-        // report a log exists to answer — and is now the record it always should have been.
-        if let Err(w) = settings::save(&settings::settings_path(dir), &settings) {
+        // closed, so there is no FR-UI-070 list left to push onto.
+        if let Err(w) = settings::save(&settings_path, &final_settings) {
             crate::diagnostics::record(w.code, &w.detail);
         }
     }
@@ -636,7 +680,22 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     // No device was opened at all on this path, so there is no share mode to indicate -- `None`
     // rather than a truthful-looking "Shared", which would claim a device this window does not have.
     let mut host = AppHost::new(instance, worker, telemetry, library, state, None);
-    // FR-STATE-030 still works on this path: a window with no device can still list, save and
+    let (settings, _) = match &config_dir {
+        Some(dir) => settings::load(&settings::settings_path(dir)),
+        None => (AppSettings::default(), None),
+    };
+    host.configure_audio_devices(
+        config_dir.clone(),
+        settings,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        Vec::new(),
+        48_000,
+        Vec::new(),
+        256,
+    );
     // recall presets, and refusing to would be a second degradation the missing device does not
     // imply.
     if let Some(dir) = preset_dir {

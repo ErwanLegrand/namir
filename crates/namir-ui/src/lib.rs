@@ -81,8 +81,8 @@ mod notices;
 
 pub use app::{NamirUi, ViewState, open_blocking, open_parented, open_with_srgb_fallback, render};
 pub use host::{
-    AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading, PresetSummary, UiHost,
-    UiIntent, UiNotice, UiSnapshot,
+    AudioDevicePanelSnapshot, AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading,
+    PresetSummary, UiHost, UiIntent, UiNotice, UiSnapshot,
 };
 pub use library_view::{LibraryViewState, entry_label};
 // The list-side half of FR-UI-070, shared by both shells rather than copied into each -- see

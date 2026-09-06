@@ -514,6 +514,8 @@ pub(crate) struct FakeBackend {
     /// the observable that distinguishes "the session settled on exclusive" from "the session
     /// settled on exclusive and then opened shared anyway".
     asked_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
+    input_devices: Vec<DeviceInfo>,
+    output_devices: Vec<DeviceInfo>,
 }
 
 #[cfg(test)]
@@ -530,6 +532,8 @@ impl FakeBackend {
             open_failures: Vec::new(),
             exclusive_devices: Vec::new(),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
+            input_devices: Vec::new(),
+            output_devices: Vec::new(),
         }
     }
 
@@ -537,6 +541,16 @@ impl FakeBackend {
     /// so a test can grant exclusive mode to one direction and refuse it on the other.
     pub(crate) fn granting_exclusive_to(mut self, device_name: &str) -> Self {
         self.exclusive_devices.push(device_name.to_string());
+        self
+    }
+    /// Configures the input and output devices reported by this backend.
+    pub(crate) fn with_devices(
+        mut self,
+        input_devices: Vec<DeviceInfo>,
+        output_devices: Vec<DeviceInfo>,
+    ) -> Self {
+        self.input_devices = input_devices;
+        self.output_devices = output_devices;
         self
     }
 
@@ -654,10 +668,10 @@ impl AudioBackend for FakeBackend {
         }
     }
     fn input_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
-        Ok(vec![])
+        Ok(self.input_devices.clone())
     }
     fn output_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
-        Ok(vec![])
+        Ok(self.output_devices.clone())
     }
     fn input_configs(
         &self,
