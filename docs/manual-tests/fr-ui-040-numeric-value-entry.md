@@ -64,3 +64,20 @@ synthetic call does.
 
 **Result: NOT EXECUTED this session — script above is ready to run by a person with a display and
 keyboard against a real `namir-ui` window.**
+
+### Supplementary headless driver coverage (2026-09-06, issue #143)
+
+Supplementary automated headless tests in `crates/namir-ui/tests/ui_interaction_scripts.rs` drive
+real widget layout and interaction via synthetic `RawInput` events through `egui::Context::run_ui`:
+- `numeric_display_shows_formatted_values_without_interaction`: verifies continuous and stepped
+  controls display their formatted values numerically without requiring click or hover.
+- `numeric_value_entry_via_keyboard_updates_continuous_parameter`: exercises click-to-edit, typing
+  `6.0`, pressing Enter, and verifies `SetParam` dispatch.
+- `numeric_value_entry_via_keyboard_updates_stepped_parameter`: exercises typing state names ("off")
+  and raw indices ("1") on stepped controls.
+- `numeric_value_entry_clamps_out_of_range_inputs`: exercises typing out-of-range values (e.g. `999`)
+  and verifies clamping at the widget boundary.
+- `numeric_value_entry_rejects_non_numeric_input`: exercises typing non-numeric text (`loud`) and
+  verifies the parameter value is preserved.
+- `numeric_value_entry_escape_key_cancels_in_progress_edit`: exercises pressing Escape during text
+  editing and verifies the in-progress edit is discarded.

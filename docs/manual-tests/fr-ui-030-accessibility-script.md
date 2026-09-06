@@ -69,3 +69,13 @@ anything screen-reader-observable.
 keyboard, and mouse against a real `namir-ui` window.** The one substantive finding worth acting on
 before this is run for real: **wiring a real `accesskit` platform adapter is still open work**,
 tracked here rather than silently assumed done because `Response::labelled_by` is called correctly.
+
+### Supplementary headless driver coverage (2026-09-06, issue #143)
+
+Supplementary automated headless tests in `crates/namir-ui/tests/ui_interaction_scripts.rs` exercise
+the widget keyboard interaction layer end-to-end:
+- `keyboard_arrow_keys_on_focused_control_adjust_value`: exercises focusing a control and stepping
+  its value via arrow keys in a headless `RawInput` event loop.
+
+Full Tab-key focus traversal across the complete screen layout and screen-reader observations remain
+manual checks (steps 2 and 3 above).

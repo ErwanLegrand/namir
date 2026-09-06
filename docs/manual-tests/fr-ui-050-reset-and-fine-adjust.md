@@ -71,3 +71,18 @@ opposed to being merely assumed correct because `egui::DragValue` documents the 
 keyboard, and mouse against a real `namir-ui` window.** The fine-adjustment gesture (steps 4–5) is
 the higher-priority half to run first once a human is available: it is the only part of FR-UI-050
 with no automated coverage of any kind today.
+
+### Supplementary headless driver coverage (2026-09-06, issue #143)
+
+Supplementary automated headless tests in `crates/namir-ui/tests/ui_interaction_scripts.rs` drive
+real widget layout and interaction via synthetic `RawInput` events through `egui::Context::run_ui`:
+- `reset_gesture_double_clicking_label_restores_continuous_default`: asserts single-click on label
+  does not reset, while double-click dispatches `ResetParamToDefault` and restores default.
+- `reset_gesture_double_clicking_label_restores_stepped_default`: asserts double-click on a stepped
+  control's label resets to default state.
+- `reset_gesture_double_clicking_value_does_not_reset_parameter`: verifies double-clicking on the
+  value itself does not fire reset.
+- `reset_and_fine_adjust_shift_drag_scales_increments`: performs unmodified drag vs Shift+drag and
+  asserts Shift+drag yields a strictly smaller parameter delta for identical pointer displacement.
+
+The `reset_and_fine_adjust_shift_drag_scales_increments` test supersedes the historical "zero automated coverage of any kind today" assessment in the section above for the algorithmic scaling behavior, while physical feel and visual feedback remain under manual observation.
