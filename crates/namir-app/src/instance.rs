@@ -92,6 +92,10 @@ mod tests {
         assert_eq!(freed, 0);
     }
 
+    // trace-partial: FR-UI-060
+    // uncovered: FR-UI-060 — non-blocking parameter submission under instance contention; whole-interface
+    // uncovered: frame duration during a 10,000-file scan is measured by namir-ui/benches/library_frame.rs;
+    // uncovered: closes M8
     #[test]
     fn try_submit_param_does_not_block_while_instance_mutex_is_held() {
         let c =

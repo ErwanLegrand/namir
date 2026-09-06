@@ -31,6 +31,11 @@
 //!   only worker-pool jobs and the GUI/main thread reach into it (NFR-RT-010's "no lock the audio
 //!   thread can contend on" is about the audio thread's *own* path, which is
 //!   `AudioEngine::process`/`apply_param_direct`, neither of which is behind this lock).
+//! - `submitter: Mutex<Option<Arc<CommandSubmitter>>>` — producer-side submitter held in a separate
+//!   mutex from `instance` so GUI parameter submissions (`try_submit_param`) never contend on
+//!   worker asset loads. `instance` and `submitter` are updated non-atomically in `install_instance`/
+//!   `clear_instance`: a submission landing in the gap gets `SubmitError::Abandoned` or a stale
+//!   abandoned ring, which callers discard safely with `let _ =`.
 //! - `nam_ref`/`ir_ref: Mutex<Option<FileRef>>` — the "what the user asked to have loaded" half of
 //!   a [`namir_state::State`], kept independently of whatever the worker has actually finished
 //!   loading (which can lag behind by however long a file read/parse takes) so that a save
@@ -94,6 +99,15 @@ pub(crate) struct SharedInner {
     pub(crate) cache: Arc<ResourceCache>,
     pub(crate) pool: ThreadPool,
     pub(crate) instance: Mutex<Option<Instance>>,
+    /// Producer-side submitter kept in a separate mutex from `instance` so GUI parameter
+    /// submissions (`try_submit_param`) never contend on worker asset loads.
+    ///
+    /// `instance` and `submitter` are held in separate mutexes and updated non-atomically in
+    /// [`Self::install_instance`] and [`Self::clear_instance`]. A submission landing in the gap
+    /// between the two writes sees either `None` (yielding [`SubmitError::Abandoned`]) or a
+    /// submitter pointing to a freshly dropped instance (whose ring is abandoned and returns
+    /// [`SubmitError::Abandoned`]). Callers safely discard this with `let _ =` because missing
+    /// a parameter change during an activation/deactivation transition is harmless.
     submitter: Mutex<Option<Arc<CommandSubmitter>>>,
     nam_ref: Mutex<Option<FileRef>>,
     ir_ref: Mutex<Option<FileRef>>,
@@ -1072,6 +1086,10 @@ mod tests {
         );
     }
 
+    // trace-partial: FR-UI-060
+    // uncovered: FR-UI-060 — non-blocking parameter submission under instance contention; whole-interface
+    // uncovered: frame duration during a 10,000-file scan is measured by namir-ui/benches/library_frame.rs;
+    // uncovered: closes M8
     #[test]
     fn try_submit_param_does_not_block_on_instance_mutex() {
         let inner = Arc::new(SharedInner::new());
