@@ -290,7 +290,7 @@ impl WorkerHandle {
     }
 
     /// Enqueues a command. Never blocks (`mpsc::Sender::send` on an unbounded channel).
-    pub(crate) fn send(&self, command: AppCommand) {
+    pub fn send(&self, command: AppCommand) {
         // The worker thread only ever exits via `Shutdown`, sent by `Drop` below, so a send
         // failing here would mean the thread already panicked -- nothing this call can recover
         // from, and dropping the command (rather than propagating an error nobody would act on
