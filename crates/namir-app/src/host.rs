@@ -444,7 +444,7 @@ impl AppHost {
         let Some(dir) = &self.config_dir else { return };
         let path = crate::settings::settings_path(dir);
         let (mut settings, _) = crate::settings::load(&path);
-        settings.library_roots = self.library.roots();
+        settings.library_roots = (*self.library.roots()).clone();
         if let Err(w) = crate::settings::save(&path, &settings) {
             crate::diagnostics::record(w.code, &w.detail);
         }
@@ -953,6 +953,9 @@ impl UiHost for AppHost {
             UiIntent::AddLibraryRoot { path } => {
                 self.library.add_root(path);
                 self.persist_library_roots();
+                // Adding a library root updates the configured list immediately for resolution and
+                // UI display, but does not trigger an automatic rescan. Rescanning remains an explicit
+                // user action via `RescanLibraryRequested`.
             }
             UiIntent::RemoveLibraryRoot { path } => {
                 self.library.remove_root(&path);
@@ -1063,7 +1066,7 @@ mod tests {
         let cache = Arc::new(ResourceCache::new());
 
         let (library, _warnings) = namir_worker::library::LibraryService::open_at(dir);
-        let roots = library.roots().to_vec();
+        let roots = (*library.roots()).clone();
         let library = Arc::new(library);
         let pool = ThreadPool::with_threads(1);
 
@@ -2104,7 +2107,7 @@ mod tests {
         host.watch_config_dir(dir.clone());
 
         let initial_roots = host.snapshot().library_roots;
-        assert_eq!(initial_roots, vec![dir.join("Library")]);
+        assert_eq!(*initial_roots, vec![dir.join("Library")]);
 
         let custom_root = dir.join("CustomLibrary");
         host.dispatch(UiIntent::AddLibraryRoot {
@@ -2113,7 +2116,7 @@ mod tests {
 
         let snapshot = host.snapshot();
         assert_eq!(
-            snapshot.library_roots,
+            *snapshot.library_roots,
             vec![dir.join("Library"), custom_root.clone()]
         );
 
@@ -2131,7 +2134,7 @@ mod tests {
             path: dir.join("Library"),
         });
         let snapshot = host.snapshot();
-        assert_eq!(snapshot.library_roots, vec![custom_root.clone()]);
+        assert_eq!(*snapshot.library_roots, vec![custom_root.clone()]);
 
         let (loaded, _) = crate::settings::load(&settings_path);
         assert_eq!(loaded.library_roots, vec![custom_root]);

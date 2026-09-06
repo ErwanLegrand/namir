@@ -515,7 +515,9 @@ mod tests {
     }
 
     /// FR-LIB-010: a recursive scan finds `.nam` and IR files under nested directories.
-    // trace: FR-LIB-010
+    // trace-partial: FR-LIB-010
+    // uncovered: FR-LIB-010 — the backend mechanism exists but the UI view-layer control to emit
+    // uncovered: the nomination intent remains unbuilt; closes M8
     #[test]
     fn a_full_scan_finds_every_file_under_nested_directories() {
         let root = temp_dir("full_scan");

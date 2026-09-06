@@ -1288,6 +1288,10 @@ failing silently is worse"):
    was tried, and what it actually hashed to) is carried into the failure report so a future UI can
    offer "use it anyway" as an explicit choice rather than a silent default.
 
+*Consequence (added issue #32)* — Saving over an existing preset is guarded by confirmation across
+both product shells (refusing on the first attempt with `PRESET_EXISTS` and writing on a second
+press with the same name within 5 seconds), and rejects invalid filenames with `PRESET_UNAVAILABLE`.
+
 ---
 
 ## 12. Library subsystem
@@ -1370,6 +1374,11 @@ an ordinary arrangement on Linux and macOS, with an empty library and no warning
 followed, and the loop safety that shape supplied implicitly is an explicit guard: each canonical
 directory target is followed at most once, and the skipped second spelling is reported rather than
 dropped, and protected from removal, since those files are still on disk.
+
+*Consequence (added issue #32).* Configured library roots are persisted in
+`AppSettings.library_roots` in the standalone application and exposed via `LibraryService::roots`.
+Scanning with an empty root list is refused upfront (returning `None`) so that an unconfigured or
+wiped root list cannot erase the shared library index.
 
 
 **Decision D-12.3 (AQ-3 resolved — added M5)** — The index is stored as a single pretty-printed
@@ -1816,6 +1825,12 @@ parameter-change intents. It never reads engine state directly and never blocks 
 
 *Traces:* FR-UI-060, FR-UI-070, NFR-RT-010.
 
+*Consequence (added issue #32)* — `UiIntent` was extended with `SavePreset`, `RecallPreset`,
+`AddLibraryRoot`, `RemoveLibraryRoot`, `RescanLibraryRequested`, `CancelScanRequested`, and
+`DismissNotice` variants, bridging user gestures to background worker tasks without blocking UI
+frames. Adding a library root updates the configured list immediately but does not trigger an
+automatic rescan.
+
 ---
 
 ## 16. Errors and diagnostics
@@ -1854,6 +1869,10 @@ than aspirational, at one token wide.
 This does not disturb D-16.2 below: `render` allocates, and the audio thread never reaches it —
 it never holds an `ErrorCode` at all, reporting through the telemetry ring as numbers that the
 non-RT side maps to entries.
+
+*Consequence (added issue #32)* — Added preset error codes in `namir-app` and `namir-clap`
+catalogues: `PRESET_EXISTS` (warning), `PRESET_UNAVAILABLE` (warning), and `PRESET_IO_FAILED`
+(error).
 
 **Decision D-16.2** — The audio thread emits **numeric fault codes** through the telemetry ring.
 All formatting, allocation and logging happen on the UI or worker side.

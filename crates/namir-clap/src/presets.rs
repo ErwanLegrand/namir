@@ -12,6 +12,8 @@ use std::path::Path;
 
 use namir_ui::PresetSummary;
 
+#[cfg(test)]
+pub(crate) use namir_platform::presets::preset_dir_under;
 pub(crate) use namir_platform::presets::{preset_dir, preset_path};
 
 /// Every `.namirpreset` in `dir` as the interface's own summary, named by stem and sorted.
