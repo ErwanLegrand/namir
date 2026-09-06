@@ -1,0 +1,103 @@
+S-5 Task 10 -- Gate 1 (compute), Google Chrome 152.0.7977.83, headless.
+Steady signal. 20 000-block screening matrix (5 reps) then 100 000-block sustained (2 reps),
+the same two block counts Edge 152's figures used. Beacon transcript, URL-decoded.
+
+=== gate1 20k scalar a1_standard reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=scalar&model=a1_standard&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.47591192351678,"control":-82.71576308709255,"margin":1.2398511635757785,"pass":true}
+{"kind":"stats","rep":1,"p50":38.999998569488525,"p99":63.5624997317791,"p999":82.3124997317791,"max":90.1874989271164,"estimator":50.62499865889549,"quotable":false}
+{"kind":"stats","rep":2,"p50":39.18749839067459,"p99":65.99999964237213,"p999":84.74999964237213,"max":92.06250160932541,"estimator":50.62499865889549,"quotable":false}
+{"kind":"stats","rep":3,"p50":39.000000804662704,"p99":61.87499910593033,"p999":78.93749848008156,"max":93.93749982118607,"estimator":50.62499865889549,"quotable":false}
+{"kind":"stats","rep":4,"p50":38.81250098347664,"p99":61.68749928474426,"p999":79.6875,"max":90.93750044703484,"estimator":50.62499865889549,"quotable":false}
+{"kind":"stats","rep":5,"p50":38.999998569488525,"p99":62.25000098347664,"p999":81.00000098347664,"max":90.74999839067459,"estimator":50.62500089406967,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+=== gate1 20k scalar a2_lite reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=scalar&model=a2_lite&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.47591192351678,"control":-82.71576308709255,"margin":1.2398511635757785,"pass":true}
+{"kind":"stats","rep":1,"p50":6.937500089406967,"p99":21.187499910593033,"p999":32.2500005364418,"max":85.12499928474426,"estimator":18.75,"quotable":false}
+{"kind":"stats","rep":2,"p50":6.937500089406967,"p99":20.43750062584877,"p999":30.750001966953278,"max":35.4374997317791,"estimator":18.937499821186066,"quotable":false}
+{"kind":"stats","rep":3,"p50":6.937500089406967,"p99":20.06250098347664,"p999":28.50000187754631,"max":34.312500804662704,"estimator":18.937499821186066,"quotable":false}
+{"kind":"stats","rep":4,"p50":6.937500089406967,"p99":20.43750062584877,"p999":29.625000804662704,"max":34.312500804662704,"estimator":18.937499821186066,"quotable":false}
+{"kind":"stats","rep":5,"p50":6.937500089406967,"p99":20.43750062584877,"p999":28.87500151991844,"max":96.00000008940698,"estimator":19.12499964237213,"quotable":false}
+FINISHED
+{"kind":"done"}
+
+=== gate1 20k simd128 a1_standard reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a1_standard&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":11.437500268220901,"p99":20.06249874830246,"p999":28.312499821186066,"max":90.93749821186066,"estimator":18.187500536441803,"quotable":false}
+{"kind":"stats","rep":2,"p50":11.625000089406967,"p99":19.687501341104507,"p999":28.312499821186066,"max":32.06250071525574,"estimator":18.37499812245369,"quotable":false}
+{"kind":"stats","rep":3,"p50":11.437500268220901,"p99":19.312499463558197,"p999":26.250001788139343,"max":30.375000089406967,"estimator":18.37499812245369,"quotable":false}
+{"kind":"stats","rep":4,"p50":11.437500268220901,"p99":20.625000447034836,"p999":28.874999284744263,"max":91.1250002682209,"estimator":18.187498301267624,"quotable":false}
+{"kind":"stats","rep":5,"p50":11.437500268220901,"p99":19.312499463558197,"p999":27.75000035762787,"max":33.3749994635582,"estimator":18.37499812245369,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+=== gate1 20k simd128 a2_lite reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a2_lite&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":2.9999993741512303,"p99":10.499998927116394,"p999":11.9999997317791,"max":81.93750008940697,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":2,"p50":2.9999993741512303,"p99":11.06250062584877,"p999":15.000001341104507,"max":19.499999284744263,"estimator":9.749999642372131,"quotable":false}
+{"kind":"stats","rep":3,"p50":2.9999993741512303,"p99":10.500001162290573,"p999":13.875000178813934,"max":17.43750125169754,"estimator":9.937499463558197,"quotable":true}
+{"kind":"stats","rep":4,"p50":2.9999993741512303,"p99":10.499998927116394,"p999":14.249999821186066,"max":18.75,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":5,"p50":2.9999993741512303,"p99":10.312501341104507,"p999":14.0625,"max":17.250001430511475,"estimator":9.937499463558197,"quotable":true}
+{"kind":"done"}
+FINISHED
+
+=== gate1 20k simd128+revectorize a1_standard reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a1_standard&signal=0
+=== flags: --js-flags=--experimental-wasm-revectorize (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":11.625000089406967,"p99":19.68749910593033,"p999":28.312499821186066,"max":31.12500160932541,"estimator":18.187500536441803,"quotable":false}
+{"kind":"stats","rep":2,"p50":11.437500268220901,"p99":19.874998927116394,"p999":28.312499821186066,"max":37.5,"estimator":18.187498301267624,"quotable":false}
+{"kind":"stats","rep":3,"p50":11.437500268220901,"p99":19.312499463558197,"p999":26.249999552965164,"max":30.7499997317791,"estimator":18.187498301267624,"quotable":false}
+{"kind":"stats","rep":4,"p50":11.437500268220901,"p99":19.312501698732376,"p999":27.75000035762787,"max":97.4999986588955,"estimator":18.187498301267624,"quotable":false}
+{"kind":"stats","rep":5,"p50":11.437500268220901,"p99":19.68749910593033,"p999":27.375000715255737,"max":30.562499910593033,"estimator":18.187498301267624,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+=== gate1 20k simd128+revectorize a2_lite reps=5
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a2_lite&signal=0
+=== flags: --js-flags=--experimental-wasm-revectorize (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":2.9999993741512303,"p99":10.312499105930328,"p999":13.874997943639755,"max":84.00000035762787,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":2,"p50":2.9999993741512303,"p99":10.125001519918442,"p999":13.312500715255737,"max":15.75000062584877,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":3,"p50":2.9999993741512303,"p99":10.312499105930328,"p999":13.500000536441803,"max":17.624998837709427,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":4,"p50":2.9999993741512303,"p99":10.499998927116394,"p999":14.624999463558197,"max":22.312498837709427,"estimator":9.749999642372131,"quotable":true}
+{"kind":"stats","rep":5,"p50":2.9999993741512303,"p99":10.500001162290573,"p999":15.000001341104507,"max":17.06250160932541,"estimator":9.749999642372131,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+=== gate1 100k simd128 a1_standard reps=2 (sustained)
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=2&measured=100000&wasm=simd128&model=a1_standard&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":11.437500268220901,"p99":19.687501341104507,"p999":28.125,"max":90.1874989271164,"estimator":17.99999848008156,"quotable":false}
+{"kind":"done"}
+FINISHED
+{"kind":"stats","rep":2,"p50":11.437500268220901,"p99":19.874998927116394,"p999":28.49999964237213,"max":40.312499552965164,"estimator":18.37499812245369,"quotable":false}
+
+=== gate1 100k simd128 a2_lite reps=2 (sustained)
+=== url: http://127.0.0.1:8080/web/bench.html?auto=1&reps=2&measured=100000&wasm=simd128&model=a2_lite&signal=0
+=== flags:  (plus --headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>)
+=== status: done
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":2.9999993741512303,"p99":10.499998927116394,"p999":14.812501519918442,"max":81.56250044703484,"estimator":9.749999642372131,"quotable":false}
+{"kind":"stats","rep":2,"p50":2.9999993741512303,"p99":10.499998927116394,"p999":14.999999105930328,"max":25.12500062584877,"estimator":9.749999642372131,"quotable":false}
+{"kind":"done"}
+FINISHED
+
+GATE1 COMPLETE
