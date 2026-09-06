@@ -180,25 +180,34 @@ impl DenormalGuard {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn read_fpcr() -> u64 {
+    let val: u64;
+    // SAFETY: `mrs` against `fpcr` reads a CPU control register directly, the same way the x86_64
+    // MXCSR intrinsics do — the instruction touches no memory, so it cannot violate memory safety.
+    // The only output is a plain 64-bit integer with no aliasing implications, and `fpcr` reads
+    // affect neither the stack pointer nor the NZCV condition flags, so
+    // `nomem, nostack, preserves_flags` accurately describe this asm block's effects.
+    unsafe {
+        core::arch::asm!(
+            "mrs {0}, fpcr",
+            out(reg) val,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    val
+}
+
+#[cfg(target_arch = "aarch64")]
 impl DenormalGuard {
     /// Engages FZ immediately, capturing the current FPCR so `Drop` can restore it exactly.
     pub fn new() -> Self {
-        let previous_fpcr: u64;
-        // SAFETY: `mrs`/`msr` against `fpcr` read/write a CPU control register directly, the same
-        // way the x86_64 MXCSR intrinsics do — the instruction touches no memory, so it cannot
-        // violate memory safety. The only output is a plain 64-bit integer with no aliasing
-        // implications, and `fpcr` writes affect neither the stack pointer nor the NZCV
-        // condition flags, so `nomem, nostack, preserves_flags` accurately describe this asm
-        // block's effects.
-        unsafe {
-            core::arch::asm!(
-                "mrs {0}, fpcr",
-                out(reg) previous_fpcr,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
+        let previous_fpcr = read_fpcr();
         let new_fpcr = previous_fpcr | FZ_MASK;
-        // SAFETY: same argument as the read above.
+        // SAFETY: `msr` against `fpcr` writes a CPU control register directly. The instruction
+        // touches no memory, so it cannot violate memory safety, and `fpcr` writes affect neither
+        // the stack pointer nor the NZCV condition flags, so `nomem, nostack, preserves_flags`
+        // accurately describe this asm block's effects.
         unsafe {
             core::arch::asm!(
                 "msr fpcr, {0}",
@@ -420,6 +429,117 @@ mod tests {
             assert_eq!(
                 flushed, 0.0,
                 "with FTZ/DAZ engaged the subnormal product must flush to exact zero"
+            );
+            drop(guard);
+
+            let restored = std::hint::black_box(a) * std::hint::black_box(b);
+            assert_eq!(
+                restored, unflushed,
+                "dropping the guard must restore ordinary subnormal handling"
+            );
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    mod aarch64_tests {
+        use super::*;
+
+        #[test]
+        fn engaging_sets_fz_bit() {
+            let before = read_fpcr();
+            let guard = DenormalGuard::new();
+            let during = read_fpcr();
+            assert_eq!(
+                during,
+                before | FZ_MASK,
+                "engaging should set exactly FZ on top of whatever was already there"
+            );
+            drop(guard);
+        }
+
+        #[test]
+        fn dropping_restores_exact_prior_fpcr() {
+            let before = read_fpcr();
+            let guard = DenormalGuard::new();
+            assert_ne!(
+                read_fpcr(),
+                before,
+                "guard should have changed something to restore"
+            );
+            drop(guard);
+            assert_eq!(
+                read_fpcr(),
+                before,
+                "drop should restore the exact prior bit pattern"
+            );
+        }
+
+        #[test]
+        fn sequential_cycles_do_not_leak_bits() {
+            let baseline = read_fpcr();
+            for _ in 0..5 {
+                let guard = DenormalGuard::new();
+                assert_eq!(read_fpcr() & FZ_MASK, FZ_MASK);
+                drop(guard);
+                assert_eq!(
+                    read_fpcr(),
+                    baseline,
+                    "a prior cycle leaked bits into this one"
+                );
+            }
+        }
+
+        #[test]
+        fn nested_guards_restore_in_reverse_order_without_leaking() {
+            let baseline = read_fpcr();
+            let outer = DenormalGuard::new();
+            let engaged = read_fpcr();
+            assert_eq!(engaged, baseline | FZ_MASK);
+
+            let inner = DenormalGuard::new();
+            assert_eq!(
+                read_fpcr(),
+                engaged,
+                "re-engaging while already engaged is idempotent"
+            );
+
+            drop(inner);
+            assert_eq!(
+                read_fpcr(),
+                engaged,
+                "dropping the inner guard must restore the outer's engaged state, not leak past it"
+            );
+
+            drop(outer);
+            assert_eq!(
+                read_fpcr(),
+                baseline,
+                "dropping the outer guard must restore the true baseline"
+            );
+        }
+
+        #[test]
+        fn subnormal_product_is_flushed_only_while_engaged() {
+            // Chosen so the mathematically exact product (1e-40) falls in f32's subnormal range
+            // (below ~1.1755e-38, above 0) rather than underflowing to true zero on its own.
+            let a: f32 = std::hint::black_box(1e-20_f32);
+            let b: f32 = std::hint::black_box(1e-20_f32);
+
+            let unflushed = std::hint::black_box(a) * std::hint::black_box(b);
+            assert!(
+                unflushed != 0.0,
+                "expected a genuine nonzero subnormal, got exact zero"
+            );
+            assert!(
+                unflushed.is_subnormal(),
+                "expected {unflushed} to be subnormal"
+            );
+
+            let guard = DenormalGuard::new();
+            let flushed = std::hint::black_box(a) * std::hint::black_box(b);
+            assert_eq!(
+                flushed, 0.0,
+                "with FZ engaged the subnormal product must flush to exact zero"
             );
             drop(guard);
 
