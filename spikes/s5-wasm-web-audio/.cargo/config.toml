@@ -1,0 +1,7 @@
+# The `env.now_us` import is resolved at instantiation, but rust-lld still refuses an
+# undefined symbol at link time by default (the Task 3 brief predicted otherwise and was
+# wrong). `--import-undefined` turns each remaining undefined symbol into an `env` import,
+# which is exactly the ABI `web/namir.js` supplies. wasm32 only, so the native bench and
+# the workspace build are untouched.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--import-undefined"]

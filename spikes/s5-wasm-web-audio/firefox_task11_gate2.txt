@@ -1,0 +1,665 @@
+# S-5 Task 11 -- Gate 2 (AudioWorklet underruns), Mozilla Firefox 155.0.1, headless.
+# Nine 60 s runs against the real AudioBox: six simd128/a1_standard then three simd128/a2_lite,
+# split=0.5 (steady first half, SubnormalTail second), 22 500 blocks each. Note the backend line
+# of every run: renderCapacity is NOT exposed by this runtime, so these runs carry two underrun
+# witnesses (the processor's currentFrame gap and the graph-clock-vs-wall-clock lag) rather than
+# Chromium's three.
+# Machine: AMD Ryzen 9 5950X / 64 GB / Windows 11 Pro 26200, PreSonus AudioBox 22VSL @ 48 kHz.
+# Runtime: firefox.exe --headless --no-remote --new-instance --profile <fresh temp profile>, one
+# run at a time. Profile prefs: media.autoplay.default=0, media.autoplay.blocking_policy=0,
+# media.navigator.permission.disabled=true, privacy.reduceTimerPrecision=false (Firefox has no
+# --autoplay-policy / --use-fake-ui-for-media-stream switches; media.navigator.streams.fake was
+# left at its default false, so every device below is the real one). Gecko's performance.now()
+# quantum is 20 us here regardless of prefs, so every figure is a multiple of 0.75% of the block
+# period. Artefacts: the committed web/build/{scalar,simd128}.wasm, not rebuilt.
+# Beacon transcript, URL-decoded; each run's own "[GFX1-] RenderCompositorSWGL" line is Firefox's
+# headless stderr and is left in place rather than filtered.
+
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a1 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard&tag=rep1
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 37.833 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 62848 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 37.83 ms
+blocks 750 | frame 110848 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.1 ms) | outputLatency 37.83 ms
+blocks 1125 | frame 158848 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 37.83 ms
+blocks 1500 | frame 206848 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 1875 | frame 254848 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 2250 | frame 302848 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 2625 | frame 350848 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 3000 | frame 398848 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 3375 | frame 446848 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 3750 | frame 494848 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 4125 | frame 542848 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 4500 | frame 590848 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 4875 | frame 638848 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 5250 | frame 686848 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 5625 | frame 734848 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 6000 | frame 782848 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 6375 | frame 830848 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 6750 | frame 878848 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 7125 | frame 926848 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 7500 | frame 974848 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 7875 | frame 1022848 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 8250 | frame 1070848 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 8625 | frame 1118848 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 9000 | frame 1166848 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 9375 | frame 1214848 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 9750 | frame 1262848 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 10125 | frame 1310848 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 10500 | frame 1358848 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 10875 | frame 1406848 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 11250 | frame 1454848 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 11625 | frame 1502848 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 12000 | frame 1550848 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 12375 | frame 1598848 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 12750 | frame 1646848 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 13125 | frame 1694848 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 13500 | frame 1742848 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 13875 | frame 1790848 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.6 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 14250 | frame 1838848 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 14625 | frame 1886848 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 15000 | frame 1934848 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 15375 | frame 1982848 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 15750 | frame 2030848 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 16125 | frame 2078848 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 16500 | frame 2126848 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 16875 | frame 2174848 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 17250 | frame 2222848 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 17625 | frame 2270848 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 18000 | frame 2318848 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 18375 | frame 2366848 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 18750 | frame 2414848 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 19125 | frame 2462848 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 19500 | frame 2510848 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 19875 | frame 2558848 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 20250 | frame 2606848 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 20625 | frame 2654848 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 21000 | frame 2702848 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 21375 | frame 2750848 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -0.6 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 21750 | frame 2798848 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.6 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 22125 | frame 2846848 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 22500 | frame 2894848 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.9 ms (max 0.3 ms) | outputLatency 37.83 ms
+blocks 22500 | frame 2894976 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -2.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+FINAL blocks 22500 | frame 2894976 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -2.5 ms (max 0.3 ms) | outputLatency 37.83 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a1 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard&tag=rep2
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 38.021 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 64256 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 38.02 ms
+blocks 750 | frame 112256 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.5 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 1125 | frame 160256 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 1500 | frame 208256 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 1875 | frame 256256 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 2250 | frame 304256 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 2625 | frame 352256 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.4 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 3000 | frame 400256 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 3375 | frame 448256 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 3750 | frame 496256 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 4125 | frame 544256 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 4500 | frame 592256 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 4875 | frame 640256 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 5250 | frame 688256 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 5625 | frame 736256 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 6000 | frame 784256 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 6375 | frame 832256 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 6750 | frame 880256 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 7125 | frame 928256 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 7500 | frame 976256 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 7875 | frame 1024256 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 8250 | frame 1072256 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 8625 | frame 1120256 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 9000 | frame 1168256 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 9375 | frame 1216256 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 9750 | frame 1264256 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 10125 | frame 1312256 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 10500 | frame 1360256 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 10875 | frame 1408256 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 11250 | frame 1456256 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 11625 | frame 1504256 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 12000 | frame 1552256 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 12375 | frame 1600256 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 12750 | frame 1648256 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag 0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 13125 | frame 1696256 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 13500 | frame 1744256 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag 0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 13875 | frame 1792256 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 14250 | frame 1840256 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 14625 | frame 1888256 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 15000 | frame 1936256 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 15375 | frame 1984256 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag 0.0 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 15750 | frame 2032256 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 16125 | frame 2080256 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 16500 | frame 2128256 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 16875 | frame 2176256 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 17250 | frame 2224256 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 17625 | frame 2272256 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -0.6 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 18000 | frame 2320256 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 18375 | frame 2368256 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 18750 | frame 2416256 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 19125 | frame 2464256 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 19500 | frame 2512256 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 19875 | frame 2560256 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.2 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 20250 | frame 2608256 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 20625 | frame 2656256 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.4 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 21000 | frame 2704256 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.1 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 21375 | frame 2752256 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -0.4 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 21750 | frame 2800256 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.4 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 22125 | frame 2848256 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -0.3 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 22500 | frame 2896256 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.4 ms (max 0.5 ms) | outputLatency 38.02 ms
+blocks 22500 | frame 2896384 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -10.5 ms (max 0.5 ms) | outputLatency 38.02 ms
+FINAL blocks 22500 | frame 2896384 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -10.5 ms (max 0.5 ms) | outputLatency 38.02 ms
+FINISHED
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a1 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard&tag=rep3
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 38.104 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 64256 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 38.10 ms
+blocks 750 | frame 112256 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 1125 | frame 160256 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 1500 | frame 208256 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 1875 | frame 256256 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 2250 | frame 304256 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 2625 | frame 352256 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 3000 | frame 400256 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 3375 | frame 448256 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 3750 | frame 496256 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 4125 | frame 544256 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 4500 | frame 592256 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 4875 | frame 640256 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 38.10 ms
+blocks 5250 | frame 688256 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 5625 | frame 736256 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 6000 | frame 784256 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 6375 | frame 832256 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 6750 | frame 880256 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 7125 | frame 928256 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 7500 | frame 976256 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 7875 | frame 1024256 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 8250 | frame 1072256 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 8625 | frame 1120256 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 9000 | frame 1168256 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 9375 | frame 1216256 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 9750 | frame 1264256 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 10125 | frame 1312256 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 10500 | frame 1360256 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 10875 | frame 1408256 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 11250 | frame 1456256 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 11625 | frame 1504256 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 12000 | frame 1552256 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 12375 | frame 1600256 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 12750 | frame 1648256 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag -0.2 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 13125 | frame 1696256 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 13500 | frame 1744256 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 13875 | frame 1792256 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 14250 | frame 1840256 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 14625 | frame 1888256 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 15000 | frame 1936256 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 15375 | frame 1984256 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 15750 | frame 2032256 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 16125 | frame 2080256 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 16500 | frame 2128256 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 16875 | frame 2176256 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 17250 | frame 2224256 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.2 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 17625 | frame 2272256 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 18000 | frame 2320256 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 18375 | frame 2368256 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 18750 | frame 2416256 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 19125 | frame 2464256 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 19500 | frame 2512256 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 19875 | frame 2560256 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.2 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 20250 | frame 2608256 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 20625 | frame 2656256 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 21000 | frame 2704256 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 21375 | frame 2752256 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -0.8 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 21750 | frame 2800256 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 22125 | frame 2848256 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 22500 | frame 2896256 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.10 ms
+blocks 22500 | frame 2896384 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -10.9 ms (max 0.2 ms) | outputLatency 38.10 ms
+FINISHED
+FINAL blocks 22500 | frame 2896384 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -10.9 ms (max 0.2 ms) | outputLatency 38.10 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a1 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard&tag=rep4
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 35.604 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 65152 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 35.60 ms
+blocks 750 | frame 113152 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 1125 | frame 161152 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 1500 | frame 209152 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 1875 | frame 257152 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 2250 | frame 305152 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 2625 | frame 353152 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 3000 | frame 401152 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 3375 | frame 449152 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 3750 | frame 497152 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 4125 | frame 545152 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 4500 | frame 593152 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 4875 | frame 641152 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 5250 | frame 689152 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 5625 | frame 737152 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 6000 | frame 785152 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 6375 | frame 833152 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 6750 | frame 881152 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 7125 | frame 929152 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 7500 | frame 977152 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 7875 | frame 1025152 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 8250 | frame 1073152 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 8625 | frame 1121152 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 9000 | frame 1169152 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 9375 | frame 1217152 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 9750 | frame 1265152 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 10125 | frame 1313152 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 10500 | frame 1361152 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 10875 | frame 1409152 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 11250 | frame 1457152 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 11625 | frame 1505152 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 12000 | frame 1553152 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.8 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 12375 | frame 1601152 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 12750 | frame 1649152 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 13125 | frame 1697152 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 13500 | frame 1745152 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 13875 | frame 1793152 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 14250 | frame 1841152 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 14625 | frame 1889152 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.4 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 15000 | frame 1937152 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 15375 | frame 1985152 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 15750 | frame 2033152 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.7 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 16125 | frame 2081152 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 16500 | frame 2129152 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.3 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 16875 | frame 2177152 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 17250 | frame 2225152 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 17625 | frame 2273152 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 18000 | frame 2321152 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 18375 | frame 2369152 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 18750 | frame 2417152 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.9 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 19125 | frame 2465152 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 19500 | frame 2513152 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 19875 | frame 2561152 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.7 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 20250 | frame 2609152 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 20625 | frame 2657152 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.7 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 21000 | frame 2705152 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 21375 | frame 2753152 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -0.8 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 21750 | frame 2801152 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 22125 | frame 2849152 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -0.6 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 22500 | frame 2897152 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -11.5 ms (max 0.1 ms) | outputLatency 35.60 ms
+blocks 22500 | frame 2897280 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -11.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINAL blocks 22500 | frame 2897280 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -11.1 ms (max 0.1 ms) | outputLatency 35.60 ms
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a1 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard&tag=rep5
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 38.146 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 65152 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 38.15 ms
+blocks 750 | frame 113152 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 1125 | frame 161152 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 1500 | frame 209152 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 1875 | frame 257152 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 2250 | frame 305152 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 2625 | frame 353152 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 3000 | frame 401152 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 3375 | frame 449152 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 3750 | frame 497152 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 4125 | frame 545152 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 4500 | frame 593152 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 4875 | frame 641152 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 5250 | frame 689152 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 5625 | frame 737152 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 6000 | frame 785152 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 6375 | frame 833152 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 6750 | frame 881152 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 7125 | frame 929152 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 7500 | frame 977152 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 7875 | frame 1025152 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 8250 | frame 1073152 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 8625 | frame 1121152 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 9000 | frame 1169152 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 9375 | frame 1217152 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 9750 | frame 1265152 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 10125 | frame 1313152 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 10500 | frame 1361152 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 10875 | frame 1409152 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 11250 | frame 1457152 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 11625 | frame 1505152 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 12000 | frame 1553152 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 12375 | frame 1601152 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 12750 | frame 1649152 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 13125 | frame 1697152 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 13500 | frame 1745152 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.1 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 13875 | frame 1793152 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 14250 | frame 1841152 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 14625 | frame 1889152 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 15000 | frame 1937152 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 15375 | frame 1985152 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.3 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 15750 | frame 2033152 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 16125 | frame 2081152 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 16500 | frame 2129152 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 16875 | frame 2177152 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 17250 | frame 2225152 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 17625 | frame 2273152 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -0.8 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 18000 | frame 2321152 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 18375 | frame 2369152 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 18750 | frame 2417152 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 19125 | frame 2465152 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 19500 | frame 2513152 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 19875 | frame 2561152 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 20250 | frame 2609152 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.4 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 20625 | frame 2657152 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 21000 | frame 2705152 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 21375 | frame 2753152 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 21750 | frame 2801152 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.6 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 22125 | frame 2849152 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -0.7 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 22500 | frame 2897152 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -11.5 ms (max 0.2 ms) | outputLatency 38.15 ms
+blocks 22500 | frame 2897280 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -11.0 ms (max 0.2 ms) | outputLatency 38.15 ms
+FINAL blocks 22500 | frame 2897280 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -11.0 ms (max 0.2 ms) | outputLatency 38.15 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a1 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a1_standard&tag=rep6
+run: simd128 a1_standard 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 35.063 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 68096 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 35.06 ms
+blocks 750 | frame 116096 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 1125 | frame 164096 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 1500 | frame 212096 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 1875 | frame 260096 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 2250 | frame 308096 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 2625 | frame 356096 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 3000 | frame 404096 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 3375 | frame 452096 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 3750 | frame 500096 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 4125 | frame 548096 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 4500 | frame 596096 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 4875 | frame 644096 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 5250 | frame 692096 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 5625 | frame 740096 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 6000 | frame 788096 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 6375 | frame 836096 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 6750 | frame 884096 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 7125 | frame 932096 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 7500 | frame 980096 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 7875 | frame 1028096 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 8250 | frame 1076096 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 8625 | frame 1124096 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 9000 | frame 1172096 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 9375 | frame 1220096 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 9750 | frame 1268096 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 10125 | frame 1316096 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 10500 | frame 1364096 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 10875 | frame 1412096 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 11250 | frame 1460096 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 11625 | frame 1508096 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 12000 | frame 1556096 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 12375 | frame 1604096 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 12750 | frame 1652096 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag 0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 13125 | frame 1700096 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 13500 | frame 1748096 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 13875 | frame 1796096 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 14250 | frame 1844096 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 14625 | frame 1892096 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 15000 | frame 1940096 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 15375 | frame 1988096 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 15750 | frame 2036096 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 16125 | frame 2084096 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 16500 | frame 2132096 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.1 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 16875 | frame 2180096 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 17250 | frame 2228096 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 17625 | frame 2276096 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 18000 | frame 2324096 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 18375 | frame 2372096 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 18750 | frame 2420096 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 19125 | frame 2468096 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.2 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 19500 | frame 2516096 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 19875 | frame 2564096 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 20250 | frame 2612096 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.3 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 20625 | frame 2660096 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.6 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 21000 | frame 2708096 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 21375 | frame 2756096 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -0.6 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 21750 | frame 2804096 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.4 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 22125 | frame 2852096 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -0.6 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 22500 | frame 2900096 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.5 ms (max 0.3 ms) | outputLatency 35.06 ms
+blocks 22500 | frame 2900224 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -10.7 ms (max 0.3 ms) | outputLatency 35.06 ms
+FINAL blocks 22500 | frame 2900224 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -10.7 ms (max 0.3 ms) | outputLatency 35.06 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a2 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a2_lite&tag=rep1
+run: simd128 a2_lite 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 33.021 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 33800 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 64768 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 750 | frame 112768 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 1125 | frame 160768 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 1500 | frame 208768 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 1875 | frame 256768 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 2250 | frame 304768 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 2625 | frame 352768 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 3000 | frame 400768 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 3375 | frame 448768 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 3750 | frame 496768 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 4125 | frame 544768 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 4500 | frame 592768 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 4875 | frame 640768 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 5250 | frame 688768 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 5625 | frame 736768 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 6000 | frame 784768 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 6375 | frame 832768 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 6750 | frame 880768 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 7125 | frame 928768 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 7500 | frame 976768 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 7875 | frame 1024768 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 8250 | frame 1072768 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 8625 | frame 1120768 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 9000 | frame 1168768 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 9375 | frame 1216768 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 9750 | frame 1264768 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 10125 | frame 1312768 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 10500 | frame 1360768 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 10875 | frame 1408768 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 11250 | frame 1456768 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 11625 | frame 1504768 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 12000 | frame 1552768 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 12375 | frame 1600768 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 12750 | frame 1648768 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 13125 | frame 1696768 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 13500 | frame 1744768 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 13875 | frame 1792768 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 14250 | frame 1840768 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 14625 | frame 1888768 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 15000 | frame 1936768 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -1.1 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 15375 | frame 1984768 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 15750 | frame 2032768 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 16125 | frame 2080768 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 16500 | frame 2128768 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 16875 | frame 2176768 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 17250 | frame 2224768 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 17625 | frame 2272768 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -1.1 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 18000 | frame 2320768 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 18375 | frame 2368768 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 18750 | frame 2416768 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 19125 | frame 2464768 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 19500 | frame 2512768 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 19875 | frame 2560768 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 20250 | frame 2608768 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 20625 | frame 2656768 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 21000 | frame 2704768 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 21375 | frame 2752768 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -1.2 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 21750 | frame 2800768 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 22125 | frame 2848768 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -1.1 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 22500 | frame 2896768 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 33.02 ms
+blocks 22500 | frame 2896896 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 33.02 ms
+FINAL blocks 22500 | frame 2896896 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 33.02 ms
+FINISHED
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a2 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a2_lite&tag=rep2
+run: simd128 a2_lite 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 33.292 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 33800 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 64768 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 750 | frame 112768 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 1125 | frame 160768 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 1500 | frame 208768 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 1875 | frame 256768 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 2250 | frame 304768 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 2625 | frame 352768 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 3000 | frame 400768 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 3375 | frame 448768 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.0 ms) | outputLatency 33.29 ms
+blocks 3750 | frame 496768 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 10.2 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 4125 | frame 544768 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 4500 | frame 592768 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 4875 | frame 640768 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 5250 | frame 688768 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 5625 | frame 736768 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 6000 | frame 784768 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 6375 | frame 832768 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 6750 | frame 880768 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 7125 | frame 928768 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 7500 | frame 976768 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 7875 | frame 1024768 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 8250 | frame 1072768 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 8625 | frame 1120768 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 9000 | frame 1168768 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 9375 | frame 1216768 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 9750 | frame 1264768 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 10125 | frame 1312768 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 10500 | frame 1360768 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 10875 | frame 1408768 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 11250 | frame 1456768 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 11625 | frame 1504768 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.4 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 12000 | frame 1552768 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 12375 | frame 1600768 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 12750 | frame 1648768 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 13125 | frame 1696768 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 13500 | frame 1744768 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.3 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 13875 | frame 1792768 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 14250 | frame 1840768 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 14625 | frame 1888768 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 15000 | frame 1936768 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.8 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 15375 | frame 1984768 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 15750 | frame 2032768 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.8 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 16125 | frame 2080768 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 16500 | frame 2128768 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 16875 | frame 2176768 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 17250 | frame 2224768 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 17625 | frame 2272768 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -1.0 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 18000 | frame 2320768 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 18375 | frame 2368768 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 18750 | frame 2416768 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 19125 | frame 2464768 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.5 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 19500 | frame 2512768 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.8 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 19875 | frame 2560768 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 20250 | frame 2608768 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 20625 | frame 2656768 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 21000 | frame 2704768 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.8 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 21375 | frame 2752768 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -1.0 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 21750 | frame 2800768 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.7 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 22125 | frame 2848768 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -0.9 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 22500 | frame 2896768 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.8 ms (max 10.2 ms) | outputLatency 33.29 ms
+blocks 22500 | frame 2896896 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+FINAL blocks 22500 | frame 2896896 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 0.6 ms (max 10.2 ms) | outputLatency 33.29 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2a2 :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=60&split=0.5&wasm=simd128&model=a2_lite&tag=rep3
+run: simd128 a2_lite 60s split 0.5 (22500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 38.979 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 33800 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 64768 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 750 | frame 112768 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 1125 | frame 160768 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 1500 | frame 208768 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 1875 | frame 256768 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 2250 | frame 304768 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 2625 | frame 352768 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 3000 | frame 400768 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 3375 | frame 448768 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.3 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 3750 | frame 496768 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 4125 | frame 544768 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 4500 | frame 592768 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 4875 | frame 640768 | steady b/u 4875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 5250 | frame 688768 | steady b/u 5250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 5625 | frame 736768 | steady b/u 5625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 6000 | frame 784768 | steady b/u 6000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 6375 | frame 832768 | steady b/u 6375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 6750 | frame 880768 | steady b/u 6750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 7125 | frame 928768 | steady b/u 7125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.4 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 7500 | frame 976768 | steady b/u 7500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 7875 | frame 1024768 | steady b/u 7875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 8250 | frame 1072768 | steady b/u 8250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 8625 | frame 1120768 | steady b/u 8625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 9000 | frame 1168768 | steady b/u 9000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 9375 | frame 1216768 | steady b/u 9375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 9750 | frame 1264768 | steady b/u 9750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 10125 | frame 1312768 | steady b/u 10125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 10500 | frame 1360768 | steady b/u 10500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 10875 | frame 1408768 | steady b/u 10875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 11250 | frame 1456768 | steady b/u 11250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 11625 | frame 1504768 | steady b/u 11250/0 (missed 0) | tail b/u 375/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 12000 | frame 1552768 | steady b/u 11250/0 (missed 0) | tail b/u 750/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 12375 | frame 1600768 | steady b/u 11250/0 (missed 0) | tail b/u 1125/0 (missed 0) | clockLag -0.6 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 12750 | frame 1648768 | steady b/u 11250/0 (missed 0) | tail b/u 1500/0 (missed 0) | clockLag -0.5 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 13125 | frame 1696768 | steady b/u 11250/0 (missed 0) | tail b/u 1875/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 13500 | frame 1744768 | steady b/u 11250/0 (missed 0) | tail b/u 2250/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 13875 | frame 1792768 | steady b/u 11250/0 (missed 0) | tail b/u 2625/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 14250 | frame 1840768 | steady b/u 11250/0 (missed 0) | tail b/u 3000/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 14625 | frame 1888768 | steady b/u 11250/0 (missed 0) | tail b/u 3375/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 15000 | frame 1936768 | steady b/u 11250/0 (missed 0) | tail b/u 3750/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 15375 | frame 1984768 | steady b/u 11250/0 (missed 0) | tail b/u 4125/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 15750 | frame 2032768 | steady b/u 11250/0 (missed 0) | tail b/u 4500/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 16125 | frame 2080768 | steady b/u 11250/0 (missed 0) | tail b/u 4875/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 16500 | frame 2128768 | steady b/u 11250/0 (missed 0) | tail b/u 5250/0 (missed 0) | clockLag -0.7 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 16875 | frame 2176768 | steady b/u 11250/0 (missed 0) | tail b/u 5625/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 17250 | frame 2224768 | steady b/u 11250/0 (missed 0) | tail b/u 6000/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 17625 | frame 2272768 | steady b/u 11250/0 (missed 0) | tail b/u 6375/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 18000 | frame 2320768 | steady b/u 11250/0 (missed 0) | tail b/u 6750/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 18375 | frame 2368768 | steady b/u 11250/0 (missed 0) | tail b/u 7125/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 18750 | frame 2416768 | steady b/u 11250/0 (missed 0) | tail b/u 7500/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 19125 | frame 2464768 | steady b/u 11250/0 (missed 0) | tail b/u 7875/0 (missed 0) | clockLag -0.8 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 19500 | frame 2512768 | steady b/u 11250/0 (missed 0) | tail b/u 8250/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 19875 | frame 2560768 | steady b/u 11250/0 (missed 0) | tail b/u 8625/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 20250 | frame 2608768 | steady b/u 11250/0 (missed 0) | tail b/u 9000/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 20625 | frame 2656768 | steady b/u 11250/0 (missed 0) | tail b/u 9375/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 21000 | frame 2704768 | steady b/u 11250/0 (missed 0) | tail b/u 9750/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 21375 | frame 2752768 | steady b/u 11250/0 (missed 0) | tail b/u 10125/0 (missed 0) | clockLag -1.1 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 21750 | frame 2800768 | steady b/u 11250/0 (missed 0) | tail b/u 10500/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 22125 | frame 2848768 | steady b/u 11250/0 (missed 0) | tail b/u 10875/0 (missed 0) | clockLag -1.0 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 22500 | frame 2896768 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag -0.9 ms (max 0.0 ms) | outputLatency 38.98 ms
+blocks 22500 | frame 2896896 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 0.5 ms (max 0.5 ms) | outputLatency 38.98 ms
+FINAL blocks 22500 | frame 2896896 | steady b/u 11250/0 (missed 0) | tail b/u 11250/0 (missed 0) | clockLag 0.5 ms (max 0.5 ms) | outputLatency 38.98 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED

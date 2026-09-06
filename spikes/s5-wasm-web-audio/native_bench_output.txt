@@ -1,0 +1,22 @@
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running `target\release\native_bench.exe`
+native a1_standard steady rep 1/5: p50 6.39% | p99 10.51% | p99.9 13.93% | max 23.54% | estimator 9.95% | quotable
+native a1_standard steady rep 2/5: p50 6.30% | p99 10.38% | p99.9 13.60% | max 20.73% | estimator 9.92% | quotable
+native a1_standard steady rep 3/5: p50 6.65% | p99 10.91% | p99.9 14.32% | max 20.01% | estimator 10.25% | quotable
+native a1_standard steady rep 4/5: p50 6.59% | p99 11.24% | p99.9 14.69% | max 24.06% | estimator 10.16% | quotable
+native a1_standard steady rep 5/5: p50 6.44% | p99 10.92% | p99.9 14.07% | max 30.73% | estimator 10.37% | quotable
+native a1_standard decaying rep 1/5: p50 9.00% | p99 15.41% | p99.9 18.53% | max 47.97% | estimator 9.92% | CONTAMINATED
+native a1_standard decaying rep 2/5: p50 9.08% | p99 14.34% | p99.9 16.59% | max 22.60% | estimator 10.17% | CONTAMINATED
+native a1_standard decaying rep 3/5: p50 9.17% | p99 14.46% | p99.9 16.77% | max 20.45% | estimator 10.23% | CONTAMINATED
+native a1_standard decaying rep 4/5: p50 9.08% | p99 14.37% | p99.9 16.66% | max 29.03% | estimator 9.96% | CONTAMINATED
+native a1_standard decaying rep 5/5: p50 9.17% | p99 14.36% | p99.9 16.32% | max 18.93% | estimator 10.20% | CONTAMINATED
+native a2_lite steady rep 1/5: p50 2.05% | p99 6.11% | p99.9 8.21% | max 12.84% | estimator 5.64% | quotable
+native a2_lite steady rep 2/5: p50 1.93% | p99 6.05% | p99.9 8.03% | max 12.29% | estimator 5.61% | quotable
+native a2_lite steady rep 3/5: p50 1.83% | p99 5.96% | p99.9 7.94% | max 10.20% | estimator 5.64% | quotable
+native a2_lite steady rep 4/5: p50 2.06% | p99 6.16% | p99.9 8.13% | max 12.74% | estimator 5.59% | quotable
+native a2_lite steady rep 5/5: p50 1.92% | p99 6.23% | p99.9 8.41% | max 9.68% | estimator 5.38% | quotable
+native a2_lite decaying rep 1/5: p50 2.18% | p99 6.38% | p99.9 8.35% | max 11.98% | estimator 5.60% | quotable
+native a2_lite decaying rep 2/5: p50 2.05% | p99 6.02% | p99.9 8.10% | max 10.22% | estimator 5.40% | quotable
+native a2_lite decaying rep 3/5: p50 2.13% | p99 6.09% | p99.9 8.07% | max 15.32% | estimator 5.60% | quotable
+native a2_lite decaying rep 4/5: p50 1.97% | p99 5.95% | p99.9 8.04% | max 21.27% | estimator 5.35% | quotable
+native a2_lite decaying rep 5/5: p50 2.16% | p99 6.38% | p99.9 8.28% | max 10.76% | estimator 5.71% | quotable

@@ -1,0 +1,29 @@
+edge simd128 a1_standard parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+edge simd128 a1_standard census amp-decay: blocks 20000 | sub-out blocks 9521 (47.6%) | sub-out samples 2436620 | min |x| 1.401298e-45
+edge simd128 a1_standard parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+edge simd128 a1_standard census subnormal: blocks 20000 | sub-out blocks 0 (0.0%) | sub-out samples 0 | min |x| 2.514571e-08
+edge simd128 a1_standard sig0 parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+edge simd128 a1_standard sig0 rep 1: p50 12.75% | p99 24.19% | p99.9 31.31% | max 40.50% | estimator 19.50%
+edge simd128 a1_standard sig0 rep 2: p50 13.13% | p99 21.75% | p99.9 30.19% | max 34.69% | estimator 19.88%
+edge simd128 a1_standard sig0 rep 3: p50 12.94% | p99 21.37% | p99.9 30.00% | max 41.63% | estimator 19.69%
+edge simd128 a1_standard sig0 rep 4: p50 12.94% | p99 21.37% | p99.9 30.00% | max 38.44% | estimator 19.87%
+edge simd128 a1_standard sig0 rep 5: p50 12.94% | p99 21.56% | p99.9 30.56% | max 37.69% | estimator 19.87%
+edge simd128 a1_standard sig2 parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+edge simd128 a1_standard sig2 rep 1: p50 17.44% | p99 41.81% | p99.9 47.44% | max 62.06% | estimator 19.50%
+edge simd128 a1_standard sig2 rep 2: p50 17.81% | p99 43.50% | p99.9 58.13% | max 67.12% | estimator 19.50%
+edge simd128 a1_standard sig2 rep 3: p50 17.44% | p99 42.00% | p99.9 46.31% | max 57.19% | estimator 19.50%
+edge simd128 a1_standard sig2 rep 4: p50 17.44% | p99 41.25% | p99.9 44.25% | max 60.00% | estimator 19.50%
+edge simd128 a1_standard sig2 rep 5: p50 17.44% | p99 41.81% | p99.9 49.31% | max 59.62% | estimator 19.50%
+edge simd128 a2_lite sig0 parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+edge simd128 a2_lite sig0 rep 1: p50 3.19% | p99 14.06% | p99.9 17.44% | max 33.75% | estimator 9.75%
+edge simd128 a2_lite sig0 rep 2: p50 3.19% | p99 11.06% | p99.9 15.94% | max 18.94% | estimator 10.31%
+edge simd128 a2_lite sig0 rep 3: p50 3.19% | p99 10.69% | p99.9 14.63% | max 24.75% | estimator 10.12%
+edge simd128 a2_lite sig0 rep 4: p50 3.19% | p99 10.69% | p99.9 14.81% | max 18.94% | estimator 10.12%
+edge simd128 a2_lite sig0 rep 5: p50 3.19% | p99 11.63% | p99.9 16.50% | max 18.00% | estimator 10.12%
+edge simd128 a2_lite sig2 parity: residual -81.6906 dB | control -82.7158 dB | margin 1.0252 dB | PASS
+edge simd128 a2_lite sig2 rep 1: p50 3.75% | p99 16.50% | p99.9 20.81% | max 30.56% | estimator 9.94%
+edge simd128 a2_lite sig2 rep 2: p50 3.38% | p99 15.19% | p99.9 18.56% | max 27.75% | estimator 10.31%
+edge simd128 a2_lite sig2 rep 3: p50 4.13% | p99 16.13% | p99.9 19.88% | max 27.94% | estimator 10.31%
+edge simd128 a2_lite sig2 rep 4: p50 3.75% | p99 15.75% | p99.9 19.31% | max 27.94% | estimator 10.12%
+edge simd128 a2_lite sig2 rep 5: p50 3.75% | p99 15.75% | p99.9 19.50% | max 27.94% | estimator 10.12%
+ALLDONE

@@ -1,0 +1,38 @@
+# S-5 Task 11 -- the worklet run the CoreAudio endpoint probe was taken over.
+# 12 s, simd128 / a1_standard, steady only, &gain=0.01. Its purpose is only to make noise of a
+# known amplitude; see firefox_task11_backend.txt for the endpoint meter reading it back.
+# Machine: AMD Ryzen 9 5950X / 64 GB / Windows 11 Pro 26200, PreSonus AudioBox 22VSL @ 48 kHz.
+# Runtime: firefox.exe --headless --no-remote --new-instance --profile <fresh temp profile>, one
+# run at a time. Profile prefs: media.autoplay.default=0, media.autoplay.blocking_policy=0,
+# media.navigator.permission.disabled=true, privacy.reduceTimerPrecision=false (Firefox has no
+# --autoplay-policy / --use-fake-ui-for-media-stream switches; media.navigator.streams.fake was
+# left at its default false, so every device below is the real one). Gecko's performance.now()
+# quantum is 20 us here regardless of prefs, so every figure is a multiple of 0.75% of the block
+# period. Artefacts: the committed web/build/{scalar,simd128}.wasm, not rebuilt.
+# Beacon transcript, URL-decoded; each run's own "[GFX1-] RenderCompositorSWGL" line is Firefox's
+# headless stderr and is left in place rather than filtered.
+
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g2gain :: http://127.0.0.1:8080/web/worklet.html?auto=1&secs=12&split=1&wasm=simd128&model=a1_standard&gain=0.01
+run: simd128 a1_standard 12s split 1 (4500 blocks)
+backend: sampleRate 48000 | baseLatency 0.000 ms | outputLatency 36.354 ms | state running | sinkId unsupported | audiooutput devices 0 []
+renderCapacity: NOT exposed by this runtime
+loaded: wasm 1648168 B, model 229479 B, ir 384044 B
+worklet constructed
+ready at 48000 Hz
+blocks 375 | frame 62336 | steady b/u 375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.0 ms (max 0.0 ms) | outputLatency 36.35 ms
+blocks 750 | frame 110336 | steady b/u 750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.2 ms (max 0.2 ms) | outputLatency 36.35 ms
+blocks 1125 | frame 158336 | steady b/u 1125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.2 ms) | outputLatency 36.35 ms
+blocks 1500 | frame 206336 | steady b/u 1500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.3 ms (max 0.3 ms) | outputLatency 36.35 ms
+blocks 1875 | frame 254336 | steady b/u 1875/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.3 ms) | outputLatency 36.35 ms
+blocks 2250 | frame 302336 | steady b/u 2250/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.4 ms (max 0.4 ms) | outputLatency 36.35 ms
+blocks 2625 | frame 350336 | steady b/u 2625/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.4 ms) | outputLatency 36.35 ms
+blocks 3000 | frame 398336 | steady b/u 3000/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.0 ms (max 0.4 ms) | outputLatency 36.35 ms
+blocks 3375 | frame 446336 | steady b/u 3375/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.4 ms) | outputLatency 36.35 ms
+blocks 3750 | frame 494336 | steady b/u 3750/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.2 ms (max 0.4 ms) | outputLatency 36.35 ms
+blocks 4125 | frame 542336 | steady b/u 4125/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -0.1 ms (max 0.4 ms) | outputLatency 36.35 ms
+blocks 4500 | frame 590336 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag 0.1 ms (max 0.4 ms) | outputLatency 36.35 ms
+blocks 4500 | frame 590464 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -10.1 ms (max 0.4 ms) | outputLatency 36.35 ms
+FINAL blocks 4500 | frame 590464 | steady b/u 4500/0 (missed 0) | tail b/u 0/0 (missed 0) | clockLag -10.1 ms (max 0.4 ms) | outputLatency 36.35 ms
+FINAL renderCapacity: windows 0 peakLoad 0.0% summed underrunRatio 0.0000
+FINISHED

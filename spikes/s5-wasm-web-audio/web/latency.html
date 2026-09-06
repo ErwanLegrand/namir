@@ -1,0 +1,258 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>S-5 latency (Gate 3)</title>
+<style>body{font:14px system-ui;margin:1.5rem;max-width:70rem} pre{white-space:pre-wrap}</style>
+
+<h3>Gate 3 &mdash; browser round-trip latency on Windows</h3>
+<p>
+  <b>Loopback run:</b> cable an interface output to one of its inputs first, set a moderate
+  monitor level, then press <b>Measure</b>. Without a loopback path every click reports
+  <code>no capture</code> and only the API figures below are meaningful &mdash; which is
+  still a result, just a different one.
+</p>
+<p>
+  input <select id="in"></select>
+  output <select id="outdev"></select>
+  latencyHint <select id="hint">
+    <option>interactive</option><option>balanced</option><option>playback</option>
+  </select>
+  clicks <input id="n" type="number" value="10" style="width:4rem">
+</p>
+<button id="probe">Probe only (no cable needed)</button>
+<button id="go">Measure</button>
+<pre id="out"></pre>
+
+<script type="module">
+// Query params so a headless runner can drive this:
+//   ?auto=probe | ?auto=measure   run on load
+//   &hint=interactive|balanced|playback
+//   &in=<substring of an input device label>     (default: the default device)
+//   &out=<substring of an output device label>   (AudioContext.setSinkId; default sink)
+//   &n=10          clicks
+//   &amp=0.5       click amplitude
+//   &len=64        click length in frames
+//   &control=1     arm the detector but never emit a click. The negative control: it says
+//                  what the peak of a pure-noise window of the same length looks like, so a
+//                  weak capture can be told from a lucky noise excursion instead of guessed
+//                  at. Any claimed loopback figure needs this run beside it.
+//   &thresh=k      onset threshold as a multiple of the measured noise rms (default 8), with
+//                  an absolute floor of 0.02 unless &floor= is given
+//   &noinput=1     probe only: open NO capture stream. Task 6 measured outputLatency 40 ms
+//                  with an output-only graph and this page reads 42 ms with a mic open, so
+//                  whether opening an input moves the output buffer is a real question for a
+//                  guitar app, and this is the A/B that answers it.
+//   &tag=...       free label echoed into the beacon log
+//
+// The beacon is the same trick Task 6 used: serve.py has no /__s5 route, so the request
+// 404s and its request line lands in the server's stderr log, URL-encoded. That is the
+// transcript. Nothing on the page depends on it succeeding.
+const q = new URLSearchParams(location.search);
+const out = document.getElementById("out");
+const beacon = q.has("auto")
+  ? (t) => fetch("/__s5?" + encodeURIComponent(t)).catch(() => {})
+  : () => {};
+const say = (t) => { out.textContent += t + "\n"; beacon(t); };
+const pick = (sel, want) => {
+  if (!want) return "";
+  const hit = [...sel.options].find((o) => o.textContent.toLowerCase().includes(want.toLowerCase()));
+  if (!hit) { say(`WARNING: no device matching "${want}"; using the default`); return ""; }
+  sel.value = hit.value;
+  return hit.value;
+};
+
+// Device labels are empty strings until microphone permission has been granted once, so
+// the enumeration has to follow a getUserMedia, not precede it.
+async function enumerate() {
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  for (const [sel, kind] of [[document.getElementById("in"), "audioinput"],
+                             [document.getElementById("outdev"), "audiooutput"]]) {
+    sel.innerHTML = "";
+    sel.append(new Option("(default)", ""));
+    for (const d of devs.filter((x) => x.kind === kind)) {
+      sel.append(new Option(d.label || `(unlabelled ${d.deviceId.slice(0, 8)})`, d.deviceId));
+      say(`  ${kind}: ${d.label || "(no label)"} [${d.deviceId.slice(0, 12)}...] group ${d.groupId.slice(0, 8)}`);
+    }
+  }
+}
+
+// Everything obtainable WITHOUT a loopback path. Spec section 6 wants the cabled figure
+// reported alongside these, because the gap between them is itself the novel number: there
+// is no standard input-latency accessor, so whatever the loopback exceeds
+// baseLatency + outputLatency by is the input side plus the unexposed remainder.
+async function apiFigures(ctx, track) {
+  const s = track ? track.getSettings() : {};
+  if (!track) say("(no capture stream open: this is the output-only condition)");
+  const c = track ? track.getConstraints() : {};
+  let caps = "getCapabilities unavailable";
+  try { caps = JSON.stringify(track.getCapabilities()); } catch (e) { caps = `threw: ${e.message}`; }
+  say(`sampleRate           ${ctx.sampleRate} Hz`);
+  say(`baseLatency          ${(ctx.baseLatency * 1000).toFixed(3)} ms`);
+  say(`outputLatency        ${(ctx.outputLatency * 1000).toFixed(3)} ms`);
+  say(`API output total     ${((ctx.baseLatency + ctx.outputLatency) * 1000).toFixed(3)} ms`);
+  say(`sinkId               ${"sinkId" in ctx ? JSON.stringify(ctx.sinkId) : "unsupported"}`);
+  say(`state                ${ctx.state}`);
+  // `latency` in getSettings() is the ONLY input-side latency the platform exposes, and it
+  // is optional; Chromium reports it in seconds when the capturer knows it.
+  say(`track.getSettings    ${JSON.stringify(s)}`);
+  say(`  -> input latency   ${"latency" in s ? (s.latency * 1000).toFixed(3) + " ms" : "NOT REPORTED"}`);
+  say(`track.getConstraints ${JSON.stringify(c)}`);
+  say(`track.getCapabilities ${caps}`);
+}
+
+async function openInput(deviceId) {
+  // exact:false on the three processing constraints: any of them left on would insert
+  // Chromium's own APM, which both delays and gates the signal, and echo cancellation in
+  // particular is designed to remove exactly the thing being measured.
+  const audio = {
+    echoCancellation: { exact: false },
+    autoGainControl: { exact: false },
+    noiseSuppression: { exact: false },
+    channelCount: 1,
+  };
+  if (deviceId) audio.deviceId = { exact: deviceId };
+  return navigator.mediaDevices.getUserMedia({ audio });
+}
+
+async function build(hint, inId, outId) {
+  const stream = await openInput(inId);
+  const track = stream.getAudioTracks()[0];
+  const ctx = new AudioContext({ sampleRate: 48000, latencyHint: hint });
+  await ctx.resume().catch(() => {});
+  if (outId) {
+    if (!ctx.setSinkId) say("WARNING: AudioContext.setSinkId unsupported; using the default sink");
+    else await ctx.setSinkId(outId).catch((e) => say(`setSinkId failed: ${e.message}`));
+  }
+  return { ctx, stream, track };
+}
+
+async function probe() {
+  const hint = q.get("hint") || document.getElementById("hint").value;
+  say(`--- probe, latencyHint=${hint}, tag=${q.get("tag") || "-"} ---`);
+  const noinput = q.has("noinput");
+  const { ctx, stream, track } = noinput
+    ? { ctx: await (async () => { const c = new AudioContext({ sampleRate: 48000, latencyHint: hint }); await c.resume().catch(() => {}); return c; })(), stream: null, track: null }
+    : await build(hint, "", "");
+  if (!noinput) await enumerate();
+  // outputLatency reads 0 until a stream is actually open on the device (Task 6), so the
+  // graph is given something to render before the figures are taken.
+  const g = ctx.createGain(); g.gain.value = 0; g.connect(ctx.destination);
+  if (stream) ctx.createMediaStreamSource(stream).connect(g);
+  else { const o = ctx.createOscillator(); o.connect(g); o.start(); }
+  await new Promise((r) => setTimeout(r, 1500));
+  await apiFigures(ctx, track);
+  // Sampled repeatedly: Task 6 saw outputLatency differ between runs (40 vs 32 ms), so a
+  // single reading is not the device's property.
+  const series = [];
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    series.push((ctx.outputLatency * 1000).toFixed(2));
+  }
+  say(`outputLatency x10    ${series.join(" ")}`);
+  if (track) track.stop();
+  await ctx.close();
+}
+
+async function measure() {
+  const hint = q.get("hint") || document.getElementById("hint").value;
+  const n = Number(q.get("n") || document.getElementById("n").value);
+  const amp = Number(q.get("amp") || 0.5);
+  const len = Number(q.get("len") || 64);
+  const control = q.has("control");
+  say(`--- ${control ? "CONTROL (no click emitted)" : "measure"}, latencyHint=${hint}, n=${n}, amp=${amp}, len=${len}, tag=${q.get("tag") || "-"} ---`);
+
+  // One throwaway open purely to unlock device labels, then the real one on the chosen id.
+  const warm = await openInput("");
+  await enumerate();
+  warm.getAudioTracks()[0].stop();
+  const inId = pick(document.getElementById("in"), q.get("in"));
+  const outId = pick(document.getElementById("outdev"), q.get("out"));
+
+  const { ctx, stream, track } = await build(hint, inId, outId);
+  await ctx.audioWorklet.addModule("./capture-processor.js");
+  const node = new AudioWorkletNode(ctx, "capture", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+  node.onprocessorerror = () => say("PROCESSOR ERROR in the capture worklet");
+  ctx.createMediaStreamSource(stream).connect(node);
+  // The worklet writes nothing, but an unconnected node is not pulled by the graph at all,
+  // so it goes to the destination through a muted gain rather than nowhere.
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  node.connect(mute).connect(ctx.destination);
+
+  const ask = (cmd, extra) => new Promise((res) => {
+    node.port.onmessage = (e) => { if (e.data.kind === "result") res(e.data); };
+    node.port.postMessage({ cmd, ...extra });
+  });
+
+  await new Promise((r) => setTimeout(r, 800));   // let the streams settle
+  await apiFigures(ctx, track);
+
+  node.port.postMessage({ cmd: "calibrate" });
+  await new Promise((r) => setTimeout(r, 500));
+  const cal = await ask("read");
+  const thresh = Math.max(Number(q.get("floor") || 0.02), cal.rms * Number(q.get("thresh") || 8));
+  say(`noise floor rms ${cal.rms.toFixed(5)} (peak ${cal.peak.toFixed(5)}) -> onset threshold ${thresh.toFixed(5)}`);
+  if (cal.rms === 0) say("NOTE: the capture stream is digital silence. No cable, a muted input, or the wrong device.");
+
+  const results = [];
+  let spurious = 0;
+  for (let i = 0; i < n; i++) {
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    buf.getChannelData(0).fill(amp);
+    const click = ctx.createBufferSource();
+    click.buffer = buf;
+    click.connect(ctx.destination);
+    const emitAt = ctx.currentTime + 0.2;
+    const emitFrame = Math.round(emitAt * ctx.sampleRate);
+    node.port.postMessage({ cmd: "arm", thresh });
+    if (!control) click.start(emitAt);
+    await new Promise((r) => setTimeout(r, 700));
+    const r = await ask("read");
+    if (r.onsetFrame < 0) {
+      say(`${control ? "control" : "click"} ${i}: no capture (peak ${r.peak.toFixed(5)}, threshold ${thresh.toFixed(5)})`);
+      continue;
+    }
+    // Both frame numbers are on the AudioContext's own sample clock: emitFrame is where
+    // the click was scheduled, onsetFrame is where it came back. No concatenation, no
+    // assumed origin, no ScriptProcessor buffering in between.
+    const ms = ((r.onsetFrame - emitFrame) / ctx.sampleRate) * 1000;
+    // A detection is not evidence on its own. A control run of this page -- armed, no click
+    // emitted -- produced two of them, one at -1.06 ms, from ambient noise on an open line
+    // input. Negative is physically impossible and anything past ~200 ms is far outside any
+    // plausible shared-mode round trip, so both are flagged here and excluded from the
+    // median rather than quietly averaged in.
+    const bad = ms < 0 || ms > 200;
+    say(`${control ? "SPURIOUS (control, no click was emitted)" : bad ? "IMPLAUSIBLE" : "click"} ${i}: ` +
+        `${ms.toFixed(2)} ms (peak ${r.peak.toFixed(4)}, onset frame ${r.onsetFrame}, emit frame ${emitFrame})`);
+    if (control) spurious++;
+    else if (!bad) results.push(ms);
+  }
+
+  if (results.length) {
+    const s = [...results].sort((a, b) => a - b);
+    const median = s[Math.floor(s.length / 2)];
+    const api = (ctx.baseLatency + ctx.outputLatency) * 1000;
+    say(`\nmedian round-trip     ${median.toFixed(2)} ms over ${results.length}/${n} clicks`);
+    say(`min / max             ${s[0].toFixed(2)} / ${s[s.length - 1].toFixed(2)} ms`);
+    say(`API output total      ${api.toFixed(2)} ms`);
+    say(`unaccounted (RTT-API) ${(median - api).toFixed(2)} ms   <- the input side plus whatever the API does not expose`);
+  } else if (control) {
+    // The operator instructions in RESULTS.md set the acceptance bar against this count, so
+    // it is printed rather than left to be counted by eye. At the measured 4% per-window
+    // false-positive rate, one detection in twenty windows is the MORE likely outcome on a
+    // rig with nothing wrong with it; the bar is 2 (run it again) / 3+ (fix the room).
+    say(`\ncontrol: ${spurious} detection(s) in ${n} windows -- 0 or 1 is expected, 2 means ` +
+        `run it again, 3 or more means fix the room. See RESULTS.md, Gate 3.`);
+  } else {
+    say(`\nNO CAPTURE ON ANY CLICK: nothing on the input crossed ${thresh.toFixed(5)}.`);
+    say("Either there is no loopback path, or the monitor level is too low, or the wrong input was selected.");
+  }
+  track.stop(); node.disconnect(); await ctx.close();
+}
+
+const guard = (f) => f().catch((e) => say(`ERROR: ${e.name}: ${e.message}`)).finally(() => {
+  if (q.has("auto")) { beacon("FINISHED"); setTimeout(() => window.close(), 800); }
+});
+document.getElementById("probe").onclick = () => guard(probe);
+document.getElementById("go").onclick = () => guard(measure);
+if (q.get("auto") === "probe") guard(probe);
+if (q.get("auto") === "measure") guard(measure);
+</script>

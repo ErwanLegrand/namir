@@ -1,0 +1,38 @@
+# CoreAudio endpoint probe -- LATER RE-RUN, 2026-09-05, after the Task 6 fix round.
+# The original probe's console output was not preserved; this is a fresh run of the same
+# check, not the original capture, and its numbers are its own.
+# IMMDeviceEnumerator -> IAudioMeterInformation / IAudioSessionManager2 on the default
+# render endpoint, sampled once a second. Sequence: 2 s idle baseline, a SoundPlayer
+# positive control on C:\Windows\Media\Alarm01.wav, then a 12 s headless Edge worklet run
+# launched with &gain=0.01 -- the endpoint peak should read back that exact gain.
+endpoint {0.0.0.00000000}.{6598e231-d6b5-4d3a-9375-ad9814951852}
+t=0 peak=0 sessions(total/active)=2/0
+t=1 peak=0 sessions(total/active)=2/0
+t=2 peak=0 sessions(total/active)=3/0
+t=3 peak=0.19793 sessions(total/active)=3/1
+t=4 peak=0.3026204 sessions(total/active)=3/1
+t=5 peak=0.2783917 sessions(total/active)=3/1
+t=6 peak=0.1791828 sessions(total/active)=3/1
+t=7 peak=0.009482479 sessions(total/active)=3/1
+t=8 peak=0 sessions(total/active)=3/0
+t=9 peak=0 sessions(total/active)=3/0
+t=10 peak=0 sessions(total/active)=3/0
+t=11 peak=0 sessions(total/active)=3/0
+t=12 peak=0.01 sessions(total/active)=4/1
+t=13 peak=0.01 sessions(total/active)=4/1
+t=14 peak=0.01 sessions(total/active)=4/1
+t=15 peak=0.01 sessions(total/active)=4/1
+t=16 peak=0.01 sessions(total/active)=4/1
+t=17 peak=0.01 sessions(total/active)=4/1
+t=18 peak=0.01 sessions(total/active)=4/1
+t=19 peak=0.01 sessions(total/active)=4/1
+t=20 peak=0.01 sessions(total/active)=4/1
+t=21 peak=0.01 sessions(total/active)=4/1
+t=22 peak=0.01 sessions(total/active)=4/1
+t=23 peak=0.01 sessions(total/active)=4/1
+t=24 peak=0 sessions(total/active)=4/0
+t=25 peak=0 sessions(total/active)=3/0
+t=26 peak=0 sessions(total/active)=3/0
+t=27 peak=0 sessions(total/active)=3/0
+t=28 peak=0 sessions(total/active)=3/0
+t=29 peak=0 sessions(total/active)=3/0
