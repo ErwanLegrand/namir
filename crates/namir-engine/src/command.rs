@@ -88,7 +88,13 @@ impl Command {
     /// *checked* by the receiving stage rather than trusted, and degrades to a retirement plus a
     /// fault reading rather than a wrongly-sized buffer.
     pub fn load_nam(model: Arc<PreparedNam>, ctx: &PrepareContext) -> Self {
-        let slot = NamSlot::new(model, ctx.sample_rate(), ctx.max_block_size());
+        let channel_count = ctx.channel_config().output_channels() as usize;
+        let slot = NamSlot::new(
+            model,
+            ctx.sample_rate(),
+            ctx.max_block_size(),
+            channel_count,
+        );
         Self::Load(Resource::nam(Box::new(slot), *ctx))
     }
 

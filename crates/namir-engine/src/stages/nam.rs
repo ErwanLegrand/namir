@@ -79,6 +79,7 @@ use namir_core::SampleRate;
 use namir_dsp::GainRamp;
 use namir_nam::{NamState, PreparedNam};
 use namir_params::ParamKind;
+use namir_params::global::INDEPENDENT_CHANNELS;
 use namir_params::stages::nam::{
     ENABLED, NORMALIZE_ENABLED, NORMALIZE_OFFSET_DB, TARGET_LOUDNESS_LUFS,
 };
@@ -159,6 +160,10 @@ const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
 const NORMALIZE_ENABLED_ID: ParamId = ParamId(NORMALIZE_ENABLED.id.0);
 /// See [`ENABLED_ID`].
 const NORMALIZE_OFFSET_DB_ID: ParamId = ParamId(NORMALIZE_OFFSET_DB.id.0);
+/// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
+/// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
+/// stage just happens to be one of the three (with `gate.rs`/`trim.rs`) that owns this id.
+const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
 
 /// FR-NAM-090's normalisation-gain smoothing time constant. Same figure and same rationale as
 /// `trim.rs`/`out.rs`'s identical constant — `gain_ramp.rs`'s own doc comment derives 20 ms as
@@ -238,6 +243,10 @@ impl StagePrep for NamPrep {
             enabled: enabled_default_on,
             normalize_enabled: normalize_enabled_default_on,
             normalize_offset_db: normalize_offset_default_db,
+            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
+            // default -- FR-CHAIN-050's mono-core-then-duplicate shape, unchanged, until a caller
+            // actively turns this on.
+            independent: false,
             // FR-CHAIN-040: nothing loaded behaves as bypassed, regardless of `enabled` — no
             // prior audio exists yet at stage creation either, so `mix` starts already settled at
             // its target rather than needing to ramp there.
@@ -246,8 +255,12 @@ impl StagePrep for NamPrep {
             mix_coeff,
             dry: vec![vec![0.0; max_block]; channel_count],
             scratch: vec![0.0; max_block],
-            crossfade_outgoing: vec![0.0; max_block],
-            crossfade_incoming: vec![0.0; max_block],
+            // One handover-fade scratch pair per channel, always -- not only when `independent` is
+            // on (same reason `NamSlot::states` is per-channel: preallocating here, in `prepare`
+            // (non-RT), is what lets a live toggle stay RT-safe). In `Linked` mode only index 0 is
+            // ever touched.
+            crossfade_outgoing: vec![vec![0.0; max_block]; channel_count],
+            crossfade_incoming: vec![vec![0.0; max_block]; channel_count],
             retired: None,
         })
     }
@@ -261,13 +274,18 @@ pub(crate) struct NamSlot {
     /// Immutable weights/config (D-9.1); cheap to clone (`Arc`) into a future cache or a
     /// crossfaded-out slot's replacement.
     model: Arc<PreparedNam>,
-    /// This instance's own causal-conv history and reusable inference scratch. Sized (via
-    /// `PreparedNam::new_state`) to `resample`'s fixed model-rate block when resampling is
+    /// This instance's own causal-conv history and reusable inference scratch, one per physical
+    /// channel — not only for the prototype `INDEPENDENT_CHANNELS` mode (`states[1..]` simply sit
+    /// idle in `Linked` mode, matching FR-CHAIN-050's own "channel 0 only" cost exactly). Sized
+    /// (via `PreparedNam::new_state`) to `resample`'s fixed model-rate block when resampling is
     /// active, or to the stage's own `max_block_size` when it isn't.
-    state: NamState,
+    states: Vec<NamState>,
     /// `None` exactly when `model.sample_rate() == engine sample rate` (D-9.2: "bypassed
-    /// entirely... zero cost and zero added latency"); `Some` otherwise.
-    resample: Option<SlotResampler>,
+    /// entirely... zero cost and zero added latency"); `Some` otherwise. One per channel, all
+    /// `Some` or all `None` together — same reason `states` is per-channel: each channel resamples
+    /// its own signal through its own FIFOs, even though whether resampling happens at all is a
+    /// property of the model/engine rate pair, identical for every channel.
+    resample: Vec<Option<SlotResampler>>,
     /// FR-NAM-090: this slot's model's declared-loudness normalisation gain relative to
     /// [`TARGET_LOUDNESS_LUFS`], in dB — `TARGET_LOUDNESS_LUFS - model.loudness_lufs()` when the
     /// model declares a loudness, or `0.0` (no correction) when it doesn't (A1 files, or any A2
@@ -277,13 +295,16 @@ pub(crate) struct NamSlot {
     /// current `normalize_enabled`/`normalize_offset_db` every block.
     base_normalize_gain_db: f32,
     /// FR-NAM-090's applied gain, smoothed with the same one-pole `namir_dsp::GainRamp` pattern
-    /// every other continuous gain-shaped parameter in this crate uses (D-10.3). Its *target* is
-    /// recomputed every block in `process_wet` from `base_normalize_gain_db` plus the stage's own
-    /// `normalize_enabled`/`normalize_offset_db`, so a live toggle or offset change ramps smoothly
-    /// rather than stepping — and a freshly loaded slot itself ramps in from unity gain (`GainRamp`
-    /// always starts there), composing with the handover crossfade the same way the shared bypass
-    /// blend already does (this module's doc comment, "two independent fades, composed").
-    normalize_gain: GainRamp,
+    /// every other continuous gain-shaped parameter in this crate uses (D-10.3) — one per channel,
+    /// all driven to the same target every block (same reason `states` is per-channel: two calls
+    /// to one shared `GainRamp::process` in the same block would advance its smoothing twice as
+    /// fast as real time). Its *target* is recomputed every block in `process_wet` from
+    /// `base_normalize_gain_db` plus the stage's own `normalize_enabled`/`normalize_offset_db`, so
+    /// a live toggle or offset change ramps smoothly rather than stepping — and a freshly loaded
+    /// slot itself ramps in from unity gain (`GainRamp` always starts there), composing with the
+    /// handover crossfade the same way the shared bypass blend already does (this module's doc
+    /// comment, "two independent fades, composed").
+    normalize_gains: Vec<GainRamp>,
 }
 
 impl NamSlot {
@@ -291,8 +312,8 @@ impl NamSlot {
     /// fresh [`NamState`] (`PreparedNam::new_state_prewarmed` allocates every scratch buffer the
     /// model's inference needs, then runs silence through it -- see below) and, only when
     /// `model.sample_rate()` differs from
-    /// `engine_sample_rate`, a [`SlotResampler`] (which itself allocates two `rubato` resamplers
-    /// and their FIFOs).
+    /// `engine_sample_rate`, a [`SlotResampler`] per channel (each of which itself allocates two
+    /// `rubato` resamplers and their FIFOs).
     ///
     /// The state is *prewarmed* rather than merely allocated (D-9.13, issue #173): the reference
     /// implementation runs every stateful model on its own prewarm length of silence before its
@@ -312,6 +333,7 @@ impl NamSlot {
         model: Arc<PreparedNam>,
         engine_sample_rate: SampleRate,
         max_block_size: usize,
+        channel_count: usize,
     ) -> Self {
         let model_rate = model.sample_rate();
         // FR-NAM-090: fixed for this model's whole lifetime as a slot -- see this field's own doc
@@ -320,60 +342,77 @@ impl NamSlot {
             .loudness_lufs()
             .map(|declared| TARGET_LOUDNESS_LUFS - declared)
             .unwrap_or(0.0);
-        let normalize_gain =
-            GainRamp::new(engine_sample_rate, NORMALIZE_GAIN_RAMP_TIME_CONSTANT_MS);
+        let normalize_gains = (0..channel_count)
+            .map(|_| GainRamp::new(engine_sample_rate, NORMALIZE_GAIN_RAMP_TIME_CONSTANT_MS))
+            .collect();
+
         if model_rate.hz() == engine_sample_rate.hz() {
-            let state = model.new_state_prewarmed(max_block_size);
+            let states = (0..channel_count)
+                .map(|_| model.new_state_prewarmed(max_block_size))
+                .collect();
             Self {
                 model,
-                state,
-                resample: None,
+                states,
+                resample: (0..channel_count).map(|_| None).collect(),
                 base_normalize_gain_db,
-                normalize_gain,
+                normalize_gains,
             }
         } else {
-            let resample = SlotResampler::new(engine_sample_rate, model_rate, max_block_size);
-            let state = model.new_state_prewarmed(resample.model_block);
+            let resamplers: Vec<SlotResampler> = (0..channel_count)
+                .map(|_| SlotResampler::new(engine_sample_rate, model_rate, max_block_size))
+                .collect();
+            // Every channel's resampler shares the same `model_block` (a property of the
+            // engine/model rate pair, not of any one channel), so any one of them names it.
+            let model_block = resamplers[0].model_block;
+            let states = (0..channel_count)
+                .map(|_| model.new_state_prewarmed(model_block))
+                .collect();
             Self {
                 model,
-                state,
-                resample: Some(resample),
+                states,
+                resample: resamplers.into_iter().map(Some).collect(),
                 base_normalize_gain_db,
-                normalize_gain,
+                normalize_gains,
             }
         }
     }
 
-    /// Runs this slot's model (resampled around, if `resample` is `Some`) on `input`, writing
-    /// exactly `input.len()` frames into `output`, then applies FR-NAM-090's normalisation gain to
-    /// `output` in place. `normalize_enabled`/`normalize_offset_db` are the stage's current values
-    /// (read once per call by `NamStage::process_channel0`, not stored here, since they're shared
-    /// across both slots and can change independently of this slot's own model). RT-safe once
-    /// constructed: every buffer this touches was sized in `NamSlot::new`/`SlotResampler::new`,
+    /// Runs this slot's model on channel `ch` (resampled around, via `resample[ch]`, if that
+    /// channel resamples) against `input`, writing exactly `input.len()` frames into `output`,
+    /// then applies FR-NAM-090's normalisation gain to `output` in place via `normalize_gains[ch]`
+    /// — every channel's own state, but the same model weights and the same target gain.
+    /// `normalize_enabled`/`normalize_offset_db` are the stage's current values (read once per
+    /// call by `NamStage`'s per-channel render, not stored here, since they're shared across both
+    /// slots and every channel, and can change independently of this slot's own model). RT-safe
+    /// once constructed: every buffer this touches was sized in `NamSlot::new`/`SlotResampler::new`,
     /// and `GainRamp::set_target_db`/`process` allocate nothing (`gain_ramp.rs`'s own contract).
     fn process_wet(
         &mut self,
+        ch: usize,
         input: &[f32],
         output: &mut [f32],
         normalize_enabled: bool,
         normalize_offset_db: f32,
     ) {
-        match &mut self.resample {
-            None => self.model.process_block(&mut self.state, input, output),
-            Some(resampler) => resampler.process(&self.model, &mut self.state, input, output),
+        match &mut self.resample[ch] {
+            None => self
+                .model
+                .process_block(&mut self.states[ch], input, output),
+            Some(resampler) => resampler.process(&self.model, &mut self.states[ch], input, output),
         }
         let target_db = if normalize_enabled {
             self.base_normalize_gain_db + normalize_offset_db
         } else {
             0.0
         };
-        self.normalize_gain.set_target_db(target_db);
-        self.normalize_gain.process(output);
+        self.normalize_gains[ch].set_target_db(target_db);
+        self.normalize_gains[ch].process(output);
     }
 
-    /// This slot's own added latency: its resampler's, or `0` if it runs at the engine rate.
+    /// This slot's own added latency: its resampler's, or `0` if it runs at the engine rate. Every
+    /// channel resamples identically (same model/engine rate pair), so channel 0 names it for all.
     fn latency_samples(&self) -> u32 {
-        self.resample.as_ref().map_or(0, |r| r.latency_samples)
+        self.resample[0].as_ref().map_or(0, |r| r.latency_samples)
     }
 }
 
@@ -718,19 +757,26 @@ pub struct NamStage {
     /// One-pole coefficient for the `mix` crossfade, computed once in `prepare` from
     /// [`BYPASS_CROSSFADE_TIME_CONSTANT_MS`] and the sample rate.
     mix_coeff: f32,
+    /// Prototype (`namir_params::global::INDEPENDENT_CHANNELS`): `false` (Linked) reproduces
+    /// FR-CHAIN-050's mono-core-then-duplicate behaviour exactly (`render_channel` called once,
+    /// for channel 0, then duplicated); `true` (Independent) calls it once per channel, each
+    /// against its own `NamSlot` state, with no duplication step.
+    independent: bool,
     /// Per-channel pre-stage signal, captured at the top of every `process` call — both the
-    /// shared bypass blend's dry reference *and*, for channel 0, the wet path's own input (reused
-    /// rather than copied a second time).
+    /// shared bypass blend's dry reference *and*, in `Linked` mode, channel 0's own wet-path input
+    /// (reused rather than copied a second time); in `Independent` mode every channel's own.
     dry: Vec<Vec<f32>>,
-    /// Shuttle buffer for FR-CHAIN-050's channel-0-then-duplicate pattern.
+    /// Shuttle buffer for FR-CHAIN-050's channel-0-then-duplicate pattern (`Linked` mode only).
     scratch: Vec<f32>,
-    /// Handover-fade scratch: `slots[active]`'s (fading-out) wet output for the current block,
-    /// or a dry passthrough copy of the input when that slot is `None` (this module's doc
-    /// comment: "a slot that is `None` inside a crossfade contributes its input directly").
-    crossfade_outgoing: Vec<f32>,
+    /// Handover-fade scratch, one buffer per physical channel (not only for `Independent` mode —
+    /// see `prepare`'s own comment): `slots[active]`'s (fading-out) wet output for the current
+    /// block, or a dry passthrough copy of the input when that slot is `None` (this module's doc
+    /// comment: "a slot that is `None` inside a crossfade contributes its input directly"). Only
+    /// index 0 is ever touched in `Linked` mode.
+    crossfade_outgoing: Vec<Vec<f32>>,
     /// Handover-fade scratch: `slots[1 - active]`'s (fading-in) wet output for the current block,
     /// or a dry passthrough copy, symmetric to `crossfade_outgoing`.
-    crossfade_incoming: Vec<f32>,
+    crossfade_incoming: Vec<Vec<f32>>,
     /// D-8.1 step 4's holding pen: a slot this stage has finished with, waiting to be moved into
     /// the return ring by [`Stage::collect_retired`].
     ///
@@ -761,7 +807,8 @@ impl NamStage {
     /// `active` (and therefore which slot is fading *out*) is unaffected, since `active` only
     /// ever changes when a handover completes.
     pub fn load_model(&mut self, model: Arc<PreparedNam>) {
-        let slot = NamSlot::new(model, self.sample_rate, self.max_block_size);
+        let channel_count = self.prepared_for.channel_config().output_channels() as usize;
+        let slot = NamSlot::new(model, self.sample_rate, self.max_block_size, channel_count);
         let ctx = self.prepared_for;
         self.install(Box::new(slot), ctx);
     }
@@ -903,16 +950,34 @@ impl NamStage {
         self.mix_target = if self.enabled && engaged { 1.0 } else { 0.0 };
     }
 
-    /// The mono-core wet path (FR-CHAIN-050): writes this block's processed result into
-    /// `io.channel(0)`, reading input from `self.dry[0]` (already captured by `process` before
-    /// this is called, so this needn't take a second copy). Handles all three shapes the
-    /// handover protocol requires: no handover in progress (single slot, or pure passthrough if
-    /// `slots[active]` is `None`); a handover in progress (equal-power blend of both slots' wet
-    /// output, either side substituting a dry passthrough for a `None` slot); and a handover that
-    /// completes partway through this very block (the per-sample `theta` below saturates at
-    /// `total`, so the tail of the block after completion is already pure incoming-slot output,
-    /// consistent with the finalization performed once after the loop).
-    fn process_channel0(&mut self, io: &mut StageIo<'_>, n: usize) {
+    /// The wet path (FR-CHAIN-050 in `Linked` mode, called once for channel 0 then duplicated;
+    /// the prototype's per-channel path in `Independent` mode, called once per channel): writes
+    /// this block's processed result into `io.channel(ch)`, reading input from `self.dry[ch]`
+    /// (already captured by `process` before this is called, so this needn't take a second copy).
+    /// Handles all three shapes the handover protocol requires: no handover in progress (single
+    /// slot, or pure passthrough if `slots[active]` is `None`); a handover in progress
+    /// (equal-power blend of both slots' wet output, either side substituting a dry passthrough
+    /// for a `None` slot); and a handover that completes partway through this very block (the
+    /// per-sample `theta` below saturates at `total`, so the tail of the block after completion is
+    /// already pure incoming-slot output, consistent with the finalization performed once after
+    /// the loop).
+    ///
+    /// # `commit`, and why every channel computes the identical fade trajectory but only one
+    /// writes it back
+    ///
+    /// `self.crossfade`'s `prime`/`remaining` are per-*block* state, advanced by exactly one
+    /// sample-count's worth per block — not per channel. Calling this once per channel (the
+    /// `Independent` path) must not advance that state once per channel too, or two channels
+    /// would desync the same handover at twice the rate a single-channel call already proves
+    /// correct. So every call takes its own local copy of `self.crossfade` (read, never mutated on
+    /// `self` mid-call) and recomputes the *same* trajectory from the *same* starting point every
+    /// channel sees — exactly the pattern this stage's own shared bypass blend (`mix`) and
+    /// `gate.rs`'s bypass blend already use for the identical reason, just extended to the
+    /// handover crossfade too. `commit` is `true` for exactly one call per block (the last channel
+    /// this stage renders that block) and gates every place that would otherwise mutate `self`:
+    /// `try_finalize_handover()` and the final `self.crossfade = Some(..)` write-back. A non-last
+    /// channel's call is side-effect-free on `self` beyond its own `io`/scratch buffers.
+    fn render_channel(&mut self, io: &mut StageIo<'_>, ch: usize, n: usize, commit: bool) {
         // FR-NAM-090: read once per block, before any of `self.slots` is borrowed below -- shared
         // across both slots (each applies its own `base_normalize_gain_db` against these same two
         // values), and can change independently of either slot's own model.
@@ -920,12 +985,13 @@ impl NamStage {
         let normalize_offset_db = self.normalize_offset_db;
 
         let Some(mut crossfade) = self.crossfade else {
-            // FR-CHAIN-040: `None` is a pure passthrough -- `io.channel(0)` already holds the
+            // FR-CHAIN-040: `None` is a pure passthrough -- `io.channel(ch)` already holds the
             // input, so there is nothing to do in that case.
             if let Some(slot) = &mut self.slots[self.active] {
                 slot.process_wet(
-                    &self.dry[0][..n],
-                    io.channel(0),
+                    ch,
+                    &self.dry[ch][..n],
+                    io.channel(ch),
                     normalize_enabled,
                     normalize_offset_db,
                 );
@@ -941,22 +1007,25 @@ impl NamStage {
             // is mathematically complete but the retire pen was still occupied when it ended, so
             // `active` has not flipped yet.
             //
-            // **Try to finalize first, every block (issue #56).** This used to fall straight
-            // through to the incoming-only render, which made the state a dead end: nothing else
-            // in `process_channel0` re-tests `self.retired`, so once entered, `active` never
-            // flipped, `crossfade` never cleared and the outgoing slot never reached the pen — for
-            // the rest of the session. The consequences were permanent and all silent:
-            // `latency_samples()` kept reporting the outgoing slot (FR-CLAP-040 wrong),
-            // `telemetry.nam.handover_active` stayed pinned at 1.0, `recompute_mix_target` never
-            // re-ran (so a *first* load left the stage bypassed forever), and a later install
-            // displaced the audible slot and re-faded from the stale outgoing one. The block
-            // comment below promised exactly this recovery; it simply did not exist.
+            // **Try to finalize first, every block (issue #56), but only on the committing call**
+            // — see this method's own doc comment on `commit`. This used to fall straight through
+            // to the incoming-only render, which made the state a dead end: nothing else in this
+            // method re-tests `self.retired`, so once entered, `active` never flipped, `crossfade`
+            // never cleared and the outgoing slot never reached the pen — for the rest of the
+            // session. The consequences were permanent and all silent: `latency_samples()` kept
+            // reporting the outgoing slot (FR-CLAP-040 wrong), `telemetry.nam.handover_active`
+            // stayed pinned at 1.0, `recompute_mix_target` never re-ran (so a *first* load left
+            // the stage bypassed forever), and a later install displaced the audible slot and
+            // re-faded from the stale outgoing one. The block comment below promised exactly this
+            // recovery; it simply did not exist.
             //
             // The retry is one `Option::is_none()` check per block. `collect_retired` empties the
             // pen as soon as the worker drains, so the deferral is normally over within a block or
             // two — but nothing bounds it, which is precisely why it must be retried rather than
             // entered once.
-            self.try_finalize_handover();
+            if commit {
+                self.try_finalize_handover();
+            }
 
             // Run only the incoming slot rather than blending in an outgoing one scaled by
             // `cos(FRAC_PI_2)` — which is -4.4e-8 in f32, not exactly zero, and would otherwise
@@ -966,8 +1035,9 @@ impl NamStage {
             // finalization sets `self.active` *to* it.
             if let Some(slot) = &mut self.slots[incoming_idx] {
                 slot.process_wet(
-                    &self.dry[0][..n],
-                    io.channel(0),
+                    ch,
+                    &self.dry[ch][..n],
+                    io.channel(ch),
                     normalize_enabled,
                     normalize_offset_db,
                 );
@@ -977,29 +1047,31 @@ impl NamStage {
 
         match &mut self.slots[outgoing_idx] {
             Some(slot) => slot.process_wet(
-                &self.dry[0][..n],
-                &mut self.crossfade_outgoing[..n],
+                ch,
+                &self.dry[ch][..n],
+                &mut self.crossfade_outgoing[ch][..n],
                 normalize_enabled,
                 normalize_offset_db,
             ),
-            None => self.crossfade_outgoing[..n].copy_from_slice(&self.dry[0][..n]),
+            None => self.crossfade_outgoing[ch][..n].copy_from_slice(&self.dry[ch][..n]),
         }
         match &mut self.slots[incoming_idx] {
             Some(slot) => slot.process_wet(
-                &self.dry[0][..n],
-                &mut self.crossfade_incoming[..n],
+                ch,
+                &self.dry[ch][..n],
+                &mut self.crossfade_incoming[ch][..n],
                 normalize_enabled,
                 normalize_offset_db,
             ),
-            None => self.crossfade_incoming[..n].copy_from_slice(&self.dry[0][..n]),
+            None => self.crossfade_incoming[ch][..n].copy_from_slice(&self.dry[ch][..n]),
         }
 
         let total = crossfade.total.max(1);
-        let out = io.channel(0);
+        let out = io.channel(ch);
         for ((o, &outgoing), &incoming) in out
             .iter_mut()
-            .zip(self.crossfade_outgoing[..n].iter())
-            .zip(self.crossfade_incoming[..n].iter())
+            .zip(self.crossfade_outgoing[ch][..n].iter())
+            .zip(self.crossfade_incoming[ch][..n].iter())
         {
             // The incoming slot has not produced a real sample yet, so there is nothing to fade
             // into: emit the outgoing side alone, which is what `theta == 0` already evaluates
@@ -1019,6 +1091,10 @@ impl NamStage {
             }
         }
 
+        if !commit {
+            return;
+        }
+
         if crossfade.remaining == 0 {
             if !self.try_finalize_handover() {
                 // The pen is still occupied because the return ring was full when
@@ -1028,8 +1104,8 @@ impl NamStage {
                 //
                 // Only the *bookkeeping* is deferred; the audio is already correct. `theta` has
                 // saturated at FRAC_PI_2, so the outgoing slot is multiplied by cos(pi/2) and
-                // contributes nothing audible, and `process_channel0`'s own fast path above skips
-                // running it at all. The stage stays in this state until a later block's
+                // contributes nothing audible, and this method's own fast path above skips running
+                // it at all. The stage stays in this state until a later block's
                 // `collect_retired` empties the pen — and that same fast path retries the
                 // finalization on every block until it does (issue #56).
                 //
@@ -1052,9 +1128,10 @@ impl NamStage {
     /// note in `install`), and three scalar assignments.
     ///
     /// Called from two places, and that is the fix for issue #56: once at the end of the fade in
-    /// `process_channel0`, and again on every subsequent block from that method's `remaining == 0`
+    /// `render_channel`, and again on every subsequent block from that method's `remaining == 0`
     /// fast path, so a deferral entered because the worker was not draining is left as soon as it
-    /// is.
+    /// is. Both call sites are gated on `commit` (`render_channel`'s own doc comment), so this
+    /// still runs exactly once per block regardless of how many channels are rendered.
     fn try_finalize_handover(&mut self) -> bool {
         if self.retired.is_some() {
             return false;
@@ -1082,19 +1159,31 @@ impl Stage for NamStage {
         let channel_count = io.channel_count();
 
         // Capture dry input for every channel — for the shared bypass blend below, and (channel
-        // 0 only) as the wet path's own input, per `process_channel0`'s doc comment.
+        // 0 in `Linked` mode, every channel in `Independent` mode) as the wet path's own input,
+        // per `render_channel`'s doc comment.
         for ch in 0..channel_count {
             self.dry[ch][..n].copy_from_slice(io.channel(ch));
         }
 
-        self.process_channel0(io, n);
+        if self.independent && channel_count > 1 {
+            // Prototype: every channel through its own `NamSlot` state, no duplication -- the
+            // same shape `gate.rs`/`trim.rs` use for the identical reason. `commit` (see
+            // `render_channel`'s own doc comment) is true only for the last channel, so the
+            // handover crossfade advances exactly once per block regardless of channel count.
+            let last = channel_count - 1;
+            for ch in 0..channel_count {
+                self.render_channel(io, ch, n, ch == last);
+            }
+        } else {
+            self.render_channel(io, 0, n, true);
 
-        // FR-CHAIN-050: duplicate channel 0's wet result onto every other channel.
-        if channel_count > 1 {
-            self.scratch[..n].copy_from_slice(io.channel(0));
-            let wet = &self.scratch[..n];
-            for ch in 1..channel_count {
-                io.channel(ch).copy_from_slice(wet);
+            // FR-CHAIN-050: duplicate channel 0's wet result onto every other channel.
+            if channel_count > 1 {
+                self.scratch[..n].copy_from_slice(io.channel(0));
+                let wet = &self.scratch[..n];
+                for ch in 1..channel_count {
+                    io.channel(ch).copy_from_slice(wet);
+                }
             }
         }
 
@@ -1138,7 +1227,7 @@ impl Stage for NamStage {
         // `PreparedNam::new_state_prewarmed` ends, which is thousands of samples of inference and
         // not audio-thread work. That makes this gap harder to close than it looked, not easier.
         for slot in self.slots.iter_mut().flatten() {
-            if let Some(resampler) = &mut slot.resample {
+            for resampler in slot.resample.iter_mut().flatten() {
                 resampler.into_model.reset();
                 resampler.out_of_model.reset();
                 resampler.engine_in_fifo.clear();
@@ -1177,6 +1266,10 @@ impl Stage for NamStage {
             self.normalize_enabled = change.value >= 0.5;
         } else if change.id == NORMALIZE_OFFSET_DB_ID {
             self.normalize_offset_db = change.value;
+        } else if change.id == INDEPENDENT_CHANNELS_ID {
+            // Stepped param value is the index as f32; index 1 is "Independent" per
+            // `INDEPENDENT_CHANNELS`'s descriptor.
+            self.independent = change.value >= 0.5;
         }
     }
 
@@ -1754,6 +1847,115 @@ mod tests {
                  nothing shows it was replaced by the mono core's result"
             );
         }
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`): the opposite claim from
+    /// `every_multi_channel_configuration_duplicates_one_mono_core_result` above, and a stronger
+    /// one than "the two channels differ" -- each channel's output must match what a completely
+    /// separate `Mono` stage, fed that exact signal alone, produces. That is the actual claim this
+    /// prototype exists for: running the *same loaded model* independently against two genuinely
+    /// different signals (e.g. two double-tracked guitar takes on a REAPER parent bus), not one
+    /// signal's result merely duplicated.
+    #[test]
+    fn independent_mode_runs_a_full_separate_core_per_channel() {
+        const FRAMES: usize = 24_000;
+        const SETTLE: usize = 19_200;
+        let sample_rate = 48_000;
+
+        let left = sine_signal(FRAMES);
+        let right: Vec<f32> = (0..FRAMES)
+            .map(|i| 0.15 * ((i as f32) * 0.037).sin())
+            .collect();
+
+        // Two independent `Mono` stages, one per signal -- ground truth for "what would a
+        // dedicated core produce", built from the same model.
+        let mut mono_left = stage(sample_rate, ChannelConfig::Mono);
+        mono_left.load_model(tiny_model(sample_rate));
+        let mono_left_out = process_signal_in_chunks(&mut mono_left, &left);
+
+        let mut mono_right = stage(sample_rate, ChannelConfig::Mono);
+        mono_right.load_model(tiny_model(sample_rate));
+        let mono_right_out = process_signal_in_chunks(&mut mono_right, &right);
+
+        let mut stereo = stage(sample_rate, ChannelConfig::Stereo);
+        stereo.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0, // "Independent"
+        });
+        stereo.load_model(tiny_model(sample_rate));
+
+        let mut out_left = Vec::with_capacity(FRAMES);
+        let mut out_right = Vec::with_capacity(FRAMES);
+        let mut offset = 0usize;
+        while offset < FRAMES {
+            let end = (offset + 64).min(FRAMES);
+            let n = end - offset;
+            let mut l = left[offset..end].to_vec();
+            let mut r = right[offset..end].to_vec();
+            let mut channels: [&mut [f32]; 2] = [&mut l, &mut r];
+            let mut io = StageIo::new(&mut channels, n);
+            audio_section(|| stereo.process(&mut io));
+            out_left.extend_from_slice(io.channel(0));
+            out_right.extend_from_slice(io.channel(1));
+            offset = end;
+        }
+
+        // Measured after the fade-in settles, same reasoning as the Linked-mode test above.
+        for i in SETTLE..FRAMES {
+            assert!(
+                (out_left[i] - mono_left_out[i]).abs() < 1e-5,
+                "left: sample {i} is {} where a dedicated Mono core fed the same signal produces \
+                 {} -- independent mode is not really running a separate core",
+                out_left[i],
+                mono_left_out[i]
+            );
+            assert!(
+                (out_right[i] - mono_right_out[i]).abs() < 1e-5,
+                "right: sample {i} is {} where a dedicated Mono core fed the same signal produces \
+                 {} -- independent mode is not really running a separate core",
+                out_right[i],
+                mono_right_out[i]
+            );
+        }
+        // Non-vacuous: the two *inputs* really did differ (same check the Linked-mode test above
+        // makes of its own probe signals) -- checking the model's *output* here instead would be
+        // the weaker, less robust claim, since a tiny/compressive model is free to map two
+        // different inputs closer together than they started.
+        assert!(
+            left.iter()
+                .zip(right.iter())
+                .any(|(l, r)| (l - r).abs() > 0.05),
+            "the two probe channels are too similar for this comparison to mean anything"
+        );
+    }
+
+    /// [`crossfade_in_progress_does_not_allocate`]'s counterpart with the prototype mode on: the
+    /// per-channel render loop in `process` (calling `render_channel` once per channel instead of
+    /// once-then-duplicate, each against its own `states`/`resample`/`normalize_gains` entry) must
+    /// be exactly as allocation-free, including while an outgoing *and* incoming slot are both
+    /// live (the two-`load_model` shape `crossfade_in_progress_does_not_allocate` uses).
+    #[test]
+    fn independent_mode_crossfade_in_progress_does_not_allocate() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0,
+        });
+        stage.load_model(tiny_model(sample_rate));
+        // Still mid-handover (20 ms = 960 samples at 48 kHz; 64 samples in is well inside it).
+        let mut left = [0.1f32; 64];
+        let mut right = [0.2f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+
+        stage.load_model(tiny_model(sample_rate)); // start a second handover, still mid-first.
+        let mut left = [0.1f32; 64];
+        let mut right = [0.2f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
     }
 
     #[test]
