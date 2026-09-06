@@ -223,14 +223,7 @@ impl UiHost for ClapUiHost {
             notices: self.inner.notices(),
             library_roots: self.inner.library_roots(),
             audio_panel_open: false,
-            input_devices: Vec::new(),
-            output_devices: Vec::new(),
-            current_input_device: None,
-            current_output_device: None,
-            supported_sample_rates: Vec::new(),
-            current_sample_rate: 48_000,
-            supported_buffer_sizes: Vec::new(),
-            current_buffer_size: 256,
+            audio_panel: None,
         }
     }
 

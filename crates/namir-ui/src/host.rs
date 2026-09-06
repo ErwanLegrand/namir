@@ -137,6 +137,26 @@ pub struct PresetSummary {
     /// this crate never reads it, only hands it back.
     pub path: PathBuf,
 }
+/// FR-IO-010/040: Audio device configuration panel state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioDevicePanelSnapshot {
+    /// Available input device names.
+    pub input_devices: Vec<String>,
+    /// Available output device names.
+    pub output_devices: Vec<String>,
+    /// Currently selected input device name, or `None` if default/unset.
+    pub current_input_device: Option<String>,
+    /// Currently selected output device name, or `None` if default/unset.
+    pub current_output_device: Option<String>,
+    /// Supported sample rates in Hz for the current configuration.
+    pub supported_sample_rates: Vec<u32>,
+    /// Currently active sample rate in Hz.
+    pub current_sample_rate: u32,
+    /// Supported buffer sizes in frames for the current configuration.
+    pub supported_buffer_sizes: Vec<u32>,
+    /// Currently active buffer size in frames.
+    pub current_buffer_size: u32,
+}
 
 /// Everything [`crate::render`] needs to draw one frame of FR-UI-020's screen -- a single,
 /// self-contained, read-only picture of engine/library/preset state at one instant. Built fresh by
@@ -178,22 +198,9 @@ pub struct UiSnapshot {
     pub library_roots: Arc<Vec<PathBuf>>,
     /// Whether the audio settings / device panel is open.
     pub audio_panel_open: bool,
-    /// List of available input device names.
-    pub input_devices: Vec<String>,
-    /// List of available output device names.
-    pub output_devices: Vec<String>,
-    /// The currently selected input device name, or `None` if default/unset.
-    pub current_input_device: Option<String>,
-    /// The currently selected output device name, or `None` if default/unset.
-    pub current_output_device: Option<String>,
-    /// Supported sample rates in Hz for the current configuration.
-    pub supported_sample_rates: Vec<u32>,
-    /// Currently active sample rate in Hz.
-    pub current_sample_rate: u32,
-    /// Supported buffer sizes in frames for the current configuration.
-    pub supported_buffer_sizes: Vec<u32>,
-    /// Currently active buffer size in frames.
-    pub current_buffer_size: u32,
+    /// Audio device configuration panel state, or `None` if device configuration is not available
+    /// (e.g. in a plugin host where audio devices are managed externally).
+    pub audio_panel: Option<AudioDevicePanelSnapshot>,
 }
 
 impl Default for UiSnapshot {
@@ -215,14 +222,7 @@ impl Default for UiSnapshot {
             presets: Vec::new(),
             library_roots: Arc::new(Vec::new()),
             audio_panel_open: false,
-            input_devices: Vec::new(),
-            output_devices: Vec::new(),
-            current_input_device: None,
-            current_output_device: None,
-            supported_sample_rates: Vec::new(),
-            current_sample_rate: 48_000,
-            supported_buffer_sizes: Vec::new(),
-            current_buffer_size: 256,
+            audio_panel: None,
         }
     }
 }

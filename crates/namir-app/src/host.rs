@@ -37,8 +37,8 @@ use namir_engine::{ParamChange, ParamId as EngineParamId, TelemetryEntry, Teleme
 use namir_params::REGISTRY;
 use namir_state::State;
 use namir_ui::{
-    AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading, PresetSummary, UiHost,
-    UiIntent, UiNotice, UiSnapshot,
+    AudioDevicePanelSnapshot, AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading,
+    PresetSummary, UiHost, UiIntent, UiNotice, UiSnapshot,
 };
 use namir_worker::Target;
 use namir_worker::library::LibraryService;
@@ -920,14 +920,16 @@ impl UiHost for AppHost {
             presets: self.presets.clone(),
             library_roots: self.library.roots(),
             audio_panel_open: self.audio_panel_open,
-            input_devices: self.input_devices.clone(),
-            output_devices: self.output_devices.clone(),
-            current_input_device: self.current_input_device.clone(),
-            current_output_device: self.current_output_device.clone(),
-            supported_sample_rates: self.supported_sample_rates.clone(),
-            current_sample_rate: self.current_sample_rate,
-            supported_buffer_sizes: self.supported_buffer_sizes.clone(),
-            current_buffer_size: self.current_buffer_size,
+            audio_panel: Some(AudioDevicePanelSnapshot {
+                input_devices: self.input_devices.clone(),
+                output_devices: self.output_devices.clone(),
+                current_input_device: self.current_input_device.clone(),
+                current_output_device: self.current_output_device.clone(),
+                supported_sample_rates: self.supported_sample_rates.clone(),
+                current_sample_rate: self.current_sample_rate,
+                supported_buffer_sizes: self.supported_buffer_sizes.clone(),
+                current_buffer_size: self.current_buffer_size,
+            }),
         }
     }
 
@@ -1037,11 +1039,6 @@ impl UiHost for AppHost {
                 self.settings.output_device_name = Some(name.clone());
                 if let Some(mode) = &mut self.audio_mode {
                     mode.device_name = name;
-                } else {
-                    self.audio_mode = Some(AudioModeStatus {
-                        share_mode: AudioShareMode::Shared,
-                        device_name: name,
-                    });
                 }
                 self.persist_settings();
             }
@@ -2264,7 +2261,10 @@ mod tests {
             256,
         );
         assert_eq!(
-            host.snapshot().current_input_device.as_deref(),
+            host.snapshot()
+                .audio_panel
+                .as_ref()
+                .and_then(|p| p.current_input_device.as_deref()),
             Some("Built-in Mic")
         );
 
@@ -2272,10 +2272,12 @@ mod tests {
             name: "USB Mic".to_string(),
         });
         assert_eq!(
-            host.snapshot().current_input_device.as_deref(),
+            host.snapshot()
+                .audio_panel
+                .as_ref()
+                .and_then(|p| p.current_input_device.as_deref()),
             Some("USB Mic")
         );
-
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.input_device_name.as_deref(), Some("USB Mic"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2284,6 +2286,43 @@ mod tests {
     #[test]
     fn select_output_device_updates_snapshot_audio_mode_and_persists_settings() {
         let dir = temp_dir("select_output_device");
+        let initial_mode = AudioModeStatus {
+            share_mode: AudioShareMode::Shared,
+            device_name: "Speakers".to_string(),
+        };
+        let (mut host, _engine) = build_host_with_audio_mode(&dir, Some(initial_mode));
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings::default(),
+            vec!["Mic".to_string()],
+            vec!["Speakers".to_string(), "Headphones".to_string()],
+            Some("Mic".to_string()),
+            Some("Speakers".to_string()),
+            vec![44_100, 48_000],
+            48_000,
+            vec![256],
+            256,
+        );
+
+        host.dispatch(UiIntent::SelectOutputDevice {
+            name: "Headphones".to_string(),
+        });
+        let snapshot = host.snapshot();
+        let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
+        assert_eq!(panel.current_output_device.as_deref(), Some("Headphones"));
+        assert_eq!(
+            snapshot.audio_mode.as_ref().map(|m| m.device_name.as_str()),
+            Some("Headphones")
+        );
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert_eq!(loaded.output_device_name.as_deref(), Some("Headphones"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn select_output_device_does_not_falsely_synthesize_audio_mode_when_none() {
+        let dir = temp_dir("select_output_device_no_mode");
         let (mut host, _engine) = build_host(&dir);
         host.configure_audio_devices(
             Some(dir.clone()),
@@ -2302,17 +2341,7 @@ mod tests {
             name: "Headphones".to_string(),
         });
         let snapshot = host.snapshot();
-        assert_eq!(
-            snapshot.current_output_device.as_deref(),
-            Some("Headphones")
-        );
-        assert_eq!(
-            snapshot.audio_mode.as_ref().map(|m| m.device_name.as_str()),
-            Some("Headphones")
-        );
-
-        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
-        assert_eq!(loaded.output_device_name.as_deref(), Some("Headphones"));
+        assert!(snapshot.audio_mode.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2336,9 +2365,9 @@ mod tests {
         host.dispatch(UiIntent::SelectSampleRate { rate: 96_000 });
         host.dispatch(UiIntent::SelectBufferSize { buffer_size: 512 });
         let snapshot = host.snapshot();
-        assert_eq!(snapshot.current_sample_rate, 96_000);
-        assert_eq!(snapshot.current_buffer_size, 512);
-
+        let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
+        assert_eq!(panel.current_sample_rate, 96_000);
+        assert_eq!(panel.current_buffer_size, 512);
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.sample_rate_hz, Some(96_000));
         assert_eq!(loaded.buffer_size_frames, Some(512));

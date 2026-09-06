@@ -243,7 +243,7 @@ pub fn run() {
 
     let config_dir = resolve_config_dir();
 
-    let (mut settings, settings_warning) = match &config_dir {
+    let (settings, settings_warning) = match &config_dir {
         Some(dir) => settings::load(&settings::settings_path(dir)),
         None => (AppSettings::default(), None),
     };
@@ -603,19 +603,31 @@ pub fn run() {
     xrun_log.stop();
 
     // FR-IO-080: persist whatever was actually negotiated -- including a fallback -- so the next
-    // launch starts from what worked this time.
+    // launch starts from what worked this time, without clobbering user selections made during the session.
     if let Some(dir) = &config_dir {
-        settings.host_name = Some(host_info.name.clone());
-        settings.input_device_name = Some(input.device.name.clone());
-        settings.output_device_name = Some(output.device.name.clone());
-        settings.sample_rate_hz = Some(sample_rate_hz);
-        settings.buffer_size_frames = buffer_frames;
-        settings.library_roots = (*library.roots()).clone();
+        let settings_path = settings::settings_path(dir);
+        let (mut final_settings, _) = settings::load(&settings_path);
+        if final_settings.host_name.is_none() {
+            final_settings.host_name = Some(host_info.name.clone());
+        }
+        if final_settings.input_device_name.is_none() {
+            final_settings.input_device_name = Some(input.device.name.clone());
+        }
+        if final_settings.output_device_name.is_none() {
+            final_settings.output_device_name = Some(output.device.name.clone());
+        }
+        if final_settings.sample_rate_hz.is_none() {
+            final_settings.sample_rate_hz = Some(sample_rate_hz);
+        }
+        if final_settings.buffer_size_frames.is_none() {
+            final_settings.buffer_size_frames = buffer_frames;
+        }
+        final_settings.library_roots = (*library.roots()).clone();
         // The one report in this function that cannot become a notice: the window is already
         // closed, so there is no FR-UI-070 list left to push onto. It was `let _ =` — a settings
         // file that silently failed to save is precisely the "why did it forget my device again?"
         // report a log exists to answer — and is now the record it always should have been.
-        if let Err(w) = settings::save(&settings::settings_path(dir), &settings) {
+        if let Err(w) = settings::save(&settings_path, &final_settings) {
             crate::diagnostics::record(w.code, &w.detail);
         }
     }
