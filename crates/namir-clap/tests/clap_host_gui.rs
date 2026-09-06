@@ -30,27 +30,20 @@
 //!    Reaper. Everything the host does *before* `set_parent` in `clack_extensions::gui`'s own
 //!    documented opening sequence (negotiate the API, `create`, `set_scale`, `get_size`,
 //!    `can_resize`) and everything *after* it (`show`, `hide`, `destroy`) is driven here.
-//! 2. `crates/namir-clap/src/gui.rs`'s `is_api_supported` accepts `GuiApiType::WIN32` only, with no
-//!    `cfg` — so on macOS and Linux the host's negotiation fails and **no editor is ever
-//!    embedded**.
-//!    That gap is tracked as GitHub issue #18 ("CLAP plugin has no embedded editor on macOS or
-//!    Linux (FR-CLAP-100)"), which lays out the three possible answers and their costs; it is not
-//!    restated here, and this file does not attempt to close it.
+//! 2. `set_parent` requires a live host window and foreign window manager integration that cannot
+//!    be completed in an in-process test without a real host application.
 //!
 //! Hence the `// trace-partial:` below rather than a plain `// trace:` (D-23.1).
 //!
 //! # Why these assertions are not `cfg`-gated per platform
 //!
-//! Because the code under test is not either. `is_api_supported` has no `#[cfg]` in it, so the
-//! answers it gives are the same on all three CI platforms: `win32`/embedded is accepted
-//! everywhere, `cocoa` and `x11` are refused everywhere — *including on the platforms where they
-//! are the only APIs the host can offer*. The matrix below therefore passes unchanged on Windows,
-//! macOS and Linux, and its message text says plainly that on the latter two the answer it records
-//! is issue #18's defect rather than a design boundary. Pinning the current answers is worth doing
-//! for both: on Windows it is the negotiation contract `src/gui.rs`'s own safety argument depends
-//! on (that module trusts `set_parent` to be reachable only for a configuration this plugin already
-//! accepted), and on macOS/Linux it is a live, executing record of the gap — one that will fail
-//! loudly the day someone adds a Cocoa or X11 backend without revisiting this requirement.
+//! `xtask layering`'s `scan_repo_for_platform_cfg` forbids `#[cfg(target_os)]`/`#[cfg(windows)]`/
+//! `#[cfg(unix)]` across `crates/**` including test targets (D-5.2(b)), so the test matrix cannot
+//! gate assertions with compile-time platform checks. Instead, both the plugin (`src/gui.rs`) and
+//! this test suite query `GuiApiType::default_for_current_platform()`.
+//!
+//! The matrix below verifies that on every platform, only the negotiated native embedded API is
+//! accepted while all other APIs and floating states are refused.
 
 mod support;
 
@@ -80,14 +73,20 @@ const EXPECTED_GUI_SIZE: clack_extensions::gui::GuiSize = clack_extensions::gui:
     height: 640,
 };
 
-/// The one configuration `src/gui.rs` accepts: Win32, embedded (not floating).
+/// The native GUI API for the current platform.
 #[cfg(feature = "host-ext-tests")]
-const EMBEDDED_WIN32: clack_extensions::gui::GuiConfiguration<'static> =
-    clack_extensions::gui::GuiConfiguration {
-        api_type: clack_extensions::gui::GuiApiType::WIN32,
-        is_floating: false,
-    };
+fn native_gui_api() -> Option<clack_extensions::gui::GuiApiType<'static>> {
+    clack_extensions::gui::GuiApiType::default_for_current_platform()
+}
 
+/// The native embedded configuration for the current platform.
+#[cfg(feature = "host-ext-tests")]
+fn embedded_native() -> Option<clack_extensions::gui::GuiConfiguration<'static>> {
+    native_gui_api().map(|api_type| clack_extensions::gui::GuiConfiguration {
+        api_type,
+        is_floating: false,
+    })
+}
 /// Activates `instance` at 48 kHz, runs a phase-continuous 1 kHz sine through it, deactivates, and
 /// returns channel 0's output for the whole run.
 ///
@@ -162,16 +161,13 @@ fn assert_is_the_probe_tone(rendered: &[f32], what: &str) {
 /// string — a host is free to invent one, and a plugin that accepted it would be promising an
 /// embedding it cannot perform.
 ///
-/// **`cocoa` and `x11` reading `false` is issue #18, not a design boundary.** See this file's own
-/// doc comment.
+/// **Refusing non-native APIs and floating state is verified per platform.**
 // trace-partial: FR-CLAP-100
-// uncovered: FR-CLAP-100 — the embedded-editor clause on macOS and Linux, where
-// uncovered: `is_api_supported` accepts only `GuiApiType::WIN32` with no `cfg` (issue #18), and
-// uncovered: `set_parent`, whose real embedding needs a live host window and stays in
-// uncovered: docs/manual-tests/fr-clap-100-gui-embedding.md; closes M8
+// uncovered: FR-CLAP-100 — set_parent, whose real embedding needs a live host window
+// uncovered: and stays in docs/manual-tests/fr-clap-100-gui-embedding.md; closes M8
 #[cfg(feature = "host-ext-tests")]
 #[test]
-fn the_gui_extension_accepts_win32_embedded_and_refuses_every_other_windowing_api() {
+fn the_gui_extension_accepts_native_api_embedded_and_refuses_every_other_windowing_api() {
     use clack_extensions::gui::{GuiApiType, GuiConfiguration, GuiError, PluginGui};
     use support::{main_thread_handle, require_plugin_extension};
 
@@ -180,8 +176,8 @@ fn the_gui_extension_accepts_win32_embedded_and_refuses_every_other_windowing_ap
         (
             GuiApiType::WIN32,
             false,
-            true,
-            "the one configuration src/gui.rs accepts",
+            native_gui_api() == Some(GuiApiType::WIN32),
+            "accepted only when this build is Windows",
         ),
         (
             GuiApiType::WIN32,
@@ -193,17 +189,17 @@ fn the_gui_extension_accepts_win32_embedded_and_refuses_every_other_windowing_ap
         (
             GuiApiType::COCOA,
             false,
-            false,
-            "issue #18: refused even on macOS, where it is the only API a host can offer",
+            native_gui_api() == Some(GuiApiType::COCOA),
+            "accepted only when this build is macOS",
         ),
-        (GuiApiType::COCOA, true, false, "issue #18, and floating"),
+        (GuiApiType::COCOA, true, false, "Cocoa floating refused"),
         (
             GuiApiType::X11,
             false,
-            false,
-            "issue #18: refused even on Linux, where it is the API a host offers",
+            native_gui_api() == Some(GuiApiType::X11),
+            "accepted only when this build is Linux",
         ),
-        (GuiApiType::X11, true, false, "issue #18, and floating"),
+        (GuiApiType::X11, true, false, "X11 floating refused"),
         (
             GuiApiType::WAYLAND,
             false,
@@ -261,7 +257,7 @@ fn the_gui_extension_accepts_win32_embedded_and_refuses_every_other_windowing_ap
 /// be accepted, or the plugin has advertised a configuration it will then refuse.
 #[cfg(feature = "host-ext-tests")]
 #[test]
-fn the_preferred_api_is_win32_embedded_and_is_one_the_plugin_then_accepts() {
+fn the_preferred_api_is_native_api_embedded_and_is_one_the_plugin_then_accepts() {
     use clack_extensions::gui::PluginGui;
     use support::{main_thread_handle, require_plugin_extension};
 
@@ -273,9 +269,9 @@ fn the_preferred_api_is_win32_embedded_and_is_one_the_plugin_then_accepts() {
         .get_preferred_api(&mut handle)
         .expect("the plugin must express a preferred GUI API");
     assert_eq!(
-        preferred, EMBEDDED_WIN32,
-        "src/gui.rs prefers Win32, embedded (issue #18: on macOS and Linux this is a preference no \
-         host can satisfy)"
+        Some(preferred),
+        embedded_native(),
+        "src/gui.rs prefers the native GUI API, embedded"
     );
 
     assert!(
@@ -303,7 +299,8 @@ fn the_host_side_embedding_sequence_runs_up_to_and_after_set_parent() {
     let gui = require_plugin_extension::<PluginGui>(&mut instance);
     let mut handle = main_thread_handle(&mut instance);
 
-    gui.create(&mut handle, EMBEDDED_WIN32)
+    let config = embedded_native().expect("native GUI configuration must be available");
+    gui.create(&mut handle, config)
         .expect("create must succeed for the negotiated configuration");
 
     // Embedded, Win32: the host sets scaling, then asks whether it may choose a size.
@@ -380,7 +377,8 @@ fn declining_the_gui_renders_bit_identical_audio_to_opening_it() {
     {
         let gui = require_plugin_extension::<PluginGui>(&mut opened);
         let mut handle = main_thread_handle(&mut opened);
-        gui.create(&mut handle, EMBEDDED_WIN32)
+        let config = embedded_native().expect("native GUI configuration must be available");
+        gui.create(&mut handle, config)
             .expect("create must succeed for the negotiated configuration");
         gui.set_scale(&mut handle, 1.0)
             .expect("set_scale must be accepted");
@@ -448,7 +446,8 @@ fn a_refused_set_size_changes_nothing_and_clack_0_1_1_swallows_the_refusal() {
     let gui = require_plugin_extension::<PluginGui>(&mut instance);
     let mut handle = main_thread_handle(&mut instance);
 
-    gui.create(&mut handle, EMBEDDED_WIN32)
+    let config = embedded_native().expect("native GUI configuration must be available");
+    gui.create(&mut handle, config)
         .expect("create must succeed for the negotiated configuration");
 
     for requested in [
