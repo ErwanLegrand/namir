@@ -222,6 +222,15 @@ impl UiHost for ClapUiHost {
             unsaved_changes: self.inner.is_dirty(),
             notices: self.inner.notices(),
             library_roots: self.inner.library_roots(),
+            audio_panel_open: false,
+            input_devices: Vec::new(),
+            output_devices: Vec::new(),
+            current_input_device: None,
+            current_output_device: None,
+            supported_sample_rates: Vec::new(),
+            current_sample_rate: 48_000,
+            supported_buffer_sizes: Vec::new(),
+            current_buffer_size: 256,
         }
     }
 
@@ -299,6 +308,11 @@ impl UiHost for ClapUiHost {
                 self.inner.remove_library_root(&path);
                 return;
             }
+            UiIntent::ToggleAudioSettings
+            | UiIntent::SelectInputDevice { .. }
+            | UiIntent::SelectOutputDevice { .. }
+            | UiIntent::SelectSampleRate { .. }
+            | UiIntent::SelectBufferSize { .. } => return,
         }
         self.inner.mark_dirty();
     }
