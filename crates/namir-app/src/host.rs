@@ -559,6 +559,9 @@ impl AppHost {
             |h, d| backend.output_configs(h, d),
         );
 
+        // Early return before replacing `pending_reopen` or dropping `streams` keeps the
+        // previous pending rebuild or running stream intact, so audio continues running while
+        // posting a notice for the failed configuration attempt.
         let (Some(input), Some(output)) = (input, output) else {
             self.audio_mode = None;
             self.push_notice(
