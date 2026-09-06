@@ -836,17 +836,34 @@ mod host_ext {
             output_cb(&mut device_buffer);
         }
 
-        let mut out = [
-            Vec::with_capacity(input.len()),
-            Vec::with_capacity(input.len()),
+        // `stream::open` prefills the bridge ring with `MAX_BLOCK` frames of silence to absorb
+        // callback scheduling jitter (PR #163). That creates a `MAX_BLOCK`-frame pipeline delay
+        // between when `input_cb` captures a block and when `output_cb` renders it. To compare
+        // the processed vector sample-for-sample against the CLAP plugin (which has no bridge),
+        // we push `input` followed by `MAX_BLOCK` frames of trailing silence to flush the vector
+        // through the bridge, then extract the vector's `input.len()` rendered output frames after
+        // that `MAX_BLOCK` delay.
+        let prefill_frames = MAX_BLOCK as usize;
+        let mut full_input = Vec::with_capacity(input.len() + prefill_frames);
+        full_input.extend_from_slice(input);
+        full_input.resize(input.len() + prefill_frames, 0.0f32);
+
+        let mut raw_out = [
+            Vec::with_capacity(full_input.len()),
+            Vec::with_capacity(full_input.len()),
         ];
-        for chunk in input.chunks_exact(frames) {
+        for chunk in full_input.chunks_exact(frames) {
             input_cb(chunk);
             device_buffer.fill(f32::NAN);
             output_cb(&mut device_buffer);
-            out[0].extend(device_buffer.chunks_exact(2).map(|f| f[0]));
-            out[1].extend(device_buffer.chunks_exact(2).map(|f| f[1]));
+            raw_out[0].extend(device_buffer.chunks_exact(2).map(|f| f[0]));
+            raw_out[1].extend(device_buffer.chunks_exact(2).map(|f| f[1]));
         }
+
+        let out = [
+            raw_out[0][prefill_frames..prefill_frames + input.len()].to_vec(),
+            raw_out[1][prefill_frames..prefill_frames + input.len()].to_vec(),
+        ];
 
         assert_eq!(
             xruns.count(),
