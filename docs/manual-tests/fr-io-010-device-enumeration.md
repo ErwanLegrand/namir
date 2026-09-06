@@ -82,7 +82,15 @@ playing audio stream against real hardware, all confirmed in this session — se
 `fr-io-080-settings-persistence.md` for the companion run that also exercises the save/fallback
 path this same execution produced.
 
-**Interactive selection note:** interactive device, sample rate, and buffer size selection is
-provided by the "Audio Settings" overlay panel in `namir-ui` (FR-UI-020). For interactive manual
-testing, see companion test scripts `docs/manual-tests/fr-io-010-device-selection.md` and
-`docs/manual-tests/fr-io-040-sample-rate-and-buffer-size.md`.
+**Not covered by this script, and why:** selecting a *different* device than whatever was
+negotiated automatically — FR-IO-010's literal "the user shall be able to select" implies an
+interactive control, and none exists in `namir-ui`'s shared FR-UI-020 screen (that crate's scope is
+the amp/cab screen; FR-IO has no UI owner yet in this codebase — see this crate's final report).
+Today's negotiation is fully automatic (remembered choice, else system default, else first
+enumerated), which is a real, working, but non-interactive implementation of FR-IO-010's *outcome*
+without its *mechanism*. Flagged as a known gap, not silently passed over.
+
+*Update (M14, 2026-09-06):* The "Audio Settings" overlay panel in `namir-ui` (FR-UI-020) now provides
+an interactive control for selecting input and output devices, sample rates, and buffer sizes, and
+dynamically reconfigures the running audio stream. Interactive testing on real hardware remains
+manual and is specified in `fr-io-010-device-selection.md` and `fr-io-040-sample-rate-and-buffer-size.md`.

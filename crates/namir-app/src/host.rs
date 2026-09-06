@@ -32,23 +32,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use namir_core::ErrorCode;
-use namir_engine::{ParamChange, ParamId as EngineParamId, TelemetryEntry, TelemetryReader};
+use namir_core::{ChannelConfig, ErrorCode, SampleRate};
+use namir_engine::{
+    ParamChange, ParamId as EngineParamId, PrepareContext, TelemetryEntry, TelemetryReader,
+    build_default_engine,
+};
 use namir_params::REGISTRY;
 use namir_state::State;
 use namir_ui::{
     AudioDevicePanelSnapshot, AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading,
     PresetSummary, UiHost, UiIntent, UiNotice, UiSnapshot,
 };
-use namir_worker::Target;
 use namir_worker::library::LibraryService;
+use namir_worker::{EngineConfig, Instance, ResourceCache, Target};
 
-use crate::audio_io::StreamFailure;
+use crate::audio_io::{AudioBackend, HostInfo, ShareMode, StreamFailure, StreamParams};
 use crate::instance::SharedInstance;
 use crate::settings::AppSettings;
-use crate::stream::{Direction, RunningStreams, ThreadPriorityReport};
+use crate::stream::{Direction, RunningStreams, StreamSetup, ThreadPriorityReport};
 use crate::worker::{AppCommand, AppEvent, LoadOutcomeSummary, WorkerHandle};
-
+use crate::xrun::XrunCounter;
 /// This crate's own catalogue entries for the notices [`AppHost`] itself synthesises (as opposed
 /// to ones that already carry a `namir_core::ErrorCode`, like a load failure).
 pub(crate) mod local_error_codes {
@@ -311,6 +314,20 @@ fn basename(path_or_desc: &str) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path_or_desc.to_string())
 }
+/// The context required to dynamically re-open and re-configure audio streams when device
+/// selection or stream parameters are changed in the UI.
+pub struct AudioReopenContext {
+    /// The audio backend through which devices and streams are managed.
+    pub backend: Arc<dyn AudioBackend>,
+    /// The host info (e.g. WASAPI, CoreAudio, ALSA).
+    pub host_info: HostInfo,
+    /// The session's shared xrun counter.
+    pub xruns: Arc<XrunCounter>,
+    /// The process-global resource cache for state recall.
+    pub cache: Arc<ResourceCache>,
+    /// Library roots for reference resolution during recall.
+    pub library_roots: Vec<PathBuf>,
+}
 
 /// This crate's [`UiHost`] implementation. See this module's doc comment for the full bridge
 /// design.
@@ -371,6 +388,7 @@ pub struct AppHost {
     supported_buffer_sizes: Vec<u32>,
     current_buffer_size: u32,
     settings: AppSettings,
+    audio_reopen: Option<AudioReopenContext>,
 }
 
 impl AppHost {
@@ -419,6 +437,7 @@ impl AppHost {
             supported_buffer_sizes: Vec::new(),
             current_buffer_size: 256,
             settings: AppSettings::default(),
+            audio_reopen: None,
         }
     }
 
@@ -444,6 +463,227 @@ impl AppHost {
     /// are already in place; a session with no audio device never calls it.
     pub fn hold_streams(&mut self, streams: RunningStreams) {
         self.streams = Some(streams);
+    }
+    /// Enables dynamic audio stream re-opening when device or format settings change.
+    pub fn enable_audio_reopen(&mut self, context: AudioReopenContext) {
+        self.audio_reopen = Some(context);
+    }
+
+    /// Re-opens and starts the audio stream with the currently configured device names,
+    /// sample rate, buffer size, and channel settings.
+    pub fn reopen_audio_stream(&mut self) {
+        let Some(reopen) = &self.audio_reopen else {
+            return;
+        };
+
+        // Stop the currently running stream before re-opening.
+        self.streams = None;
+        self.stream_failures = None;
+
+        let backend = Arc::clone(&reopen.backend);
+        let host_info = reopen.host_info.clone();
+        let xruns = Arc::clone(&reopen.xruns);
+        let cache = Arc::clone(&reopen.cache);
+        let library_roots = reopen.library_roots.clone();
+
+        let input_devices = backend.input_devices(&host_info);
+        let output_devices = backend.output_devices(&host_info);
+
+        let input = crate::app::setup_direction(
+            backend.as_ref(),
+            &host_info,
+            input_devices,
+            self.current_input_device.as_deref(),
+            |h, d| backend.input_configs(h, d),
+        );
+        let output = crate::app::setup_direction(
+            backend.as_ref(),
+            &host_info,
+            output_devices,
+            self.current_output_device.as_deref(),
+            |h, d| backend.output_configs(h, d),
+        );
+
+        let (Some(input), Some(output)) = (input, output) else {
+            self.audio_mode = None;
+            self.push_notice(
+                crate::error_codes::NO_AUDIO_DEVICE,
+                "no audio device was found or could be opened",
+            );
+            return;
+        };
+
+        let sample_rate_hz = crate::device_state::negotiate_shared_sample_rate(
+            &input.configs,
+            &output.configs,
+            self.settings.sample_rate_hz,
+        )
+        .unwrap_or(48_000);
+        let buffer_frames = crate::device_state::negotiate_shared_buffer_size(
+            &input.configs,
+            &output.configs,
+            sample_rate_hz,
+            self.settings.buffer_size_frames,
+        );
+        let input_channels =
+            crate::device_state::negotiate_channels(&input.configs, sample_rate_hz, 1).unwrap_or(1);
+        let output_channels =
+            crate::device_state::negotiate_channels(&output.configs, sample_rate_hz, 2)
+                .unwrap_or(1);
+
+        let mut input_params = StreamParams {
+            sample_rate_hz,
+            buffer_frames,
+            channels: input_channels,
+            share_mode: ShareMode::Shared,
+        };
+        let mut output_params = StreamParams {
+            sample_rate_hz,
+            buffer_frames,
+            channels: output_channels,
+            share_mode: ShareMode::Shared,
+        };
+        let share_mode = crate::app::negotiate_share_mode(
+            backend.as_ref(),
+            &host_info,
+            &input.device,
+            input_params,
+            &output.device,
+            output_params,
+            self.settings.exclusive_mode,
+        );
+        input_params.share_mode = share_mode.mode;
+        output_params.share_mode = share_mode.mode;
+
+        let max_block_size = crate::audio_io::block_frames(buffer_frames);
+        let channel_config = if output_channels >= 2 {
+            ChannelConfig::MonoToStereo
+        } else {
+            ChannelConfig::Mono
+        };
+
+        let Some(sample_rate) = SampleRate::new(sample_rate_hz) else {
+            self.audio_mode = None;
+            self.push_notice(
+                crate::error_codes::NO_SUPPORTED_CONFIG,
+                format!("negotiated an invalid sample rate ({sample_rate_hz} Hz)"),
+            );
+            return;
+        };
+
+        let ctx = match PrepareContext::new(sample_rate, max_block_size, channel_config) {
+            Ok(c) => c,
+            Err(e) => {
+                self.audio_mode = None;
+                self.push_notice(
+                    crate::error_codes::NO_SUPPORTED_CONFIG,
+                    format!("could not prepare engine context ({e:?})"),
+                );
+                return;
+            }
+        };
+
+        let (engine, endpoint) = match build_default_engine(&ctx) {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.audio_mode = None;
+                self.push_notice(
+                    crate::error_codes::DEVICE_OPEN_FAILED,
+                    format!("could not build engine ({e:?})"),
+                );
+                return;
+            }
+        };
+
+        self.telemetry = endpoint.telemetry.clone();
+        let state_snapshot = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        self.instance.with(|inst| {
+            *inst = Instance::new(EngineConfig { ctx }, endpoint);
+            let snapshot = self.library.snapshot();
+            let resolver = namir_library::LibraryResolver::new(&snapshot, &library_roots);
+            let _ = inst.recall(&cache, &state_snapshot, &resolver);
+        });
+
+        let stream_setup = StreamSetup {
+            backend: backend.as_ref(),
+            input_host: host_info.clone(),
+            input_device: input.device.clone(),
+            input_params,
+            output_host: host_info.clone(),
+            output_device: output.device.clone(),
+            output_params,
+            channel_config,
+            input_channel_index: self.settings.channel_mapping.input_channel.unwrap_or(0),
+            output_channel_left: self
+                .settings
+                .channel_mapping
+                .output_channel_left
+                .unwrap_or(0),
+            output_channel_right: self
+                .settings
+                .channel_mapping
+                .output_channel_right
+                .unwrap_or(1),
+            max_block_size,
+        };
+
+        let failed_input_name = input.device.name.clone();
+        let failed_output_name = output.device.name.clone();
+        let (input_failure_tx, input_failure_rx) =
+            rtrb::RingBuffer::new(crate::app::STREAM_FAILURE_RING_SLOTS);
+        let (output_failure_tx, output_failure_rx) =
+            rtrb::RingBuffer::new(crate::app::STREAM_FAILURE_RING_SLOTS);
+
+        let running = crate::stream::open(
+            stream_setup,
+            engine,
+            Arc::clone(&xruns),
+            crate::app::stream_failure_sink(Arc::clone(&xruns), input_failure_tx),
+            crate::app::stream_failure_sink(Arc::clone(&xruns), output_failure_tx),
+        );
+
+        self.watch_stream_failures(StreamFailureWatch::new(
+            input_failure_rx,
+            output_failure_rx,
+            failed_input_name,
+            failed_output_name,
+        ));
+
+        match running {
+            Ok(running) => {
+                self.watch_thread_priority(running.thread_priority());
+                match running.play() {
+                    Ok(()) => {
+                        self.audio_mode = Some(AudioModeStatus {
+                            share_mode: share_mode.mode.into(),
+                            device_name: output.device.name.clone(),
+                        });
+                        self.current_input_device = Some(input.device.name);
+                        self.current_output_device = Some(output.device.name);
+                        self.current_sample_rate = sample_rate_hz;
+                        self.current_buffer_size = buffer_frames.unwrap_or(256);
+                        self.supported_sample_rates = crate::device_state::supported_sample_rates(
+                            &input.configs,
+                            &output.configs,
+                        );
+                        self.supported_buffer_sizes = crate::device_state::supported_buffer_sizes(
+                            &input.configs,
+                            &output.configs,
+                            sample_rate_hz,
+                        );
+                        self.hold_streams(running);
+                    }
+                    Err(e) => {
+                        self.audio_mode = None;
+                        self.push_notice(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                self.audio_mode = None;
+                self.push_notice(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
+            }
+        }
     }
 
     /// Points this host at FR-STATE-030's preset directory (`<config_dir>/Presets`, see
@@ -1033,24 +1273,25 @@ impl UiHost for AppHost {
                 self.current_input_device = Some(name.clone());
                 self.settings.input_device_name = Some(name);
                 self.persist_settings();
+                self.reopen_audio_stream();
             }
             UiIntent::SelectOutputDevice { name } => {
                 self.current_output_device = Some(name.clone());
-                self.settings.output_device_name = Some(name.clone());
-                if let Some(mode) = &mut self.audio_mode {
-                    mode.device_name = name;
-                }
+                self.settings.output_device_name = Some(name);
                 self.persist_settings();
+                self.reopen_audio_stream();
             }
             UiIntent::SelectSampleRate { rate } => {
                 self.current_sample_rate = rate;
                 self.settings.sample_rate_hz = Some(rate);
                 self.persist_settings();
+                self.reopen_audio_stream();
             }
             UiIntent::SelectBufferSize { buffer_size } => {
                 self.current_buffer_size = buffer_size;
                 self.settings.buffer_size_frames = Some(buffer_size);
                 self.persist_settings();
+                self.reopen_audio_stream();
             }
         }
     }
@@ -2291,6 +2532,31 @@ mod tests {
             device_name: "Speakers".to_string(),
         };
         let (mut host, _engine) = build_host_with_audio_mode(&dir, Some(initial_mode));
+        let backend = Arc::new(crate::stream::FakeBackend::new().with_devices(
+            vec![crate::audio_io::DeviceInfo {
+                name: "Mic".to_string(),
+                is_default: true,
+            }],
+            vec![
+                crate::audio_io::DeviceInfo {
+                    name: "Speakers".to_string(),
+                    is_default: true,
+                },
+                crate::audio_io::DeviceInfo {
+                    name: "Headphones".to_string(),
+                    is_default: false,
+                },
+            ],
+        ));
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: backend as Arc<dyn AudioBackend>,
+            host_info: HostInfo {
+                name: "fake".to_string(),
+            },
+            xruns: Arc::new(XrunCounter::new()),
+            cache: Arc::new(ResourceCache::new()),
+            library_roots: Vec::new(),
+        });
         host.configure_audio_devices(
             Some(dir.clone()),
             AppSettings::default(),
@@ -2371,6 +2637,85 @@ mod tests {
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.sample_rate_hz, Some(96_000));
         assert_eq!(loaded.buffer_size_frames, Some(512));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dynamic_stream_reconfiguration_reopens_and_plays_on_fake_backend() {
+        let dir = temp_dir("dynamic_reconfig");
+        let (mut host, _engine) = build_host(&dir);
+        let backend = Arc::new(crate::stream::FakeBackend::new().with_devices(
+            vec![
+                crate::audio_io::DeviceInfo {
+                    name: "Mic 1".to_string(),
+                    is_default: true,
+                },
+                crate::audio_io::DeviceInfo {
+                    name: "Mic 2".to_string(),
+                    is_default: false,
+                },
+            ],
+            vec![
+                crate::audio_io::DeviceInfo {
+                    name: "Out 1".to_string(),
+                    is_default: true,
+                },
+                crate::audio_io::DeviceInfo {
+                    name: "Out 2".to_string(),
+                    is_default: false,
+                },
+            ],
+        ));
+        let xruns = Arc::new(XrunCounter::new());
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+            host_info: HostInfo {
+                name: "fake".to_string(),
+            },
+            xruns,
+            cache: Arc::new(ResourceCache::new()),
+            library_roots: Vec::new(),
+        });
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings::default(),
+            vec!["Mic 1".to_string(), "Mic 2".to_string()],
+            vec!["Out 1".to_string(), "Out 2".to_string()],
+            Some("Mic 1".to_string()),
+            Some("Out 1".to_string()),
+            vec![44_100, 48_000],
+            48_000,
+            vec![256],
+            256,
+        );
+
+        // Changing input device re-opens stream
+        host.dispatch(UiIntent::SelectInputDevice {
+            name: "Mic 2".to_string(),
+        });
+        assert_eq!(backend.stream_log(Direction::Input).plays(), 1);
+        assert_eq!(
+            host.snapshot()
+                .audio_panel
+                .unwrap()
+                .current_input_device
+                .as_deref(),
+            Some("Mic 2")
+        );
+
+        // Changing output device re-opens stream and updates audio_mode
+        host.dispatch(UiIntent::SelectOutputDevice {
+            name: "Out 2".to_string(),
+        });
+        assert_eq!(backend.stream_log(Direction::Output).plays(), 2);
+        assert_eq!(
+            host.snapshot()
+                .audio_mode
+                .as_ref()
+                .map(|m| m.device_name.as_str()),
+            Some("Out 2")
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

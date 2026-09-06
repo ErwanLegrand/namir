@@ -13,7 +13,7 @@ each where the platform permits."
 3. Click "Audio Settings" to open the audio settings overlay window.
 4. Verify the "Input Device" and "Output Device" dropdown combo boxes list all available system audio devices.
 5. Select a different input device and output device from the dropdowns.
-6. Verify that the selected devices are reflected in the UI and persisted to `audio-settings.json`.
+6. Verify that the selected devices are reflected in the UI, audio actually plays through the newly selected output device and captures from the newly selected input device, and the selection is persisted to `audio-settings.json`.
 7. Close the audio settings overlay and the application window.
 
 ## Executed run (this session)

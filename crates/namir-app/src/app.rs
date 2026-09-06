@@ -56,13 +56,13 @@ fn resolve_config_dir() -> Option<PathBuf> {
 /// negotiation to check against (`crate::device_state::negotiate_shared_sample_rate`) — kept
 /// separate from applying the choice so the caller can negotiate the shared sample rate before
 /// picking a final buffer size per direction.
-struct DirectionSetup {
-    device: DeviceInfo,
-    fell_back_from: Option<String>,
-    configs: Vec<crate::audio_io::SupportedConfigRange>,
+pub(crate) struct DirectionSetup {
+    pub(crate) device: DeviceInfo,
+    pub(crate) fell_back_from: Option<String>,
+    pub(crate) configs: Vec<crate::audio_io::SupportedConfigRange>,
 }
 
-fn setup_direction(
+pub(crate) fn setup_direction(
     backend: &dyn AudioBackend,
     host: &HostInfo,
     devices: Result<Vec<DeviceInfo>, crate::audio_io::AudioIoError>,
@@ -89,11 +89,11 @@ fn setup_direction(
 /// FR-IO-020's settled answer for one session: the share mode both streams open with, and — when
 /// exclusive mode was asked for and not granted — the notice detail explaining why the session is
 /// running shared instead.
-struct ShareModeDecision {
-    mode: ShareMode,
+pub(crate) struct ShareModeDecision {
+    pub(crate) mode: ShareMode,
     /// `None` whenever the answer needs no explanation: exclusive was never requested, or it was
     /// requested and granted.
-    refusal_detail: Option<String>,
+    pub(crate) refusal_detail: Option<String>,
 }
 
 /// FR-IO-020: asks both devices whether they can provide exclusive mode and **ANDs the answers**,
@@ -109,7 +109,7 @@ struct ShareModeDecision {
 ///
 /// Asked before any stream is opened; see [`AudioBackend::supports_exclusive`] for why a pre-flight
 /// query rather than an open-and-retry.
-fn negotiate_share_mode(
+pub(crate) fn negotiate_share_mode(
     backend: &dyn AudioBackend,
     host: &HostInfo,
     input_device: &DeviceInfo,
@@ -177,7 +177,7 @@ fn negotiate_share_mode(
 /// is failing repeatedly needs one notice, not sixteen, and [`crate::host::AppHost`] drains this
 /// every frame. Small enough that both rings together are a few kilobytes allocated once, at
 /// stream open, and never again.
-const STREAM_FAILURE_RING_SLOTS: usize = 16;
+pub(crate) const STREAM_FAILURE_RING_SLOTS: usize = 16;
 
 /// Builds one direction's `cpal` error callback (FR-IO-070), and the reason it is a function with
 /// its own tests rather than a closure inlined into [`run`].
@@ -248,7 +248,7 @@ pub fn run() {
         None => (AppSettings::default(), None),
     };
 
-    let backend = CpalBackend::new();
+    let backend = Arc::new(CpalBackend::new());
     let host_info = match &settings.host_name {
         Some(name) => backend
             .hosts()
@@ -259,14 +259,14 @@ pub fn run() {
     };
 
     let input = setup_direction(
-        &backend,
+        backend.as_ref(),
         &host_info,
         backend.input_devices(&host_info),
         settings.input_device_name.as_deref(),
         |h, d| backend.input_configs(h, d),
     );
     let output = setup_direction(
-        &backend,
+        backend.as_ref(),
         &host_info,
         backend.output_devices(&host_info),
         settings.output_device_name.as_deref(),
@@ -323,7 +323,7 @@ pub fn run() {
         share_mode: ShareMode::Shared,
     };
     let share_mode = negotiate_share_mode(
-        &backend,
+        backend.as_ref(),
         &host_info,
         &input.device,
         input_params,
@@ -408,10 +408,12 @@ pub fn run() {
         cache: Arc::clone(&cache),
         library: Arc::clone(&library),
         pool: ThreadPool::new(),
-        library_roots,
+        library_roots: library_roots.clone(),
         state: Arc::clone(&state),
     };
     let worker = WorkerHandle::spawn(worker_ctx);
+
+    let xruns = Arc::new(XrunCounter::new());
 
     // FR-IO-020's mode indicator: the mode actually granted, never the one requested. The output
     // device names it -- see `namir_ui::AudioModeStatus::device_name` for why one name is enough
@@ -428,6 +430,14 @@ pub fn run() {
         state,
         audio_mode,
     );
+    let reopen_ctx = crate::host::AudioReopenContext {
+        backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+        host_info: host_info.clone(),
+        xruns: Arc::clone(&xruns),
+        cache: Arc::clone(&cache),
+        library_roots,
+    };
+    host.enable_audio_reopen(reopen_ctx);
     let input_device_names: Vec<String> = backend
         .input_devices(&host_info)
         .unwrap_or_default()
@@ -489,9 +499,8 @@ pub fn run() {
         host.report(crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE, detail);
     }
 
-    let xruns = Arc::new(XrunCounter::new());
     let stream_setup = StreamSetup {
-        backend: &backend,
+        backend: backend.as_ref(),
         input_host: host_info.clone(),
         input_device: input.device.clone(),
         input_params,
