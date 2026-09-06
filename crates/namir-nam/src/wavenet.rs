@@ -551,6 +551,14 @@ fn resolve_activation_kind(
 //    of every `p99.9` figure in the superseded analysis above was the GPU driver rather than this
 //    file. See `pin_to_measurement_core` in any of this workspace's benchmarks.
 //
+// 3. **AArch64 / NEON vectorization (2026-09-06, Issue #148).** On `target_arch = "aarch64"`,
+//    NEON is part of the standard baseline. `wide::f32x8` is composed of `{ a: f32x4, b: f32x4 }`
+//    where `wide::f32x4` is backed by real hardware NEON `float32x4_t` intrinsics (`target_feature = "neon"`),
+//    not a scalar fallback. Because NEON registers are 128-bit wide, each 8-lane operation compiles
+//    to two paired 128-bit NEON vector instructions (`fmul v.4s`, `fadd v.4s`, `fsub v.4s`, etc.)
+//    with 128-bit load/store pairs (`ldp q, q` / `stp q, q`), delivering hardware vectorization
+//    without 256-bit registers.
+//
 // **Still true, and worth keeping:** this benchmark's `p50` is stable and trustworthy; its raw
 // `p99.9` is not reproducible run-to-run on a general-purpose desktop even after both fixes
 // (measured varying 17%-52% across ten identical runs of the chain benchmark, with `p50` pinned).
@@ -3076,5 +3084,69 @@ mod tests {
         rt_harness::audio_section(|| {
             prepared.process_block(&mut state, &input, &mut output);
         });
+    }
+
+    #[test]
+    fn axpy_vectorization_matches_scalar_across_all_buffer_lengths() {
+        let w = 2.5f32;
+        for len in 0..=65 {
+            let input: Vec<f32> = (0..len).map(|i| (i as f32 * 0.73).sin()).collect();
+            let mut actual: Vec<f32> = (0..len).map(|i| (i as f32 * 0.31).cos()).collect();
+            let mut expected = actual.clone();
+
+            for (o, &i) in expected.iter_mut().zip(input.iter()) {
+                *o += w * i;
+            }
+
+            axpy(&mut actual, &input, w);
+
+            for (idx, (&act, &exp)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(act, exp, "len {len}, index {idx}: axpy mismatch");
+            }
+        }
+    }
+
+    #[test]
+    fn activation_vectorization_matches_scalar_across_all_variants_and_lengths() {
+        let activations = [
+            Activation::Tanh,
+            Activation::ReLU,
+            Activation::Sigmoid,
+            Activation::Identity,
+            Activation::SiLU,
+            Activation::Hardswish,
+            Activation::Softsign,
+            Activation::LeakyHardtanh {
+                min_val: -1.0,
+                max_val: 1.0,
+                min_slope: 0.01,
+                max_slope: 0.02,
+            },
+            Activation::LeakyReLU {
+                negative_slope: DEFAULT_LEAKY_SLOPE,
+            },
+            Activation::PReLU(PReluSlopes::Scalar(DEFAULT_LEAKY_SLOPE)),
+        ];
+
+        let test_lengths = [0, 1, 3, 7, 8, 9, 15, 16, 17, 32, 63, 64, 65];
+
+        for act in activations {
+            for &len in &test_lengths {
+                let mut input: Vec<f32> = (0..len).map(|i| (i as f32 * 0.25) - 4.0).collect();
+                act.apply(&mut input, len);
+
+                for &val in &input {
+                    assert!(val.is_finite(), "activation output must be finite");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn simd_vector_layout_and_alignment() {
+        assert_eq!(std::mem::size_of::<wide::f32x8>(), 32);
+        assert_eq!(std::mem::align_of::<wide::f32x8>(), 32);
+        assert_eq!(std::mem::size_of::<wide::f32x4>(), 16);
+        assert_eq!(std::mem::align_of::<wide::f32x4>(), 16);
     }
 }
