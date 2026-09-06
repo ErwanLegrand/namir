@@ -1,0 +1,71 @@
+# S-5 Task 11 -- Gate 1 (compute), Mozilla Firefox 155.0.1, headless.
+# Steady signal. 20 000-block screening matrix (5 reps) then 100 000-block sustained (2 reps),
+# the same two block counts Edge 152's and Chrome 152's figures used. Six run sections, in order:
+# simd128/a1 20k, simd128/a2 20k, scalar/a1 20k, scalar/a2 20k, simd128/a1 100k, simd128/a2 100k.
+# There is no Firefox equivalent of --js-flags=--experimental-wasm-revectorize, so that
+# configuration has no section here.
+# Machine: AMD Ryzen 9 5950X / 64 GB / Windows 11 Pro 26200, PreSonus AudioBox 22VSL @ 48 kHz.
+# Runtime: firefox.exe --headless --no-remote --new-instance --profile <fresh temp profile>, one
+# run at a time. Profile prefs: media.autoplay.default=0, media.autoplay.blocking_policy=0,
+# media.navigator.permission.disabled=true, privacy.reduceTimerPrecision=false (Firefox has no
+# --autoplay-policy / --use-fake-ui-for-media-stream switches; media.navigator.streams.fake was
+# left at its default false, so every device below is the real one). Gecko's performance.now()
+# quantum is 20 us here regardless of prefs, so every figure is a multiple of 0.75% of the block
+# period. Artefacts: the committed web/build/{scalar,simd128}.wasm, not rebuilt.
+# Beacon transcript, URL-decoded; each run's own "[GFX1-] RenderCompositorSWGL" line is Firefox's
+# headless stderr and is left in place rather than filtered.
+
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g1 :: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a1_standard&signal=0
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":12.000000000000002,"p99":19.5,"p999":21.000000000000004,"max":94.5,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":2,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":23.25,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":3,"p50":12.000000000000002,"p99":20.25,"p999":24.750000000000004,"max":49.50000000000001,"estimator":18.75,"quotable":false}
+{"kind":"stats","rep":4,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":26.25,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":5,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":24.000000000000004,"estimator":18.75,"quotable":true}
+{"kind":"done"}
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g1 :: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=simd128&model=a2_lite&signal=0
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":3.0000000000000004,"p99":11.25,"p999":12.75,"max":15.75,"estimator":9.75,"quotable":true}
+{"kind":"stats","rep":2,"p50":3.0000000000000004,"p99":10.500000000000002,"p999":11.25,"max":72.75,"estimator":9.749999999965075,"quotable":true}
+{"kind":"stats","rep":3,"p50":3.0000000000000004,"p99":10.500000000000002,"p999":11.25,"max":12.000000000000002,"estimator":9.75,"quotable":true}
+{"kind":"stats","rep":4,"p50":3.0000000000000004,"p99":10.500000000000002,"p999":11.25,"max":12.75,"estimator":9.75,"quotable":true}
+{"kind":"stats","rep":5,"p50":3.0000000000000004,"p99":10.500000000000002,"p999":11.25,"max":12.75,"estimator":9.75,"quotable":true}
+{"kind":"done"}
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g1 :: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=scalar&model=a1_standard&signal=0
+{"kind":"parity","residual":-81.47591192351678,"control":-82.71576308709255,"margin":1.2398511635757785,"pass":true}
+{"kind":"stats","rep":1,"p50":43.5,"p99":56.25,"p999":57.75,"max":72.75,"estimator":53.99999999993016,"quotable":true}
+{"kind":"stats","rep":2,"p50":43.5,"p99":55.50000000000001,"p999":57.00000000000001,"max":62.25000000000001,"estimator":53.25000000000001,"quotable":true}
+{"kind":"stats","rep":3,"p50":43.5,"p99":55.50000000000001,"p999":57.00000000000001,"max":66.75000000000001,"estimator":54,"quotable":true}
+{"kind":"stats","rep":4,"p50":43.5,"p99":55.50000000000001,"p999":57.00000000000001,"max":61.5,"estimator":54,"quotable":true}
+{"kind":"stats","rep":5,"p50":43.5,"p99":55.50000000000001,"p999":56.25,"max":60.75000000000001,"estimator":53.99999999888242,"quotable":true}
+{"kind":"done"}
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g1 :: http://127.0.0.1:8080/web/bench.html?auto=1&reps=5&measured=20000&wasm=scalar&model=a2_lite&signal=0
+{"kind":"parity","residual":-81.47591192351678,"control":-82.71576308709255,"margin":1.2398511635757785,"pass":true}
+{"kind":"stats","rep":1,"p50":7.500000000000001,"p99":19.5,"p999":21.000000000000004,"max":78.75000000000001,"estimator":18.000000000000004,"quotable":true}
+{"kind":"stats","rep":2,"p50":7.500000000000001,"p99":18.75,"p999":19.5,"max":21.75,"estimator":18.000000000000004,"quotable":true}
+{"kind":"stats","rep":3,"p50":7.500000000000001,"p99":18.75,"p999":20.25,"max":30.0000000001397,"estimator":18.000000000000004,"quotable":true}
+{"kind":"stats","rep":4,"p50":7.500000000000001,"p99":18.75,"p999":19.5,"max":21.000000000000004,"estimator":18.000000000000004,"quotable":true}
+{"kind":"stats","rep":5,"p50":7.500000000000001,"p99":18.75,"p999":20.25,"max":24.750000000000004,"estimator":18.000000000000004,"quotable":true}
+{"kind":"done"}
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g1c :: http://127.0.0.1:8080/web/bench.html?auto=1&reps=2&measured=100000&wasm=simd128&model=a1_standard&signal=0
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":12.000000000000002,"p99":19.5,"p999":20.999999999965077,"max":87.75,"estimator":18.75,"quotable":true}
+{"kind":"stats","rep":2,"p50":12.000000000000002,"p99":19.5,"p999":20.25,"max":34.5,"estimator":18.75,"quotable":true}
+{"kind":"done"}
+FINISHED
+[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer, no dt
+=== g1c :: http://127.0.0.1:8080/web/bench.html?auto=1&reps=2&measured=100000&wasm=simd128&model=a2_lite&signal=0
+{"kind":"parity","residual":-81.69057888033807,"control":-82.71576308709255,"margin":1.0251842067544885,"pass":true}
+{"kind":"stats","rep":1,"p50":3.0000000000000004,"p99":10.500000000000002,"p999":12.000000000000002,"max":65.25000000000001,"estimator":9.749999999965075,"quotable":true}
+{"kind":"stats","rep":2,"p50":3.0000000000000004,"p99":10.500000000000002,"p999":11.25,"max":18.75,"estimator":9.749999999930152,"quotable":true}
+FINISHED
+{"kind":"done"}

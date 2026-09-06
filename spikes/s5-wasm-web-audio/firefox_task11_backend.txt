@@ -1,0 +1,28 @@
+# CoreAudio endpoint probe -- Firefox 155 (Task 11), 2026-09-06. Same script and same
+# shape as coreaudio_task6_rerun.txt: IMMDeviceEnumerator -> IAudioMeterInformation /
+# IAudioSessionManager2 on the default render endpoint, sampled once a second, with a
+# 3 s idle baseline before a 12 s headless Firefox worklet run launched with &gain=0.01.
+# The endpoint peak should read back that gain; a null sink would read 0 throughout.
+endpoint {0.0.0.00000000}.{6598e231-d6b5-4d3a-9375-ad9814951852}
+t=0 peak=0 sessions(total/active)=2/0
+t=1 peak=0 sessions(total/active)=2/0
+t=2 peak=0 sessions(total/active)=2/0
+t=3 peak=0 sessions(total/active)=2/0
+t=4 peak=0 sessions(total/active)=3/0
+t=5 peak=0.01 sessions(total/active)=3/1
+t=6 peak=0.01 sessions(total/active)=3/1
+t=7 peak=0.01 sessions(total/active)=3/1
+t=8 peak=0.01 sessions(total/active)=3/1
+t=9 peak=0.01 sessions(total/active)=3/1
+t=10 peak=0.01 sessions(total/active)=3/1
+t=11 peak=0.01 sessions(total/active)=3/1
+t=12 peak=0.01 sessions(total/active)=3/1
+t=13 peak=0.01 sessions(total/active)=3/1
+t=14 peak=0.01 sessions(total/active)=3/1
+t=15 peak=0.01 sessions(total/active)=3/1
+t=16 peak=0.01 sessions(total/active)=3/1
+t=17 peak=0 sessions(total/active)=3/0
+t=18 peak=0 sessions(total/active)=2/0
+t=19 peak=0 sessions(total/active)=2/0
+t=20 peak=0 sessions(total/active)=2/0
+t=21 peak=0 sessions(total/active)=2/0
