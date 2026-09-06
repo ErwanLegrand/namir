@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{CentralPanel, Panel, ScrollArea, Ui};
-use namir_params::global::{GLOBAL_BYPASS, OUTPUT_CEILING_DB};
+use namir_params::global::{GLOBAL_BYPASS, INDEPENDENT_CHANNELS, OUTPUT_CEILING_DB};
 use namir_params::stages::{out, trim};
 use namir_state::ParamValues;
 
@@ -121,6 +121,11 @@ pub fn render(
 
                 ui.separator();
                 render_single(ui, &GLOBAL_BYPASS, &snapshot.params, intents);
+                // Prototype (`INDEPENDENT_CHANNELS`'s own doc comment): the one control this
+                // in-progress feature gets on the main screen, alongside the other chain-wide
+                // `global.*` controls rather than folded into any one stage's section, since it
+                // affects Gate/Trim/Nam/Ir all at once.
+                render_single(ui, &INDEPENDENT_CHANNELS, &snapshot.params, intents);
             });
     });
 
@@ -705,7 +710,11 @@ mod tests {
     #[test]
     fn every_registry_key_is_covered_by_a_section_prefix_or_a_named_single_control() {
         let prefixes = ["trim.", "gate.", "nam.", "ir.", "eq.", "out."];
-        let named_singles = [GLOBAL_BYPASS.key, OUTPUT_CEILING_DB.key];
+        let named_singles = [
+            GLOBAL_BYPASS.key,
+            OUTPUT_CEILING_DB.key,
+            INDEPENDENT_CHANNELS.key,
+        ];
         for descriptor in REGISTRY {
             let covered = prefixes.iter().any(|p| descriptor.key.starts_with(p))
                 || named_singles.contains(&descriptor.key);
