@@ -33,9 +33,14 @@ The compute and scheduling questions the spike was built to answer both came bac
 denormal condition attached. The latency question came back no for live guitar input in a
 browser on this path, which is the answer that decides the demo's *shape* rather than its
 existence — and file-playback-first was already the plan. What phase (b) must not do is assume
-the numbers below transfer: **every browser figure here is headless Microsoft Edge 152 on one
-machine.** Chrome and Firefox were never installed; SpiderMonkey is a different wasm compiler and
-is entirely unmeasured. **No figure in this file is certified** in `docs/02-architecture.md`
+the numbers below transfer: **every browser figure in Tasks 3–8 is headless Microsoft Edge 152 on
+one machine.** **Task 10 (2026-09-06) re-ran all three gates on real Google Chrome
+152.0.7977.83** — the same Chromium major — and every gate reproduced: Gate 1 PASS on simd128 /
+FAIL on scalar A1, Gate 2 zero steady-state underruns with the same first-second start-up event,
+Gate 3's 62 ms API-reported best case and the same 2.6x `--enable-exclusive-audio` regression, to
+the digit. So the Edge-as-Chrome substitution was sound and the Edge figures stand; what is
+unmeasured is **Firefox**, still not installed, whose SpiderMonkey wasm compiler *and* cubeb audio
+backend are both different code — and cubeb is what the public Windows latency bugs are about. **No figure in this file is certified** in `docs/02-architecture.md`
 §2's sense, and a browser figure cannot be — it passes through a JIT, a browser process model
 and an OS audio stack the project does not control.
 
@@ -651,6 +656,10 @@ this chain today at A2 Lite, and cannot reliably run it at A1 Standard.**
 
 #### PENDING RUN — Step 8's Chrome and Firefox figures
 
+**[UPDATED at Task 10, 2026-09-06: the Chrome half was run — headless Chrome 152.0.7977.83,
+figures in Task 10. This block's prediction held: Chrome lands near the Edge headless numbers,
+2–3 pp *below* them on p99.9. Firefox is still not installed.]**
+
 Neither browser is installed on this machine. Both remain to be run by a human on a
 machine that has them; the page takes all its settings from the query string, so no code
 change is needed:
@@ -811,7 +820,12 @@ All percentages are of the 2 666.67 µs block period (128 frames at 48 000 Hz).
 | Edge headless (V8) | scalar | A2 Lite | 6.94–7.12 | **29.25–34.13** | 18.75–18.94 | 5/5 |
 | Edge headless (V8) | simd128 | A2 Lite | 3.00–3.19 | **15.37–17.25** | 9.75–9.94 | 5/5 |
 | Edge headless (V8) | simd128 + revectorize | A2 Lite | 3.19–3.56 | **14.44–17.44** | 9.94–10.13 | 5/5 |
-| **Chrome** | scalar / simd128 / revectorize | both | — | — | — | **PENDING RUN** |
+| Chrome 152 headless (V8) | scalar | A1 Standard | 38.81–39.19 | **78.94–84.75** | 50.62–50.63 | 5/5 (Task 10) |
+| Chrome 152 headless (V8) | simd128 | A1 Standard | 11.44–11.63 | **26.25–28.87** (**28.12–28.50 sustained**) | 18.19–18.37 | 5/5 (Task 10) |
+| Chrome 152 headless (V8) | simd128 + revectorize | A1 Standard | 11.44–11.63 | **26.25–28.31** | 18.19 | 5/5 (Task 10) |
+| Chrome 152 headless (V8) | scalar | A2 Lite | 6.94 | **28.50–32.25** | 18.75–19.12 | 5/5 (Task 10) |
+| Chrome 152 headless (V8) | simd128 | A2 Lite | 3.00 | **12.00–15.00** (**14.81–15.00 sustained**) | 9.75–9.94 | 5/5 (Task 10) |
+| Chrome 152 headless (V8) | simd128 + revectorize | A2 Lite | 3.00 | **13.31–15.00** | 9.75 | 5/5 (Task 10) |
 | **Firefox** | scalar / simd128 | both | — | — | — | **PENDING RUN** |
 
 Native reference (same machine, same fixtures, 128-frame block, Task 2, steady, 5 reps):
@@ -1116,7 +1130,11 @@ after page load, both inside the first repetition. A shipping worklet would pay 
 cost on its first blocks, so it is recorded, not discarded — and it is one more reason
 the verdict is read off `p99.9` rather than `max`.
 
-### PENDING RUN — Chrome and Firefox
+### PENDING RUN — Firefox (Chrome was run at Task 10, 2026-09-06)
+
+**[UPDATED at Task 10, 2026-09-06: Chrome 152.0.7977.83 was installed and this matrix was
+run on it. The Chrome rows above are real measurements; see Task 10. Firefox is still not
+installed and the rest of this block stands as written.]**
 
 **Neither Chrome nor Firefox is installed on this machine, and nothing was installed.**
 The matrix was run under headless Microsoft Edge, which is Chromium/V8 — the same engine
@@ -1393,7 +1411,8 @@ Kill criterion 3 now applies to **`SubnormalTail`**, per the ruling, not to `amp
 | native | x86-64-v3, no FTZ | A2 Lite | p50 2.04 / p99.9 7.66 | p50 2.13 / p99.9 9.14 | 1.04x p50, 1.19x p99.9 |
 | native | x86-64-v3, FTZ/DAZ on | A2 Lite | p50 2.04 / p99.9 7.55 | p50 2.00 / p99.9 7.51 | 0.98x p50, 0.99x p99.9 |
 | **Edge (V8)** | **simd128** | A2 Lite | p50 3.19 / p99.9 15.94 | p50 3.75 / p99.9 19.41 | 1.18x p50, 1.22x p99.9 |
-| **Chrome** | simd128 | both | — | — | **PENDING RUN** |
+| **Chrome 152 (V8)** | **simd128** | A1 Standard | p50 11.44 / p99.9 28.50 | p50 16.31 / p99.9 42.56 | **1.43x** p50, **1.49x** p99.9 (Task 10) |
+| **Chrome 152 (V8)** | **simd128** | A2 Lite | p50 3.00 / p99.9 14.62 | p50 3.75 / p99.9 18.56 | **1.25x** p50, **1.27x** p99.9 (Task 10) |
 | **Firefox** | simd128 | both | — | — | **PENDING RUN** |
 
 **Kill criterion 3 (>2x penalty on the subnormal mode): NOT FIRED.** The largest penalty
@@ -1492,7 +1511,10 @@ renderer — informational only, never quoted as a browser figure):
 
     S5_WASM=web/build/simd128.wasm node web/parity-node.mjs --bench --census --measured 20000 --signal 1
 
-### PENDING RUN — Chrome and Firefox
+### PENDING RUN — Firefox (Chrome was run at Task 10, 2026-09-06)
+
+**[UPDATED at Task 10, 2026-09-06: Chrome 152.0.7977.83 was installed and these cells were
+run on it — see Task 10. Firefox is still not installed.]**
 
 Neither is installed on this machine and nothing was installed; **no Chrome or Firefox
 number appears above.** Firefox especially matters here: SpiderMonkey is a different wasm
@@ -1646,7 +1668,8 @@ anyway, and the demo path would not ship them.
 | Edge 152 headless | scalar | a1_standard | 1 | 22 500 | 0 | 0 | 0 | 2.3 |
 | Edge 152 headless | scalar | a1_standard | 2 | 22 500 | 1 | 0 | 3 | 3.3 |
 | Edge 152 headless | scalar | a1_standard | 3 | 22 500 | 1 | 0 | 4 | 3.8 |
-| Chrome | simd128 | a1_standard | — | — | **PENDING RUN** | **PENDING RUN** | — | — |
+| Chrome 152 headless | simd128 | a1_standard | 6 runs (Task 10) | 22 500 each | 0 in 5, 1 start-up event in 1 | 0 | 4 (that one run) | 1.2–1.9 |
+| Chrome 152 headless | simd128 | a2_lite | 3 runs (Task 10) | 22 500 each | 0 | 0 | 0 | 0.0–0.2 |
 | Firefox | simd128 | a1_standard | — | — | **PENDING RUN** | **PENDING RUN** | — | — |
 
 **Raw logs.** Every run in this table is preserved verbatim in **`edge_task6.txt`** — the
@@ -1655,8 +1678,8 @@ contaminated one and the 300 s growth run's full per-10-second `clockLag` series
 round's 36 attribution runs are in **`edge_task6_attribution.txt`**, one section per rep.
 The CoreAudio endpoint probe is `coreaudio_probe.ps1` with its output in
 `coreaudio_task6_rerun.txt`; that file is a *later re-run* of the check rather than the
-original console capture, and says so in its own header. Chrome and Firefox are PENDING RUN
-rows above: no figure exists for them because neither browser is installed here.
+original console capture, and says so in its own header. The Chrome rows above were filled at
+**Task 10** (`chrome_task10_gate2.txt`); Firefox is still PENDING RUN, not installed here.
 
 Run 3 of simd128/a1_standard is **contaminated and is reported, not used**: a second Edge
 process was launched over it by mistake, which is exactly the contamination AGENTS.md's
@@ -1725,7 +1748,10 @@ Under `?auto=1` each line is beaconed to `/__s5?...`, which the dev server 404s 
 that log is the transcript, and `edge_task6.txt` / `edge_task6_attribution.txt` are exactly
 that log, URL-decoded, for every run reported here.
 
-### PENDING RUN — Chrome and Firefox
+### PENDING RUN — Firefox (Chrome was run at Task 10, 2026-09-06)
+
+**[UPDATED at Task 10, 2026-09-06: Chrome 152.0.7977.83 was installed and nine 60 s runs were
+made on it — see Task 10. Firefox is still not installed.]**
 
 Neither is installed on this machine and nothing was installed, so **no Chrome or Firefox
 underrun count appears above**. Firefox matters most: SpiderMonkey is a different wasm
@@ -2040,7 +2066,10 @@ spike's constraints.
 | AudioBox 22VSL | Edge 152 | playback, default | **PENDING RUN** (no cable) | 20.000 | 52.000 | 10.000 | — |
 | AudioBox 22VSL | Edge 152 | interactive, `--enable-exclusive-audio` | **PENDING RUN** (no cable) | 5.333 | 128.000 | 10.000 | — |
 | onboard/consumer output | Edge 152 | any | **NOT RUNNABLE** — no such endpoint is exposed to Chromium on this machine | — | — | — | — |
-| any | Chrome | any | **PENDING RUN** — Chrome is not installed | — | — | — | — |
+| AudioBox 22VSL | Chrome 152 | interactive, default | **PENDING RUN** (no cable) | 10.000 | 42.000 | 10.000 | — |
+| AudioBox 22VSL | Chrome 152 | balanced, default | **PENDING RUN** (no cable) | 10.000 | 42.000 | 10.000 | — |
+| AudioBox 22VSL | Chrome 152 | playback, default | **PENDING RUN** (no cable) | 20.000 | 52.000 | 10.000 | — |
+| AudioBox 22VSL | Chrome 152 | interactive, `--enable-exclusive-audio` | **PENDING RUN** (no cable) | 5.333 | 128.000 | 10.000 | — |
 | any | Firefox | any | **PENDING RUN** — Firefox is not installed; this is the browser the ~70–100 ms cubeb bugs are actually about | — | — | — | — |
 
 **What can be said now:** on this machine, in Chromium, the browser's own accounting for a
@@ -2309,3 +2338,269 @@ side of the comparison it was about to make. Worth keeping on the record per thi
 stated practice of retracting a finding honestly rather than quietly dropping it.
 **Extra 2 (stopped early, per the ruling):** confirmed absent on this machine's only available
 browser (Edge 152.0.4191.62); `PENDING RUN` on Chrome 153+/newer Edge, exact command above.
+
+## Task 10 — the same gates on real Google Chrome, 2026-09-06
+
+**Nothing here is certified**, same caveat as every other figure in this file. Nothing under
+`crates/`, `docs/`, `.github/` or `xtask/` was touched, no fixture was captured, and the
+parity gate ran and **PASSED before every benchmark run below** — residual **−81.4759 dB**
+(scalar) / **−81.6906 dB** (simd128) against the **−82.7158 dB** native-vs-native control,
+margins 1.2399 dB and 1.0252 dB, byte-identical to Edge's. Neither the gate, its degenerate
+control, `assert_resources_loaded()` nor `fault_count() == 0` was changed, weakened or bypassed.
+
+**Why this task exists.** Every browser figure in Tasks 3–8 is headless **Microsoft Edge
+152.0.4191.62**, used as a stand-in because Chrome was not installed. Google Chrome
+**152.0.7977.83** was installed on this machine on 2026-09-06 — the *same Chromium major* — so
+this task is two things at once: it fills the Chrome half of the `PENDING RUN` rows, and it
+tests whether the substitution was sound. **It was.** Chrome reproduces Edge on all three
+gates; the two exceptions are named below and neither changes a verdict.
+
+Runtime: `chrome.exe --headless=new --no-sandbox` (plus `--disable-gpu` for Gate 1,
+`--autoplay-policy=no-user-gesture-required` for Gates 2 and 3,
+`--use-fake-ui-for-media-stream` for Gate 3), each run alone and sequentially, one browser
+process at a time, with a dedicated `--user-data-dir` under `%TEMP%` so no run attached to an
+existing profile. Machine and device unchanged: AMD Ryzen 9 5950X / 64 GB / Windows 11 Pro
+26200, PreSonus AudioBox 22VSL @ 48 kHz, still the only endpoint Chromium enumerates here.
+Server `python web/serve.py` from the spike root. **The wasm artefacts were not rebuilt** —
+`web/build/{scalar,simd128}.wasm` are the committed ones, so the Chrome/Edge comparison is
+against the same bytes wherever Edge's own figures were taken on the same build (see the
+artefact caveat under Task 5's cells).
+
+Raw logs, committed: **`chrome_task10_gate3.txt`**, **`chrome_task10_gate1.txt`**,
+**`chrome_task10_gate2.txt`**, **`chrome_task10_task5.txt`** — the dev server's `/__s5`
+beacon 404 lines, URL-decoded, one section per run, each carrying its own URL and flags.
+
+### Gate 3 in Chrome — the highest-value cell, and it reproduces exactly
+
+Three reps of each cell, `latency.html?auto=probe`. Every cell was identical across its three
+reps and `outputLatency` sampled ten times inside each run never moved, exactly as in Task 7.
+
+| Browser flags | `latencyHint` | baseLatency | outputLatency | API output total | input latency (`getSettings().latency`) | Edge 152 read |
+|---|---|---|---|---|---|---|
+| none | interactive | 10.000 ms | 42.000 ms | 52.000 ms | 10.000 ms | identical |
+| none | balanced | 10.000 ms | 42.000 ms | 52.000 ms | 10.000 ms | identical |
+| none | playback | 20.000 ms | 52.000 ms | 72.000 ms | 10.000 ms | identical |
+| `--enable-exclusive-audio` | interactive | 5.333 ms | 128.000 ms | **133.333 ms** | 10.000 ms | identical |
+| `--enable-exclusive-audio` | balanced | 5.333 ms | 128.000 ms | **133.333 ms** | 10.000 ms | identical |
+| `--enable-exclusive-audio` | playback | 21.333 ms | 128.000 ms | **149.333 ms** | 10.000 ms | identical |
+| none, `&noinput=1` | interactive | 10.000 ms | **40.000 ms** | 50.000 ms | n/a (no capture stream) | Edge read 42.000 |
+
+**Every Gate 3 conclusion of Task 7 is confirmed on Chrome, to the digit.**
+
+- **API-reported total, best case: 10 + 42 + 10 = 62 ms.** Unchanged.
+- **`--enable-exclusive-audio` is a 2.6x regression**, on this spike's definition (the ratio of
+  API-reported *output* totals, 52.0 -> 133.3 ms); the device buffer alone 42 -> 128 ms, and the
+  input-inclusive total 62 -> 143 ms. Confirmed, same numbers, not merely the same direction.
+- **`interactive` and `balanced` are the same thing here; only `playback` moves**, +20 ms.
+  Confirmed.
+- **The input side is a declared constant.** `getSettings().latency` is `0.01` in every cell
+  including both exclusive-audio ones, and `getCapabilities().latency` is `{min: 0.01, max:
+  0.01}`. Confirmed. `channelCount` again comes back **2** despite `1` being requested.
+
+**The one divergence, and it is small.** Task 7's third finding — "opening a microphone does not
+change the output buffer" — rested on `&noinput=1` reading **42.000 ms** in Edge, the same as
+the capture-open cells. In Chrome `&noinput=1` reads **40.000 ms** in all three reps while the
+capture-open cells read 42.000 ms, i.e. Chrome's data is consistent with the hypothesis Edge's
+control refuted. It is one 2 ms device-period step, the same 40-vs-42 wobble Task 6 saw
+between sessions with no capture stream at all, and it moves nothing: 40 ms would make the
+best-case API total 60 ms rather than 62 ms, still roughly twice the ~30 ms soft reference.
+**Recorded as an unresolved 2 ms discrepancy between the two browsers, not as a refutation of
+either.**
+
+The **physical loopback half remains `PENDING RUN`** on Chrome exactly as on Edge, and for the
+same reason: there is still no cable on this machine. Nothing in this task attempted it.
+
+### Gate 1 in Chrome — the compute matrix
+
+Same two block counts Edge's figures used, so the comparison is like-for-like: a **20 000-block
+screening matrix at 5 reps** and a **100 000-block sustained confirmation at 2 reps**, steady
+signal, `WARMUP_BLOCKS = 5 000`, per-block timing throughout, nothing batched. All percentages
+are of the 2 666.67 µs block period.
+
+| Build | Model | blocks | p50 % | p99.9 % | estimator % | reps retained | Edge 152 (same cell) |
+|---|---|---|---|---|---|---|---|
+| scalar | A1 Standard | 20 000 | 38.81–39.19 | **78.94–84.75** | 50.62–50.63 | 5/5 | 38.63–39.00 / 74.44–85.88 / 50.25–50.44 |
+| scalar | A2 Lite | 20 000 | 6.94 (all five) | 28.50–32.25 | 18.75–19.12 | 5/5 | 6.94–7.12 / 29.25–34.13 / 18.75–18.94 |
+| simd128 | A1 Standard | 20 000 | 11.44–11.63 | **26.25–28.87** | 18.19–18.37 | 5/5 | 11.44–11.81 / 28.88–30.94 / 18.00–18.37 |
+| simd128 | A2 Lite | 20 000 | 3.00 (all five) | 12.00–15.00 | 9.75–9.94 | 5/5 | 3.00–3.19 / 15.37–17.25 / 9.75–9.94 |
+| simd128 + revectorize | A1 Standard | 20 000 | 11.44–11.63 | 26.25–28.31 | 18.19 (all five) | 5/5 | 11.44–12.19 / 29.06–31.88 / 18.00–18.19 |
+| simd128 + revectorize | A2 Lite | 20 000 | 3.00 (all five) | 13.31–15.00 | 9.75 (all five) | 5/5 | 3.19–3.56 / 14.44–17.44 / 9.94–10.13 |
+| simd128 | A1 Standard | 100 000 | 11.44 (both) | **28.12–28.50** | 18.00–18.37 | 2/2 | 13.12–13.31 / **32.44–33.56** / 18.19 |
+| simd128 | A2 Lite | 100 000 | 3.00 (both) | 14.81–15.00 | 9.75 (both) | 2/2 | 3.00 / 14.81–16.31 / 9.56–9.75 |
+
+**Gate 1's verdict is unchanged on Chrome, and every reading is Edge's or slightly kinder.**
+A1 Standard on `simd128` sits at p99.9 **26.25–28.87%** (20 000) and **28.12–28.50%**
+(100 000) against the <=50% bar; A2 Lite at **12.00–15.00%** / **14.81–15.00%**. **Scalar A1
+still FAILS** at 78.94–84.75%, with the estimator pinned at 50.62% — the same structural
+picture, so the "serve simd128, fail loudly without it" conclusion carries over untouched.
+Chrome's p99.9 runs 2–3 pp *below* Edge's on the simd128 cells and its p50 sits at the bottom
+of Edge's range; nothing here is worse in Chrome.
+
+**`--js-flags=--experimental-wasm-revectorize` changes nothing measurable on real Chrome
+either.** A1 with the flag is p50 11.44–11.63 / p99.9 26.25–28.31 against 11.44–11.63 /
+26.25–28.87 without it — the same numbers, inside the same reps' spread, on both models. That
+retires the last "but this was Edge" hedge on `REVECTORIZE.md`'s conclusion: the pass runs and
+packs nothing, and the finding was never an Edge artefact. (The trace itself is still a Node
+run; Chromium does not surface the renderer's V8 stderr here either.)
+
+**The one real disagreement: Chrome shows no 20 000 -> 100 000 block growth at all.** Task 4
+read A1's cost growing ~14% between the two lengths off two reps (p50 11.4–11.8 -> 13.1–13.3,
+p99.9 28.9–30.9 -> 32.4–33.6) and Task 5's five-rep replication on a rebuilt artefact did not
+reproduce it (30.00–31.31). **Chrome's p50 is 11.44% at *both* lengths, in every one of the
+seven 100 000-block A1 reps taken here (two in this section, five in Task 5's cells below),
+and its p99.9 moves from 26.25–28.87 to 27.37–29.25** — i.e. no growth outside rep-to-rep
+spread. This does not settle asymptotic-vs-drifting, which needs a run far longer than
+100 000 blocks; what it does do is remove the last support for reading the ~14% as a property
+of the code. **Budgeting A1 against ~33.6% stays the conservative choice, but it is now a
+margin of safety rather than anything a measurement here reproduces.**
+
+**Discarded repetitions: none.** Task 4's substitution rule (*"discard a rep whose p50 is >10%
+above the modal p50 **while** its estimator is <5% above the modal estimator"* — the
+implementer's own stand-in for `is_quotable()`, which flags nearly every browser rep and so
+cannot discriminate) was applied to all 34 reps in this section and **no rep meets clause 1**:
+the widest p50 departure anywhere is +1.6% (A1 simd128 rep 2, 11.63 against a modal 11.44).
+`is_quotable()` itself again reports `false` on almost every rep, for the reason Task 4 gives.
+
+**One honest contamination note.** The first Gate 1 configuration (scalar A1, 5 reps) overlapped
+a `git commit`, whose pre-commit hook runs `cargo fmt --check` + `cargo check --workspace
+--all-targets` — a few seconds of multi-core work on the same machine, which is exactly the
+contamination AGENTS.md warns about and which should not have been started over a run. Its
+effect, if any, is inside rep 2 (p50 39.19 against a modal 39.00, +0.48%; p99.9 84.75, the
+highest of the five). The rule does not discard it and the cell's verdict — a FAIL at ~4/5 of
+the block period — is not close to a boundary. No later run overlapped anything.
+
+**A1's `max` outliers land in rep 1 in Chrome too**, the same V8-tier-up-plus-first-GC signature
+Task 4 recorded: 90.94% (A1 simd128 rep 1), 85.12% (A2 scalar rep 1), 81.94% (A2 simd128 rep
+1), 84.00% (A2 revectorize rep 1). Reported, not discarded, for Task 4's reason.
+
+### Task 5's denormal cells in Chrome
+
+`simd128`, 100 000 measured blocks, 5 reps, signals 0 (steady) and 2 (`SubnormalTail`) —
+the same shape as Task 5's Edge table.
+
+| model | signal | p50 % | p99.9 % | estimator % | reps retained |
+|---|---|---|---|---|---|
+| a1_standard | steady | 11.44 (all five) | 27.37–29.25 (med **28.50**) | 18.00–18.37 | 5/5 |
+| a1_standard | **subnormal** | 16.31–16.50 (med **16.31**) | **42.00–44.06** (med **42.56**) | 18.19–18.38 | 5/5 |
+| a2_lite | steady | 3.00 (all five) | 14.25–15.00 (med **14.62**) | 9.56–9.75 | 5/5 |
+| a2_lite | **subnormal** | 3.19–4.13 (med **3.75**) | 17.06–18.75 (med **18.56**) | 9.56–9.75 | 5/5 |
+
+| Runtime | Build | Model | steady | subnormal | **penalty** |
+|---|---|---|---|---|---|
+| **Chrome 152 (V8)** | simd128 | A1 Standard | p50 11.44 / p99.9 28.50 | p50 16.31 / p99.9 42.56 | **1.43x p50, 1.49x p99.9** |
+| Edge 152 (V8) | simd128 | A1 Standard | p50 12.94 / p99.9 30.19 | p50 17.44 / p99.9 47.44 | 1.35x p50, 1.57x p99.9 |
+| **Chrome 152 (V8)** | simd128 | A2 Lite | p50 3.00 / p99.9 14.62 | p50 3.75 / p99.9 18.56 | **1.25x p50, 1.27x p99.9** |
+| Edge 152 (V8) | simd128 | A2 Lite | p50 3.19 / p99.9 15.94 | p50 3.75 / p99.9 19.41 | 1.18x p50, 1.22x p99.9 |
+
+**Kill criterion 3 (>2x on the subnormal mode) does not fire on Chrome either** — the largest
+penalty anywhere is **1.49x**, against Edge's 1.57x.
+
+**The Gate 1 consequence Task 5 raised is confirmed but slightly less sharp.** A1 Standard
+under a subnormal tail reaches p99.9 **42.00–44.06%** of the block period in Chrome, against
+Edge's 44.25–58.13% where one rep of five was over the <=50% bar. **In Chrome no rep is over
+the bar** — but 42–44% of a 50% budget is still a hairline, not headroom, and the finding
+stands as Task 5 wrote it: silence between notes is most of a session, wasm has no
+flush-to-zero, `DenormalGuard` is a no-op there, and A1's browser margin is thin.
+
+**The in-browser subnormal census reproduces Edge to three digits.** Chrome, `amp-decay`,
+20 000 blocks: **9 521 blocks (47.605%)** carry subnormal output, 2 436 620 subnormal samples,
+smallest magnitude **1.401298e−45** — against Edge's 47.6% and the same 1e−45 floor.
+
+**Discarded repetitions: none, and one call worth stating.** `a2_lite` subnormal rep 5 has p50
+**4.125%** against that cell's modal **3.750%** — **exactly +10.00%**, and the rule's clause 1
+is *"more than 10%"*. Its estimator is 9.75 against a modal 9.75 (+0.0%, clause 2 met). It is
+retained on the letter of the rule; including it moves the cell's median p99.9 not at all
+(18.56 either way) and the penalty ratios not at all to two decimals, so the call does not
+matter to any number here — but the rule was applied and landed on its boundary, which is
+recorded rather than quietly resolved. (Task 5's Edge run discarded the analogous rep at
++10.13%, on the other side of the same bar.) Rep 3's p50 of 3.19% is 15% *below* the modal, the
+direction the rule does not act on.
+
+**Artefact caveat, stated because it weakens this comparison.** The committed
+`web/build/simd128.wasm` reports an estimator of 18.19% on A1 steady — Task 4's level, not the
+19.50–19.88% Task 5's rebuilt artefact reported. So the Chrome-vs-Edge comparison in *this*
+sub-section is not guaranteed to be against identical bytes; the Gate 1 section above, which
+compares against Task 4's figures, is. Task 5's cells were re-run on the artefact that is in
+the tree rather than by rebuilding, because a rebuild would have broken the Gate 1 comparison
+in exchange for a Task 5 comparison that still could not be proved byte-identical.
+
+### Gate 2 in Chrome — worklet scheduling
+
+Nine 60-second runs against the real AudioBox, `split=0.5` (first half steady, second half
+`SubnormalTail`), 22 500 blocks each, `outputLatency` **40.00 ms** in every run. Six reps on
+`simd128`/A1 Standard rather than three, deliberately: Edge's start-up event appears in about
+one run in three, and three reps cannot distinguish "absent" from "unlucky".
+
+| Browser | Build | Model | Run | Blocks | Underruns steady | Underruns tail | Missed quanta | max clock lag ms |
+|---|---|---|---|---|---|---|---|---|
+| Chrome 152 headless | simd128 | a1_standard | 1 | 22 500 | 0 | 0 | 0 | 1.5 |
+| Chrome 152 headless | simd128 | a1_standard | 2 | 22 500 | 0 | 0 | 0 | 1.2 |
+| Chrome 152 headless | simd128 | a1_standard | 3 | 22 500 | 0 | 0 | 0 | 1.6 |
+| Chrome 152 headless | simd128 | a1_standard | 4 | 22 500 | 0 | 0 | 0 | 1.3 |
+| Chrome 152 headless | simd128 | a1_standard | 5 | 22 500 | 0 | 0 | 0 | 1.9 |
+| Chrome 152 headless | simd128 | a1_standard | 6 | 22 500 | **1 (first second)** | 0 | 4 | 1.3 |
+| Chrome 152 headless | simd128 | a2_lite | 1 | 22 500 | 0 | 0 | 0 | 0.0 |
+| Chrome 152 headless | simd128 | a2_lite | 2 | 22 500 | 0 | 0 | 0 | 0.1 |
+| Chrome 152 headless | simd128 | a2_lite | 3 | 22 500 | 0 | 0 | 0 | 0.2 |
+
+**Gate 2 reads on Chrome exactly as it reads on Edge.** Zero underruns in every steady-state
+second of every run, in both signal regimes, including **101 250 subnormal-tail blocks** across
+the nine runs — the regime Gate 1 flags as the risk. `renderCapacity` reported
+`underrunRatio 0.0000` in all nine.
+
+**The start-up event is present in Chrome, with the same signature.** One run of nine (a1
+rep 6) dropped a single device callback of **4 quanta**, already counted at the first
+one-second beacon (`blocks 375`) and never incremented again for the remaining 59 seconds.
+That is Edge's event: one event, 3–4 quanta, inside the first second, never recurring. The
+rate is 1/9 here against Edge's 4/11 — the two are not distinguishable at these counts
+(Fisher's exact p ~ 0.31) — and no attribution experiment was re-run, per the brief. **Task 6's
+fix-round conclusion therefore carries: it is Chromium/WASAPI stream start-up, not this
+chain — and it now has a second Chromium browser showing it.** A demo must still hide the
+first-stream click.
+
+Not re-run on Chrome, and still open: the 300 s growth run, the `scalar` cell, `&preroll`, and
+any run at a device buffer smaller than 40 ms (there is still no way to ask for one from the
+page).
+
+### `renderSizeHint` — one cheap probe, still absent
+
+    "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu --no-sandbox \
+      --autoplay-policy=no-user-gesture-required \
+      "http://127.0.0.1:8080/web/worklet.html?auto=1&checkRenderSizeHint=256"
+
+    renderSizeHint 256: NOT honoured -- ctx.renderQuantumSize is undefined
+    (the property does not exist on this runtime's AudioContext at all)
+
+As predicted: `renderQuantumSize` shipped in Chrome **153** and this is Chrome **152**, so the
+property is absent here exactly as it is on Edge 152. Nothing further was attempted — no
+`BLOCK_SIZE` change, no rebuild — per Task 8's ruling to stop at the availability check.
+**Extra 2 stays `PENDING RUN` on Chrome 153+ / a newer Edge**, with Task 8's command intact.
+
+### What is still PENDING RUN after this task
+
+- **Every Firefox row.** Firefox is still not installed and nothing was installed. SpiderMonkey
+  is a different wasm compiler *and* cubeb is a different audio backend — and cubeb is what the
+  public ~70–100 ms Windows latency bugs (Mozilla 1375466 / 1412067) are actually about, which
+  is precisely why Gate 3 exists. Nothing in this task bears on Gecko.
+- **The Gate 3 physical loopback**, on either browser: still no cable. The procedure is written
+  up above under "PENDING RUN — how to run the loopback half".
+- **`renderSizeHint` / `renderQuantumSize`**, on Chrome 153+.
+- **The laptop axis**, and any run at a device buffer below 40 ms.
+
+### Task 10 verdict
+
+**The Edge-as-Chrome substitution was sound, and every Edge-based conclusion in this document
+is retroactively supported by a real Chrome measurement.** Gate 1 PASS on simd128 / FAIL on
+scalar A1, Gate 2 PASS in steady state with the same first-second start-up artefact, Gate 3's
+62 ms API-reported best case and the 2.6x `--enable-exclusive-audio` regression — all
+reproduced, most of them to the digit, none of them worse in Chrome. Three things moved, and
+none is a verdict:
+
+1. Chrome's simd128 p99.9 runs 2–3 pp below Edge's throughout, and its A1 subnormal-tail cell
+   (42.00–44.06%) keeps every rep under the <=50% bar where Edge put one rep over.
+2. **Chrome shows no 20 000 -> 100 000 block cost growth for A1**, which removes the last
+   support for Task 4's ~14% reading. The question of what happens at 10^6 blocks is untouched.
+3. `&noinput=1` reads 40 ms on Chrome against Edge's 42 ms — a 2 ms unresolved discrepancy on
+   Task 7's third finding, immaterial to the gate.
+
+**No Chrome figure is certified**, and a browser figure cannot be.

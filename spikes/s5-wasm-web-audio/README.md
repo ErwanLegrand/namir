@@ -8,9 +8,12 @@ findings are drafted in **`FINDINGS-draft.md`** (a §19 entry that has deliberat
 committed into `docs/`); the full measurement log, retractions included, is **`RESULTS.md`**,
 whose first section is the verdict. This file is the reproduction record.
 
-**Every browser figure in this spike is headless Microsoft Edge 152.0.4191.62 on one machine.**
-Chrome and Firefox were never installed and nothing was installed to run these; Firefox /
-SpiderMonkey — a different wasm compiler — is entirely unmeasured. **No figure produced here is
+**Every browser figure in Tasks 3–8 is headless Microsoft Edge 152.0.4191.62 on one machine**,
+used as a stand-in because Chrome was not installed. **Task 10 re-ran all three gates on real
+Google Chrome 152.0.7977.83 — the same Chromium major — and every one reproduced** (raw logs
+`chrome_task10*.txt`), so the substitution is now evidenced rather than assumed. **Firefox is
+still not installed**; Firefox / SpiderMonkey — a different wasm compiler, with cubeb as a
+different audio backend — is entirely unmeasured. **No figure produced here is
 certified** in `docs/02-architecture.md` §2's sense, and a browser figure cannot be: it is
 measured through a JIT, a browser process model and an OS audio stack the project does not
 control. Nothing under `crates/`, `docs/`, `.github/` or `xtask/` was modified by this spike.
@@ -64,6 +67,8 @@ vendoring cannot answer. `Cargo.lock` still pins the measurement.
 - `FINDINGS-draft.md` — the drafted `docs/02-architecture.md` §19 entry and risk-register rows.
   **Drafted into the spike, deliberately not committed into `docs/`**; they land only if and when
   a phase-(b) decision is taken.
+- `chrome_task10_gate1.txt`, `chrome_task10_gate2.txt`, `chrome_task10_gate3.txt`,
+  `chrome_task10_task5.txt` — Task 10's Chrome transcripts, same beacon-log form as the Edge ones.
 - `edge_task*.txt`, `native_bench_output*.txt`, `coreaudio_task6_rerun.txt` — raw transcripts for
   Tasks 5, 6, 7 and 8 and for every native run. **Tasks 3 and 4 have no committed beacon log** —
   the Gate 1 matrix and the sustained confirmation, i.e. the spike's headline figures, are
@@ -88,7 +93,11 @@ python web/serve.py                        # from the spike root, in another she
 
 Then, per gate — Edge 152, run alone and sequentially, one browser process at a time (a second
 Edge launched over a run is exactly the contamination AGENTS.md warns about on this machine, and
-it happened once):
+it happened once). **Task 10 ran the same URLs on Chrome 152**: substitute
+`"C:\Program Files\Google\Chrome\Application\chrome.exe"` for `msedge`, add a throwaway
+`--user-data-dir` so the run cannot attach to an existing profile, and note that `bench.html`
+does not close its own tab — Task 10 waited for the `{"kind":"done"}` beacon and then killed the
+browser:
 
 ```bash
 # Gate 1 — compute matrix. 5 reps; 20 000 blocks screens, 100 000 confirms.
@@ -202,9 +211,9 @@ control. The figures exist because the port was proved correct first.
   real-time safety and only matters to a demo's perceived load time. **The per-block question is
   unanswered, not answered negatively** — only one of three runs produced any quotable rep, so
   there was never a clean pair to compare.
-- **`renderSizeHint` is absent on Edge 152.** `ctx.renderQuantumSize` is `undefined`, not merely
-  defaulting to 128 — the property is not in this runtime. It shipped in Chrome 153; this machine
-  is one release behind. `PENDING RUN`.
+- **`renderSizeHint` is absent on Edge 152 *and* Chrome 152.** `ctx.renderQuantumSize` is
+  `undefined`, not merely defaulting to 128 — the property is not in either runtime. It shipped
+  in Chrome 153; this machine is one release behind on both browsers. `PENDING RUN`.
 - **`is_quotable()` (D-2.4) cannot be applied literally in a browser.** It flags all 30 matrix
   reps, including the calmest, because a browser's tail is structurally fat (GC, tier-up, the
   renderer's scheduler all land inside the timed span). Applying it as written would discard the
@@ -303,7 +312,9 @@ Spec §12, updated with what the spike actually learned:
   the other; the honest state is a disagreement, not a trend. Budgeting A1 against the higher
   figure stays the conservative choice, and 112 500 worklet blocks produced no scheduling
   consequence either way.
-- **Nothing outside Chromium is known.** Every figure is Edge 152. Before a demo is announced as
-  working in "a browser", Gate 1 and Gate 2 need one run each on Firefox, whose wasm compiler and
-  audio backend are both different code; the exact commands are recorded per task in `RESULTS.md`
-  as `PENDING RUN` rows.
+- **Nothing outside Chromium is known, and that is now the whole of the gap.** Task 10 measured
+  all three gates on Chrome 152 and they reproduce Edge 152 — so "Chromium" is measured twice,
+  not once, and no Edge-based conclusion is left resting on the substitution. Before a demo is
+  announced as working in "a browser", Gate 1 and Gate 2 still need one run each on **Firefox**,
+  whose wasm compiler and audio backend are both different code; the exact commands are recorded
+  per task in `RESULTS.md` as `PENDING RUN` rows.
