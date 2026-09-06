@@ -29,6 +29,7 @@
 
 use namir_dsp::{GateParams, NoiseGate};
 use namir_params::ParamKind;
+use namir_params::global::INDEPENDENT_CHANNELS;
 use namir_params::stages::gate::{ATTACK_MS, ENABLED, HOLD_MS, RELEASE_MS, THRESHOLD_DB};
 
 use crate::param::{ParamChange, ParamId};
@@ -55,6 +56,10 @@ const ATTACK_MS_ID: ParamId = ParamId(ATTACK_MS.id.0);
 const HOLD_MS_ID: ParamId = ParamId(HOLD_MS.id.0);
 /// See [`ENABLED_ID`].
 const RELEASE_MS_ID: ParamId = ParamId(RELEASE_MS.id.0);
+/// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
+/// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
+/// stage just happens to be one of the three (with `trim.rs`/`nam.rs`) that owns this id.
+const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
 
 /// Telemetry signal id (FR-GATE-040), derived from a namespaced string the same way
 /// `namir-params`'s real parameter ids are (this crate's shared telemetry-id convention) — this
@@ -107,16 +112,30 @@ impl StagePrep for GatePrep {
             ..GateParams::default()
         };
 
-        let mut detector = NoiseGate::new(sample_rate);
-        detector.set_params(params);
+        // One independent detector per channel, always -- not only when `independent` is on
+        // (prototype: `INDEPENDENT_CHANNELS`'s own doc comment). Preallocating every channel's
+        // detector here, in `prepare` (non-RT), rather than only the one `process` currently uses,
+        // is what lets a live toggle between Linked and Independent stay RT-safe: `process` and
+        // `apply` only ever pick which already-built detector(s) to read/write, never build one.
+        let detectors: Vec<NoiseGate> = (0..channel_count)
+            .map(|_| {
+                let mut d = NoiseGate::new(sample_rate);
+                d.set_params(params);
+                d
+            })
+            .collect();
 
         let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * sample_rate.hz_f64();
         let mix_coeff = (1.0 - (-1.0_f64 / tau_samples).exp()) as f32;
         let mix_target = if enabled_default_on { 1.0 } else { 0.0 };
 
         Ok(GateStage {
-            detector,
+            detectors,
             params,
+            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
+            // default -- FR-CHAIN-050's mono-core-then-duplicate shape, unchanged, until a caller
+            // actively turns this on.
+            independent: false,
             enabled: enabled_default_on,
             mix: mix_target, // no prior audio exists yet at stage creation; start settled.
             mix_target,
@@ -130,13 +149,21 @@ impl StagePrep for GatePrep {
 /// RT-safe noise gate: `namir_dsp::NoiseGate` run mono-core on channel 0 and duplicated
 /// (FR-CHAIN-050), behind the shared click-free per-stage bypass crossfade (FR-CHAIN-020).
 pub struct GateStage {
-    /// FR-GATE-010..040's hysteresis/attack/hold/release state machine.
-    detector: NoiseGate,
-    /// This stage's own copy of `detector`'s current params. `NoiseGate` exposes no getter for
+    /// FR-GATE-010..040's hysteresis/attack/hold/release state machine — one per physical
+    /// channel, always (see `prepare`'s own comment on why). In `Linked` mode (`independent ==
+    /// false`, the shipped default) only `detectors[0]` is ever read; every detector still tracks
+    /// the same params, so switching to `Independent` mid-session starts from an already-correct,
+    /// already-settled state rather than a fresh gate slamming open or shut.
+    detectors: Vec<NoiseGate>,
+    /// This stage's own copy of every detector's current params. `NoiseGate` exposes no getter for
     /// them (`namir_dsp::gate`'s own scope), so `apply` mutates the relevant field here, then
-    /// calls `detector.set_params` with the whole struct — recomputing every coefficient from
-    /// scratch each time, which is fine at control rate (`set_params`'s own doc comment).
+    /// calls `set_params` with the whole struct on *every* detector — recomputing each one's
+    /// coefficients from scratch, which is fine at control rate (`set_params`'s own doc comment).
     params: GateParams,
+    /// Prototype (`namir_params::global::INDEPENDENT_CHANNELS`): `false` (Linked) reproduces
+    /// FR-CHAIN-050's mono-core-then-duplicate behaviour exactly; `true` (Independent) runs every
+    /// channel's own detector against its own signal, with no duplication step at all.
+    independent: bool,
     /// Whether this stage is enabled (FR-GATE-010's "Enabled" control, also FR-CHAIN-020's
     /// per-stage bypass for this stage). Tracked separately from `mix`/`mix_target` because it's
     /// the semantic on/off state `telemetry`/a future host query would want, not the crossfade's
@@ -175,16 +202,25 @@ impl Stage for GateStage {
             self.dry[ch][..n].copy_from_slice(io.channel(ch));
         }
 
-        // Wet: one gate, detected on channel 0 (this module's own doc comment) and applied to
-        // every channel by multiplying each by the same gain curve. Channel 0 gets exactly what
-        // `NoiseGate::process` would have given it -- `compute_gains` is that function with the
-        // multiplication deferred, asserted bit-identical in `namir-dsp`'s own tests.
-        self.detector
-            .compute_gains(io.channel(0), &mut self.gains[..n]);
-        for ch in 0..channel_count {
-            let gains = &self.gains[..n];
-            for (sample, gain) in io.channel(ch).iter_mut().zip(gains) {
-                *sample *= gain;
+        if self.independent && channel_count > 1 {
+            // Prototype: every channel's own detector against its own signal, no duplication —
+            // the whole point being that two genuinely different signals (e.g. a REAPER parent
+            // bus summing two panned double-tracked takes) each get gated on their own content,
+            // not on channel 0's alone.
+            for ch in 0..channel_count {
+                self.detectors[ch].process(io.channel(ch));
+            }
+        } else {
+            // Wet: one gate, detected on channel 0 (this module's own doc comment) and applied to
+            // every channel by multiplying each by the same gain curve. Channel 0 gets exactly what
+            // `NoiseGate::process` would have given it -- `compute_gains` is that function with the
+            // multiplication deferred, asserted bit-identical in `namir-dsp`'s own tests.
+            self.detectors[0].compute_gains(io.channel(0), &mut self.gains[..n]);
+            for ch in 0..channel_count {
+                let gains = &self.gains[..n];
+                for (sample, gain) in io.channel(ch).iter_mut().zip(gains) {
+                    *sample *= gain;
+                }
             }
         }
 
@@ -213,8 +249,11 @@ impl Stage for GateStage {
         // `namir_dsp::NoiseGate::reset`'s own scope is detector/state-machine only, not params —
         // and per that same boundary, not this stage's bypass-mix state either (a reset is a
         // transport stop/reposition, not a parameter or bypass-state change; matches `trim.rs`'s
-        // identical treatment of its own gain ramp).
-        self.detector.reset();
+        // identical treatment of its own gain ramp). Every channel's detector, not only the one
+        // `Linked` mode currently reads, so a reset while `Independent` behaves identically.
+        for detector in &mut self.detectors {
+            detector.reset();
+        }
     }
 
     fn latency_samples(&self) -> u32 {
@@ -233,24 +272,43 @@ impl Stage for GateStage {
             self.mix_target = if self.enabled { 1.0 } else { 0.0 };
         } else if change.id == THRESHOLD_DB_ID {
             self.params.threshold_db = change.value;
-            self.detector.set_params(self.params);
+            self.set_params_on_every_detector();
         } else if change.id == ATTACK_MS_ID {
             self.params.attack_ms = change.value;
-            self.detector.set_params(self.params);
+            self.set_params_on_every_detector();
         } else if change.id == HOLD_MS_ID {
             self.params.hold_ms = change.value;
-            self.detector.set_params(self.params);
+            self.set_params_on_every_detector();
         } else if change.id == RELEASE_MS_ID {
             self.params.release_ms = change.value;
-            self.detector.set_params(self.params);
+            self.set_params_on_every_detector();
+        } else if change.id == INDEPENDENT_CHANNELS_ID {
+            // Stepped param value is the index as f32; index 1 is "Independent" per
+            // `INDEPENDENT_CHANNELS`'s descriptor.
+            self.independent = change.value >= 0.5;
         }
     }
 
     fn telemetry(&self, out: &mut TelemetrySink<'_>) {
+        // Channel 0's reading always: in `Linked` mode it's the only detector actually running;
+        // in `Independent` mode it's an arbitrary but consistent choice of which channel's own
+        // gate the one meter this stage exposes reflects (this prototype adds no second meter).
         out.push(TelemetryEntry {
             id: TELEMETRY_GAIN_REDUCTION_DB,
-            value: self.detector.gain_reduction_db(),
+            value: self.detectors[0].gain_reduction_db(),
         });
+    }
+}
+
+impl GateStage {
+    /// `apply`'s shared tail for every threshold/attack/hold/release change: recomputes every
+    /// detector's coefficients from the just-updated `self.params`, not only the one `Linked`
+    /// mode currently reads — so a live switch into `Independent` finds every detector already
+    /// carrying the right settings rather than stale ones from construction time.
+    fn set_params_on_every_detector(&mut self) {
+        for detector in &mut self.detectors {
+            detector.set_params(self.params);
+        }
     }
 }
 
@@ -781,6 +839,103 @@ mod tests {
     #[test]
     fn stereo_process_does_not_allocate() {
         let mut stage = stage(ChannelConfig::Stereo);
+        let mut left = [0.1f32; 64];
+        let mut right = [0.1f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`): the opposite claim from
+    /// `every_multi_channel_configuration_duplicates_the_mono_core_gate_result` above — with the
+    /// mode switched on, a loud left channel and a silent right channel must settle at *different*
+    /// gain states (left open, right closed), not one duplicated onto the other. This is the
+    /// double-tracked-guitar-on-a-parent-bus scenario the prototype exists for: two genuinely
+    /// different signals, each gated on its own content.
+    #[test]
+    fn independent_mode_gates_each_channel_on_its_own_signal() {
+        let mut stage = stage(ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0, // "Independent"
+        });
+
+        let loud = db_to_linear(-10.0); // well above the -70 dBFS default threshold: opens.
+        let silent = 0.0f32; // stays closed.
+
+        // Settle both channels fully (1 s, many times the 1 ms default attack / 100 ms release).
+        for _ in 0..800 {
+            let mut left = [loud; 64];
+            let mut right = [silent; 64];
+            let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+            let mut io = StageIo::new(&mut channels, 64);
+            audio_section(|| stage.process(&mut io));
+        }
+
+        // Left stays loud (already settled open); right stays silent (still settled closed) --
+        // isolates "each channel is gated on its own signal" from "a channel that just went loud
+        // takes a block to open", which a same-block loud/loud comparison would have confounded.
+        let mut left = [loud; 64];
+        let mut right = [silent; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+
+        let left_out = io.channel(0).to_vec();
+        let right_out = io.channel(1).to_vec();
+
+        // Left's own gate is open: near-unity passthrough of this block's loud input.
+        for &s in &left_out {
+            assert!(
+                (s - loud).abs() < 1e-3,
+                "left: expected its own gate open (near-unity), got {s}"
+            );
+        }
+        // Right's own gate is still closed, on its own (silent) input -- a gate closed on silence
+        // outputs silence regardless, so this alone doesn't distinguish independence from leakage.
+        // The leakage claim is proven separately, below, by feeding right something audible.
+        for &s in &right_out {
+            assert!(s.abs() < 1e-6, "right: expected silence, got {s}");
+        }
+
+        // Now feed right something loud too, in a *fresh* block: if channels leaked, right would
+        // already be open (copying left's settled state); genuinely independent, right's own
+        // detector is still closed at the start of this block and has to open from there, exactly
+        // as `attack_sets_how_long_the_gate_takes_to_open` measures for a lone mono gate.
+        let mut left = [loud; 64];
+        let mut right = [loud; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+        let right_out = io.channel(1).to_vec();
+        // The distinguishing signal: right *ramps* from ~0 to ~loud over the block (a 1 ms attack
+        // is ~48 samples, so it crosses unity partway through this 64-sample block) rather than
+        // reading `loud` from the very first sample, which is what leaking left's already-settled
+        // state would look like.
+        assert!(
+            right_out[0].abs() < 1e-3,
+            "right: expected the block to start from its own still-closed gate (~0), got {} -- \
+             a value already near `loud` here would mean left's state leaked into right",
+            right_out[0]
+        );
+        assert!(
+            (right_out[right_out.len() - 1] - loud).abs() < 1e-3,
+            "right: expected its own attack ramp to have reached fully open by the end of a \
+             64-sample block (attack default is 1 ms, ~48 samples), got {}",
+            right_out[right_out.len() - 1]
+        );
+    }
+
+    /// [`stereo_process_does_not_allocate`]'s counterpart with the prototype mode on: the
+    /// per-channel branch in `process` (no scratch shuttle, one call per detector) must be exactly
+    /// as allocation-free as the Linked path.
+    #[test]
+    fn independent_mode_stereo_process_does_not_allocate() {
+        let mut stage = stage(ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0,
+        });
         let mut left = [0.1f32; 64];
         let mut right = [0.1f32; 64];
         let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
