@@ -240,14 +240,12 @@ impl ClapUiHost {
         let Some(descriptor) = REGISTRY.iter().find(|d| d.key == key) else {
             return;
         };
-        self.inner.with_instance(|instance| {
-            // "What the UI thread uses" — see `namir_worker::Instance::try_submit_param`'s own
-            // doc comment. One attempt, never blocks; a param change that misses one block is not
-            // worth stalling a GUI frame for (D-15.3).
-            let _ = instance.try_submit_param(ParamChange {
-                id: ParamId(descriptor.id.0),
-                value,
-            });
+        // "What the UI thread uses" — see `namir_worker::Instance::try_submit_param`'s own
+        // doc comment. One attempt, never blocks; a param change that misses one block is not
+        // worth stalling a GUI frame for (D-15.3).
+        let _ = self.inner.try_submit_param(ParamChange {
+            id: ParamId(descriptor.id.0),
+            value,
         });
     }
 }

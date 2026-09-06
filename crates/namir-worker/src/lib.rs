@@ -274,7 +274,7 @@ impl EngineConfig {
 /// its resources are prepared against.
 pub struct Instance {
     config: EngineConfig,
-    submitter: CommandSubmitter,
+    submitter: Arc<CommandSubmitter>,
     retire: RingConsumer<Resource>,
     /// When this instance last handed a handover to the audio thread, per target — the state
     /// [`Instance::serialise_against_other_target`] needs. Indexed by [`Target`] via
@@ -290,13 +290,18 @@ impl Instance {
     pub fn new(config: EngineConfig, endpoint: WorkerEndpoint) -> Self {
         Self {
             config,
-            submitter: CommandSubmitter::new(endpoint.commands),
+            submitter: Arc::new(CommandSubmitter::new(endpoint.commands)),
             retire: endpoint.retire,
             last_handover: [None, None],
             handover_window: Duration::from_micros(
                 (namir_engine::HANDOVER_CROSSFADE_MS * 1000.0 * HANDOVER_WINDOW_MARGIN) as u64,
             ),
         }
+    }
+
+    /// Clones a reference to the producer-side [`CommandSubmitter`].
+    pub fn submitter(&self) -> Arc<CommandSubmitter> {
+        Arc::clone(&self.submitter)
     }
 
     /// **R-7's mitigation: never let a NAM and an IR handover be in flight at the same time.**
@@ -380,7 +385,7 @@ impl Instance {
     /// `process()` runs, the caller already holds exclusive audio-thread access and going back
     /// through this producer-side mutex would risk blocking on whatever holds it, including this
     /// very method's own worker-side sibling, [`Self::load`]).
-    pub fn try_submit_param(&mut self, change: ParamChange) -> Result<(), SubmitError> {
+    pub fn try_submit_param(&self, change: ParamChange) -> Result<(), SubmitError> {
         self.submitter.try_submit(Command::Param(change))
     }
 
@@ -887,7 +892,7 @@ mod tests {
     fn try_submit_param_delivers_a_plain_parameter_change() {
         let c = ctx();
         let (mut engine, endpoint) = build_default_engine(&c).unwrap();
-        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+        let instance = Instance::new(EngineConfig { ctx: c }, endpoint);
 
         // An arbitrary id, deliberately not a `namir_params` descriptor's -- this crate takes no
         // dependency on `namir-params` even in tests (see this `Cargo.toml`'s own comment on why
@@ -914,7 +919,7 @@ mod tests {
     fn try_submit_param_never_blocks_on_a_full_ring() {
         let c = ctx();
         let (_engine, endpoint) = build_default_engine(&c).unwrap();
-        let mut instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+        let instance = Instance::new(EngineConfig { ctx: c }, endpoint);
 
         // Fill the ring (default capacity 256) without anything draining it.
         for i in 0..300u32 {
@@ -930,5 +935,32 @@ mod tests {
         });
         assert!(started.elapsed() < Duration::from_millis(50));
         assert!(matches!(result, Err(SubmitError::Timeout(_))));
+    }
+
+    #[test]
+    fn try_submit_param_succeeds_via_shared_reference_and_submitter() {
+        let c = ctx();
+        let (_engine, endpoint) = build_default_engine(&c).unwrap();
+        let instance = Instance::new(EngineConfig { ctx: c }, endpoint);
+        let submitter = instance.submitter();
+
+        // Submitting through both `instance.try_submit_param` (&self) and `submitter.try_submit`
+        // works concurrently.
+        assert!(
+            instance
+                .try_submit_param(namir_engine::ParamChange {
+                    id: namir_engine::ParamId(1),
+                    value: 0.5,
+                })
+                .is_ok()
+        );
+        assert!(
+            submitter
+                .try_submit(Command::Param(namir_engine::ParamChange {
+                    id: namir_engine::ParamId(2),
+                    value: 1.0,
+                }))
+                .is_ok()
+        );
     }
 }
