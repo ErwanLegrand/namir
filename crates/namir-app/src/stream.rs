@@ -264,9 +264,13 @@ pub fn open(
     // (see `crate::bridge`), so with an empty ring the steady-state occupancy sits at zero and any
     // output callback that happens to run before its matching input one pads and counts an xrun --
     // perpetually, not just at startup. Prefilling gives the pull one block of slack to absorb that
-    // jitter, at the cost of one block of added latency, which is what `crate::audio_io`'s
-    // round-trip estimate already assumes is there.
-    producer.push_captured(&vec![0.0; setup.max_block_size.max(1)]);
+    // jitter. The cost is one block of added latency, which `crate::latency::estimate_round_trip`
+    // accounts for as its `bridge_prefill_frames` term.
+    let dropped = producer.push_captured(&vec![0.0; setup.max_block_size.max(1)]);
+    debug_assert_eq!(
+        dropped, 0,
+        "fresh bridge with capacity >= 8 * max_block_size cannot drop prefill"
+    );
 
     let input_channel_index = setup.input_channel_index as usize;
     let input_channels = setup.input_params.channels as usize;
