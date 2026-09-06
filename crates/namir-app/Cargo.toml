@@ -70,7 +70,7 @@ cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "2edbacb44b10e56801
 # see that module for the full adoption argument) rather than re-litigating it or hand-rolling a
 # second lock-free queue -- already MIT OR Apache-2.0 on `deny.toml`'s allow list, zero transitive
 # dependencies, no build script.
-rtrb = "0.3.4"
+rtrb = "0.3.5"
 # `AppSettings` (FR-IO-080's persisted device/rate/buffer/channel-mapping choices) needs a format;
 # `serde`/`serde_json` are already this workspace's convention for exactly this shape of data
 # (`namir-state`'s identical dependency, same versions).
