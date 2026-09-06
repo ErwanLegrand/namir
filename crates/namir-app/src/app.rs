@@ -434,8 +434,6 @@ pub fn run() {
         backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
         host_info: host_info.clone(),
         xruns: Arc::clone(&xruns),
-        cache: Arc::clone(&cache),
-        library_roots,
     };
     host.enable_audio_reopen(reopen_ctx);
     let input_device_names: Vec<String> = backend
@@ -560,6 +558,15 @@ pub fn run() {
                     startup_probe::audible(library_index_entries, default_state_params);
                     eprintln!("namir: audio stream started");
                     host.hold_streams(running);
+                    // FR-IO-080: persist the negotiated values immediately — including any fallback
+                    // from the default-device path — so the next launch starts from what worked.
+                    host.persist_negotiated_audio(
+                        &host_info.name,
+                        &input.device.name,
+                        &output.device.name,
+                        sample_rate_hz,
+                        buffer_frames,
+                    );
                 }
                 Err(e) => {
                     // The detail is carried on the marker, not left to the notice alone: a probed
@@ -611,31 +618,16 @@ pub fn run() {
 
     xrun_log.stop();
 
-    // FR-IO-080: persist whatever was actually negotiated -- including a fallback -- so the next
-    // launch starts from what worked this time, without clobbering user selections made during the session.
+    // FR-IO-080: device/rate/buffer are now persisted at the point of negotiation (see
+    // `host.persist_negotiated_audio` called right after `play()` above, and
+    // `apply_audio_reopen`). Only library_roots needs updating here: it tracks mid-session
+    // changes (add/remove via panel) that `persist_negotiated_audio` does not touch.
     if let Some(dir) = &config_dir {
         let settings_path = settings::settings_path(dir);
         let (mut final_settings, _) = settings::load(&settings_path);
-        if final_settings.host_name.is_none() {
-            final_settings.host_name = Some(host_info.name.clone());
-        }
-        if final_settings.input_device_name.is_none() {
-            final_settings.input_device_name = Some(input.device.name.clone());
-        }
-        if final_settings.output_device_name.is_none() {
-            final_settings.output_device_name = Some(output.device.name.clone());
-        }
-        if final_settings.sample_rate_hz.is_none() {
-            final_settings.sample_rate_hz = Some(sample_rate_hz);
-        }
-        if final_settings.buffer_size_frames.is_none() {
-            final_settings.buffer_size_frames = buffer_frames;
-        }
         final_settings.library_roots = (*library.roots()).clone();
         // The one report in this function that cannot become a notice: the window is already
-        // closed, so there is no FR-UI-070 list left to push onto. It was `let _ =` — a settings
-        // file that silently failed to save is precisely the "why did it forget my device again?"
-        // report a log exists to answer — and is now the record it always should have been.
+        // closed, so there is no FR-UI-070 list left to push onto.
         if let Err(w) = settings::save(&settings_path, &final_settings) {
             crate::diagnostics::record(w.code, &w.detail);
         }
