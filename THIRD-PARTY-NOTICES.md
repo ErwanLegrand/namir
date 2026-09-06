@@ -168,13 +168,13 @@ they are never linked into a release binary.
 | redox_syscall | 0.4.1 | MIT |
 | redox_syscall | 0.5.18 | MIT |
 | redox_syscall | 0.9.1 | MIT |
-| rtrb | 0.3.4 | MIT OR Apache-2.0 |
+| rtrb | 0.3.5 | MIT OR Apache-2.0 |
 | rubato | 0.16.2 | MIT |
 | rustfft | 6.4.1 | MIT OR Apache-2.0 |
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
-| safe_arch | 1.1.0 | Zlib OR Apache-2.0 OR MIT |
+| safe_arch | 1.2.0 | Zlib OR Apache-2.0 OR MIT |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
 | self_cell | 1.3.0 | Apache-2.0 OR GPL-2.0-only |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
@@ -215,7 +215,7 @@ they are never linked into a release binary.
 | wasm-bindgen-shared | 0.2.126 | MIT OR Apache-2.0 |
 | web-sys | 0.3.103 | MIT OR Apache-2.0 |
 | web-time | 1.1.0 | MIT OR Apache-2.0 |
-| wide | 1.6.0 | Zlib OR Apache-2.0 OR MIT |
+| wide | 1.7.0 | Zlib OR Apache-2.0 OR MIT |
 | windows | 0.62.2 | MIT OR Apache-2.0 |
 | windows-collections | 0.3.2 | MIT OR Apache-2.0 |
 | windows-core | 0.62.2 | MIT OR Apache-2.0 |
