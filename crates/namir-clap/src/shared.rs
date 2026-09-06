@@ -1086,10 +1086,6 @@ mod tests {
         );
     }
 
-    // trace-partial: FR-UI-060
-    // uncovered: FR-UI-060 — non-blocking parameter submission under instance contention; whole-interface
-    // uncovered: frame duration during a 10,000-file scan is measured by namir-ui/benches/library_frame.rs;
-    // uncovered: closes M8
     #[test]
     fn try_submit_param_does_not_block_on_instance_mutex() {
         let inner = Arc::new(SharedInner::new());
