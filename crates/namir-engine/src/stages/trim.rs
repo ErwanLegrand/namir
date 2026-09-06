@@ -30,6 +30,7 @@
 use namir_core::{SampleRate, db_to_linear};
 use namir_dsp::{DcBlocker, GainRamp, Meter};
 use namir_params::ParamKind;
+use namir_params::global::INDEPENDENT_CHANNELS;
 use namir_params::stages::trim::{DC_BLOCKER_ENABLED, GAIN_DB};
 
 use crate::param::{ParamChange, ParamId};
@@ -60,6 +61,10 @@ const DOWNMIX_EACH_TERM_DB: f32 = -6.0;
 const GAIN_DB_ID: ParamId = ParamId(GAIN_DB.id.0);
 /// See [`GAIN_DB_ID`].
 const DC_BLOCKER_ENABLED_ID: ParamId = ParamId(DC_BLOCKER_ENABLED.id.0);
+/// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
+/// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
+/// stage just happens to be one of the three (with `gate.rs`/`nam.rs`) that owns this id.
+const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
 
 /// Telemetry signal ids, derived from a namespaced string the same way `namir-params`'s real
 /// parameter ids are (this crate's shared telemetry-id convention) — these are readouts, not
@@ -103,11 +108,31 @@ impl StagePrep for TrimPrep {
             }
         };
 
+        let channel_count = ctx.channel_config().output_channels() as usize;
+        // One independent ramp/blocker/meter per channel, always -- not only when `independent`
+        // is on (prototype: `INDEPENDENT_CHANNELS`'s own doc comment). Preallocating every
+        // channel's here, in `prepare` (non-RT), rather than only the one `process` currently
+        // uses in Linked mode, is what lets a live toggle stay RT-safe: `process`/`apply` only
+        // ever pick which already-built set to read/write, never build one. Mirrors `gate.rs`'s
+        // identical `detectors: Vec<NoiseGate>` shape.
+        let gain_ramps: Vec<GainRamp> = (0..channel_count)
+            .map(|_| gain_ramp_at_default(sample_rate, gain_default_db))
+            .collect();
+        let dc_blockers: Vec<DcBlocker> = (0..channel_count)
+            .map(|_| DcBlocker::new(sample_rate, DC_BLOCKER_CORNER_HZ))
+            .collect();
+        let meters: Vec<Meter> = (0..channel_count)
+            .map(|_| Meter::new(sample_rate))
+            .collect();
+
         Ok(TrimStage {
-            gain_ramp: gain_ramp_at_default(sample_rate, gain_default_db),
-            dc_blocker: DcBlocker::new(sample_rate, DC_BLOCKER_CORNER_HZ),
+            gain_ramps,
+            dc_blockers,
             dc_blocker_enabled: dc_blocker_default_on,
-            meter: Meter::new(sample_rate),
+            meters,
+            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
+            // default -- FR-CHAIN-060's downmix, unchanged, until a caller actively turns this on.
+            independent: false,
             downmix_gain: db_to_linear(DOWNMIX_EACH_TERM_DB),
             scratch: vec![0.0; ctx.max_block_size()],
         })
@@ -118,16 +143,28 @@ impl StagePrep for TrimPrep {
 /// stages) the chain's stereo-to-mono-core downmix. See this module's doc comment for the
 /// channel-handling rationale.
 pub struct TrimStage {
-    /// FR-IN-010's gain control, smoothed per [`GAIN_RAMP_TIME_CONSTANT_MS`].
-    gain_ramp: GainRamp,
-    /// FR-IN-040's optional DC-blocking high-pass.
-    dc_blocker: DcBlocker,
-    /// Whether `dc_blocker` runs this block; toggled by `apply`, defaulted from
+    /// FR-IN-010's gain control, smoothed per [`GAIN_RAMP_TIME_CONSTANT_MS`] — one per physical
+    /// channel, always (see `prepare`'s own comment). In `Linked` mode (`independent == false`,
+    /// the shipped default) only `gain_ramps[0]` is ever read; every ramp still tracks the same
+    /// target, so switching to `Independent` mid-session starts already-settled rather than
+    /// jumping.
+    gain_ramps: Vec<GainRamp>,
+    /// FR-IN-040's optional DC-blocking high-pass, one per channel (same shape as `gain_ramps`
+    /// above).
+    dc_blockers: Vec<DcBlocker>,
+    /// Whether every `dc_blockers` entry runs this block; toggled by `apply`, defaulted from
     /// `DC_BLOCKER_ENABLED`'s descriptor.
     dc_blocker_enabled: bool,
-    /// FR-IN-020/030's peak/average/peak-hold/clip readout, measured on the post-trim signal
-    /// (after gain and the DC blocker, so it reflects what actually leaves this stage).
-    meter: Meter,
+    /// FR-IN-020/030's peak/average/peak-hold/clip readout, one per channel — measured on the
+    /// post-trim signal (after gain and the DC blocker, so it reflects what actually leaves this
+    /// stage). Only `meters[0]` is ever reported via [`Stage::telemetry`], matching `gate.rs`'s
+    /// identical simplification (this prototype adds no second meter).
+    meters: Vec<Meter>,
+    /// Prototype (`namir_params::global::INDEPENDENT_CHANNELS`): `false` (Linked) reproduces
+    /// FR-CHAIN-060's downmix-then-single-signal-processing behaviour exactly; `true`
+    /// (Independent) skips the downmix and runs every channel's own gain/DC-block/meter against
+    /// its own signal, with no cross-channel mixing or duplication at all.
+    independent: bool,
     /// `db_to_linear(DOWNMIX_EACH_TERM_DB)`, computed once here rather than re-deriving a `powf`
     /// every block (the same house pattern `GainRamp::set_target_db`'s doc comment names).
     downmix_gain: f32,
@@ -140,9 +177,22 @@ pub struct TrimStage {
 
 impl Stage for TrimStage {
     fn process(&mut self, io: &mut StageIo<'_>) {
-        let n = io.frames();
         let channel_count = io.channel_count();
 
+        if self.independent && channel_count > 1 {
+            // Prototype: every channel keeps its own signal -- no downmix, no cross-channel
+            // copying at all, the same shape `eq.rs` already uses for the identical reason.
+            for ch in 0..channel_count {
+                self.gain_ramps[ch].process(io.channel(ch));
+                if self.dc_blocker_enabled {
+                    self.dc_blockers[ch].process(io.channel(ch));
+                }
+                self.meters[ch].process(io.channel(ch));
+            }
+            return;
+        }
+
+        let n = io.frames();
         if channel_count >= 2 {
             // Copy channel 1 out before touching channel 0: holding both `channel()` borrows at
             // once does not compile (this module's own doc comment). -6 dB on *both* terms, per
@@ -159,11 +209,11 @@ impl Stage for TrimStage {
         // From here on there is exactly one signal (channel 0, already carrying the full mix
         // when channel_count >= 2): ramp, then DC-block, then meter -- metering last so it reads
         // the actual post-trim signal, not a pre-filter one.
-        self.gain_ramp.process(io.channel(0));
+        self.gain_ramps[0].process(io.channel(0));
         if self.dc_blocker_enabled {
-            self.dc_blocker.process(io.channel(0));
+            self.dc_blockers[0].process(io.channel(0));
         }
-        self.meter.process(io.channel(0));
+        self.meters[0].process(io.channel(0));
 
         if channel_count >= 2 {
             // Re-establish "every channel identical" for whatever comes next in the chain.
@@ -176,10 +226,15 @@ impl Stage for TrimStage {
     }
 
     fn reset(&mut self) {
-        // `gain_ramp` deliberately keeps its current smoothed value: a reset is a transport
-        // stop/reposition, not a parameter change (this stage's own spec).
-        self.dc_blocker.reset();
-        self.meter.reset();
+        // `gain_ramps` deliberately keep their current smoothed value: a reset is a transport
+        // stop/reposition, not a parameter change (this stage's own spec). Every channel's, not
+        // only the one `Linked` mode currently reads.
+        for dc_blocker in &mut self.dc_blockers {
+            dc_blocker.reset();
+        }
+        for meter in &mut self.meters {
+            meter.reset();
+        }
     }
 
     fn latency_samples(&self) -> u32 {
@@ -192,30 +247,39 @@ impl Stage for TrimStage {
 
     fn apply(&mut self, change: ParamChange) {
         if change.id == GAIN_DB_ID {
-            self.gain_ramp.set_target_db(change.value);
+            for ramp in &mut self.gain_ramps {
+                ramp.set_target_db(change.value);
+            }
         } else if change.id == DC_BLOCKER_ENABLED_ID {
             // Stepped param value is the index as f32 (`ParamChange`'s own doc comment); index 1
             // is "On" per `DC_BLOCKER_ENABLED`'s descriptor.
             self.dc_blocker_enabled = change.value >= 0.5;
+        } else if change.id == INDEPENDENT_CHANNELS_ID {
+            // Stepped param value is the index as f32; index 1 is "Independent" per
+            // `INDEPENDENT_CHANNELS`'s descriptor.
+            self.independent = change.value >= 0.5;
         }
     }
 
     fn telemetry(&self, out: &mut TelemetrySink<'_>) {
+        // Channel 0's reading always -- same simplification `gate.rs` documents for its own
+        // telemetry.
+        let meter = &self.meters[0];
         out.push(TelemetryEntry {
             id: TELEMETRY_PEAK_DB,
-            value: self.meter.peak_db(),
+            value: meter.peak_db(),
         });
         out.push(TelemetryEntry {
             id: TELEMETRY_AVERAGE_DB,
-            value: self.meter.average_db(),
+            value: meter.average_db(),
         });
         out.push(TelemetryEntry {
             id: TELEMETRY_PEAK_HOLD_DB,
-            value: self.meter.peak_hold_db(),
+            value: meter.peak_hold_db(),
         });
         out.push(TelemetryEntry {
             id: TELEMETRY_CLIPPED,
-            value: if self.meter.clipped() { 1.0 } else { 0.0 },
+            value: if meter.clipped() { 1.0 } else { 0.0 },
         });
     }
 }
@@ -310,9 +374,9 @@ mod tests {
             ParamKind::Stepped { .. } => unreachable!("trim.gain_db is declared Continuous"),
         };
         assert!(
-            (stage.gain_ramp.current_db() - default_db).abs() < 1e-4,
+            (stage.gain_ramps[0].current_db() - default_db).abs() < 1e-4,
             "a freshly prepared stage's ramp sits at {} dB, not its {default_db} dB default",
-            stage.gain_ramp.current_db()
+            stage.gain_ramps[0].current_db()
         );
     }
 
@@ -491,6 +555,53 @@ mod tests {
     #[test]
     fn stereo_process_does_not_allocate() {
         let mut stage = stage(ChannelConfig::Stereo);
+        let mut left = [0.1f32; 64];
+        let mut right = [0.2f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`): the opposite claim from
+    /// `stereo_downmix_sums_both_channels_at_minus_six_db_identically` above -- with the mode
+    /// switched on, two different *inputs* (there is only one shared `trim.gain_db`, so this
+    /// prototype has no per-channel gain to vary instead) must reach the output as two different
+    /// results, not one downmixed-and-duplicated value.
+    #[test]
+    fn independent_mode_skips_the_downmix_and_keeps_channels_separate() {
+        let mut stage = stage(ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: DC_BLOCKER_ENABLED_ID,
+            value: 0.0,
+        });
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0, // "Independent"
+        });
+
+        let mut left = [0.2f32; 64];
+        let mut right = [0.8f32; 64];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut io = StageIo::new(&mut channels, 64);
+        audio_section(|| stage.process(&mut io));
+
+        // Unity gain (default), no downmix: each channel passes through as its own input.
+        for s in io.channel(0) {
+            assert!((*s - 0.2).abs() < 1e-4, "left: got {s}, expected 0.2");
+        }
+        for s in io.channel(1) {
+            assert!((*s - 0.8).abs() < 1e-4, "right: got {s}, expected 0.8");
+        }
+    }
+
+    /// [`stereo_process_does_not_allocate`]'s counterpart with the prototype mode on.
+    #[test]
+    fn independent_mode_stereo_process_does_not_allocate() {
+        let mut stage = stage(ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0,
+        });
         let mut left = [0.1f32; 64];
         let mut right = [0.2f32; 64];
         let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
