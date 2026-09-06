@@ -3364,6 +3364,87 @@ See D-13.3.
 S-1 is the largest and gates the most numbers — **complete, 2026-08-05.** S-2 is also **complete,
 2026-08-05.** All four spikes are done.
 
+*Note (added 2026-09-06):* a **fifth** spike, S-5, was specified and run after the line above was
+written. "All four spikes are done" is true of the four this section was written for and is left
+as written; S-5's specification follows.
+
+### S-5 — Namir's DSP chain in the browser: WASM + Web Audio (informs a prospective demo target)
+
+**Specification recorded retrospectively, 2026-09-06.** The spike was agreed and run on
+2026-09-05/06 against a spec held in conversation, and this entry is that spec written down from
+the branch — not a fresh scoping. It is here because §19 is where a spike's success criteria
+belong, fixed before the code is written, and because the spike's own boundary ("S-5 may not add
+a decision, a requirement, a §14 row or a CI gate") is uncheckable by anyone who was not in the
+room while it exists only on the branch. **The findings deliberately stay out of this document**
+until a phase-(b) decision is taken; they are drafted in
+`spikes/s5-wasm-web-audio/FINDINGS-draft.md` in the shape this section uses, and the measurement
+log is `spikes/s5-wasm-web-audio/RESULTS.md`.
+
+**Question:** Can the existing six-stage DSP chain — unmodified, compiled to
+`wasm32-unknown-unknown` — hold a Web Audio deadline in a desktop browser, and at what cost
+relative to the native build on the same machine? Three sub-questions, each with its own gate:
+compute, scheduling, and the round-trip latency a browser on Windows actually delivers for
+`getUserMedia` -> `AudioWorklet` -> output, which is unmeasured in public sources.
+
+**Method:** one shared measurement harness compiled to both native and wasm, differing only in
+the clock; the real chain assembled through `namir_engine::build_default_engine` with resources
+delivered over the real command ring; 128-frame blocks throughout. Two wasm artefacts (scalar and
+`+simd128`, the third matrix cell being the same `simd128` binary under a V8 flag rather than a
+third build). An output-parity gate against a native render that must PASS before any timing
+figure is reported, with no bypass, and with its own control checked for degeneracy. A real
+`AudioWorkletProcessor` against real hardware for scheduling, and a `currentFrame`-differencing
+page for latency. Generated fixtures throughout, per D-19.1.
+
+**Axes:** build (scalar / simd128 / simd128 + revectorizer) x model (a WaveNet standard shape and
+a lite shape) x signal (steady / amplitude-decay / subnormal-tail) x machine (the §2 reference
+machine, and one laptop) x browser (Chromium, Firefox). The second machine is individually
+droppable without invalidating the gates.
+
+**Gates:**
+
+| Gate | Bar |
+|---|---|
+| 1 — compute | p99.9 of the per-block cost <= **50%** of the 128-frame block period, on the reference machine |
+| 2 — scheduling | **zero underruns** over a 60 s run in a real `AudioWorkletProcessor` against a real device |
+| 3 — latency | round-trip `getUserMedia` -> worklet -> output, reported against a **~30 ms** soft reference, with the API's own terms and a physical loopback measurement given separately |
+
+**Kill criteria** (any one ends the spike where it stands, rather than being worked around):
+
+1. The six DSP-path crates do not build for `wasm32-unknown-unknown` **without edits under
+   `crates/`**.
+2. Cost exceeds **100%** of realtime, sustained, in every configuration.
+3. The decaying/silence signal mode costs more than **2x** the steady mode.
+
+**Produces:** a browser-vs-native cost ratio for the assembled chain; a scheduling verdict on a
+real device; the first measured statement about this path's Windows audio latency; and the
+evidence for a later go/no-go on a try-before-download demo page.
+
+**Scope and non-goals, as specified.** Single-threaded; D-8.1's handover is not exercised.
+`namir-worker`, `namir-platform`, `namir-ui`, the library and preset persistence are all out of
+scope. **The spike may not add a decision, a requirement, a §14 row or a CI gate**, and may not
+modify anything under `crates/`, `docs/`, `.github/` or `xtask/` — it lives in `spikes/`, which
+is outside the workspace. A prospective demo inherits FR-ERR-060's network-free posture and the
+RD-1 non-goal: models travel embedded (FR-STATE-080), never fetched.
+
+**Two spec-level choices, given ids because the spike's own text cites them.** They are spike
+scope, not architecture decisions: they bind S-5's method only, are not carried into this
+document's D-numbering, and nothing in `crates/` may cite them.
+
+- **D-S5.1 — the spike path-depends on `crates/namir-*` rather than vendoring.** A stated
+  divergence from S-1..S-4's convention. Those spikes asked whether an implementation was
+  possible, which vendoring can answer; this one asks whether *the code that exists* ports, which
+  vendoring cannot. The spike pins its own `Cargo.lock`.
+- **D-S5.5 — the bench page is served cross-origin isolated (COOP/COEP).** Without isolation
+  `performance.now()` resolves to 100 µs, i.e. 3.75% of the block period, and no compute figure is
+  quotable. The headers are a measurement instrument and a shipped demo would not send them.
+  (Numbering: only `.1` and `.5` are cited anywhere on the branch. The intervening numbers are not
+  reconstructable and are deliberately not invented.)
+
+**Not certified, and not certifiable.** No figure S-5 produces was measured under §2's
+conditions and none can be: a browser figure passes through a JIT, a browser process model and an
+OS audio stack this project does not control, and no browser run can be core-pinned. Nothing S-5
+produces may be quoted as closing a Must requirement.
+
 ---
 
 ## 20. Disposition of FRS open questions
@@ -3919,3 +4000,4 @@ drift was findable.
 | 0.34 | 2026-08-12 | **M14 Phase 4b: A2 is compared against `NeuralAmpModelerCore` for the first time, and the comparison holds.** Two generated A2 fixtures (`a2_full.nam`, `a2_lite.nam`, seed 30, D-19.1) rendered through the pinned reference build (`3cde95c`, `-DNAM_USE_INLINE_GEMM -DNAM_ENABLE_A2_FAST=OFF`, built outside the repository) over the same `input_10s.wav` the two existing goldens use, asserted in-process: **A2-Full -132.58 dB, A2-Lite -126.46 dB**. `FR-NAM-030` and `FR-NAM-150` are promoted from `trace-partial:` to plain `trace:` **by closing their `uncovered:` fields, not by promoting the tags** — the golden set now spans all three configurations this crate runs, and FR-NAM-150's probe clause is met by the 10-second signal rather than by `a2_fixtures.rs`'s 4 000-sample probe, which was *shorter* than A2's 6 346-sample receptive field and is raised to 20 000 in the same pass. The golden bar tightens from -85 dB to FR-NAM-030's own **-90 dB**, because a plain tag cannot be carried by an assertion looser than the requirement it claims to verify; all four fixtures clear it by ≥36 dB, and the headroom that spends is recorded at the constant (M10's `Standard`-shape cross-check sat at -90.3 to -90.9 dB). **FR-NAM-110's method is performed for the first time**: `crates/namir-nam/tests/latency.rs` drives an impulse through every architecture, differences it against the model's own zero-input response, and cross-correlates — the previous evidence was two tests reading an accessor whose body is the literal `0` and asserting it equalled `0`, which would have passed unchanged had inference introduced delay. Its tag stays `trace-partial:`, narrowed to the residue in `namir-engine` (`NamStage`'s `SlotResampler` latency, asserted only as `> 0`) and re-booked M8 → M14. **R-9 is narrowed, not retired**, severity High → Medium: the silent-wrong-weight-order failure it was raised about is now excluded by a real-reference comparison, and this pass also resolves the contradiction in its own reopening text — M10's recorded "A2 Full and A2 Lite at -90.31 dB each" cannot have been an A2 measurement, since the two shapes measure -132.58 and -126.46. What stays open is stated rather than absorbed: no genuine trainer-produced A2 export has ever been loaded, so a *shared* misreading of the schema between generator, parser and reference target is invisible to every test in the tree; and upstream's default `NAM_ENABLE_A2_FAST=ON` path is not what these renders exercise — a rationale for excluding it is now recorded at `golden_reference.rs`'s header where before there was none, which is not the same as a measurement, and none was taken. Partial count 68 → 66. |
 | 0.35 | 2026-08-28 | **A manual-test document now has to say whether it was run, and the traceability gate reads that instead of the file name (issue #34).** D-18.6 gains a `*Consequence (added M15, 2026-08-28)*` note holding the verdict convention: every file under `docs/manual-tests/` carries a line beginning `**Result:` opening with one of `PASS`, `FAIL`, `PARTIAL` or `NOT EXECUTED`; only `PASS` credits a requirement; the worst line in a document wins; and a missing, tokenless or self-contradicting verdict is a **hard error** that aborts the run upstream of `--write`, `--allow-uncovered` and every exit-status term, on D-23.1's malformed-annotation footing — a bad input, not a coverage gap. `docs/manual-tests/README.md` is added as the authors' copy of the rule and is the one file exempt from it. Eight live documents carried no verdict line and were given one recording what their own prose already said; two carried a verdict line no token opened (`fr-ui-010`'s self-contradicting `PASS`, corrected to `PARTIAL`, and `fr-io-070`'s second line). No verdict was promoted and no requirement became more met: the six Musts left uncovered — FR-IO-030, FR-IO-050, FR-UI-030, FR-UI-040, FR-UI-050 and FR-UI-070 — are the same six their documents already recorded as NOT EXECUTED, PARTIAL or FAIL. |
 | 0.36 | 2026-08-28 | **A pass over the open issue tracker; five decisions gain consequence notes recording where their stated behaviour had drifted from the built one.** **D-12.1** twice: its removal-suppression rule was one flag, right for cancellation and wrong for an unreadable directory, since clearing `complete` tree-wide would leave a genuinely deleted file elsewhere in the index forever — unreadable prefixes now suppress removals under themselves only; and its settling window, described against scan *completion*, protected only files examined in a scan's final seconds and is re-anchored to the scan's start. A third note records that the scanner now follows directory symlinks: not following them was never a decision, it fell out of asking `file_type()`, and it left a user with a symlinked collection holding an empty library — the loop safety that shape supplied implicitly is now an explicit canonical-target guard. **D-12.3**: "degrades to a full rescan" is true of entries and false of favourites, which exist nowhere on disk, so the corruption policy was destroying hand-curated data under a warning promising a rebuild; favourites gain a sidecar with the index document authoritative whenever it loads, so a stale sidecar cannot resurrect a removed mark. Its staging file also carried a fixed name, so two Namir processes staged onto each other. **D-13.2**: elevation was implemented at the policy maximum, which on Linux is `SCHED_FIFO` 99 — where `watchdog/N` and `migration/N` live, above the 50 threaded IRQ handlers take — so a runaway audio thread outranked everything able to preempt it; now `min + 10`. The same note records that `SCHED_FIFO` is not Darwin's mechanism at all (CoreAudio-grade threads take `THREAD_TIME_CONSTRAINT_POLICY`, a deadline contract no priority number expresses), recorded rather than implemented, and retires that decision's "not yet called from any audio thread" line. **D-16.1** gains its own note, written by the notice work: it still described three catalogue fields while the tree has carried a fourth (`remedy`) and a one-token substitution vocabulary since M14 W10. |
+| 0.37 | 2026-09-06 | **S-5's specification is recorded in §19, where the four earlier spikes' specs already live.** Written retrospectively from the branch: the spike was agreed and run on 2026-09-05/06 against a spec held only in conversation, so `grep -rn "S-5" docs/` returned nothing while the branch was the sole record that S-5 was scoped at all — including the boundary ("may not add a decision, a requirement, a §14 row or a CI gate") that the branch is supposed to be constrained by. Question/Method/Axes/Gates/Kill criteria/Produces/Scope, plus the two spike-scoped ids the spike's own text cites and this repository did not define: **D-S5.1** (path-depend on `crates/` rather than vendor) and **D-S5.5** (serve the bench page cross-origin isolated, or the 100 µs timer makes every compute figure unquotable). Neither is an architecture decision and neither enters this document's D-numbering; the gap between them is left as a gap rather than filled with invented numbers. **The findings stay out of this document by design** — they are drafted in `spikes/s5-wasm-web-audio/FINDINGS-draft.md` and land only if a phase-(b) decision is taken. No decision is amended, no requirement moves, no gate changes. |

@@ -2,8 +2,9 @@
 
 This file holds the `docs/02-architecture.md` §19 findings entry and the §22 risk-register rows
 that S-5 would produce, written in the exact shape those sections use. **They live here, in the
-spike, on purpose.** S-5's own spec forbids it from adding a decision, a requirement, a §14 row
-or a CI gate, and M14 is still in flight; these paragraphs move into `docs/` only if and when a
+spike, on purpose.** S-5's own spec — recorded at `docs/02-architecture.md` §19 in review on
+2026-09-06, having until then existed only in conversation — forbids it from adding a decision, a
+requirement, a §14 row or a CI gate, and M14 is still in flight; these paragraphs move into `docs/` only if and when a
 phase-(b) decision is taken, and whoever takes that decision should re-read them against the
 tree as it is then, not paste them unread.
 
