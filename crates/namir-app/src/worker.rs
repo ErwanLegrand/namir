@@ -326,7 +326,7 @@ fn record_reference(
 ) {
     let reference = FileRef {
         hash,
-        library_relative: library_relative_reference(&ctx.library_roots, path),
+        library_relative: library_relative_reference(&ctx.library.roots(), path),
         absolute: Some(path.to_string_lossy().into_owned()),
         display_name,
         embedded: None,
@@ -511,7 +511,8 @@ fn run(ctx: WorkerContext, commands: mpsc::Receiver<AppCommand>, events: mpsc::S
                     }
                 };
                 let snapshot = ctx.library.snapshot();
-                let resolver = LibraryResolver::new(&snapshot, &ctx.library_roots);
+                let roots = ctx.library.roots();
+                let resolver = LibraryResolver::new(&snapshot, &roots);
                 let outcome = ctx
                     .instance
                     .with(|instance| instance.recall(&ctx.cache, &state, &resolver));

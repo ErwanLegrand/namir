@@ -264,8 +264,20 @@ impl SharedInner {
     pub(crate) fn library_roots(&self) -> Vec<std::path::PathBuf> {
         lock(&self.library)
             .as_ref()
-            .map(|service| service.roots().to_vec())
+            .map(|service| service.roots())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn add_library_root(&self, path: std::path::PathBuf) {
+        if let Some(service) = lock(&self.library).as_ref() {
+            service.add_root(path);
+        }
+    }
+
+    pub(crate) fn remove_library_root(&self, path: &std::path::Path) {
+        if let Some(service) = lock(&self.library).as_ref() {
+            service.remove_root(path);
+        }
     }
 
     pub(crate) fn nam_ref(&self) -> Option<FileRef> {
@@ -347,6 +359,10 @@ impl SharedInner {
 
     pub(crate) fn dismiss_notice(&self, id: u64) {
         lock(&self.notices).retain(|n| n.id != id);
+    }
+
+    pub(crate) fn dismiss_notices_matching(&self, predicate: impl Fn(&UiNotice) -> bool) {
+        lock(&self.notices).retain(|n| !predicate(n));
     }
 
     pub(crate) fn notices(&self) -> Vec<UiNotice> {

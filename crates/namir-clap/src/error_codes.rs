@@ -62,6 +62,18 @@ pub const PRESET_IO_FAILED: ErrorCode = ErrorCode::new(
      exact path and the operating system's own reason.",
 );
 
+/// A save was asked for under a name that already names a preset file. **`Warning`, and a
+/// refusal, not a failure:** nothing has been written, the preset on disk is untouched, and
+/// the same name pressed again goes through — see
+/// [`crate::ui_host::ClapUiHost::needs_overwrite_confirmation`] for why the confirmation is a second press
+/// rather than a dialog.
+pub const PRESET_EXISTS: ErrorCode = ErrorCode::new(
+    "clap.preset.exists",
+    Severity::Warning,
+    "A preset named {detail} already exists, so nothing was saved.",
+    "Press Save again to replace it, or type a different name. The preset on disk is still \
+     whatever it was, and your current settings are unchanged either way.",
+);
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +86,7 @@ mod tests {
             INVALID_SAMPLE_RATE,
             PRESET_UNAVAILABLE,
             PRESET_IO_FAILED,
+            PRESET_EXISTS,
         ]);
     }
 }

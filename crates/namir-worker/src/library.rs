@@ -136,7 +136,7 @@ pub struct ScanOutcome {
 /// never blocked by one and never observes a half-updated index.
 pub struct LibraryService {
     shared: Arc<SharedIndex>,
-    roots: Vec<PathBuf>,
+    roots: Mutex<Vec<PathBuf>>,
     /// Guards against two scans running against the same service at once — see
     /// [`Self::start_scan`]'s doc comment for why that case is refused rather than resolved.
     scanning: Arc<AtomicBool>,
@@ -293,7 +293,7 @@ impl LibraryService {
         (
             LibraryService {
                 shared,
-                roots,
+                roots: Mutex::new(roots),
                 scanning: Arc::new(AtomicBool::new(false)),
             },
             Vec::new(),
@@ -340,10 +340,27 @@ impl LibraryService {
     }
 
     /// The library roots this service scans, in configured order.
-    pub fn roots(&self) -> &[PathBuf] {
-        &self.roots
+    pub fn roots(&self) -> Vec<PathBuf> {
+        lock(&self.roots).clone()
     }
 
+    /// Adds `path` as a library root if not already present.
+    pub fn add_root(&self, path: PathBuf) {
+        let mut guard = lock(&self.roots);
+        if !guard.contains(&path) {
+            guard.push(path);
+        }
+    }
+
+    /// Removes `path` from the configured library roots.
+    pub fn remove_root(&self, path: &Path) {
+        lock(&self.roots).retain(|r| r != path);
+    }
+
+    /// Replaces the configured library roots.
+    pub fn set_roots(&self, roots: Vec<PathBuf>) {
+        *lock(&self.roots) = roots;
+    }
     /// The one per-user default location every product shell shares, at an explicitly-supplied
     /// config directory: an index at `<config_dir>/library-index.json` and one root,
     /// `<config_dir>/Library`, created if it doesn't exist yet (a scan over a directory that
@@ -431,7 +448,7 @@ impl LibraryService {
             cancel: Arc::clone(&cancel),
         };
 
-        let roots = self.roots.clone();
+        let roots = lock(&self.roots).clone();
         let shared = Arc::clone(&self.shared);
         // Moved into the job and held for its whole duration, so that an unwind from anywhere
         // inside still clears the flag; released explicitly before `on_complete` below.
@@ -645,7 +662,7 @@ mod tests {
         let dir = std::path::PathBuf::from("/config/dir");
         let (service, warnings) = LibraryService::open_at(&dir);
         assert!(warnings.is_empty());
-        assert_eq!(service.roots(), [dir.join("Library")].as_slice());
+        assert_eq!(service.roots(), vec![dir.join("Library")]);
     }
 
     /// A first launch (no config directory yet at all) opens cleanly with an empty index and no

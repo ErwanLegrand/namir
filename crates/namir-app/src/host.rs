@@ -336,6 +336,8 @@ pub struct AppHost {
     /// nothing — an environment with no per-user configuration convention, where the session runs
     /// but remembers nothing across launches (P8).
     preset_dir: Option<PathBuf>,
+    /// FR-LIB-010's configuration directory for persisting settings, or `None`.
+    config_dir: Option<PathBuf>,
     /// The preset directory as last enumerated by [`crate::worker`], and when the enumeration was
     /// *asked for* — stamped on request, not on arrival, so two frames in the same millisecond do
     /// not both queue one.
@@ -383,6 +385,7 @@ impl AppHost {
             loaded_model_name: None,
             loaded_ir_name: None,
             audio_mode,
+            config_dir: None,
             input_meter: MeterReading::default(),
             output_meter: MeterReading::default(),
             scan_progress: None,
@@ -432,6 +435,20 @@ impl AppHost {
         self.presets_listed_at = None;
     }
 
+    /// Points this host at the configuration directory for persisting settings.
+    pub fn watch_config_dir(&mut self, config_dir: PathBuf) {
+        self.config_dir = Some(config_dir);
+    }
+
+    fn persist_library_roots(&self) {
+        let Some(dir) = &self.config_dir else { return };
+        let path = crate::settings::settings_path(dir);
+        let (mut settings, _) = crate::settings::load(&path);
+        settings.library_roots = self.library.roots();
+        if let Err(w) = crate::settings::save(&path, &settings) {
+            crate::diagnostics::record(w.code, &w.detail);
+        }
+    }
     /// Asks [`crate::worker`] for a fresh preset listing if the last one is stale. Never reads a
     /// directory itself — see [`PRESET_LISTING_MAX_AGE`].
     fn refresh_presets_if_stale(&mut self) {
@@ -843,6 +860,7 @@ impl UiHost for AppHost {
             // Whatever the last off-thread enumeration produced -- a GUI frame never reads a
             // directory (`refresh_presets_if_stale` only ever *asks* for one).
             presets: self.presets.clone(),
+            library_roots: self.library.roots(),
         }
     }
 
@@ -931,6 +949,14 @@ impl UiHost for AppHost {
             }
             UiIntent::DismissNotice { id } => {
                 self.notices.retain(|n| n.id != id);
+            }
+            UiIntent::AddLibraryRoot { path } => {
+                self.library.add_root(path);
+                self.persist_library_roots();
+            }
+            UiIntent::RemoveLibraryRoot { path } => {
+                self.library.remove_root(&path);
+                self.persist_library_roots();
             }
         }
     }
@@ -2065,6 +2091,51 @@ mod tests {
         host.dispatch(UiIntent::DismissNotice { id: first_id });
         assert_eq!(host.notices.len(), 1);
         assert_ne!(host.notices[0].id, first_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FR-LIB-010: adding and removing library roots updates the host snapshot and is persisted to
+    /// AppSettings when a config directory is configured.
+    // trace: FR-LIB-010
+    #[test]
+    fn adding_and_removing_library_roots_updates_snapshot_and_persists_settings() {
+        let dir = temp_dir("library_roots_app_host");
+        let (mut host, _engine) = build_host(&dir);
+        host.watch_config_dir(dir.clone());
+
+        let initial_roots = host.snapshot().library_roots;
+        assert_eq!(initial_roots, vec![dir.join("Library")]);
+
+        let custom_root = dir.join("CustomLibrary");
+        host.dispatch(UiIntent::AddLibraryRoot {
+            path: custom_root.clone(),
+        });
+
+        let snapshot = host.snapshot();
+        assert_eq!(
+            snapshot.library_roots,
+            vec![dir.join("Library"), custom_root.clone()]
+        );
+
+        // Verify settings were persisted on disk
+        let settings_path = crate::settings::settings_path(&dir);
+        let (loaded, warning) = crate::settings::load(&settings_path);
+        assert!(warning.is_none());
+        assert_eq!(
+            loaded.library_roots,
+            vec![dir.join("Library"), custom_root.clone()]
+        );
+
+        // Removing a root
+        host.dispatch(UiIntent::RemoveLibraryRoot {
+            path: dir.join("Library"),
+        });
+        let snapshot = host.snapshot();
+        assert_eq!(snapshot.library_roots, vec![custom_root.clone()]);
+
+        let (loaded, _) = crate::settings::load(&settings_path);
+        assert_eq!(loaded.library_roots, vec![custom_root]);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

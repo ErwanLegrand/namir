@@ -58,7 +58,7 @@ fn telemetry_output_peak_id(channel: usize) -> u32 {
 /// and showing whatever it caught up to. Not RT-constrained (this runs on the GUI thread), but
 /// bounded anyway so a telemetry flood cannot turn one frame into unbounded work.
 const MAX_DRAIN_BATCHES: usize = 8;
-
+const OVERWRITE_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 pub(crate) struct ClapUiHost {
     inner: Arc<SharedInner>,
     /// A clone of the live engine's telemetry reader, or `None` before the first `activate()`.
@@ -88,6 +88,7 @@ pub(crate) struct ClapUiHost {
     /// this shape.
     input_peak_db: f32,
     output_peak_db: f32,
+    pending_overwrite: Option<(String, std::time::Instant)>,
 }
 
 impl ClapUiHost {
@@ -103,6 +104,7 @@ impl ClapUiHost {
             telemetry_generation: 0,
             input_peak_db: f32::NEG_INFINITY,
             output_peak_db: f32::NEG_INFINITY,
+            pending_overwrite: None,
         }
     }
 
@@ -162,6 +164,23 @@ impl ClapUiHost {
             self.output_peak_db = peak;
         }
     }
+
+    fn needs_overwrite_confirmation(&mut self, path: &std::path::Path, name: &str) -> bool {
+        if !path.exists() {
+            self.pending_overwrite = None;
+            return false;
+        }
+        let confirmed = self
+            .pending_overwrite
+            .as_ref()
+            .is_some_and(|(armed, at)| armed == name && at.elapsed() < OVERWRITE_CONFIRM_WINDOW);
+        if confirmed {
+            self.pending_overwrite = None;
+            return false;
+        }
+        self.pending_overwrite = Some((name.to_string(), std::time::Instant::now()));
+        true
+    }
 }
 
 impl UiHost for ClapUiHost {
@@ -189,6 +208,7 @@ impl UiHost for ClapUiHost {
             audio_mode: None,
             unsaved_changes: self.inner.is_dirty(),
             notices: self.inner.notices(),
+            library_roots: self.inner.library_roots(),
         }
     }
 
@@ -202,10 +222,29 @@ impl UiHost for ClapUiHost {
                 }
             }
             UiIntent::SavePreset { name } => {
+                let Some(dir) = crate::presets::preset_dir() else {
+                    self.inner.push_notice(
+                        crate::error_codes::PRESET_UNAVAILABLE,
+                        "this system has no per-user configuration directory to keep presets in",
+                    );
+                    return;
+                };
+                let Some(path) = crate::presets::preset_path(&dir, &name) else {
+                    self.inner.push_notice(
+                        crate::error_codes::PRESET_UNAVAILABLE,
+                        format!("{name:?} is not a usable preset name"),
+                    );
+                    return;
+                };
+                if self.needs_overwrite_confirmation(&path, &name) {
+                    self.inner
+                        .push_notice(crate::error_codes::PRESET_EXISTS, &name);
+                    return;
+                }
+                self.inner.dismiss_notices_matching(|n| {
+                    n.code.id == crate::error_codes::PRESET_EXISTS.id && n.detail == name
+                });
                 worker_jobs::spawn_save_preset(Arc::clone(&self.inner), name);
-                // Left out of the `mark_dirty` below with `RecallPreset`, and for the mirror-image
-                // reason: a save is what *clears* the dirty flag, and the job that writes the file
-                // is the one that clears it once the bytes are actually on disk.
                 return;
             }
             UiIntent::RecallPreset { path } => {
@@ -224,6 +263,14 @@ impl UiHost for ClapUiHost {
             UiIntent::RescanLibraryRequested => self.inner.start_library_scan(),
             UiIntent::CancelScanRequested => self.inner.cancel_library_scan(),
             UiIntent::DismissNotice { id } => self.inner.dismiss_notice(id),
+            UiIntent::AddLibraryRoot { path } => {
+                self.inner.add_library_root(path);
+                return;
+            }
+            UiIntent::RemoveLibraryRoot { path } => {
+                self.inner.remove_library_root(&path);
+                return;
+            }
         }
         self.inner.mark_dirty();
     }
@@ -536,5 +583,88 @@ mod tests {
             key: "not.a.real.key",
         });
         // No panic is the assertion.
+    }
+
+    #[test]
+    fn adding_and_removing_library_roots_in_clap_host_updates_snapshot() {
+        let mut h = host();
+        let custom = std::path::PathBuf::from("/custom/models");
+        h.dispatch(UiIntent::AddLibraryRoot {
+            path: custom.clone(),
+        });
+        assert!(h.snapshot().library_roots.contains(&custom));
+
+        h.dispatch(UiIntent::RemoveLibraryRoot {
+            path: custom.clone(),
+        });
+        assert!(!h.snapshot().library_roots.contains(&custom));
+    }
+
+    #[test]
+    fn clap_host_saving_over_existing_preset_requires_confirmation() {
+        let mut h = host();
+        let Some(dir) = crate::presets::preset_dir() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        let preset_name = "ClapTestExistingPreset";
+        let path = crate::presets::preset_path(&dir, preset_name).unwrap();
+        std::fs::write(&path, b"dummy preset bytes").unwrap();
+
+        // First save attempt: refused, PRESET_EXISTS notice pushed
+        h.dispatch(UiIntent::SavePreset {
+            name: preset_name.to_string(),
+        });
+        let snapshot = h.snapshot();
+        assert_eq!(snapshot.notices.len(), 1);
+        assert_eq!(
+            snapshot.notices[0].code.id,
+            crate::error_codes::PRESET_EXISTS.id
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"dummy preset bytes");
+
+        // Second consecutive save attempt with same name: proceeds and clears notice
+        h.dispatch(UiIntent::SavePreset {
+            name: preset_name.to_string(),
+        });
+        let snapshot = h.snapshot();
+        assert!(snapshot.notices.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn clap_host_overwrite_confirmation_resets_on_different_name() {
+        let mut h = host();
+        let Some(dir) = crate::presets::preset_dir() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        let preset1 = "ClapOverwriteReset1";
+        let preset2 = "ClapOverwriteReset2";
+        let path1 = crate::presets::preset_path(&dir, preset1).unwrap();
+        let path2 = crate::presets::preset_path(&dir, preset2).unwrap();
+        std::fs::write(&path1, b"p1").unwrap();
+        std::fs::write(&path2, b"p2").unwrap();
+
+        h.dispatch(UiIntent::SavePreset {
+            name: preset1.to_string(),
+        });
+        h.dispatch(UiIntent::SavePreset {
+            name: preset2.to_string(),
+        });
+
+        let snapshot = h.snapshot();
+        assert_eq!(
+            snapshot
+                .notices
+                .iter()
+                .filter(|n| n.code.id == crate::error_codes::PRESET_EXISTS.id)
+                .count(),
+            2
+        );
+
+        let _ = std::fs::remove_file(&path1);
+        let _ = std::fs::remove_file(&path2);
     }
 }
