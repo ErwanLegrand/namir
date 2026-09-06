@@ -7,13 +7,15 @@ show a GUI at all.
 
 ## What's mechanically true today
 
-`crates/namir-clap/src/gui.rs` implements `PluginGuiImpl`, restricted to `GuiApiType::WIN32`,
-non-floating (matching `spikes/s4-clack-clap`'s own S-4-validated shape, D-14.2). `set_parent`
-calls `namir_ui::app::open_parented` with a real `crate::ui_host::ClapUiHost` (not the spike's
-placeholder egui window), bridging to this instance's live `ParamMirror`, meters, loaded model/IR
-names, library snapshot and notices (`crates/namir-clap/src/ui_host.rs`). The one `unsafe` block
-this needs (`window.borrow_handle_unchecked()`) carries a full written safety argument in that
-module's own doc comment, per D-5.3.
+`crates/namir-clap/src/gui.rs` implements `PluginGuiImpl`, negotiating the current platform's
+native GUI API (`GuiApiType::default_for_current_platform()`: `WIN32` on Windows, `COCOA` on macOS,
+`X11` on Linux), non-floating. `set_parent` receives and validates native raw window handles
+(`Win32` on Windows, `AppKit` on macOS, `Xlib`/`Xcb` on Linux) and calls
+`namir_ui::app::open_parented` with a real `crate::ui_host::ClapUiHost`, bridging to this
+instance's live `ParamMirror`, meters, loaded model/IR names, library snapshot and notices
+(`crates/namir-clap/src/ui_host.rs`). The one `unsafe` block this needs
+(`window.borrow_handle_unchecked()`) carries a full written safety argument in that module's own
+doc comment, per D-5.3.
 
 **The "host declines to show a GUI" half is true by construction, not merely by intent:** nothing
 in `crates/namir-clap/src/audio.rs` (the audio-thread path) or `crates/namir-clap/src/main_thread.rs`
@@ -27,17 +29,19 @@ direct evidence the plugin is fully functional with the GUI never shown.
 ## Why this needs a real host and can't be fully automated
 
 Embedding is specifically about the host's own window-management code correctly receiving,
-sizing, and parenting a foreign HWND — `clap-validator` has no GUI-driving test at all (confirmed:
-none of its 44 tests reference the `gui` extension), and there is no way to observe "does this
-render inside Reaper's own plugin-editor window frame, with correct focus/input/DPI behaviour"
-without an actual host process and a screen.
+sizing, and parenting a foreign window handle (`HWND` on Windows, `NSView` on macOS, `XID` on Linux)
+— `clap-validator` has no GUI-driving test at all (confirmed: none of its 44 tests reference the
+`gui` extension), and there is no way to observe "does this render inside Reaper's or Bitwig's own
+plugin-editor window frame, with correct focus/input/DPI behaviour" without an actual host process
+and a screen.
 
 ## Script
 
-1. Build `namir_clap.dll` in release mode; copy/rename it to `namir.clap` and place it at
-   `namir_platform::clap_paths::clap_install_dir(ClapInstallScope::PerUser)`'s reported path
-   (`%LOCALAPPDATA%\Programs\Common\CLAP` on Windows — **not** `%APPDATA%\...`, per D-13.3's own
-   S-4 finding that Reaper silently ignores the latter).
+1. Build the CLAP plugin in release mode; place/install it at
+   `namir_platform::clap_paths::clap_install_dir(ClapInstallScope::PerUser)`'s reported path:
+   - Windows: `%LOCALAPPDATA%\Programs\Common\CLAP\Namir.clap` (renamed DLL)
+   - macOS: `~/Library/Audio/Plug-Ins/CLAP/Namir.clap` (bundle directory)
+   - Linux: `~/.clap/Namir.clap` (renamed shared object, or via `install.sh`)
 2. Open Reaper, insert Namir on a track from the FX browser. Confirm the plugin appears under its
    declared name ("Namir") and vendor.
 3. Open the plugin's editor (double-click the FX, or the host's own "show UI" control). Confirm:

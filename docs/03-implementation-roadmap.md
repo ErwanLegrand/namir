@@ -3079,6 +3079,10 @@ that happens to depend on them first.
     FR-CLAP-100 stays `**UNRESOLVED**` and unmet on two of three platforms through M14. One stale
     detail found while writing this and recorded rather than fixed: the requirement's ledger entry
     still books it to **M9b**, a milestone that has run, so whoever takes the decision re-books it.
+    *Status (2026-09-06)* — **Closed.** `namir-clap` resolves `GuiApiType::default_for_current_platform()`
+    (`WIN32` on Windows, `COCOA` on macOS, `X11` on Linux) and handles matching native raw window handles
+    (`Win32`, `AppKit`, `Xlib`, `Xcb`) for embedding via `baseview::open_parented` without introducing any
+    new `unsafe` surfaces.
 21. **Closed 2026-08-29 (issue #27), both halves built.** `xtask traceability` reads the whole
     code set (D-23.1's M15 consequence note has the rule and the demotions); `namir-state`'s
     `schema` module and `cargo run -p xtask -- schema` are FR-STATE-040's missing `S` artifact.
