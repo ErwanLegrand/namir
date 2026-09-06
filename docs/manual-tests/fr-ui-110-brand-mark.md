@@ -56,11 +56,12 @@ called `Result::unwrap()` on an `Err` value: RecvError
 
 `cargo run -p namir-app` reached further -- it started audio (`namir: audio stream started`,
 `48000 Hz, 256-frame buffer`) and then panicked at the same `baseview` X11 call. `xvfb-run` did not
-help. No CLAP host was available there either.
+help under the default config because Xvfb GLX requires sRGB fallback (`GlConfig::srgb = false`).
+No CLAP host was available there either.
 
 **Correction (2026-08-30, issue #143).** The observation above stands; the explanation attached to it
-did not. It was recorded as "`baseview` 0.2.2's X11 path needs a GLX-capable display and `Xvfb`
-provides none", and that is wrong. The cause is **sRGB**, not GLX: `GlConfig::srgb` defaults to
+did not. It was originally recorded as "`baseview` 0.2.2's X11 path needs a GLX-capable display and `Xvfb`
+provides none", and that is wrong: Xvfb does support GLX (via Mesa). The cause of the failure was **sRGB**, not GLX: `GlConfig::srgb` defaults to
 `true`, and `glXChooseFBConfig` then matches none of Xvfb's configs. Measured under Xvfb -- 240
 healthy `GLXFBConfig`s available, the sRGB flag clear on every one. `namir-ui` now retries with
 `srgb: false` when the first attempt fails (`open_with_srgb_fallback`), and CI runs the interface

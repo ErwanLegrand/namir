@@ -292,7 +292,7 @@ impl<H: UiHost> NamirUi<H> {
     /// One frame: fetch a snapshot, render FR-UI-020's screen from it, dispatch every intent that
     /// interaction produced, then request another repaint (meters and scan progress both need
     /// continuous updates even with no user input).
-    fn frame(&mut self, ui: &mut egui::Ui) {
+    pub fn frame(&mut self, ui: &mut egui::Ui) {
         let snapshot = self.host.snapshot();
         let mut intents = Vec::new();
         render(ui, &mut self.view, &snapshot, &mut intents);
