@@ -30,7 +30,7 @@ use namir_worker::{EngineConfig, Instance, JobResult, LoadSource, ResourceCache,
 use crate::instance::SharedInstance;
 
 /// One request from the UI thread.
-pub(crate) enum AppCommand {
+pub enum AppCommand {
     /// FR-UI-050-adjacent: load a library entry, inferring Nam vs. Ir from its extension.
     LoadLibraryEntry(PathBuf),
     /// FR-LIB-020: (re)start a library scan.

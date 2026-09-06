@@ -312,19 +312,22 @@ impl From<crate::audio_io::ShareMode> for AudioShareMode {
 /// Shared between `AppHost` and `AppCommand::ReopenAudioStream`: the worker puts the built
 /// engine + telemetry reader here; `handle_event(AppEvent::AudioStreamReady)` takes them out.
 /// Using a slot rather than an `AppEvent` payload avoids requiring `Debug` on `AudioEngine`.
-#[derive(Clone)]
-pub(crate) struct EngineSlot(Arc<Mutex<Option<(AudioEngine, TelemetryReader)>>>);
+#[derive(Clone, Default)]
+pub struct EngineSlot(Arc<Mutex<Option<(AudioEngine, TelemetryReader)>>>);
 
 impl EngineSlot {
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(Mutex::new(None)))
+    /// Creates an empty engine transfer slot.
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub(crate) fn put(&self, engine: AudioEngine, telemetry: TelemetryReader) {
+    /// Stores the rebuilt engine and telemetry reader in the slot.
+    pub fn put(&self, engine: AudioEngine, telemetry: TelemetryReader) {
         *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((engine, telemetry));
     }
 
-    pub(crate) fn take(&self) -> Option<(AudioEngine, TelemetryReader)> {
+    /// Takes the engine and telemetry reader out of the slot, leaving it empty.
+    pub fn take(&self) -> Option<(AudioEngine, TelemetryReader)> {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }
