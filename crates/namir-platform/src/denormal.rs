@@ -430,4 +430,128 @@ mod tests {
             );
         }
     }
+
+    #[cfg(target_arch = "aarch64")]
+    mod aarch64_tests {
+        use super::*;
+
+        // Direct FPCR read for tests observing what the guard observes/restores on AArch64.
+        fn read_fpcr() -> u64 {
+            let fpcr: u64;
+            // SAFETY: `mrs` against `fpcr` reads a CPU control register directly. It touches no
+            // memory and has no side effects, so `nomem, nostack, preserves_flags` are sound.
+            unsafe {
+                core::arch::asm!(
+                    "mrs {0}, fpcr",
+                    out(reg) fpcr,
+                    options(nomem, nostack, preserves_flags),
+                );
+            }
+            fpcr
+        }
+
+        use read_fpcr as fpcr;
+
+        #[test]
+        fn engaging_sets_fz_bit() {
+            let before = fpcr();
+            let guard = DenormalGuard::new();
+            let during = fpcr();
+            assert_eq!(
+                during,
+                before | FZ_MASK,
+                "engaging should set exactly FZ on top of whatever was already there"
+            );
+            drop(guard);
+        }
+
+        #[test]
+        fn dropping_restores_exact_prior_fpcr() {
+            let before = fpcr();
+            let guard = DenormalGuard::new();
+            assert_ne!(
+                fpcr(),
+                before,
+                "guard should have changed something to restore"
+            );
+            drop(guard);
+            assert_eq!(
+                fpcr(),
+                before,
+                "drop should restore the exact prior bit pattern"
+            );
+        }
+
+        #[test]
+        fn sequential_cycles_do_not_leak_bits() {
+            let baseline = fpcr();
+            for _ in 0..5 {
+                let guard = DenormalGuard::new();
+                assert_eq!(fpcr() & FZ_MASK, FZ_MASK);
+                drop(guard);
+                assert_eq!(fpcr(), baseline, "a prior cycle leaked bits into this one");
+            }
+        }
+
+        #[test]
+        fn nested_guards_restore_in_reverse_order_without_leaking() {
+            let baseline = fpcr();
+            let outer = DenormalGuard::new();
+            let engaged = fpcr();
+            assert_eq!(engaged, baseline | FZ_MASK);
+
+            let inner = DenormalGuard::new();
+            assert_eq!(
+                fpcr(),
+                engaged,
+                "re-engaging while already engaged is idempotent"
+            );
+
+            drop(inner);
+            assert_eq!(
+                fpcr(),
+                engaged,
+                "dropping the inner guard must restore the outer's engaged state, not leak past it"
+            );
+
+            drop(outer);
+            assert_eq!(
+                fpcr(),
+                baseline,
+                "dropping the outer guard must restore the true baseline"
+            );
+        }
+
+        #[test]
+        fn subnormal_product_is_flushed_only_while_engaged() {
+            // Chosen so the mathematically exact product (1e-40) falls in f32's subnormal range
+            // (below ~1.1755e-38, above 0) rather than underflowing to true zero on its own.
+            let a: f32 = std::hint::black_box(1e-20_f32);
+            let b: f32 = std::hint::black_box(1e-20_f32);
+
+            let unflushed = std::hint::black_box(a) * std::hint::black_box(b);
+            assert!(
+                unflushed != 0.0,
+                "expected a genuine nonzero subnormal, got exact zero"
+            );
+            assert!(
+                unflushed.is_subnormal(),
+                "expected {unflushed} to be subnormal"
+            );
+
+            let guard = DenormalGuard::new();
+            let flushed = std::hint::black_box(a) * std::hint::black_box(b);
+            assert_eq!(
+                flushed, 0.0,
+                "with FZ engaged the subnormal product must flush to exact zero"
+            );
+            drop(guard);
+
+            let restored = std::hint::black_box(a) * std::hint::black_box(b);
+            assert_eq!(
+                restored, unflushed,
+                "dropping the guard must restore ordinary subnormal handling"
+            );
+        }
+    }
 }
