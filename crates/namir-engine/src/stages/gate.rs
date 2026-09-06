@@ -2,17 +2,21 @@
 //! shared per-stage bypass crossfade (FR-CHAIN-020), and FR-CHAIN-050's mono-core-then-duplicate
 //! channel handling.
 //!
-//! Runtime order is `gate → trim → ...` (D-9.8; see `stages/mod.rs`'s doc comment) — this module
-//! doesn't need to know that, it just implements Gate itself.
+//! Runtime order is `trim → gate → ...` (FR-CHAIN-010; see `stages/mod.rs`'s doc comment) — this
+//! module doesn't need to know that, it just implements Gate itself.
 //!
 //! # Why this is mono-core
 //!
 //! FR-CHAIN-050 treats Gate as conceptually mono: by the time this stage runs, every channel of
-//! `io` already carries an identical signal (an invariant either Trim establishes downstream of
-//! here, for `channel_count() > 1`, or that trivially holds for a true mono chain) since Gate
-//! itself runs *before* Trim in this chain (D-9.8). Detecting and gating on channel 0 alone, then
-//! duplicating the result, keeps that invariant intact for whatever comes next rather than
-//! running (and potentially diverging) an independent detector per channel.
+//! `io` already carries an identical signal — Trim runs immediately upstream and establishes that
+//! invariant for `channel_count() > 1`, and it trivially holds for a true mono chain. Detecting
+//! and gating on channel 0 alone, then duplicating the result, keeps the invariant intact for
+//! whatever comes next rather than running (and potentially diverging) an independent detector
+//! per channel.
+//!
+//! Until M15 this stage ran *upstream* of Trim (D-9.8, now withdrawn), and the duplication below
+//! therefore overwrote channel 1 before Trim could sum it — which is what made `Stereo` a
+//! left-channel-only path. The mono-core shape is unchanged; only its position moved.
 
 use namir_dsp::{GateParams, NoiseGate};
 use namir_params::ParamKind;

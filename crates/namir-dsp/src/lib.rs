@@ -2,8 +2,8 @@
 //! reusable signal-processing building blocks used by `namir-engine`'s product stages
 //! (Trim/Gate/Nam/Ir/Eq/Out). This crate has no notion of a `Stage`, a chain, or parameter IDs;
 //! it only knows how to turn one set of numeric controls into a sample-accurate DSP operation on
-//! a `&mut [f32]` buffer. Stage assembly, ordering (e.g. D-9.8's gate-before-trim), and telemetry
-//! wiring belong to `namir-engine`, not here.
+//! a `&mut [f32]` buffer. Stage assembly, ordering (e.g. FR-CHAIN-010's trim-before-gate), and
+//! telemetry wiring belong to `namir-engine`, not here.
 
 mod biquad;
 mod dc_blocker;

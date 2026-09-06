@@ -220,7 +220,7 @@ mod tests {
 
     const TRIM: ParamDescriptor = ParamDescriptor::new(
         "trim.gain_db",
-        "Input Trim",
+        "Input Level",
         Unit::Decibels,
         ParamKind::Continuous {
             min: -24.0,

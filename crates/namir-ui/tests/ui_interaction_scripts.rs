@@ -364,8 +364,8 @@ impl HeadlessUiDriver {
 fn numeric_display_shows_formatted_values_without_interaction() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
     // Continuous control displays value text without interaction
-    let (trim_text, _) = driver.locate_value_for_control("Input Trim");
-    assert_eq!(trim_text, "0.0", "Input Trim displays 0.0 by default");
+    let (trim_text, _) = driver.locate_value_for_control("Input Level");
+    assert_eq!(trim_text, "0.0", "Input Level displays 0.0 by default");
 
     let (gate_thresh_text, _) = driver.locate_value_for_control("Gate Threshold");
     assert_eq!(
@@ -384,7 +384,7 @@ fn numeric_display_shows_formatted_values_without_interaction() {
 #[test]
 fn numeric_value_entry_via_keyboard_updates_continuous_parameter() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
-    driver.type_into_control_value("Input Trim", "6.0");
+    driver.type_into_control_value("Input Level", "6.0");
     let intents = driver.dispatched_intents();
     assert_eq!(
         intents,
@@ -392,10 +392,10 @@ fn numeric_value_entry_via_keyboard_updates_continuous_parameter() {
             key: trim::GAIN_DB.key,
             value: 6.0,
         }],
-        "typing 6.0 into Input Trim must dispatch SetParam 6.0"
+        "typing 6.0 into Input Level must dispatch SetParam 6.0"
     );
 
-    let (updated_text, _) = driver.locate_value_for_control("Input Trim");
+    let (updated_text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(updated_text, "6.0");
 }
 
@@ -437,7 +437,7 @@ fn numeric_value_entry_clamps_out_of_range_inputs() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
 
     // Input trim range is -24.0..=+24.0. Type 999.0 -> clamped to 24.0
-    driver.type_into_control_value("Input Trim", "999");
+    driver.type_into_control_value("Input Level", "999");
     assert_eq!(
         driver.dispatched_intents(),
         vec![UiIntent::SetParam {
@@ -446,13 +446,13 @@ fn numeric_value_entry_clamps_out_of_range_inputs() {
         }],
         "typing 999 must clamp to maximum 24.0"
     );
-    let (text, _) = driver.locate_value_for_control("Input Trim");
+    let (text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text, "24.0");
 
     driver.clear_dispatched();
 
     // Type -999.0 -> clamped to -24.0
-    driver.type_into_control_value("Input Trim", "-999");
+    driver.type_into_control_value("Input Level", "-999");
     assert_eq!(
         driver.dispatched_intents(),
         vec![UiIntent::SetParam {
@@ -461,7 +461,7 @@ fn numeric_value_entry_clamps_out_of_range_inputs() {
         }],
         "typing -999 must clamp to minimum -24.0"
     );
-    let (text, _) = driver.locate_value_for_control("Input Trim");
+    let (text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text, "-24.0");
 }
 
@@ -474,14 +474,14 @@ fn numeric_value_entry_rejects_non_numeric_input() {
         ..Default::default()
     });
 
-    let (initial_text, _) = driver.locate_value_for_control("Input Trim");
+    let (initial_text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(initial_text, "6.0");
 
-    driver.type_into_control_value("Input Trim", "loud");
+    driver.type_into_control_value("Input Level", "loud");
     // Value remains 6.0 and was not modified to invalid state
     assert_eq!(driver.current_param(trim::GAIN_DB.key), 6.0);
 
-    let (text, _) = driver.locate_value_for_control("Input Trim");
+    let (text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text, "6.0", "value must remain at previous value 6.0");
 }
 
@@ -494,10 +494,10 @@ fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
         ..Default::default()
     });
 
-    driver.type_and_escape_control_value("Input Trim", "12.0");
+    driver.type_and_escape_control_value("Input Level", "12.0");
     assert_eq!(driver.current_param(trim::GAIN_DB.key), 6.0);
 
-    let (text, _) = driver.locate_value_for_control("Input Trim");
+    let (text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text, "6.0");
 }
 
@@ -514,10 +514,10 @@ fn reset_gesture_double_clicking_label_restores_continuous_default() {
         ..Default::default()
     });
 
-    let (initial_text, _) = driver.locate_value_for_control("Input Trim");
+    let (initial_text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(initial_text, "12.0");
 
-    let label_rect = driver.locate_label("Input Trim");
+    let label_rect = driver.locate_label("Input Level");
 
     // Single click does not reset
     driver.click_at(label_rect.center());
@@ -535,7 +535,7 @@ fn reset_gesture_double_clicking_label_restores_continuous_default() {
         }],
         "double clicking label must emit ResetParamToDefault"
     );
-    let (text_after, _) = driver.locate_value_for_control("Input Trim");
+    let (text_after, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text_after, "0.0");
 }
 
@@ -574,7 +574,7 @@ fn reset_gesture_double_clicking_value_does_not_reset_parameter() {
         ..Default::default()
     });
 
-    let (_, val_rect) = driver.locate_value_for_control("Input Trim");
+    let (_, val_rect) = driver.locate_value_for_control("Input Level");
     driver.double_click_at(val_rect.center());
     let reset_intents: Vec<_> = driver
         .dispatched_intents()
@@ -591,7 +591,7 @@ fn reset_gesture_double_clicking_value_does_not_reset_parameter() {
 fn reset_and_fine_adjust_shift_drag_scales_increments() {
     // Standard drag without Shift
     let mut driver1 = HeadlessUiDriver::new(UiSnapshot::default());
-    let (_, rect1) = driver1.locate_value_for_control("Input Trim");
+    let (_, rect1) = driver1.locate_value_for_control("Input Level");
     driver1.drag_at(rect1.center(), vec2(50.0, 0.0), Modifiers::NONE);
     let normal_dispatched = driver1.dispatched_intents();
     assert_eq!(normal_dispatched.len(), 1);
@@ -604,7 +604,7 @@ fn reset_and_fine_adjust_shift_drag_scales_increments() {
 
     // Drag with Shift modifier
     let mut driver2 = HeadlessUiDriver::new(UiSnapshot::default());
-    let (_, rect2) = driver2.locate_value_for_control("Input Trim");
+    let (_, rect2) = driver2.locate_value_for_control("Input Level");
     driver2.drag_at(rect2.center(), vec2(50.0, 0.0), Modifiers::SHIFT);
     let shift_dispatched = driver2.dispatched_intents();
     assert_eq!(shift_dispatched.len(), 1);
@@ -629,8 +629,8 @@ fn reset_and_fine_adjust_shift_drag_scales_increments() {
 fn keyboard_arrow_keys_on_focused_control_adjust_value() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
 
-    // Focus Input Trim by clicking its value control
-    let (_, rect) = driver.locate_value_for_control("Input Trim");
+    // Focus Input Level by clicking its value control
+    let (_, rect) = driver.locate_value_for_control("Input Level");
     driver.click_at(rect.center());
     driver.clear_dispatched();
 
@@ -668,7 +668,8 @@ fn single_screen_layout_paints_all_major_sections() {
     let mut driver = HeadlessUiDriver::new(UiSnapshot::default());
     // Verify all major controls and section headers exist on one screen
     let sections = [
-        "Input",
+        "Input Level",
+        "Output Level",
         "Gate",
         "Model",
         "Impulse Response",

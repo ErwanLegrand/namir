@@ -960,6 +960,44 @@ of that reading, not a design pass, and not something any of the five gates coul
 sweep's second product, after the fifty-four partials, and the argument for the reading being
 periodic rather than once.
 
+*Consequence (added M15, 2026-09-07) — **this decision is withdrawn.*** The chain is rebuilt to
+`trim → gate → nam → ir → eq → out`, which is FR-CHAIN-010's original order, and that requirement's
+M9a amendment is superseded by a note of its own. The decision text above is left standing, as this
+document's convention requires, and is now history: it describes what shipped from M2 (2026-08-06)
+to M15 and the reasoning that put it there.
+
+*What the M9a note above got right, and the one thing it did not weigh.* Its account of the
+contradiction — as old as the two documents, visible in `stages/mod.rs`'s prose the whole time,
+undetectable by any of the five gates — stands unchanged and is worth keeping for its own sake. What
+it weighed, on both passes, was a single argument: this decision's usability one. Two paragraphs
+after resolving the conflict in that argument's favour it recorded a second consequence of the same
+ordering, as an observation about FR-CHAIN-060's Stereo row, and did not carry it back to the
+question it had just answered. Gate is mono-core: it detects on channel 0 and copies that result
+over every other channel (`crates/namir-engine/src/stages/gate.rs`) to establish the
+identical-channel invariant every later stage assumes. Trim owns the chain's only cross-channel
+mixing. Ordering Gate first therefore destroys the right channel *before* the only stage that could
+have summed it — so of FR-CHAIN-060's two permitted Stereo inputs, `2 ch summed or L-only
+(FR-CHAIN-070)`, the first was unreachable except as a side effect of disabling the gate. That is
+the argument on the other side of the scale, and M9a never put it there.
+
+*The trade, stated as a trade.* Withdrawing this decision costs exactly what it was written to buy:
+the gate's threshold now references the trimmed signal, so raising the input trim raises what the
+gate hears, and a player who does so may have to lower the threshold to match. Nothing has been
+discovered that makes that cost smaller than D-9.8 judged it. It is paid for two things — a
+requirement and its code agreeing without either being amended to the other, for the first time
+since `875068e`, and a stereo input reaching the mono core as both of its channels — and the
+judgement that those together outweigh it is the owner's, taken on 2026-09-07 with the cost in view.
+
+*What moves with it, and what does not.* `build_default_chain` and the three stage doc comments that
+asserted gate-first; `chain_probes.rs`'s transcription of the requirement's order and two of its
+five transposition probes; `namir-clap`'s stereo-pair test, which pinned L-only as the shipped
+reading of FR-CHAIN-060 and now pins the sum; the two benches' assembly order. **AQ-2 is not
+reopened** — it asked for confirmation of this decision, got it on 2026-08-04, and that confirmation
+is a matter of record rather than a live question. **No requirement changes priority or disposition**
+except FR-CHAIN-070's, whose absent chooser now falls back to the sum rather than to the left
+channel; FR-CHAIN-060 stays satisfied on the other of its two permitted options, and both
+requirements carry their own M15 notes.
+
 **Decision D-9.9** — EQ uses transposed-direct-form-II biquads with coefficient interpolation
 across the block rather than coefficient recalculation per sample.
 
@@ -4038,3 +4076,4 @@ drift was findable.
 | 0.37 | 2026-08-30 | **Four prose sites that had gone false against the code beside them, corrected after the issue-tracker pass merged.** **§22 R-18** said "not mitigated today" while M14 had already taken the first of the three mitigations it lists — the index is off the instantiation path — so the row gains a note saying what was taken, what it does *not* retire (the ~161 ms parse still exists, merely deferred, guarded by `LIBRARY_INDEX_BUDGET`), and that deferring it created issue #96's empty-index resolution defect in turn; the M9b statement above it is kept as written rather than edited. `namir-platform`'s `thread_priority` module claimed the `min + 10` change was "not yet recorded in D-13.2" after 0.36 recorded it. `namir-clap`'s `gui.rs` claimed `set_size` had "no upstream ticket to track" after it was filed as `prokopyl/clack#101`. And `docs/manual-tests/fr-ui-110-brand-mark.md` attributed its headless-window failure to GLX; the cause is sRGB, measured as 240 healthy `GLXFBConfig`s with the sRGB flag clear on every one (issue #143). No behaviour changes. Recorded because each of the four was a claim a reader would have believed, and three of them were written by the same work that then invalidated them. |
 | 0.38 | 2026-09-06 | **S-5's specification is recorded in §19, where the four earlier spikes' specs already live.** Written retrospectively from the branch: the spike was agreed and run on 2026-09-05/06 against a spec held only in conversation, so `grep -rn "S-5" docs/` returned nothing while the branch was the sole record that S-5 was scoped at all — including the boundary ("may not add a decision, a requirement, a §14 row or a CI gate") that the branch is supposed to be constrained by. Question/Method/Axes/Gates/Kill criteria/Produces/Scope, plus the two spike-scoped ids the spike's own text cites and this repository did not define: **D-S5.1** (path-depend on `crates/` rather than vendor) and **D-S5.5** (serve the bench page cross-origin isolated, or the 100 µs timer makes every compute figure unquotable). Neither is an architecture decision and neither enters this document's D-numbering; the gap between them is left as a gap rather than filled with invented numbers. **The findings stay out of this document by design** — they are drafted in `spikes/s5-wasm-web-audio/FINDINGS-draft.md` and land only if a phase-(b) decision is taken. No decision is amended, no requirement moves, no gate changes. |
 | 0.39 | 2026-09-06 | **AArch64 NEON vectorization verified and documented (issue #148).** Verified at the source dependency level that `wide` 1.7.0's `pick!` macro selects `core::arch::aarch64` NEON intrinsics for `f32x4` (with `f32x8` composed of two `f32x4`s) rather than scalar fallback; documented the two-op 128-bit composition at Risk R-4, explicitly noting that performance on AArch64 remains unmeasured without an ARM reference benchmarking rig. |
+| 0.40 | 2026-09-07 | **D-9.8 is withdrawn; the chain is rebuilt to FR-CHAIN-010's original `trim → gate → nam → ir → eq → out`.** The decision text stands as history per this document's convention and gains a `*Consequence (added M15, 2026-09-07)*` note; FR-CHAIN-010's M9a amendment, which had rewritten the requirement to match the code, is superseded by a note of its own. **What M9a weighed twice was one argument — D-9.8's usability one — and the argument on the other side was in its own note, two paragraphs later, filed as an observation about FR-CHAIN-060's Stereo row and never carried back to the question it had just answered**: Gate is mono-core and copies channel 0 over every other channel, so placing it ahead of Trim, the chain's only cross-channel mixing, annihilated the right channel before the −6 dB sum could use it — `2 ch summed` was unreachable except as a side effect of disabling the gate. The trade is recorded as a trade: the gate's threshold now moves with the input trim, which is the whole cost D-9.8 was written to avoid and nothing has made it smaller; it buys a requirement and its code agreeing without either being amended to the other, for the first time since `875068e`, and a stereo input reaching the core as both channels. **AQ-2 is not reopened** — it asked for and got confirmation on 2026-08-04, which is a matter of record, not a live question. Moving with the decision: `build_default_chain`, three stage doc comments, `chain_probes.rs`'s transcription of the order and two of its five transposition probes (the Gate↔Nam pair needs the gate's envelope times inverted to be observable at all, and the doc comment says why), `namir-clap`'s stereo-pair test — which pinned L-only as the shipped reading of FR-CHAIN-060 and now pins the sum — and both benches' assembly order. No requirement changes priority; FR-CHAIN-070's absent chooser now falls back to the sum rather than the left channel, and FR-CHAIN-060 stays satisfied on the other of its two permitted options. Roadmap §6's M2 bullet gains a dated amendment rather than an edit. **Unrelated to the order, in the same commit**: `trim.gain_db` is displayed as "Input Level" (key and `ParamId` unchanged), and `namir-ui` moves both meters and both level controls into the top panel as two columns, each meter drawn beneath the control whose output it reads, with the bars filled in the brand mark's orange rather than `egui`'s default blue. |

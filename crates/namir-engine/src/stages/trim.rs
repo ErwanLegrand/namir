@@ -2,9 +2,10 @@
 //! high-pass, and metering — plus, uniquely among the six stages
 //! (`03-implementation-roadmap.md` §6), the chain's *only* real cross-channel mixing.
 //!
-//! Runtime order is `gate → trim → ...` (D-9.8; see `stages/mod.rs`'s doc comment), not
-//! FR-CHAIN-010's literal prose order — this module doesn't need to know that, it just
-//! implements Trim itself.
+//! Runtime order is `trim → gate → ...` (FR-CHAIN-010; see `stages/mod.rs`'s doc comment) — this
+//! module doesn't need to know that, it just implements Trim itself. It does mean the downmix
+//! below is the *first* thing the chain does, which is what gives it two genuinely different
+//! channels to sum in `Stereo`.
 //!
 //! # Why Trim owns the downmix
 //!
@@ -17,8 +18,11 @@
 //! `MonoToStereo` both channels already carry the same duplicated signal, so the -6 dB-both-terms
 //! sum below is a no-op by construction (it re-derives the same shared signal, just attenuated,
 //! not a blend of two different signals); for `Stereo` the channels genuinely differ, and the
-//! same rule performs FR-CHAIN-060's default "2 ch summed to the mono core at -6 dB". One rule,
-//! two configurations, no per-configuration branching needed.
+//! same rule performs the first of the two inputs FR-CHAIN-060's Stereo row permits, "2 ch summed
+//! or L-only (FR-CHAIN-070)". One rule, two configurations, no per-configuration branching needed.
+//! That row names no default between its two options; this stage having called the sum
+//! "FR-CHAIN-060's default" was the phrasing M9a identified as the likely source of a
+//! documentation-wide confusion about whether that Must was met, and it is corrected here.
 //!
 //! Trim is not in FR-CHAIN-020's bypassable list, so unlike Gate/Nam/Ir/Eq this stage has no
 //! dry/wet crossfade machinery.
@@ -44,8 +48,8 @@ const GAIN_RAMP_TIME_CONSTANT_MS: f32 = 25.0;
 /// FR-IN-040: "corner no higher than 20 Hz."
 const DC_BLOCKER_CORNER_HZ: f32 = 20.0;
 
-/// FR-CHAIN-060's default stereo-to-mono-core mix: both terms attenuated by -6 dB before summing,
-/// rather than a plain 0.5/0.5 average, per that requirement's own wording.
+/// FR-CHAIN-060's "2 ch summed" stereo-to-mono-core mix: both terms attenuated by -6 dB before
+/// summing, rather than a plain 0.5/0.5 average, per that requirement's own wording.
 const DOWNMIX_EACH_TERM_DB: f32 = -6.0;
 
 /// This stage's RT-facing `namir_engine::ParamId`, converted once from `namir_params`'s own id

@@ -1,5 +1,6 @@
-//! FR-UI-020's single screen, assembled: input meter+trim, gate, the loaded model's name, the
-//! loaded IR's name, EQ, output meter+level, and global bypass, all visible without navigation.
+//! FR-UI-020's single screen, assembled: the two ends of the chain (input level+meter, output
+//! level+meter) side by side in the top panel, then gate, the loaded model's name, the loaded
+//! IR's name, EQ and global bypass below, all visible without navigation.
 //! [`NamirUi`] is the one widget type both product shells construct (FR-UI-010) -- see this
 //! crate's top doc comment for why a single type parameterized by *which `open_*` call wraps it*
 //! satisfies FR-UI-010 rather than two separate UIs.
@@ -8,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{CentralPanel, Panel, ScrollArea, Ui};
 use namir_params::global::{GLOBAL_BYPASS, OUTPUT_CEILING_DB};
+use namir_params::stages::{out, trim};
 use namir_state::ParamValues;
 
 use crate::brand;
@@ -67,6 +69,7 @@ pub fn render(
         });
         preset_controls(ui, snapshot, &mut view.preset_name, intents);
         notices::render(ui, &snapshot.notices, intents);
+        chain_ends(ui, snapshot, intents);
     });
 
     Panel::left("namir_ui_library")
@@ -80,9 +83,6 @@ pub fn render(
         ScrollArea::vertical()
             .id_salt("namir_ui_main_scroll")
             .show(ui, |ui| {
-                meter::render(ui, "Input", snapshot.input_meter);
-                param_section(ui, "Input Trim", "trim.", &snapshot.params, intents);
-
                 param_section(ui, "Gate", "gate.", &snapshot.params, intents);
 
                 ui.heading("Model");
@@ -107,18 +107,58 @@ pub fn render(
 
                 param_section(ui, "EQ", "eq.", &snapshot.params, intents);
 
-                // No `ui.heading("Output")` here: the meter row below is labelled "Output" and
-                // both controls under it are named "Output ...", so a heading would be the third
-                // "Output" on four consecutive rows -- the same duplication issue #103 reports,
-                // with the meter as the element in between. Mirrors the input side, where the
-                // "Input" meter likewise stands as its own row above its controls.
-                meter::render(ui, "Output", snapshot.output_meter);
-                param_controls(ui, "out.", &snapshot.params, intents);
-                render_single(ui, &OUTPUT_CEILING_DB, &snapshot.params, intents);
-
                 ui.separator();
                 render_single(ui, &GLOBAL_BYPASS, &snapshot.params, intents);
             });
+    });
+}
+
+/// The two ends of the chain, side by side at the top of the screen: each is a level control with
+/// its own meter directly beneath it ([`meter::level_control`]), plus that end's one remaining
+/// parameter underneath.
+///
+/// # Why the top panel, and why two columns
+///
+/// These four rows are what a player touches while playing -- set the input so the meter reads
+/// healthily into the model, set the output so it reads healthily into the host -- and both are
+/// judged against a meter, so both want to be visible at a glance and at the same time. In the
+/// central panel they were the first and last things in a scrolling column with the whole chain
+/// between them, which on a 960x640 CLAP editor means they are never both on screen. Two columns
+/// in the fixed top panel costs three rows of height and puts the pair permanently in view; the
+/// stages between them (gate, model, IR, EQ) are set-and-forget and keep the scroll area.
+///
+/// Neither column draws a heading. The level control's own name -- "Input Level", "Output Level"
+/// -- is the heading, and adding one above it would repeat the word directly above itself, which
+/// is issue #103's shape exactly.
+fn chain_ends(ui: &mut Ui, snapshot: &UiSnapshot, intents: &mut Vec<UiIntent>) {
+    ui.columns(2, |columns| {
+        meter::level_control(
+            &mut columns[0],
+            &trim::GAIN_DB,
+            snapshot.params.get(trim::GAIN_DB.key).unwrap_or_default(),
+            snapshot.input_meter,
+            intents,
+        );
+        render_single(
+            &mut columns[0],
+            &trim::DC_BLOCKER_ENABLED,
+            &snapshot.params,
+            intents,
+        );
+
+        meter::level_control(
+            &mut columns[1],
+            &out::GAIN_DB,
+            snapshot.params.get(out::GAIN_DB.key).unwrap_or_default(),
+            snapshot.output_meter,
+            intents,
+        );
+        render_single(
+            &mut columns[1],
+            &OUTPUT_CEILING_DB,
+            &snapshot.params,
+            intents,
+        );
     });
 }
 
@@ -1009,15 +1049,16 @@ mod tests {
     /// of view is never painted at all, and a duplicate-count assertion at 960x640 would be
     /// counting what fits rather than what is drawn.
     ///
-    /// `"Input Trim"` is deliberately **not** on this list and is not a defect: it is painted
-    /// twice because `trim.gain_db`'s own `ParamDescriptor::name` is also "Input Trim", so the
-    /// second painting is a control's name, not a repeated heading.
-    ///
     /// `"Output"` had a **third** painting the issue's own diagnosis does not name: the output
     /// meter's label. `ui.heading("Output")`, a meter labelled "Output" and a `param_section`
-    /// titled "Output" put the word on three consecutive rows. Removing the section title alone
-    /// left two, and this test is what said so -- which is why `"Input"` (the input meter's label,
-    /// with no heading above it) is on the list too, as the shape the output side now matches.
+    /// titled "Output" put the word on three consecutive rows.
+    ///
+    /// *Amended when the chain's two ends moved to the top panel.* Neither end has a heading or a
+    /// labelled meter any more -- each is a level control with an unlabelled bar beneath it
+    /// (`chain_ends`, `meter::level_control`) -- so what this test watches at those two positions
+    /// is the control's own name. `"Input Level"` and `"Output Level"` each being painted exactly
+    /// once is the same assertion in the new shape: it fails if a heading is ever added back above
+    /// a control that already carries the word.
     #[test]
     fn each_section_heading_is_painted_exactly_once() {
         const TALL: egui::Rect =
@@ -1042,13 +1083,13 @@ mod tests {
 
         for heading in [
             "Library",
-            "Input",
+            "Input Level",
             "Gate",
             "Model",
             "NAM",
             "Impulse Response",
             "EQ",
-            "Output",
+            "Output Level",
         ] {
             let count = painted.iter().filter(|(text, _)| text == heading).count();
             assert_eq!(
@@ -1123,8 +1164,10 @@ mod tests {
         );
 
         // The screen the notices share. One element from each of the other two panels, so a top
-        // panel that has taken the window cannot pass this.
-        for element in ["Library", "Input Trim"] {
+        // panel that has taken the window cannot pass this. `"Gate"` rather than the input level:
+        // the chain's two ends now live in the top panel themselves, so only a stage between them
+        // still proves the central panel survived.
+        for element in ["Library", "Gate"] {
             let rect = painted
                 .iter()
                 .find(|(text, _)| text == element)
