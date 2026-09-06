@@ -552,12 +552,13 @@ fn resolve_activation_kind(
 //    file. See `pin_to_measurement_core` in any of this workspace's benchmarks.
 //
 // 3. **AArch64 / NEON vectorization (2026-09-06, Issue #148).** On `target_arch = "aarch64"`,
-//    NEON is part of the standard baseline. `wide::f32x8` is composed of `{ a: f32x4, b: f32x4 }`
-//    where `wide::f32x4` is backed by real hardware NEON `float32x4_t` intrinsics (`target_feature = "neon"`),
-//    not a scalar fallback. Because NEON registers are 128-bit wide, each 8-lane operation compiles
-//    to two paired 128-bit NEON vector instructions (`fmul v.4s`, `fadd v.4s`, `fsub v.4s`, etc.)
-//    with 128-bit load/store pairs (`ldp q, q` / `stp q, q`), delivering hardware vectorization
-//    without 256-bit registers.
+//    NEON is part of the standard baseline. `wide` 1.7.0's `pick!` macro selects `core::arch::aarch64`
+//    NEON intrinsics (`float32x4_t`) for `f32x4`, and `wide::f32x8` is composed of `{ a: f32x4, b: f32x4 }`,
+//    confirming vectorization at the source dependency level rather than a scalar fallback. Because
+//    NEON registers are 128-bit wide, each 8-lane operation compiles to two paired 128-bit NEON vector
+//    operations (`fmul v.4s`, `fadd v.4s`, `fsub v.4s`, etc.) with 128-bit load/store pairs
+//    (`ldp q, q` / `stp q, q`). Performance on AArch64 remains unmeasured without an ARM reference
+//    benchmarking rig.
 //
 // **Still true, and worth keeping:** this benchmark's `p50` is stable and trustworthy; its raw
 // `p99.9` is not reproducible run-to-run on a general-purpose desktop even after both fixes
@@ -3106,6 +3107,61 @@ mod tests {
         }
     }
 
+    fn scalar_activation_ref(act: &Activation, input: &[f32], n: usize) -> Vec<f32> {
+        match act {
+            Activation::Tanh => input.iter().map(|&x| x.tanh()).collect(),
+            Activation::ReLU => input.iter().map(|&x| x.max(0.0)).collect(),
+            Activation::Sigmoid => input.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect(),
+            Activation::Identity => input.to_vec(),
+            Activation::LeakyReLU { negative_slope } => input
+                .iter()
+                .map(|&x| if x > 0.0 { x } else { negative_slope * x })
+                .collect(),
+            Activation::SiLU => input.iter().map(|&x| x / (1.0 + (-x).exp())).collect(),
+            Activation::Hardswish => input
+                .iter()
+                .map(|&x| {
+                    let t = (x + 3.0).clamp(0.0, 6.0);
+                    x * t * (1.0 / 6.0)
+                })
+                .collect(),
+            Activation::Softsign => input.iter().map(|&x| x / (1.0 + x.abs())).collect(),
+            Activation::LeakyHardtanh {
+                min_val,
+                max_val,
+                min_slope,
+                max_slope,
+            } => input
+                .iter()
+                .map(|&x| {
+                    if x < *min_val {
+                        (x - min_val) * min_slope + min_val
+                    } else if x > *max_val {
+                        (x - max_val) * max_slope + max_val
+                    } else {
+                        x
+                    }
+                })
+                .collect(),
+            Activation::PReLU(PReluSlopes::Scalar(slope)) => input
+                .iter()
+                .map(|&x| if x > 0.0 { x } else { slope * x })
+                .collect(),
+            Activation::PReLU(PReluSlopes::PerChannel(slopes)) => {
+                if n == 0 {
+                    return Vec::new();
+                }
+                let mut out = input.to_vec();
+                for (row, &slope) in out.chunks_exact_mut(n).zip(slopes.iter()) {
+                    for v in row.iter_mut() {
+                        *v = if *v > 0.0 { *v } else { slope * *v };
+                    }
+                }
+                out
+            }
+        }
+    }
+
     #[test]
     fn activation_vectorization_matches_scalar_across_all_variants_and_lengths() {
         let activations = [
@@ -3126,20 +3182,48 @@ mod tests {
                 negative_slope: DEFAULT_LEAKY_SLOPE,
             },
             Activation::PReLU(PReluSlopes::Scalar(DEFAULT_LEAKY_SLOPE)),
+            Activation::PReLU(PReluSlopes::PerChannel(vec![0.01, 0.05, 0.1, 0.2])),
         ];
 
         let test_lengths = [0, 1, 3, 7, 8, 9, 15, 16, 17, 32, 63, 64, 65];
 
-        for act in activations {
-            for &len in &test_lengths {
-                let mut input: Vec<f32> = (0..len).map(|i| (i as f32 * 0.25) - 4.0).collect();
-                act.apply(&mut input, len);
+        for act in &activations {
+            let num_channels = if let Activation::PReLU(PReluSlopes::PerChannel(slopes)) = act {
+                slopes.len()
+            } else {
+                1
+            };
 
-                for &val in &input {
-                    assert!(val.is_finite(), "activation output must be finite");
+            for &n in &test_lengths {
+                let total_len = num_channels * n;
+                let original: Vec<f32> = (0..total_len).map(|i| (i as f32 * 0.25) - 4.0).collect();
+                let mut actual = original.clone();
+                act.apply(&mut actual, n);
+
+                let expected = scalar_activation_ref(act, &original, n);
+                assert_eq!(actual.len(), expected.len());
+
+                let tol = match act {
+                    Activation::Tanh | Activation::Sigmoid | Activation::SiLU => 1e-4,
+                    _ => 1e-6,
+                };
+
+                for (idx, (&act_val, &exp_val)) in actual.iter().zip(expected.iter()).enumerate() {
+                    assert!(
+                        (act_val - exp_val).abs() <= tol,
+                        "act: {:?}, n: {n}, idx: {idx}: actual {act_val} vs expected {exp_val} (diff {})",
+                        act,
+                        (act_val - exp_val).abs()
+                    );
                 }
             }
         }
+    }
+
+    #[cfg(target_feature = "neon")]
+    #[test]
+    fn neon_is_in_the_baseline_so_wide_is_not_a_scalar_fallback() {
+        assert!(cfg!(target_feature = "neon"));
     }
 
     #[test]
