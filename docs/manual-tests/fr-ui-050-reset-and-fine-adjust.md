@@ -84,3 +84,5 @@ real widget layout and interaction via synthetic `RawInput` events through `egui
   value itself does not fire reset.
 - `reset_and_fine_adjust_shift_drag_scales_increments`: performs unmodified drag vs Shift+drag and
   asserts Shift+drag yields a strictly smaller parameter delta for identical pointer displacement.
+
+The `reset_and_fine_adjust_shift_drag_scales_increments` test supersedes the historical "zero automated coverage of any kind today" assessment in the section above for the algorithmic scaling behavior, while physical feel and visual feedback remain under manual observation.
