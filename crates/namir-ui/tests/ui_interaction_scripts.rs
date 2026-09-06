@@ -292,7 +292,7 @@ impl HeadlessUiDriver {
             Event::Key {
                 key: Key::A,
                 pressed: true,
-                modifiers: Modifiers::CTRL,
+                modifiers: Modifiers::COMMAND,
                 repeat: false,
                 physical_key: None,
             },
@@ -314,7 +314,7 @@ impl HeadlessUiDriver {
             Event::Key {
                 key: Key::A,
                 pressed: true,
-                modifiers: Modifiers::CTRL,
+                modifiers: Modifiers::COMMAND,
                 repeat: false,
                 physical_key: None,
             },
