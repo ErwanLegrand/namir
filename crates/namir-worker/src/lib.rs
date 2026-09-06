@@ -915,10 +915,6 @@ mod tests {
 
     /// `try_submit_param` never blocks: a full ring hands the change back as `SubmitError::Timeout`
     /// on the very first attempt rather than retrying.
-    // trace-partial: FR-UI-060
-    // uncovered: FR-UI-060 — non-blocking parameter submission on a full ring; whole-interface
-    // uncovered: frame duration during a 10,000-file scan is measured by namir-ui/benches/library_frame.rs;
-    // uncovered: closes M8
     #[test]
     fn try_submit_param_never_blocks_on_a_full_ring() {
         let c = ctx();

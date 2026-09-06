@@ -316,10 +316,6 @@ mod tests {
     /// producer mutex across its whole deadline. Before the fix this call waited on that mutex for
     /// up to `DEFAULT_DEADLINE`, so the one caller forbidden to block was the one that blocked
     /// longest.
-    // trace-partial: FR-UI-060
-    // uncovered: FR-UI-060 — non-blocking submitter bounded wait under deadline contention; whole-interface
-    // uncovered: frame duration during a 10,000-file scan is measured by namir-ui/benches/library_frame.rs;
-    // uncovered: closes M8
     #[test]
     fn try_submit_does_not_wait_for_a_worker_already_inside_the_deadline() {
         let (tx, rx) = ring::<Command>(1);
