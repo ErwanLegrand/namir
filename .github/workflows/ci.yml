@@ -48,6 +48,8 @@ jobs:
       matrix:
         # GitHub Actions `macos-latest` runs on Apple Silicon (AArch64), executing `aarch64_tests`
         # (such as `namir-platform`'s FPCR denormal handling) natively under `cargo test --workspace`.
+        # If runner image targets or defaults change in the future, native execution of AArch64
+        # tests would need a dedicated AArch64 matrix leg.
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
