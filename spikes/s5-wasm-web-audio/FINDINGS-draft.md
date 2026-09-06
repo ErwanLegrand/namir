@@ -51,7 +51,9 @@ twice the ~30 ms soft reference, before anything the API does not account for.
 | Edge 152 / wasm simd128, steady (20 000 blocks) | 11.44–11.81 | 28.88–30.94 | 18.00–18.37 |
 | Edge 152 / wasm simd128, steady (100 000 blocks, 2 reps) | 13.12–13.31 | **32.44–33.56** | 18.19 |
 | Edge 152 / wasm simd128, steady (100 000 blocks, 5-rep replication, rebuilt artefact) | 12.75–13.13 | 30.00–31.31 | 19.50–19.88 |
+| **Chrome 152** / wasm simd128, steady (20 000 / 100 000 blocks, 5+7 reps) | 11.44–11.63 | 26.25–29.25 | 18.00–18.37 |
 | Edge 152 / wasm simd128, subnormal tail (5 reps) | 17.44–17.81 | **44.25–58.13** | 19.50 |
+| **Chrome 152** / wasm simd128, subnormal tail (5 reps) | 16.31–16.50 | **42.00–44.06** | 18.19–18.38 |
 | Edge 152 / wasm simd128, A2 Lite, steady (100 000 blocks, 2 reps) | 3.00 | 14.81–16.31 | 9.56–9.75 |
 | Edge 152 / wasm simd128, A2 Lite, subnormal tail (5 reps) | 3.38–3.75 | 18.56–20.81 | 10.12–10.31 |
 
@@ -60,7 +62,11 @@ they disagree. The second is a five-rep replication of the first's two reps and 
 20 000-block screening level, but its artefact is a rebuild (the estimator moves with it), so
 neither supersedes the other. The higher figure is quoted above as the conservative one, not as
 the settled one, and the "cost grows with run length" reading that the two-rep set suggested is
-correspondingly weak.
+correspondingly weak. **Chrome weakens it further**: across seven 100 000-block A1 reps its p50
+is 11.44% — identical to its own 20 000-block figure — so the ~14% growth is not reproduced on
+the other Chromium browser at all. Budgeting A1 against ~33.6% remains the conservative choice;
+it is no longer a measured trend. Chrome's subnormal-tail row also keeps every rep under the
+<=50% bar where Edge put one rep over — the margin is still a hairline, just not a breach.
 
 Gate 2, on a PreSonus AudioBox 22VSL at 48 kHz through Chromium's real audio service: **zero
 underruns in every steady-state second of every run**, both signal regimes, three build/model
@@ -108,13 +114,17 @@ exercises D-8.1's handover, so live model switching in a browser is unproven. `n
 `namir-platform`, `namir-ui`, the library and preset persistence are all out of scope by design.
 The laptop axis was never run, and Gate 3's loopback half was never run.
 
-**Browser scope note, which bounds every figure above:** all browser measurements are **headless
-Microsoft Edge 152.0.4191.62**. Chrome and Firefox were never installed and nothing was installed
-to run these. Edge is Chromium and drives the same audio service over the same WASAPI path, so
-these figures are informative about Chrome — but they are not Chrome measurements, and
-Firefox/SpiderMonkey, a different wasm compiler with a different audio backend, is entirely
-unmeasured. This project has over-generalised a Firefox figure to all browsers once before; the
-same mistake is available in the other direction.
+**Browser scope note, which bounds every figure above:** the figures quoted above are **headless
+Microsoft Edge 152.0.4191.62**. **All three gates were re-run on real Google Chrome
+152.0.7977.83 (Task 10, 2026-09-06) and every one of them reproduced** — Gate 1 PASS on simd128 /
+FAIL on scalar A1 (Chrome's p99.9 runs 2–3 pp *below* Edge's), Gate 2 zero steady-state underruns
+with the same one-in-several first-second start-up event, Gate 3 identical to the digit including
+the 2.6x `--enable-exclusive-audio` regression. So the Edge-as-Chrome substitution these figures
+rested on is now evidenced rather than assumed. **Firefox remains entirely unmeasured**:
+SpiderMonkey is a different wasm compiler and cubeb a different audio backend, and cubeb is the
+backend the public ~70–100 ms Windows latency reports are about. This project has
+over-generalised a Firefox figure to all browsers once before; the same mistake is available in
+the other direction, and Gecko is where it is still available.
 
 **Not certified:** no figure here was measured under `docs/02-architecture.md` §2's conditions,
 and a browser figure cannot be — it passes through a JIT, a browser process model and an OS audio
