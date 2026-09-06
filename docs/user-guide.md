@@ -249,11 +249,12 @@ Recorded here plainly rather than glossed over, since these are genuine, current
   currently the only way to run Namir. On macOS this is a sharper limitation than elsewhere,
   because the `.clap` bundle described above has to be assembled by hand; a build step that
   produces it automatically is planned but not yet written.
-- **The CLAP plugin provides an embedded interface on Windows, macOS, and Linux.** The plugin
-  negotiates the platform-native GUI API (`WIN32` on Windows, `COCOA` on macOS, and `X11` on Linux)
-  and parents its embedded egui interface into host plugin windows. On hosts that decline GUI
-  embedding, the host falls back to its generic parameter panel while audio processing, parameters,
-  and automation continue uninterrupted.
+- **The CLAP plugin's embedded interface works on Windows, macOS, and Linux** — it negotiates
+  the platform-native GUI API (`WIN32`, `COCOA`, `X11`). The Windows path is the long-standing
+  one; **macOS and Linux are new and have had little use** — macOS has been opened once in REAPER,
+  and the Linux/X11 path has not yet been confirmed in a host at all. If your host shows its own
+  generic parameter panel instead of Namir's screen, that is the host's fallback rather than a
+  broken install, the standalone is unaffected, and it is worth reporting.
 - **On Linux, Namir's window needs X11 — a Wayland-only session will not open one.** Both the
   standalone and the plugin's interface draw through a windowing library whose only Unix backend is
   X11, so on a Wayland desktop they rely on XWayland, which most distributions install by default.

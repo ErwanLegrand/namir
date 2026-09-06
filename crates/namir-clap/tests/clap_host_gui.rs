@@ -34,11 +34,17 @@
 //!    be completed in an in-process test without a real host application.
 //!
 //! Hence the `// trace-partial:` below rather than a plain `// trace:` (D-23.1).
-//! # Platform-native GUI API negotiation
 //!
-//! `src/gui.rs` negotiates `GuiApiType::default_for_current_platform()` — `WIN32` on Windows,
-//! `COCOA` on macOS, and `X11` on Linux. The test matrix below verifies that on every platform,
-//! only the native embedded API is accepted while all other APIs and floating states are refused.
+//! # Why these assertions are not `cfg`-gated per platform
+//!
+//! `xtask layering`'s `scan_repo_for_platform_cfg` forbids `#[cfg(target_os)]`/`#[cfg(windows)]`/
+//! `#[cfg(unix)]` across `crates/**` including test targets (D-5.2(b)), so the test matrix cannot
+//! gate assertions with compile-time platform checks. Instead, both the plugin (`src/gui.rs`) and
+//! this test suite query `GuiApiType::default_for_current_platform()`.
+//!
+//! The matrix below verifies that on every platform, only the negotiated native embedded API is
+//! accepted while all other APIs and floating states are refused.
+
 mod support;
 
 use clack_host::prelude::PluginInstance;
