@@ -273,14 +273,8 @@ impl Rep {
     /// either — that is the whole reason this benchmark can carry an absolute threshold without
     /// becoming a coin flip on a shared desktop.
     ///
-    /// # Steady-state signal assumption
-    ///
-    /// This heuristic assumes a **steady-state driving signal** (such as the fixture produced by
-    /// [`gen_block`]). On a signal-dependent or decaying signal, DSP costs (such as denormal
-    /// handling or input-dependent path costs) can vary across blocks rather than remaining
-    /// schedule-determined. In that case, raw `p99.9` can genuinely exceed the per-residue-minimum
-    /// estimator without any external machine interference or contamination (see issue #149 and
-    /// `docs/02-architecture.md` D-2.4).
+    /// Assumes a steady-state driving signal; see `docs/02-architecture.md` D-2.4 for why non-steady
+    /// signals cause p99.9 to exceed the estimator.
     fn is_quotable(&self) -> bool {
         self.p999 - self.estimator <= VALIDITY_MARGIN_PCT
     }
@@ -292,15 +286,8 @@ impl Rep {
 /// other benchmark in this workspace sorts in place at the point of measurement and destroys it.
 /// The sort below is on a copy for exactly that reason.
 ///
-/// # Steady-state signal assumption
-///
-/// D-2.4's contamination-immune estimator assumes that per-block processing cost is stationary across
-/// identical IR schedule residues, so that each residue's minimum duration isolates the uncontaminated
-/// block. On a signal-dependent or decaying signal, costs (such as denormal handling or input-dependent
-/// path costs) can vary across blocks over time. Under non-steady input, raw `p99.9` can exceed the
-/// per-residue-minimum estimator without machine interference or contamination, because later or
-/// quieter blocks become genuinely more expensive while the minimum remains anchored by cheaper
-/// blocks (see issue #149).
+/// Assumes a steady-state driving signal; see `docs/02-architecture.md` D-2.4 for why non-steady
+/// signals cause p99.9 to exceed the estimator.
 fn analyse(durations_ns: &[u64], block_period_ns: u64) -> Rep {
     let pct = |v: u64| v as f64 / block_period_ns as f64 * 100.0;
 
