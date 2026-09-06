@@ -19,7 +19,12 @@ input latency and a zero `baseLatency`, so the 62 ms accounting is a Chromium co
 is now unmeasured is **Safari/WebKit**, and every non-desktop runtime. **No figure produced here
 is certified** in `docs/02-architecture.md` §2's sense, and a browser figure cannot be: it is
 measured through a JIT, a browser process model and an OS audio stack the project does not
-control. Nothing under `crates/`, `docs/`, `.github/` or `xtask/` was modified by this spike.
+control. Nothing under `crates/`, `docs/`, `.github/` or `xtask/` was modified by this spike's
+measurement work — **one exception, added in review on 2026-09-06**: S-5's *specification* is now
+recorded at `docs/02-architecture.md` §19, where S-1..S-4's specs already live, because a spec
+that exists only on the branch cannot constrain the branch. That entry is the spec only; the
+findings stay here, per `FINDINGS-draft.md`'s own argument, and no decision, requirement, §14 row
+or CI gate was added.
 
 ## Divergence from the spikes convention
 
