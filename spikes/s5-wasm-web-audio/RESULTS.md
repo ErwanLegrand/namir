@@ -2383,9 +2383,10 @@ beacon 404 lines, URL-decoded, one section per run, each carrying its own URL an
 Three reps of each cell, `latency.html?auto=probe`. Every cell's reported figures were identical
 across its three reps. `outputLatency`, sampled ten times inside each run, never moved **in any
 default-flag cell** (60 samples at 42.00 ms, 30 at 52.00 ms, 30 at 40.00 ms for `&noinput=1`) —
-but it is **not stable under `--enable-exclusive-audio`**: two of the 180 exclusive-audio samples
-dipped, `96.00` in interactive rep 2 and `107.00` in interactive rep 3
-(`chrome_task10_gate3.txt:265` and `:289`), the other 178 reading 128.00. It does not move the
+but it is **not stable under `--enable-exclusive-audio`**: two of the **90** exclusive-audio
+samples dipped (nine reps — three hints x three — at ten samples each), `96.00` in interactive
+rep 2 and `107.00` in interactive rep 3 (`chrome_task10_gate3.txt:265` and `:289`), the other
+**88** reading 128.00 — a **2.2%** divergence rate. It does not move the
 128 / 133.333 ms figures, which are what every rep's summary reported. **It is worth a sentence
 on its own account**: the exclusive path's buffering is not merely larger than the shared path's,
 it is also less predictable, and for a demo an unstable buffer is worse news than a big one. The
