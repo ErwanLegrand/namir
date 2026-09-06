@@ -340,8 +340,11 @@ impl std::fmt::Debug for EngineSlot {
 }
 
 /// Negotiated stream parameters stored during device selection, awaiting the worker's engine
-/// rebuild. Taken by `apply_audio_reopen` when `AppEvent::AudioStreamReady` arrives.
+/// rebuild. Taken by `apply_audio_reopen` when an `AppEvent::AudioStreamReady` with the
+/// matching `generation` arrives; a ready event for a different generation is stale and the
+/// pending state it names has already been superseded.
 struct PendingStreamOpen {
+    generation: u64,
     input_device: crate::audio_io::DeviceInfo,
     output_device: crate::audio_io::DeviceInfo,
     input_params: crate::audio_io::StreamParams,
@@ -432,6 +435,9 @@ pub struct AppHost {
     supported_buffer_sizes: Vec<u32>,
     current_buffer_size: u32,
     settings: AppSettings,
+    /// Bumped on every `initiate_audio_reopen` and carried through the command/event round
+    /// trip, so an `AppEvent::AudioStreamReady` overtaken by a newer reopen is ignored.
+    reopen_generation: u64,
     audio_reopen: Option<AudioReopenContext>,
     /// Pending stream-open params, set by `initiate_audio_reopen`, consumed by `apply_audio_reopen`.
     pending_reopen: Option<PendingStreamOpen>,
@@ -483,6 +489,7 @@ impl AppHost {
             supported_buffer_sizes: Vec::new(),
             current_buffer_size: 256,
             settings: AppSettings::default(),
+            reopen_generation: 0,
             audio_reopen: None,
             pending_reopen: None,
         }
@@ -526,6 +533,11 @@ impl AppHost {
         let Some(reopen) = &self.audio_reopen else {
             return;
         };
+
+        // Every reopen attempt gets a fresh generation, so an `AudioStreamReady` from a rebuild
+        // this attempt overtook is recognised as stale and ignored (PR #159).
+        self.reopen_generation = self.reopen_generation.wrapping_add(1);
+        let generation = self.reopen_generation;
 
         let backend = Arc::clone(&reopen.backend);
         let host_info = reopen.host_info.clone();
@@ -630,6 +642,7 @@ impl AppHost {
 
         let engine_slot = EngineSlot::new();
         self.pending_reopen = Some(PendingStreamOpen {
+            generation,
             input_device: input.device,
             output_device: output.device,
             input_params,
@@ -645,6 +658,7 @@ impl AppHost {
         });
 
         self.worker.send(AppCommand::ReopenAudioStream {
+            generation,
             sample_rate_hz,
             max_block_size,
             channel_config,
@@ -655,14 +669,22 @@ impl AppHost {
     /// Phase 3 of the async stream-reopen flow: runs on the GUI thread via `handle_event`.
     ///
     /// Takes the engine from the slot, opens the new stream, calls `play()`, and updates
-    /// all host fields. Called when `AppEvent::AudioStreamReady` arrives.
-    fn apply_audio_reopen(&mut self) {
-        let Some(pending) = self.pending_reopen.take() else {
+    /// all host fields. Called when `AppEvent::AudioStreamReady` arrives. A `generation` that
+    /// does not match `pending_reopen` belongs to an earlier reopen that was superseded, and is
+    /// ignored; an empty slot means the worker's rebuild failed, so the host settles
+    /// `pending_reopen`, clears `audio_mode`, and posts the error notice (PR #159).
+    fn apply_audio_reopen(&mut self, generation: u64) {
+        let Some(pending) = self.pending_reopen.as_ref() else {
             return;
         };
+        if pending.generation != generation {
+            return;
+        }
+        let pending = self.pending_reopen.take().unwrap();
         let Some((engine, telemetry)) = pending.engine_slot.take() else {
+            self.audio_mode = None;
             self.push_notice(
-                crate::error_codes::DEVICE_OPEN_FAILED,
+                crate::error_codes::NO_SUPPORTED_CONFIG,
                 "engine rebuild failed during stream reopen",
             );
             return;
@@ -1094,7 +1116,7 @@ impl AppHost {
                 }
                 self.push_notice(code, detail);
             }
-            AppEvent::AudioStreamReady => self.apply_audio_reopen(),
+            AppEvent::AudioStreamReady { generation } => self.apply_audio_reopen(generation),
         }
     }
 
@@ -2846,6 +2868,94 @@ mod tests {
             Some("Out 2")
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn pending_stream_open(generation: u64, engine_slot: EngineSlot) -> PendingStreamOpen {
+        PendingStreamOpen {
+            generation,
+            input_device: crate::audio_io::DeviceInfo {
+                name: "Mic".to_string(),
+                is_default: true,
+            },
+            output_device: crate::audio_io::DeviceInfo {
+                name: "Speakers".to_string(),
+                is_default: true,
+            },
+            input_params: crate::audio_io::StreamParams {
+                sample_rate_hz: SR,
+                buffer_frames: Some(256),
+                channels: 1,
+                share_mode: crate::audio_io::ShareMode::Shared,
+            },
+            output_params: crate::audio_io::StreamParams {
+                sample_rate_hz: SR,
+                buffer_frames: Some(256),
+                channels: 2,
+                share_mode: crate::audio_io::ShareMode::Shared,
+            },
+            channel_config: ChannelConfig::Mono,
+            share_mode_mode: crate::audio_io::ShareMode::Shared,
+            sample_rate_hz: SR,
+            buffer_frames: Some(256),
+            max_block_size: 512,
+            supported_sample_rates: vec![SR],
+            supported_buffer_sizes: vec![256],
+            engine_slot,
+        }
+    }
+
+    #[test]
+    fn stale_audio_stream_ready_generation_is_ignored() {
+        let dir = temp_dir("stale_audio_stream_ready");
+        let (mut host, _engine) = build_host(&dir);
+        let slot = EngineSlot::new();
+        host.pending_reopen = Some(pending_stream_open(2, slot.clone()));
+
+        // A ready event from a reopen superseded by generation 2 must not touch the pending
+        // reopen: `pending_reopen` stays, and the engine slot stays unclaimed so the newer
+        // rebuild can still fill it.
+        host.handle_event(AppEvent::AudioStreamReady { generation: 1 });
+
+        let pending = host
+            .pending_reopen
+            .as_ref()
+            .expect("a stale ready event must not consume the pending reopen");
+        assert_eq!(pending.generation, 2);
+        assert!(pending.engine_slot.take().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audio_stream_ready_with_empty_slot_clears_audio_mode_and_posts_notice() {
+        let dir = temp_dir("audio_stream_ready_empty_slot");
+        let granted = AudioModeStatus {
+            share_mode: AudioShareMode::Shared,
+            device_name: "Speakers".to_string(),
+        };
+        let (mut host, _engine) = build_host_with_audio_mode(&dir, Some(granted.clone()));
+        host.pending_reopen = Some(pending_stream_open(1, EngineSlot::new()));
+
+        // The worker failed its rebuild (nothing in the slot) — it still answers the command,
+        // so the host settles the pending reopen, drops the audio mode, and says why.
+        host.handle_event(AppEvent::AudioStreamReady { generation: 1 });
+
+        assert!(
+            host.pending_reopen.is_none(),
+            "a failed rebuild must settle the pending reopen"
+        );
+        assert!(
+            host.audio_mode.is_none(),
+            "a failed rebuild must clear the audio mode"
+        );
+        let notices = host.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(
+            notices[0].code.id,
+            crate::error_codes::NO_SUPPORTED_CONFIG.id,
+            "{:?}",
+            notices
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
