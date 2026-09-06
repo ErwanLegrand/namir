@@ -56,6 +56,9 @@ pub struct AppSettings {
     pub buffer_size_frames: Option<u32>,
     /// FR-IO-090's channel mapping.
     pub channel_mapping: ChannelMapping,
+    /// FR-LIB-010: user-nominated library root directories.
+    #[serde(default)]
+    pub library_roots: Vec<PathBuf>,
 }
 
 impl Default for AppSettings {
@@ -70,6 +73,7 @@ impl Default for AppSettings {
             sample_rate_hz: None,
             buffer_size_frames: None,
             channel_mapping: ChannelMapping::default(),
+            library_roots: Vec::new(),
         }
     }
 }
@@ -223,6 +227,10 @@ mod tests {
                 input_channel: Some(1),
                 ..Default::default()
             },
+            library_roots: vec![
+                PathBuf::from("/custom/models"),
+                PathBuf::from("/custom/irs"),
+            ],
         };
 
         save(&path, &settings).unwrap();
@@ -323,6 +331,7 @@ mod tests {
         assert!(settings.sample_rate_hz.is_none());
         assert!(settings.buffer_size_frames.is_none());
         assert!(!settings.exclusive_mode);
+        assert!(settings.library_roots.is_empty());
     }
 
     /// The write is atomic: a save that is interrupted after the temp file but before the rename

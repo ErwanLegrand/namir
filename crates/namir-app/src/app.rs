@@ -376,7 +376,14 @@ pub fn run() {
     let library_dir = config_dir
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
-    let (library, _) = namir_worker::library::LibraryService::open_at(&library_dir);
+    let (library, _) = if settings.library_roots.is_empty() {
+        namir_worker::library::LibraryService::open_at(&library_dir)
+    } else {
+        namir_worker::library::LibraryService::open(
+            library_dir.join("library-index.json"),
+            settings.library_roots.clone(),
+        )
+    };
     // M14 (§22 R-18): `open_at` no longer reads the index file, and **the standalone asks for it
     // anyway, here, deliberately.** The deferral exists for the *plugin*, where a host instantiates
     // one instance per track and NFR-PERF-040's 200 ms is a per-instance budget the index parse was
@@ -386,7 +393,7 @@ pub fn run() {
     // and `startup_probe::audible` below would report an index of zero entries.
     library.ensure_loaded();
     let library_warnings = library.take_load_warnings();
-    let library_roots = library.roots().to_vec();
+    let library_roots = library.roots();
     let library = Arc::new(library);
     // NFR-PERF-030's "with a warm library index": captured here, where it is true, so the startup
     // probe's marker reports the size of the index this launch actually read rather than leaving a
@@ -417,13 +424,21 @@ pub fn run() {
         share_mode: share_mode.mode.into(),
         device_name: output.device.name.clone(),
     });
-    let mut host = AppHost::new(instance, worker, telemetry, library, state, audio_mode);
+    let mut host = AppHost::new(
+        instance,
+        worker,
+        telemetry,
+        Arc::clone(&library),
+        state,
+        audio_mode,
+    );
     // FR-STATE-030: `<config_dir>/Presets`, the one directory `namir-clap` must also resolve --
     // see `crate::presets`' module doc comment for why that rule is written twice today and where
     // it belongs. `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly, so a
     // NFR-PERF-030 measurement run stays inside the directory its harness owns.
     if let Some(dir) = &config_dir {
         host.watch_presets(crate::presets::preset_dir_under(dir));
+        host.watch_config_dir(dir.clone());
     }
     if let Some(w) = settings_warning {
         host.report(w.code, w.detail);
@@ -568,6 +583,7 @@ pub fn run() {
         settings.output_device_name = Some(output.device.name.clone());
         settings.sample_rate_hz = Some(sample_rate_hz);
         settings.buffer_size_frames = buffer_frames;
+        settings.library_roots = library.roots();
         // The one report in this function that cannot become a notice: the window is already
         // closed, so there is no FR-UI-070 list left to push onto. It was `let _ =` — a settings
         // file that silently failed to save is precisely the "why did it forget my device again?"
@@ -604,9 +620,11 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     let instance = SharedInstance::new(Instance::new(EngineConfig { ctx: c }, endpoint));
 
     let preset_dir = config_dir.as_deref().map(crate::presets::preset_dir_under);
-    let library_dir = config_dir.unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
+    let library_dir = config_dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("namir-session-only"));
     let (library, _warnings) = namir_worker::library::LibraryService::open_at(&library_dir);
-    let library_roots = library.roots().to_vec();
+    let library_roots = library.roots();
     let library = Arc::new(library);
 
     let state = Arc::new(Mutex::new(State::defaults()));
@@ -627,6 +645,9 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     // imply.
     if let Some(dir) = preset_dir {
         host.watch_presets(dir);
+    }
+    if let Some(dir) = config_dir {
+        host.watch_config_dir(dir);
     }
     // `NO_AUDIO_DEVICE`, not `NO_SUPPORTED_CONFIG` (issue #40): FR-IO-040's entry says none of the
     // rates *a device* reports could be negotiated, and on this path there is no device to be the
