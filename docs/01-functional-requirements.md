@@ -1008,6 +1008,12 @@ So the requirement stays `**UNRESOLVED**` and unmet on two of three platforms th
 ownership token in its ledger entry — which still reads M9b, a milestone that has run — is stale and
 needs re-booking by whoever takes the decision.
 
+*Consequence (added M14, 2026-09-06)* — **the first clause is implemented on all three platforms.**
+`crates/namir-clap/src/gui.rs`'s `is_api_supported` and `get_preferred_api` now resolve
+`GuiApiType::default_for_current_platform()` (`WIN32` on Windows, `COCOA` on macOS, `X11` on Linux),
+and `set_parent` validates and accepts the matching native raw window handles (`Win32`, `AppKit`,
+`Xlib`, `Xcb`) without adding new `unsafe` blocks.
+
 **FR-CLAP-110 (Should)** — The GUI shall support host-driven resizing and shall report its size
 constraints and preferred aspect to the host.
 *Verify:* M.
