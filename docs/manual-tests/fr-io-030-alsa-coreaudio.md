@@ -45,6 +45,8 @@ not by running the CI job (no CI execution available in this session either).
    claimed exclusive access to a device (FR-IO-030's own "PipeWire and/or JACK support is Should"
    notes this is a known area of platform variance) rather than hanging or crashing.
 
-**Result: PARTIAL.** Step 1 executed on Linux x86_64: `cargo run --example list_devices -p namir-app`
-enumerated the ALSA host and endpoints (`default host: ALSA`, `hosts (1): ["ALSA"]`, input/output
-devices listed with 48000 Hz configs). CoreAudio (macOS) remains unexecuted in this environment.
+**Result: PARTIAL.** Step 1 executed on Linux x86_64 (WSL2 development environment without physical
+audio hardware): `cargo run --example list_devices -p namir-app` enumerated the ALSA host and
+endpoints (`default host: ALSA`, `hosts (1): ["ALSA"]`, virtual input/output endpoints listed with
+48000 Hz configs). Steps 2–3 on physical Linux hardware and CoreAudio on macOS remain unexecuted in
+this environment.

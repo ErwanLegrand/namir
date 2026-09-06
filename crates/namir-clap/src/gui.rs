@@ -59,10 +59,10 @@
 //! panic at the FFI boundary (`PluginWrapper::handle`'s `catch_unwind`) so it cannot become
 //! undefined behaviour, but the panic would fire *before* this crate's own `GUI_INVALID_PARENT`
 //! diagnostic ever gets a chance to, so the user would see nothing but a silently-failed GUI open.
-//! This crate closes that gap itself, below, by matching on `handle.as_raw()` and treating anything
-//! other than the native platform window handle variants (`Win32`, `AppKit`, `Xlib`, `Xcb`) the same
-//! way an unrecognised tag is already treated — a pushed notice and an `Err`, never a fallthrough into
-//! `open_parented` with the wrong variant.
+//! This crate closes that gap itself, below, by checking [`handle_matches_negotiated_api`] and
+//! treating anything other than the negotiated platform's window handle variant (`Win32` on Windows,
+//! `AppKit` on macOS, `Xlib`/`Xcb` on Linux) the same way an unrecognised tag is already treated —
+//! a pushed notice and an `Err`, never a fallthrough into `open_parented` with the wrong variant.
 //!
 //! Confined to this one module per D-5.3/NFR-QUAL-070 — `#![allow(unsafe_code)]` below opts only
 //! this file back into the one `unsafe` block above out of this crate's `[lints.rust] unsafe_code
@@ -94,6 +94,28 @@ pub(crate) fn native_gui_api() -> Option<GuiApiType<'static>> {
     GuiApiType::default_for_current_platform()
 }
 
+/// Whether `raw` matches the windowing backend expected by [`native_gui_api`].
+///
+/// Factored out so the raw-handle safety check in [`PluginGuiImpl::set_parent`] is directly
+/// testable without constructing a live `HostMainThreadHandle` or invoking FFI embedding.
+pub(crate) fn handle_matches_negotiated_api(raw: &raw_window_handle::RawWindowHandle) -> bool {
+    match native_gui_api() {
+        Some(api) if api == GuiApiType::WIN32 => {
+            matches!(raw, raw_window_handle::RawWindowHandle::Win32(_))
+        }
+        Some(api) if api == GuiApiType::COCOA => {
+            matches!(raw, raw_window_handle::RawWindowHandle::AppKit(_))
+        }
+        Some(api) if api == GuiApiType::X11 => {
+            matches!(
+                raw,
+                raw_window_handle::RawWindowHandle::Xlib(_)
+                    | raw_window_handle::RawWindowHandle::Xcb(_)
+            )
+        }
+        _ => false,
+    }
+}
 impl<'a> PluginGuiImpl for NamirMainThread<'a> {
     fn is_api_supported(&mut self, configuration: GuiConfiguration<'_>) -> bool {
         // Embedded only, platform-native only — matching this module's safety argument above,
@@ -148,13 +170,7 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
         // only thing standing between a spec-violating host and a panic inside `baseview`'s
         // Windows backend (which would otherwise fire before `GUI_INVALID_PARENT` ever gets
         // pushed).
-        if !matches!(
-            handle.as_raw(),
-            raw_window_handle::RawWindowHandle::Win32(_)
-                | raw_window_handle::RawWindowHandle::AppKit(_)
-                | raw_window_handle::RawWindowHandle::Xlib(_)
-                | raw_window_handle::RawWindowHandle::Xcb(_)
-        ) {
+        if !handle_matches_negotiated_api(&handle.as_raw()) {
             self.shared.inner.push_notice(
                 crate::error_codes::GUI_INVALID_PARENT,
                 "the host supplied a window handle for a different windowing API than the one \
@@ -298,6 +314,49 @@ mod tests {
                 "{refused:?} is not a size get_size() will ever report, so accepting it would be \
                  a lie a host then sizes its parent window from"
             );
+        }
+    }
+
+    #[test]
+    fn handle_validation_accepts_only_negotiated_platform_variant() {
+        use raw_window_handle::{
+            AppKitWindowHandle, RawWindowHandle, Win32WindowHandle, XcbWindowHandle,
+            XlibWindowHandle,
+        };
+        use std::num::{NonZeroIsize, NonZeroU32};
+        use std::ptr::NonNull;
+
+        let win32_handle =
+            RawWindowHandle::Win32(Win32WindowHandle::new(NonZeroIsize::new(1).unwrap()));
+        let appkit_handle = RawWindowHandle::AppKit(AppKitWindowHandle::new(NonNull::dangling()));
+        let xlib_handle = RawWindowHandle::Xlib(XlibWindowHandle::new(1));
+        let xcb_handle = RawWindowHandle::Xcb(XcbWindowHandle::new(NonZeroU32::new(1).unwrap()));
+
+        match native_gui_api() {
+            Some(api) if api == GuiApiType::WIN32 => {
+                assert!(handle_matches_negotiated_api(&win32_handle));
+                assert!(!handle_matches_negotiated_api(&appkit_handle));
+                assert!(!handle_matches_negotiated_api(&xlib_handle));
+                assert!(!handle_matches_negotiated_api(&xcb_handle));
+            }
+            Some(api) if api == GuiApiType::COCOA => {
+                assert!(!handle_matches_negotiated_api(&win32_handle));
+                assert!(handle_matches_negotiated_api(&appkit_handle));
+                assert!(!handle_matches_negotiated_api(&xlib_handle));
+                assert!(!handle_matches_negotiated_api(&xcb_handle));
+            }
+            Some(api) if api == GuiApiType::X11 => {
+                assert!(!handle_matches_negotiated_api(&win32_handle));
+                assert!(!handle_matches_negotiated_api(&appkit_handle));
+                assert!(handle_matches_negotiated_api(&xlib_handle));
+                assert!(handle_matches_negotiated_api(&xcb_handle));
+            }
+            _ => {
+                assert!(!handle_matches_negotiated_api(&win32_handle));
+                assert!(!handle_matches_negotiated_api(&appkit_handle));
+                assert!(!handle_matches_negotiated_api(&xlib_handle));
+                assert!(!handle_matches_negotiated_api(&xcb_handle));
+            }
         }
     }
 }

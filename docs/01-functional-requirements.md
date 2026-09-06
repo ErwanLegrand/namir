@@ -1013,6 +1013,10 @@ needs re-booking by whoever takes the decision.
 `GuiApiType::default_for_current_platform()` (`WIN32` on Windows, `COCOA` on macOS, `X11` on Linux),
 and `set_parent` validates and accepts the matching native raw window handles (`Win32`, `AppKit`,
 `Xlib`, `Xcb`) without adding new `unsafe` blocks.
+*Evidence status:* The macOS embedding was reported in REAPER (PR #151, replacing the generic
+slider panel); no in-tree test executes it. The Linux/X11 embedding is implemented but unexecuted
+in a live host. No test in this tree or in CI renders a host-parented window, so the `set_parent`
+embedding clause remains `**PARTIAL**` in `docs/03-test-plan.md`.
 
 **FR-CLAP-110 (Should)** — The GUI shall support host-driven resizing and shall report its size
 constraints and preferred aspect to the host.

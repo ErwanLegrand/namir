@@ -3353,6 +3353,7 @@ changed — there was none to change, which is itself the finding.
 to platform-native.** `crates/namir-clap/src/gui.rs` negotiates `GuiApiType::default_for_current_platform()`
 (`WIN32` on Windows, `COCOA` on macOS, `X11` on Linux) and accepts matching native raw window handles
 (`Win32`, `AppKit`, `Xlib`, `Xcb`) for embedding via `baseview` without adding any new `unsafe` blocks.
+macOS embedding verified in REAPER (PR #151); Linux/X11 embedding implemented but unexecuted in a live host.
 
 **Install-path finding — this cost a failed first attempt and is a real product requirement, not a
 spike detail.** Reaper does **not** scan `%APPDATA%\REAPER\UserPlugins\CLAP`; a plugin placed there
