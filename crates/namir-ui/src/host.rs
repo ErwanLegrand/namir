@@ -176,6 +176,24 @@ pub struct UiSnapshot {
     pub presets: Vec<PresetSummary>,
     /// FR-LIB-010's configured library roots.
     pub library_roots: Arc<Vec<PathBuf>>,
+    /// Whether the audio settings / device panel is open.
+    pub audio_panel_open: bool,
+    /// List of available input device names.
+    pub input_devices: Vec<String>,
+    /// List of available output device names.
+    pub output_devices: Vec<String>,
+    /// The currently selected input device name, or `None` if default/unset.
+    pub current_input_device: Option<String>,
+    /// The currently selected output device name, or `None` if default/unset.
+    pub current_output_device: Option<String>,
+    /// Supported sample rates in Hz for the current configuration.
+    pub supported_sample_rates: Vec<u32>,
+    /// Currently active sample rate in Hz.
+    pub current_sample_rate: u32,
+    /// Supported buffer sizes in frames for the current configuration.
+    pub supported_buffer_sizes: Vec<u32>,
+    /// Currently active buffer size in frames.
+    pub current_buffer_size: u32,
 }
 
 impl Default for UiSnapshot {
@@ -196,6 +214,15 @@ impl Default for UiSnapshot {
             notices: Vec::new(),
             presets: Vec::new(),
             library_roots: Arc::new(Vec::new()),
+            audio_panel_open: false,
+            input_devices: Vec::new(),
+            output_devices: Vec::new(),
+            current_input_device: None,
+            current_output_device: None,
+            supported_sample_rates: Vec::new(),
+            current_sample_rate: 48_000,
+            supported_buffer_sizes: Vec::new(),
+            current_buffer_size: 256,
         }
     }
 }
@@ -284,6 +311,28 @@ pub enum UiIntent {
     RemoveLibraryRoot {
         /// The root directory to remove.
         path: PathBuf,
+    },
+    /// Toggle the visibility of the audio device / audio settings panel.
+    ToggleAudioSettings,
+    /// Select an audio input device by name.
+    SelectInputDevice {
+        /// The selected input device name.
+        name: String,
+    },
+    /// Select an audio output device by name.
+    SelectOutputDevice {
+        /// The selected output device name.
+        name: String,
+    },
+    /// Select an audio sample rate in Hz.
+    SelectSampleRate {
+        /// The selected sample rate in Hz.
+        rate: u32,
+    },
+    /// Select an audio buffer size in frames.
+    SelectBufferSize {
+        /// The selected buffer size in frames.
+        buffer_size: u32,
     },
 }
 

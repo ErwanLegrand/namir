@@ -428,6 +428,37 @@ pub fn run() {
         state,
         audio_mode,
     );
+    let input_device_names: Vec<String> = backend
+        .input_devices(&host_info)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    let output_device_names: Vec<String> = backend
+        .output_devices(&host_info)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    let supported_sample_rates =
+        crate::device_state::supported_sample_rates(&input.configs, &output.configs);
+    let supported_buffer_sizes = crate::device_state::supported_buffer_sizes(
+        &input.configs,
+        &output.configs,
+        sample_rate_hz,
+    );
+    host.configure_audio_devices(
+        config_dir.clone(),
+        settings.clone(),
+        input_device_names,
+        output_device_names,
+        Some(input.device.name.clone()),
+        Some(output.device.name.clone()),
+        supported_sample_rates,
+        sample_rate_hz,
+        supported_buffer_sizes,
+        buffer_frames.unwrap_or(256),
+    );
     // FR-STATE-030: `<config_dir>/Presets`, the one directory `namir-clap` must also resolve --
     // see `crate::presets`' module doc comment for why that rule is written twice today and where
     // it belongs. `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly, so a
@@ -636,7 +667,22 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     // No device was opened at all on this path, so there is no share mode to indicate -- `None`
     // rather than a truthful-looking "Shared", which would claim a device this window does not have.
     let mut host = AppHost::new(instance, worker, telemetry, library, state, None);
-    // FR-STATE-030 still works on this path: a window with no device can still list, save and
+    let (settings, _) = match &config_dir {
+        Some(dir) => settings::load(&settings::settings_path(dir)),
+        None => (AppSettings::default(), None),
+    };
+    host.configure_audio_devices(
+        config_dir.clone(),
+        settings,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        Vec::new(),
+        48_000,
+        Vec::new(),
+        256,
+    );
     // recall presets, and refusing to would be a second degradation the missing device does not
     // imply.
     if let Some(dir) = preset_dir {

@@ -268,13 +268,69 @@ pub fn negotiate_shared_buffer_size(
 /// Whether any of one direction's applicable buffer-size ranges covers `frames`.
 /// [`BufferSizeRange::Unknown`] imposes no constraint, so it accepts anything — the same reading
 /// [`negotiate_buffer_size`] has always given it.
-fn accepts_buffer_size(ranges: &[BufferSizeRange], frames: u32) -> bool {
+pub(crate) fn accepts_buffer_size(ranges: &[BufferSizeRange], frames: u32) -> bool {
     ranges.iter().any(|r| match r {
         BufferSizeRange::Range { min, max } => frames >= *min && frames <= *max,
         BufferSizeRange::Unknown => true,
     })
 }
 
+/// Standard sample rates presented in the UI when supported by both input and output devices.
+pub const STANDARD_SAMPLE_RATES: &[u32] = &[44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+
+/// Standard buffer sizes presented in the UI when supported by both input and output devices.
+pub const STANDARD_BUFFER_SIZES: &[u32] = &[32, 64, 128, 256, 512, 1024, 2048];
+
+/// Returns all standard sample rates supported by both `input_configs` and `output_configs`.
+pub fn supported_sample_rates(
+    input_configs: &[SupportedConfigRange],
+    output_configs: &[SupportedConfigRange],
+) -> Vec<u32> {
+    let mut rates: Vec<u32> = STANDARD_SAMPLE_RATES
+        .iter()
+        .copied()
+        .filter(|&rate| {
+            input_configs.iter().any(|c| c.covers_rate(rate))
+                && output_configs.iter().any(|c| c.covers_rate(rate))
+        })
+        .collect();
+    if rates.is_empty()
+        && let Some(r) = negotiate_shared_sample_rate(input_configs, output_configs, None)
+    {
+        rates.push(r);
+    }
+    rates
+}
+
+/// Returns all standard buffer sizes supported by both `input_configs` and `output_configs`
+/// at `sample_rate_hz`.
+pub fn supported_buffer_sizes(
+    input_configs: &[SupportedConfigRange],
+    output_configs: &[SupportedConfigRange],
+    sample_rate_hz: u32,
+) -> Vec<u32> {
+    let input: Vec<BufferSizeRange> = configs_at_rate(input_configs, sample_rate_hz)
+        .map(|c| c.buffer_size)
+        .collect();
+    let output: Vec<BufferSizeRange> = configs_at_rate(output_configs, sample_rate_hz)
+        .map(|c| c.buffer_size)
+        .collect();
+    if input.is_empty() || output.is_empty() {
+        return Vec::new();
+    }
+    let mut sizes: Vec<u32> = STANDARD_BUFFER_SIZES
+        .iter()
+        .copied()
+        .filter(|&size| accepts_buffer_size(&input, size) && accepts_buffer_size(&output, size))
+        .collect();
+    if sizes.is_empty()
+        && let Some(b) =
+            negotiate_shared_buffer_size(input_configs, output_configs, sample_rate_hz, None)
+    {
+        sizes.push(b);
+    }
+    sizes
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,5 +811,31 @@ mod tests {
             negotiate_shared_buffer_size(&input, &output, 48_000, None),
             Some(PREFERRED_BUFFER_FRAMES)
         );
+    }
+
+    #[test]
+    fn supported_sample_rates_filters_to_matching_standard_rates() {
+        let input = vec![config(1, 44_100, 96_000, BufferSizeRange::Unknown)];
+        let output = vec![config(2, 48_000, 192_000, BufferSizeRange::Unknown)];
+        let rates = supported_sample_rates(&input, &output);
+        assert_eq!(rates, vec![48_000, 88_200, 96_000]);
+    }
+
+    #[test]
+    fn supported_buffer_sizes_filters_to_matching_standard_sizes() {
+        let input = vec![config(
+            1,
+            44_100,
+            96_000,
+            BufferSizeRange::Range { min: 64, max: 1024 },
+        )];
+        let output = vec![config(
+            2,
+            44_100,
+            96_000,
+            BufferSizeRange::Range { min: 128, max: 512 },
+        )];
+        let sizes = supported_buffer_sizes(&input, &output, 48_000);
+        assert_eq!(sizes, vec![128, 256, 512]);
     }
 }

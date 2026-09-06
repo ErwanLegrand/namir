@@ -45,6 +45,7 @@ use namir_worker::library::LibraryService;
 
 use crate::audio_io::StreamFailure;
 use crate::instance::SharedInstance;
+use crate::settings::AppSettings;
 use crate::stream::{Direction, RunningStreams, ThreadPriorityReport};
 use crate::worker::{AppCommand, AppEvent, LoadOutcomeSummary, WorkerHandle};
 
@@ -360,6 +361,16 @@ pub struct AppHost {
     thread_priority: Option<Arc<ThreadPriorityReport>>,
     notices: Vec<UiNotice>,
     next_notice_id: AtomicU64,
+    audio_panel_open: bool,
+    input_devices: Vec<String>,
+    output_devices: Vec<String>,
+    current_input_device: Option<String>,
+    current_output_device: Option<String>,
+    supported_sample_rates: Vec<u32>,
+    current_sample_rate: u32,
+    supported_buffer_sizes: Vec<u32>,
+    current_buffer_size: u32,
+    settings: AppSettings,
 }
 
 impl AppHost {
@@ -398,6 +409,16 @@ impl AppHost {
             thread_priority: None,
             notices: Vec::new(),
             next_notice_id: AtomicU64::new(1),
+            audio_panel_open: false,
+            input_devices: Vec::new(),
+            output_devices: Vec::new(),
+            current_input_device: None,
+            current_output_device: None,
+            supported_sample_rates: Vec::new(),
+            current_sample_rate: 48_000,
+            supported_buffer_sizes: Vec::new(),
+            current_buffer_size: 256,
+            settings: AppSettings::default(),
         }
     }
 
@@ -446,6 +467,43 @@ impl AppHost {
         let (mut settings, _) = crate::settings::load(&path);
         settings.library_roots = (*self.library.roots()).clone();
         if let Err(w) = crate::settings::save(&path, &settings) {
+            crate::diagnostics::record(w.code, &w.detail);
+        }
+    }
+
+    /// Sets the initial audio device configuration and settings for this host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn configure_audio_devices(
+        &mut self,
+        config_dir: Option<PathBuf>,
+        settings: AppSettings,
+        input_devices: Vec<String>,
+        output_devices: Vec<String>,
+        current_input: Option<String>,
+        current_output: Option<String>,
+        supported_sample_rates: Vec<u32>,
+        current_sample_rate: u32,
+        supported_buffer_sizes: Vec<u32>,
+        current_buffer_size: u32,
+    ) {
+        self.config_dir = config_dir;
+        self.settings = settings;
+        self.input_devices = input_devices;
+        self.output_devices = output_devices;
+        self.current_input_device = current_input;
+        self.current_output_device = current_output;
+        self.supported_sample_rates = supported_sample_rates;
+        self.current_sample_rate = current_sample_rate;
+        self.supported_buffer_sizes = supported_buffer_sizes;
+        self.current_buffer_size = current_buffer_size;
+    }
+
+    /// Persists current `AppSettings` to `<config_dir>/audio-settings.json`.
+    fn persist_settings(&self) {
+        if let Some(dir) = &self.config_dir
+            && let Err(w) =
+                crate::settings::save(&crate::settings::settings_path(dir), &self.settings)
+        {
             crate::diagnostics::record(w.code, &w.detail);
         }
     }
@@ -861,6 +919,15 @@ impl UiHost for AppHost {
             // directory (`refresh_presets_if_stale` only ever *asks* for one).
             presets: self.presets.clone(),
             library_roots: self.library.roots(),
+            audio_panel_open: self.audio_panel_open,
+            input_devices: self.input_devices.clone(),
+            output_devices: self.output_devices.clone(),
+            current_input_device: self.current_input_device.clone(),
+            current_output_device: self.current_output_device.clone(),
+            supported_sample_rates: self.supported_sample_rates.clone(),
+            current_sample_rate: self.current_sample_rate,
+            supported_buffer_sizes: self.supported_buffer_sizes.clone(),
+            current_buffer_size: self.current_buffer_size,
         }
     }
 
@@ -956,6 +1023,37 @@ impl UiHost for AppHost {
             UiIntent::RemoveLibraryRoot { path } => {
                 self.library.remove_root(&path);
                 self.persist_library_roots();
+            }
+            UiIntent::ToggleAudioSettings => {
+                self.audio_panel_open = !self.audio_panel_open;
+            }
+            UiIntent::SelectInputDevice { name } => {
+                self.current_input_device = Some(name.clone());
+                self.settings.input_device_name = Some(name);
+                self.persist_settings();
+            }
+            UiIntent::SelectOutputDevice { name } => {
+                self.current_output_device = Some(name.clone());
+                self.settings.output_device_name = Some(name.clone());
+                if let Some(mode) = &mut self.audio_mode {
+                    mode.device_name = name;
+                } else {
+                    self.audio_mode = Some(AudioModeStatus {
+                        share_mode: AudioShareMode::Shared,
+                        device_name: name,
+                    });
+                }
+                self.persist_settings();
+            }
+            UiIntent::SelectSampleRate { rate } => {
+                self.current_sample_rate = rate;
+                self.settings.sample_rate_hz = Some(rate);
+                self.persist_settings();
+            }
+            UiIntent::SelectBufferSize { buffer_size } => {
+                self.current_buffer_size = buffer_size;
+                self.settings.buffer_size_frames = Some(buffer_size);
+                self.persist_settings();
             }
         }
     }
@@ -2134,7 +2232,116 @@ mod tests {
 
         let (loaded, _) = crate::settings::load(&settings_path);
         assert_eq!(loaded.library_roots, vec![custom_root]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
+    #[test]
+    fn toggle_audio_settings_intent_flips_panel_state() {
+        let dir = temp_dir("toggle_audio_settings");
+        let (mut host, _engine) = build_host(&dir);
+        assert!(!host.snapshot().audio_panel_open);
+        host.dispatch(UiIntent::ToggleAudioSettings);
+        assert!(host.snapshot().audio_panel_open);
+        host.dispatch(UiIntent::ToggleAudioSettings);
+        assert!(!host.snapshot().audio_panel_open);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn select_input_device_updates_snapshot_and_persists_settings() {
+        let dir = temp_dir("select_input_device");
+        let (mut host, _engine) = build_host(&dir);
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings::default(),
+            vec!["Built-in Mic".to_string(), "USB Mic".to_string()],
+            vec!["Built-in Output".to_string()],
+            Some("Built-in Mic".to_string()),
+            Some("Built-in Output".to_string()),
+            vec![44_100, 48_000],
+            48_000,
+            vec![128, 256, 512],
+            256,
+        );
+        assert_eq!(
+            host.snapshot().current_input_device.as_deref(),
+            Some("Built-in Mic")
+        );
+
+        host.dispatch(UiIntent::SelectInputDevice {
+            name: "USB Mic".to_string(),
+        });
+        assert_eq!(
+            host.snapshot().current_input_device.as_deref(),
+            Some("USB Mic")
+        );
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert_eq!(loaded.input_device_name.as_deref(), Some("USB Mic"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn select_output_device_updates_snapshot_audio_mode_and_persists_settings() {
+        let dir = temp_dir("select_output_device");
+        let (mut host, _engine) = build_host(&dir);
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings::default(),
+            vec!["Mic".to_string()],
+            vec!["Speakers".to_string(), "Headphones".to_string()],
+            Some("Mic".to_string()),
+            Some("Speakers".to_string()),
+            vec![44_100, 48_000],
+            48_000,
+            vec![256],
+            256,
+        );
+
+        host.dispatch(UiIntent::SelectOutputDevice {
+            name: "Headphones".to_string(),
+        });
+        let snapshot = host.snapshot();
+        assert_eq!(
+            snapshot.current_output_device.as_deref(),
+            Some("Headphones")
+        );
+        assert_eq!(
+            snapshot.audio_mode.as_ref().map(|m| m.device_name.as_str()),
+            Some("Headphones")
+        );
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert_eq!(loaded.output_device_name.as_deref(), Some("Headphones"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn select_sample_rate_and_buffer_size_updates_snapshot_and_persists_settings() {
+        let dir = temp_dir("select_rate_buffer");
+        let (mut host, _engine) = build_host(&dir);
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings::default(),
+            vec!["In".to_string()],
+            vec!["Out".to_string()],
+            Some("In".to_string()),
+            Some("Out".to_string()),
+            vec![44_100, 48_000, 96_000],
+            48_000,
+            vec![128, 256, 512],
+            256,
+        );
+
+        host.dispatch(UiIntent::SelectSampleRate { rate: 96_000 });
+        host.dispatch(UiIntent::SelectBufferSize { buffer_size: 512 });
+        let snapshot = host.snapshot();
+        assert_eq!(snapshot.current_sample_rate, 96_000);
+        assert_eq!(snapshot.current_buffer_size, 512);
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert_eq!(loaded.sample_rate_hz, Some(96_000));
+        assert_eq!(loaded.buffer_size_frames, Some(512));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
