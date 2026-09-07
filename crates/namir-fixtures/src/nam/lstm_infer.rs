@@ -53,8 +53,14 @@
 //!
 //! Not ported, and not needed by anything here: upstream's zero-layer passthrough
 //! (`lstm.cpp:141-151` — this crate's generator always emits at least one layer), its
-//! `fast_tanh`/`fast_sigmoid` branch (`:48-58`), and `GetPrewarmSamples` (`:127-134`), which is a
-//! caller-side warm-up recommendation rather than part of the model's definition.
+//! `fast_tanh`/`fast_sigmoid` branch (`:48-58`), and `GetPrewarmSamples` (`:127-134`).
+//!
+//! That last one stays out of this module even though `namir-nam` ported it in issue #173 (D-9.13
+//! settled that prewarming is part of matching the reference), and the two are not in tension: this
+//! is a *reference for the forward pass*, compared against `PreparedNam::process` over a state the
+//! parity tests build with `new_state`, so neither side prewarms and the comparison is of the
+//! arithmetic alone. Prewarming here would have to be mirrored there to keep that true, and would
+//! test nothing extra.
 //!
 //! **What this provenance does and does not buy.** The facts above are now checked against the
 //! source that defines them rather than against another Rust port of it, and `tests` below pins
