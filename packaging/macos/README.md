@@ -124,6 +124,46 @@ mode, so this one cannot be an argument). Everywhere else it is an argument arra
 the secret is absent, expanded as `${sign_args[@]+"${sign_args[@]}"}` — one invocation, one argument
 list, both paths. `productbuild` is called from exactly one place.
 
+## CI: the GitHub Actions secrets that turn signing on
+
+`release.yml` imports the certificates into a temporary keychain before the `Package` step and
+reads the signing variables in it, but only when the repository secrets are set. An absent secret
+is the unsigned path — identical run, no failure — so enabling signing is *adding secrets*, not
+restructuring anything. Seven secrets make a signed, notarized, stapled release:
+
+| Secret | What it holds |
+|---|---|
+| `NAMIR_APPLE_CERTIFICATE_P12_BASE64` | base64-encoded `.p12` holding the **Developer ID Application** certificate *and* the **Developer ID Installer** certificate (both are created with one Developer ID). This is the master switch: the workflow's `import_cert` step runs only when it is non-empty. |
+| `NAMIR_APPLE_CERTIFICATE_PASSWORD` | the password protecting that `.p12`. |
+| `NAMIR_CODESIGN_IDENTITY` | the identity `codesign` signs with, e.g. `Developer ID Application: Your Name (TEAMID1234)`. |
+| `NAMIR_INSTALLER_IDENTITY` | the identity `productbuild --sign` signs the `.pkg` with, e.g. `Developer ID Installer: Your Name (TEAMID1234)`. |
+| `NAMIR_NOTARY_APPLE_ID` | the Apple ID (email) the notarization submission is made from. |
+| `NAMIR_NOTARY_TEAM_ID` | the Apple Developer Team ID, 10 alphanumeric characters. |
+| `NAMIR_NOTARY_PASSWORD` | the Apple ID's **app-specific password**, created at appleid.apple.com — never the account password. |
+
+The release notes `publish` job writes are chosen from the same set: all seven present, the notes
+say the macOS installers are notarized and stapled and how to verify; any one missing, the notes say
+the binaries are unsigned. The workflow's `publish` job mirrors the list so the notes describe what
+the artifacts actually are.
+
+### Exporting the `.p12` from Keychain Access
+
+The two certificates live in **Keychain Access → My Certificates** after you approve the Developer
+ID certificate downloads (certificates are shared on the keychain: exporting one `.p12` covers both
+identities, application *and* installer).
+
+1. Right-click the certificate, choose **Export "…"…**, pick a password (`NAMIR_APPLE_CERTIFICATE_PASSWORD`)
+   and save as `Certificates.p12`.
+2. Encode it for the secret, one line:
+
+   ```bash
+   base64 -i Certificates.p12 | tr -d '\n'
+   ```
+
+   Paste the whole single line into the `NAMIR_APPLE_CERTIFICATE_P12_BASE64` secret. GitHub's paste
+   box preserves newlines from multi-line output, which would corrupt the base64 — `tr -d '\n'`
+   exists for that reason.
+
 ## The honest caveat — macOS is developer-only until signing is real
 
 Risk **R-11**. An unsigned, quarantined **plugin** does not fail the way an unsigned application
@@ -215,10 +255,14 @@ Everything, but not equally. In descending order of how likely it is to be wrong
    references, the disabled-choice syntax. Each is per Apple's Distribution XML reference; none has
    been through `productbuild`. A malformed distribution fails loudly, so this is a "first run
    fails" risk rather than a silent one.
-4. **Signing and notarisation.** No identity exists, so the entire signed path — including whether
-   signing the dylib before the bundle wrapper is sufficient, and whether the two-submission
-   staple order works — is written from documentation. The **unsigned** path is the one every run
-   will exercise until a secret exists, which is exactly D-18.3's point.
+4. **Signing and notarisation.** No credentials exist yet, so the entire signed path — including
+   whether signing the dylib before the bundle wrapper is sufficient, and whether the
+   two-submission staple order works — is written from documentation. **The pipeline is built and
+   ready for credentials**: `release.yml` now imports the `.p12` into a keychain (`import_cert`
+   step), passes the documented secrets through to this script, and picks signed or unsigned
+   release notes from the same set. What remains untested is the *signed* run itself, which cannot
+   happen until a Developer ID is obtained and the seven secrets above are configured; until then,
+   the **unsigned** path is the one every run exercises, which is exactly D-18.3's point.
 5. **`pkgbuild --analyze` on the app root.** The `PlistBuddy` loop assumes the component list is an
    array of dicts each carrying `BundleIsRelocatable`, and fails loudly if it finds no bundle at
    all. It has not been run against a real component plist.

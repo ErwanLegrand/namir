@@ -41,10 +41,13 @@
 # a non-reproducible build would be gratuitous. A hash a user can check is worth having even where
 # bit-for-bit reproducibility is not on offer, which is the roadmap's own framing (§20).
 #
-# **Risk R-11 -- the binaries are unsigned.** SmartScreen warns on every Windows release and Smart
-# App Control blocks outright; on macOS an unsigned, quarantined *plugin* fails to load in a DAW
-# with no user-visible override at all. The release notes this workflow writes say so, because a
-# user discovering it is worse. macOS signing turns on by adding secrets, with no change here.
+# **Risk R-11 -- the binaries are unsigned until the secrets are added.** SmartScreen warns on
+# every Windows release and Smart App Control blocks outright; on macOS an unsigned, quarantined
+# *plugin* fails to load in a DAW with no user-visible override at all. The release notes this
+# workflow writes state which of the two is true per run, because a user discovering it is worse.
+# macOS signing turns on by adding repository secrets, with no change here: the `import_cert` step
+# below runs only when `NAMIR_APPLE_CERTIFICATE_P12_BASE64` is present, and the packaging step is
+# written so an absent secret is the unsigned path, not an error.
 
 name: Release
 
@@ -238,6 +241,51 @@ jobs:
       - name: xtask bundle (stage and assert target/bundle/macos)
         run: cargo run -p xtask -- bundle --target macos
 
+      # `codesign` and `productbuild` will not trust a Developer ID identity unless its
+      # certificates sit in a keychain on this runner, and every `macos-latest` run starts with a
+      # fresh login keychain. Hence this import step, which keys on the one secret that gates the
+      # whole signed path (R-11): absent `NAMIR_APPLE_CERTIFICATE_P12_BASE64` skips it, and the
+      # `Package` step below takes its documented unsigned path -- identical in shape to
+      # `make_installer.sh`'s own "empty variable" design (D-18.3), not an error.
+      #
+      # The `-T` allow-list and `set-key-partition-list` are what let `codesign` and
+      # `productbuild` -- and only them -- use the imported identity without the GUI prompt a
+      # headless runner cannot answer; macOS 10.12+ refuses such use without that entry. The
+      # `-lut 21600` (6 h) unlock window covers the longest conceivable build. The
+      # `KEYCHAIN_PASSWORD` default is not a security boundary: the keychain guards partition-list
+      # access, and the certificates themselves carry whatever the `.p12` password secret holds.
+      - name: Import Apple Developer ID certificates to keychain
+        id: import_cert
+        if: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 != '' }}
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.NAMIR_APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'build-temporary-keychain' }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          echo "$CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productbuild
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign:,productbuild: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
       # Signing is conditional on a secret being present, per D-18.3 and the script's own design:
       # every variable below is optional, an unset one takes the unsigned path, and the run goes
       # down the identical sequence either way. So this step is written once and needs no `if:`.
@@ -245,12 +293,12 @@ jobs:
       # Two things a reader should not have to discover from a failed release. (1) The script's
       # documented `NAMIR_NOTARY_PROFILE` is a `notarytool store-credentials` **keychain profile**,
       # which a fresh runner does not have -- hence the Apple-ID trio here, which is the script's
-      # own documented alternative. (2) An identity *string* is not an identity: `codesign` needs
-      # the certificate present in a keychain on the runner, and importing one (a `.p12` secret plus
-      # `security create-keychain`/`import`) is a step this workflow does not have, because no
-      # signing identity exists yet (R-11). With the secrets unset -- today's state -- none of that
-      # matters and the artifacts are simply unsigned. Whoever adds the first identity adds the
-      # keychain-import step here at the same time; it is not an oversight, it is unbuilt.
+      # own documented alternative. (2) An identity *string* is not an identity: the certificate
+      # must be in a keychain on the runner, which is `import_cert`'s job above -- and the
+      # `Makefile`-equivalent guard is that `make_installer.sh` fails loudly if an identity is set
+      # while signing cannot happen, rather than shipping something that claims otherwise. With
+      # the secrets unset -- today's state -- none of that matters and the artifacts are simply
+      # unsigned.
       - name: Package (.pkg inside .dmg, plus FR-PKG-050's .zip and NFR-SEC-040's hashes)
         env:
           NAMIR_CODESIGN_IDENTITY: ${{ secrets.NAMIR_CODESIGN_IDENTITY }}
@@ -259,6 +307,16 @@ jobs:
           NAMIR_NOTARY_TEAM_ID: ${{ secrets.NAMIR_NOTARY_TEAM_ID }}
           NAMIR_NOTARY_PASSWORD: ${{ secrets.NAMIR_NOTARY_PASSWORD }}
         run: bash packaging/macos/make_installer.sh --version "$NAMIR_VERSION"
+
+      # The imported keychain holds a certificate that outlives its purpose once the artifacts
+      # are signed; a fresh runner costs nothing, so scrub it. `|| true` because a keychain that
+      # was never created (or was deleted by its own expiry) makes `delete-keychain` exit 1, and
+      # a best-effort scrub must never fail the job. Gated on the step having *run*, not on its
+      # success -- a failed import deserves the same cleanup of whatever partial state it left.
+      - name: Clean up temporary keychain
+        if: always() && steps.import_cert.outcome == 'success'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -377,6 +435,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          # Every secret `make_installer.sh` reads must be present for the macOS artifacts to be
+          # signed, notarized and stapled; `import_cert` alone proves nothing and neither does this
+          # job's copy of the list. The notes have to describe what the artifacts are, so the
+          # signed / unsigned wording is chosen here, from the same secrets (R-11).
+          NAMIR_APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 }}
+          NAMIR_CODESIGN_IDENTITY: ${{ secrets.NAMIR_CODESIGN_IDENTITY }}
+          NAMIR_INSTALLER_IDENTITY: ${{ secrets.NAMIR_INSTALLER_IDENTITY }}
+          NAMIR_NOTARY_APPLE_ID: ${{ secrets.NAMIR_NOTARY_APPLE_ID }}
+          NAMIR_NOTARY_TEAM_ID: ${{ secrets.NAMIR_NOTARY_TEAM_ID }}
+          NAMIR_NOTARY_PASSWORD: ${{ secrets.NAMIR_NOTARY_PASSWORD }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -396,12 +464,43 @@ jobs:
           Each artifact is published with a `.sha256` file beside it. Verify before installing:
 
               sha256sum -c namir-<version>-<platform>.<ext>.sha256
+          NOTES
+
+          # Exactly the signing set, mirrored from the macOS job's `import_cert` gate and the
+          # `Package` step's variables. Missing any one of them, the macOS run took the unsigned
+          # path and the notes must say so (R-11) -- a user discovering it is worse.
+          if [ -n "${NAMIR_APPLE_CERTIFICATE_P12_BASE64:-}" ] \
+             && [ -n "${NAMIR_CODESIGN_IDENTITY:-}" ] \
+             && [ -n "${NAMIR_INSTALLER_IDENTITY:-}" ] \
+             && [ -n "${NAMIR_NOTARY_APPLE_ID:-}" ] \
+             && [ -n "${NAMIR_NOTARY_TEAM_ID:-}" ] \
+             && [ -n "${NAMIR_NOTARY_PASSWORD:-}" ]; then
+            cat >> release-notes.md <<'NOTES'
+
+          **macOS installers are signed, notarized and stapled.** The `.clap`, the app and the
+          `.dmg` carry a Developer ID Application signature, the `.pkg` a Developer ID Installer
+          signature, and both are submitted to Apple's notary and stapled, so Gatekeeper can
+          approve the `.pkg` offline -- no "Open Anyway" prompt and no quarantine. Verify with the
+          `.sha256` beside the artifact, and on a Mac with the Xcode command line tools:
+
+              spctl verify --verbose Namir-<version>.pkg
+
+          Install from the `.pkg` inside the `.dmg`. Files extracted from the `.zip` are not
+          signed (the archive is a plain copy of the bundle) and may be quarantined by a DAW,
+          which is why the `.pkg` is the supported install path.
+          NOTES
+          else
+            cat >> release-notes.md <<'NOTES'
 
           **These binaries are unsigned.** On Windows, SmartScreen warns on every download and Smart
           App Control blocks the installer outright. On macOS, an unsigned plugin extracted from the
           `.zip` is quarantined and a DAW will fail to load it with no user-visible override --
           install from the `.pkg` inside the `.dmg`, which avoids quarantine. Signing identities are
           not yet in place; this is a known limitation, not a defect in a particular download.
+          NOTES
+          fi
+
+          cat >> release-notes.md <<'NOTES'
 
           Hashes are published, but the build is **not** bit-for-bit reproducible: one dependency is
           taken from a git fork and the toolchain is whatever `stable` was when the tag was pushed.
