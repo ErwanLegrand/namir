@@ -106,8 +106,13 @@ console, e.g.:
 
 ```
 namir: audio stream started
-namir: 48000 Hz, 480-frame buffer, ~20.0 ms estimated round-trip latency (in: "...", out: "...")
+namir: 48000 Hz, 480-frame block, at least ~20.0 ms estimated round-trip latency (in: "...", out: "...")
 ```
+
+"At least" because the output stream asks the device for its own buffer rather than one Namir
+picked (issue #166), and `cpal` gives no portable way to read back what the device chose — so the
+figure covers the two buffers Namir itself sizes and nothing for the device. The buffer size you
+select still sets the engine's block size and the input stream.
 
 Your negotiated choice (device names, sample rate, buffer size, and channel mapping) is saved when
 you close the app, and reloaded next time. If a remembered device is no longer available, the app
