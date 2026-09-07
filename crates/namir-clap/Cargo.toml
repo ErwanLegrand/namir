@@ -112,6 +112,10 @@ raw-window-handle = "0.6"
 baseview = "0.2"
 
 [dev-dependencies]
+# Test-only: `host_wake.rs`'s unit test builds a test `clap_host` with an active `request_callback`
+# entry to give the `HostWake` test seam real teeth. `clap-sys` is already a transitive normal
+# dependency of `clack-plugin`, so `xtask attribution` / THIRD-PARTY-NOTICES.md are unchanged.
+clap-sys = "0.5.0"
 # Test-only: `state_ext.rs`'s D-11.2 write-back test reads a saved document's raw JSON to check an
 # unrelated section survived, since `namir_state::Document`'s own section accessors are
 # `pub(crate)` to that crate. Not a new dependency in spirit -- `namir-state` already depends on

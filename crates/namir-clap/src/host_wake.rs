@@ -58,7 +58,10 @@
 //! `impl Drop for NamirShared` calls `SharedInner::shutdown_workers`, which cancels the
 //! library scan and then `pool.shutdown()` — `ThreadPool::shutdown` joins every worker thread and
 //! returns only once they are all finished (`crate::shared`'s drop impl documents that this is the
-//! sole mechanism preventing the M9a `0xc0000005` teardown crash). `destroy` therefore cannot
+//! sole mechanism preventing the M9a `0xc0000005` teardown crash). Crucially, `ThreadPool::spawn`
+//! checks its shutdown flag under lock and drops any newly dispatched job immediately rather than
+//! queueing or executing it, so even if an off-thread reference were held past `destroy`, no new
+//! pool thread could ever be started to run with the handle. `destroy` therefore cannot
 //! return — and the host cannot drop its `clap_host` pointer — while any worker thread that could
 //! still call `request_callback` is alive. The pointer's guaranteed lifetime (argument 1) extends
 //! at least to the end of `destroy`, so every `request_callback` issued by a joined-completed pool
@@ -75,6 +78,17 @@
 //! the erased lifetime. The race this could theoretically present — a `request_callback` landing
 //! after `destroy` — is closed by argument 2.
 //!
+//! **4. Re-entrancy hazard during teardown.** Because `destroy` joins all worker threads
+//! synchronously (`NamirShared::drop` -> `pool.shutdown()`), the calling thread (the host's main
+//! thread or host-destruction thread) blocks until any pool thread currently executing a job
+//! returns. If a pool thread is mid-call inside `host->request_callback`, `destroy` blocks waiting
+//! for that host callback to return. A host implementation that holds a lock across
+//! `clap_plugin->destroy` that its own `request_callback` implementation also acquires would
+//! deadlock. This is an inherent consequence of synchronous worker-thread joining combined with
+//! outbound host calls. It is compliant with the CLAP specification: CLAP designates
+//! `request_callback` as `[thread-safe]`, meaning it must be callable concurrently from non-main
+//! threads without deadlocking the host's lock hierarchy. Hosts are expected not to hold internal
+//! mutexes across plugin destruction that block thread-safe host callbacks.
 //! **Why sound rather than a gap.** The erased handle stores *no* `SharedInner` data and exposes
 //! *one* method, `request_callback`, whose safety the three arguments pin to the CLAP contract
 //! that the pointer outlives the instance and the pool-join guarantee that no worker thread
@@ -147,9 +161,9 @@ impl HostWake {
     /// pool needs, so `SharedInner::params_rescan_pending` is actually serviced (issue #94). A
     /// no-op when this instance was built without a host ([`empty`](Self::empty)).
     pub(crate) fn request_callback(&self) {
-        #[cfg(test)]
-        self.callbacks_requested.fetch_add(1, Ordering::Relaxed);
         if let Some(handle) = self.handle {
+            #[cfg(test)]
+            self.callbacks_requested.fetch_add(1, Ordering::Relaxed);
             handle.request_callback();
         }
     }
@@ -160,4 +174,50 @@ impl HostWake {
     pub(crate) fn requested_callbacks(&self) -> usize {
         self.callbacks_requested.load(Ordering::Relaxed)
     }
+
+    /// A test host-wake slot backed by a static `clap_host` whose `request_callback` vtable
+    /// entry records the call. Used by `worker_jobs`'s unit test so the test exercises a real
+    /// `HostSharedHandle` with teeth (moving the increment inside `if let Some` means
+    /// `HostWake::empty()` cannot increment, and deleting `handle.request_callback()` fails
+    /// to invoke the host function).
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        TEST_CALLBACKS_C_INVOKED.store(0, Ordering::Relaxed);
+        let raw = NonNull::from(&TEST_CLAP_HOST);
+        // SAFETY: TEST_CLAP_HOST is a static clap_host with static lifetime and valid function pointers.
+        let handle = unsafe { HostSharedHandle::from_raw(raw) };
+        Self {
+            handle: Some(handle),
+            callbacks_requested: AtomicUsize::new(0),
+        }
+    }
+
+    /// How many times the C vtable's `request_callback` was actually invoked through the
+    /// `HostSharedHandle`.
+    #[cfg(test)]
+    pub(crate) fn c_callbacks_invoked(&self) -> usize {
+        TEST_CALLBACKS_C_INVOKED.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+static TEST_CLAP_HOST: clap_sys::host::clap_host = clap_sys::host::clap_host {
+    clap_version: clap_sys::version::CLAP_VERSION,
+    host_data: std::ptr::null_mut(),
+    name: c"namir_test_host".as_ptr(),
+    vendor: std::ptr::null(),
+    url: std::ptr::null(),
+    version: c"1.0".as_ptr(),
+    get_extension: None,
+    request_restart: None,
+    request_process: None,
+    request_callback: Some(test_request_callback),
+};
+
+#[cfg(test)]
+static TEST_CALLBACKS_C_INVOKED: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+unsafe extern "C" fn test_request_callback(_host: *const clap_sys::host::clap_host) {
+    TEST_CALLBACKS_C_INVOKED.fetch_add(1, Ordering::Relaxed);
 }

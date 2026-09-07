@@ -1163,6 +1163,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "clap-sys",
  "core_affinity",
  "namir-app",
  "namir-core",

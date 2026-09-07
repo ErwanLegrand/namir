@@ -575,11 +575,11 @@ mod tests {
         )
         .unwrap();
 
-        // Built with an explicit host-wake slot (`HostWake::empty()`) so the test can observe
-        // through [`SharedInner::requested_host_callbacks`]; `new_at` would build one just the
-        // same way, this is only to be explicit that the wake is exercised even host-less.
+        // Built with an explicit test host-wake slot ([`HostWake::new_for_test`]) carrying a
+        // static C `clap_host` so the test can observe both the internal dispatch counter and
+        // the actual C vtable callback execution.
         let shared = Arc::new(SharedInner::with_host_wake_at(
-            crate::host_wake::HostWake::empty(),
+            crate::host_wake::HostWake::new_for_test(),
             &config,
         ));
 
@@ -596,6 +596,11 @@ mod tests {
             shared.requested_host_callbacks(),
             1,
             "a single recall must request exactly one host callback"
+        );
+        assert_eq!(
+            shared.c_callbacks_invoked(),
+            1,
+            "the C vtable's request_callback function must be invoked through the handle"
         );
 
         shared.shutdown_workers();

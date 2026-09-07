@@ -37,7 +37,6 @@
 
 mod support;
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clack_extensions::params::ParamRescanFlags;
