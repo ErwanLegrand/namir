@@ -389,6 +389,37 @@ pub struct NamMetadata {
     pub loudness: Option<f32>,
 }
 
+impl NamMetadata {
+    /// Fills every field this metadata leaves empty (or `None`) from `other`, leaving anything
+    /// already set untouched. Issue #172's submodel-first, container-fallback resolution.
+    ///
+    /// One implementation rather than three. `wavenet.rs` and `lstm.rs` carried byte-identical
+    /// 20-line copies of this and `probe::probe_metadata` inlined a third, each enumerating all
+    /// six fields by hand — so a seventh field added to this struct would have been silently
+    /// dropped by all three, with no compile error to catch it. Living here, next to the fields it
+    /// enumerates, is the only place a reader adding a field would look.
+    pub(crate) fn fill_empty_from(&mut self, other: &NamMetadata) {
+        if self.name.is_empty() {
+            self.name = other.name.clone();
+        }
+        if self.modeled_by.is_empty() {
+            self.modeled_by = other.modeled_by.clone();
+        }
+        if self.gear_type.is_empty() {
+            self.gear_type = other.gear_type.clone();
+        }
+        if self.tone_type.is_empty() {
+            self.tone_type = other.tone_type.clone();
+        }
+        if self.description.is_empty() {
+            self.description = other.description.clone();
+        }
+        if self.loudness.is_none() {
+            self.loudness = other.loudness;
+        }
+    }
+}
+
 /// Treats a present-but-`null` JSON value the same as an absent key: both become `T::default()`.
 /// Combined with `#[serde(default)]` (which only handles the absent-key case on its own), this is
 /// the standard serde pattern for "optional in practice, but not typed `Option<T>`, because the
@@ -473,6 +504,60 @@ fn default_lstm_channel_count() -> usize {
 
 impl LstmFile {
     /// The LSTM analogue of `NamFile::parse`; see that method's doc comment.
+    pub fn parse(bytes: &[u8]) -> Result<Self, NamLoadError> {
+        serde_json::from_slice(bytes).map_err(|e| NamLoadError {
+            code: error_codes::MALFORMED_JSON,
+            detail: e.to_string(),
+        })
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// SlimmableContainer's file shape — a container holding discrete submodels at distinct widths;
+// see `NeuralAmpModelerCore`'s `NAM/container.cpp`.
+// -------------------------------------------------------------------------------------------
+
+/// Top-level `.nam` JSON document for a SlimmableContainer model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContainerFile {
+    /// The exporter's format version string, when present.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The model architecture name; expected to be `"SlimmableContainer"`.
+    pub architecture: String,
+    /// The container configuration holding submodel entries.
+    pub config: ContainerConfig,
+    /// Display-only metadata (FR-NAM-080); see [`NamMetadata`].
+    #[serde(default)]
+    pub metadata: NamMetadata,
+    /// Sample rate if declared at container level.
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
+}
+
+/// The container configuration, holding a sequence of submodel entries sorted by `max_value`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContainerConfig {
+    /// The list of submodels in the container.
+    pub submodels: Vec<SubmodelEntry>,
+}
+
+/// One submodel entry in a `SlimmableContainer`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubmodelEntry {
+    /// The threshold value associated with this submodel.
+    pub max_value: f64,
+    /// The submodel's raw JSON document, kept as an owned [`serde_json::value::RawValue`] so a
+    /// container load never materializes every submodel's `weights` as a `serde_json::Value` —
+    /// only the selected (last) submodel is fully parsed, and then straight from these raw bytes
+    /// via `model::load` (`RawValue::get()` returns the exact source text, so the recursive load
+    /// does zero re-serialization).
+    pub model: Box<serde_json::value::RawValue>,
+}
+
+impl ContainerFile {
+    /// Deserializes `bytes` as a [`ContainerFile`]. Returns [`error_codes::MALFORMED_JSON`] if
+    /// `bytes` is not valid JSON.
     pub fn parse(bytes: &[u8]) -> Result<Self, NamLoadError> {
         serde_json::from_slice(bytes).map_err(|e| NamLoadError {
             code: error_codes::MALFORMED_JSON,
@@ -701,5 +786,103 @@ mod tests {
     fn sniff_architecture_rejects_malformed_json() {
         let err = sniff_architecture(b"{not valid json").unwrap_err();
         assert_eq!(err.code.id, error_codes::MALFORMED_JSON.id);
+    }
+
+    fn minimal_valid_container_json() -> Vec<u8> {
+        serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 0.5,
+                        "model": {
+                            "version": "0.7.0",
+                            "architecture": "WaveNet",
+                            "config": {
+                                "layers": [{
+                                    "input_size": 1,
+                                    "condition_size": 1,
+                                    "head_size": 1,
+                                    "channels": 1,
+                                    "kernel_size": 1,
+                                    "dilations": [1],
+                                    "activation": "Tanh",
+                                    "gated": false,
+                                    "head_bias": false
+                                }],
+                                "head_scale": 0.5,
+                                "head": null
+                            },
+                            "weights": [0.0, 0.0, 0.0, 0.0, 0.0],
+                            "sample_rate": 48000
+                        }
+                    },
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "version": "0.7.0",
+                            "architecture": "WaveNet",
+                            "config": {
+                                "layers": [{
+                                    "input_size": 1,
+                                    "condition_size": 1,
+                                    "head_size": 1,
+                                    "channels": 1,
+                                    "kernel_size": 1,
+                                    "dilations": [1],
+                                    "activation": "Tanh",
+                                    "gated": false,
+                                    "head_bias": false
+                                }],
+                                "head_scale": 0.5,
+                                "head": null
+                            },
+                            "weights": [0.0, 0.0, 0.0, 0.0, 0.0],
+                            "sample_rate": 48000
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[test]
+    fn parses_minimal_valid_container_file() {
+        let file = ContainerFile::parse(&minimal_valid_container_json()).unwrap();
+        assert_eq!(file.architecture, "SlimmableContainer");
+        assert_eq!(file.version.as_deref(), Some("0.7.0"));
+        assert_eq!(file.config.submodels.len(), 2);
+        assert_eq!(file.config.submodels[0].max_value, 0.5);
+        assert_eq!(file.config.submodels[1].max_value, 1.0);
+    }
+
+    #[test]
+    fn malformed_container_json_is_rejected_not_panicking() {
+        let err = ContainerFile::parse(b"{not valid json").unwrap_err();
+        assert_eq!(err.code.id, error_codes::MALFORMED_JSON.id);
+    }
+
+    #[test]
+    fn sniff_architecture_reads_slimmable_container_files() {
+        let arch = sniff_architecture(&minimal_valid_container_json()).unwrap();
+        assert_eq!(arch, "SlimmableContainer");
+    }
+
+    /// Issue #172: `SubmodelEntry::model` is kept as raw JSON (`Box<RawValue>`) so a container
+    /// parse never materializes any submodel's `weights` as a `serde_json::Value`. Pins the
+    /// property that the raw text still round-trips — re-parsing it yields the exact submodel
+    /// document, which is what `model::load_slimmable_container` feeds to `load`.
+    #[test]
+    fn container_submodel_model_round_trips_as_raw_json() {
+        let file = ContainerFile::parse(&minimal_valid_container_json()).unwrap();
+        let last = file.config.submodels.last().unwrap();
+        let reparsed: serde_json::Value =
+            serde_json::from_str(last.model.get()).expect("raw submodel JSON must parse");
+        assert_eq!(reparsed["architecture"], "WaveNet");
+        assert_eq!(reparsed["sample_rate"], 48_000);
+        assert!(reparsed.get("weights").is_some());
     }
 }
