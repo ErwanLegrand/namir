@@ -26,10 +26,12 @@
 //!
 //! 1. `serde_json::Value` is used only for fields whose contents this crate never *interprets* —
 //!    the out-of-scope set (`condition_dsp`, `slimmable`, `gating_mode`, `secondary_activation`).
-//!    What `wavenet.rs` inspects is presence, JSON kind (object vs. non-object), and — for
-//!    `gating_mode` alone — whether the value is the inert `"none"`, since rejecting that key on
-//!    presence refused every real A2 export for naming a feature it had switched off (issue #37).
-//!    Reading a value far enough to tell "off" from "on" is not the same as implementing it. Every field that
+//!    What `wavenet.rs` inspects is presence, JSON kind (object vs. non-object), and — for the two
+//!    gating fields, `gating_mode` and `secondary_activation` — whether the value is the inert one
+//!    (all `"none"`, all `null`). Rejecting those two on presence refused every real A2 export for
+//!    naming a feature it had switched off (issue #37). Reading a value far enough to tell "off"
+//!    from "on" is not the same as implementing it, and it is what the reference's own shape
+//!    detector does with these same fields. Every field that
 //!    *is* consumed (`kernel_sizes`, `bottleneck`, `head.*`, activation parameters) keeps a concrete
 //!    type, so a wrong-typed value still fails at `serde` and is still reported as malformed.
 //! 2. **No untagged enum below gets a catch-all variant.** An `Other(serde_json::Value)` arm on
@@ -176,8 +178,10 @@ pub struct LayerArrayConfig {
     /// read from it.
     #[serde(default)]
     pub gating_mode: Option<serde_json::Value>,
-    /// A2's blend/gate activation. Kept opaque: read only when gating is active, which Namir does
-    /// not support, so this is parsed solely so a rejection can name it if present.
+    /// A2's blend/gate activation, one entry per layer. Kept opaque: the reference reads it only
+    /// where that layer's gating is active, which Namir does not support, so the only thing read
+    /// from it here is whether it names an activation at all. Real exports write it as an array of
+    /// `null` — the field present, selecting nothing — and that loads.
     #[serde(default)]
     pub secondary_activation: Option<serde_json::Value>,
     /// A2's dilated-conv group count. Namir supports only `1` (no grouped convolution kernels
