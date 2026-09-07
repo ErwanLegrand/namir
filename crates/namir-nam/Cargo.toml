@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 namir-core = { path = "../namir-core", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 # R-4: vectorizes the WaveNet's AXPY-shaped inner loops (see wavenet.rs's Decision/Rationale
 # note near `axpy`). Safe public API only (Zlib OR Apache-2.0 OR MIT, all on deny.toml's allow
 # list) -- this crate forbids unsafe code (workspace lint, D-5.3) and `wide` never requires one.
