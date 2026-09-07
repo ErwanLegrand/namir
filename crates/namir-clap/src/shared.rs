@@ -761,6 +761,13 @@ impl SharedInner {
     pub(crate) fn requested_host_callbacks(&self) -> usize {
         self.host_wake.requested_callbacks()
     }
+
+    /// How many times the C vtable's `request_callback` was actually invoked through the
+    /// `HostSharedHandle`. Test-only, mirroring [`crate::host_wake::HostWake::c_callbacks_invoked`].
+    #[cfg(test)]
+    pub(crate) fn c_callbacks_invoked(&self) -> usize {
+        self.host_wake.c_callbacks_invoked()
+    }
 }
 
 /// A worker/library warning this crate has nowhere richer to send — it reaches no FR-UI-070 notice
@@ -863,6 +870,8 @@ impl<'a> NamirShared<'a> {
 impl Drop for NamirShared<'_> {
     fn drop(&mut self) {
         self.inner.shutdown_workers();
+        #[cfg(feature = "host-ext-tests")]
+        crate::__test_support::unregister_shared(&self.inner);
     }
 }
 

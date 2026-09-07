@@ -88,31 +88,76 @@ use shared::NamirShared;
 #[cfg(feature = "host-ext-tests")]
 #[doc(hidden)]
 pub mod __test_support {
+    use std::cell::RefCell;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::{Arc, Mutex, PoisonError, Weak};
 
     use crate::shared::SharedInner;
 
-    /// The most recently constructed live instance's `SharedInner`, held so a test can recall a
-    /// preset through it. One per process (only one `TestHost` instance is active per test), and
-    /// dropped when the instance is dropped.
-    static LAST_SHARED: Mutex<Option<Arc<SharedInner>>> = Mutex::new(None);
+    // Thread-local slot so parallel tests in libtest (e.g. `tests/clap_host_state.rs`'s six
+    // concurrent instantiations) do not overwrite each other's recorded instance or target a
+    // foreign instance on recall. Holds a `Weak` reference so the test seam never prevents
+    // `SharedInner` teardown or leaks the worker pool / `LibraryService`.
+    thread_local! {
+        static CURRENT_THREAD_SHARED: RefCell<Option<Weak<SharedInner>>> = const { RefCell::new(None) };
+    }
+
+    // Fallback process-global slot for any cross-thread diagnostic read, also stored weakly.
+    static LAST_SHARED: Mutex<Option<Weak<SharedInner>>> = Mutex::new(None);
 
     /// Records `shared` as the live instance for [`recall_preset_for_test`]. Called from
     /// [`shared::NamirShared::new`] under the `host-ext-tests` feature only.
     pub(crate) fn record_shared(shared: &Arc<SharedInner>) {
+        let weak = Arc::downgrade(shared);
+        CURRENT_THREAD_SHARED.with(|cell| {
+            *cell.borrow_mut() = Some(weak.clone());
+        });
         // P8 poison recovery, matching `crate::shared`'s own `lock` helper.
-        *LAST_SHARED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(shared));
+        *LAST_SHARED.lock().unwrap_or_else(PoisonError::into_inner) = Some(weak);
     }
 
-    /// Recalls the preset at `path` through this instance's real worker-pool path
+    /// Clears `shared` when [`shared::NamirShared`] drops on `destroy`.
+    pub(crate) fn unregister_shared(shared: &Arc<SharedInner>) {
+        let ptr = Arc::as_ptr(shared);
+        CURRENT_THREAD_SHARED.with(|cell| {
+            let mut opt = cell.borrow_mut();
+            if let Some(weak) = opt.as_ref()
+                && weak.as_ptr() == ptr
+            {
+                *opt = None;
+            }
+        });
+        let mut guard = LAST_SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(weak) = guard.as_ref()
+            && weak.as_ptr() == ptr
+        {
+            *guard = None;
+        }
+    }
+
+    fn with_current_shared<R>(f: impl FnOnce(&SharedInner) -> R) -> Option<R> {
+        if let Some(shared) = CURRENT_THREAD_SHARED
+            .with(|cell| cell.borrow().as_ref().and_then(|weak| weak.upgrade()))
+        {
+            return Some(f(&shared));
+        }
+        let guard = LAST_SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+        guard
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .map(|s| f(&s))
+    }
+
+    /// Recalls the preset at `path` through this thread's live instance worker-pool path
     /// ([`crate::worker_jobs::spawn_recall_preset`]), the same code a GUI-triggered recall runs.
-    /// Panics if no instance has been constructed yet.
+    /// Panics if no live instance is recorded on the current thread (or process).
     pub fn recall_preset_for_test(path: PathBuf) {
-        let shared = LAST_SHARED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        let shared = CURRENT_THREAD_SHARED
+            .with(|cell| cell.borrow().as_ref().and_then(|weak| weak.upgrade()))
+            .or_else(|| {
+                let guard = LAST_SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+                guard.as_ref().and_then(|weak| weak.upgrade())
+            })
             .expect("no live plugin instance recorded; construct one before recalling a preset");
         crate::worker_jobs::spawn_recall_preset(shared, path);
     }
@@ -121,43 +166,26 @@ pub mod __test_support {
     /// has raised `params_rescan_pending` (the flag the wake exists to service). Lets the test
     /// distinguish "the recall job failed before the wake" from "the wake itself was not
     /// delivered" when the host-callback counter does not move.
-    #[cfg(feature = "host-ext-tests")]
     pub fn last_rescan_pending() -> bool {
-        let shared = LAST_SHARED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        shared
-            .map(|s| {
-                s.params_rescan_pending
-                    .load(std::sync::atomic::Ordering::Acquire)
-            })
-            .unwrap_or(false)
+        with_current_shared(|s| {
+            s.params_rescan_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        })
+        .unwrap_or(false)
     }
 
     /// Diagnostic: the recorded instance's outstanding notice count, so the test can tell "the
     /// recall job failed during adopt (raised a notice, never reached the wake)" from "the job
     /// never ran / the wake died silently".
-    #[cfg(feature = "host-ext-tests")]
     pub fn last_notice_count() -> usize {
-        let shared = LAST_SHARED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        shared.map(|s| s.notices().len()).unwrap_or(usize::MAX)
+        with_current_shared(|s| s.notices().len()).unwrap_or(usize::MAX)
     }
 
     /// Diagnostic: how many live worker threads the recorded instance's pool has. `0` with a
-    /// `None`/dropped inner would be the sign that `LAST_SHARED` holds a shut-down (already
-    /// `destroy`ed) instance whose pool no longer accepts `spawn` — which would explain a job
-    /// that never runs.
-    #[cfg(feature = "host-ext-tests")]
+    /// `None`/dropped inner would be the sign that the recorded instance is shut down (already
+    /// `destroy`ed) and its pool no longer accepts `spawn`.
     pub fn last_pool_threads() -> usize {
-        let shared = LAST_SHARED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        shared.map(|s| s.pool.threads()).unwrap_or(usize::MAX)
+        with_current_shared(|s| s.pool.threads()).unwrap_or(usize::MAX)
     }
 }
 
