@@ -477,6 +477,56 @@ impl LstmFile {
     }
 }
 
+// -------------------------------------------------------------------------------------------
+// SlimmableContainer's file shape — a container holding discrete submodels at distinct widths;
+// see `NeuralAmpModelerCore`'s `NAM/container.cpp`.
+// -------------------------------------------------------------------------------------------
+
+/// Top-level `.nam` JSON document for a SlimmableContainer model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContainerFile {
+    /// The exporter's format version string, when present.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The model architecture name; expected to be `"SlimmableContainer"`.
+    pub architecture: String,
+    /// The container configuration holding submodel entries.
+    pub config: ContainerConfig,
+    /// Display-only metadata (FR-NAM-080); see [`NamMetadata`].
+    #[serde(default)]
+    pub metadata: NamMetadata,
+    /// Sample rate if declared at container level.
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
+}
+
+/// The container configuration, holding a sequence of submodel entries sorted by `max_value`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContainerConfig {
+    /// The list of submodels in the container.
+    pub submodels: Vec<SubmodelEntry>,
+}
+
+/// One submodel entry in a `SlimmableContainer`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubmodelEntry {
+    /// The threshold value associated with this submodel.
+    pub max_value: f64,
+    /// The submodel's JSON document, parsed during model loading.
+    pub model: serde_json::Value,
+}
+
+impl ContainerFile {
+    /// Deserializes `bytes` as a [`ContainerFile`]. Returns [`error_codes::MALFORMED_JSON`] if
+    /// `bytes` is not valid JSON.
+    pub fn parse(bytes: &[u8]) -> Result<Self, NamLoadError> {
+        serde_json::from_slice(bytes).map_err(|e| NamLoadError {
+            code: error_codes::MALFORMED_JSON,
+            detail: e.to_string(),
+        })
+    }
+}
+
 /// Just the `architecture` field, common to both [`NamFile`] and [`LstmFile`]'s JSON shape.
 /// `model::load` reads this first, before committing to parsing the rest of the document as
 /// either shape, since which one applies is exactly what this field says.
@@ -697,5 +747,88 @@ mod tests {
     fn sniff_architecture_rejects_malformed_json() {
         let err = sniff_architecture(b"{not valid json").unwrap_err();
         assert_eq!(err.code.id, error_codes::MALFORMED_JSON.id);
+    }
+
+    fn minimal_valid_container_json() -> Vec<u8> {
+        serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 0.5,
+                        "model": {
+                            "version": "0.7.0",
+                            "architecture": "WaveNet",
+                            "config": {
+                                "layers": [{
+                                    "input_size": 1,
+                                    "condition_size": 1,
+                                    "head_size": 1,
+                                    "channels": 1,
+                                    "kernel_size": 1,
+                                    "dilations": [1],
+                                    "activation": "Tanh",
+                                    "gated": false,
+                                    "head_bias": false
+                                }],
+                                "head_scale": 0.5,
+                                "head": null
+                            },
+                            "weights": [0.0, 0.0, 0.0, 0.0, 0.0],
+                            "sample_rate": 48000
+                        }
+                    },
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "version": "0.7.0",
+                            "architecture": "WaveNet",
+                            "config": {
+                                "layers": [{
+                                    "input_size": 1,
+                                    "condition_size": 1,
+                                    "head_size": 1,
+                                    "channels": 1,
+                                    "kernel_size": 1,
+                                    "dilations": [1],
+                                    "activation": "Tanh",
+                                    "gated": false,
+                                    "head_bias": false
+                                }],
+                                "head_scale": 0.5,
+                                "head": null
+                            },
+                            "weights": [0.0, 0.0, 0.0, 0.0, 0.0],
+                            "sample_rate": 48000
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[test]
+    fn parses_minimal_valid_container_file() {
+        let file = ContainerFile::parse(&minimal_valid_container_json()).unwrap();
+        assert_eq!(file.architecture, "SlimmableContainer");
+        assert_eq!(file.version.as_deref(), Some("0.7.0"));
+        assert_eq!(file.config.submodels.len(), 2);
+        assert_eq!(file.config.submodels[0].max_value, 0.5);
+        assert_eq!(file.config.submodels[1].max_value, 1.0);
+    }
+
+    #[test]
+    fn malformed_container_json_is_rejected_not_panicking() {
+        let err = ContainerFile::parse(b"{not valid json").unwrap_err();
+        assert_eq!(err.code.id, error_codes::MALFORMED_JSON.id);
+    }
+
+    #[test]
+    fn sniff_architecture_reads_slimmable_container_files() {
+        let arch = sniff_architecture(&minimal_valid_container_json()).unwrap();
+        assert_eq!(arch, "SlimmableContainer");
     }
 }

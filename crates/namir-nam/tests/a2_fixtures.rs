@@ -215,3 +215,93 @@ fn rejects_mutated_a2_variants_without_panicking() {
         }
     }
 }
+
+#[test]
+fn slimmable_container_with_generated_a2_models_matches_full_reference() {
+    let lite = nam::generate_a2(A2Shape::Lite, 42).expect("lite fixture should generate");
+    let full = nam::generate_a2(A2Shape::Full, 42).expect("full fixture should generate");
+
+    let lite_val: serde_json::Value =
+        serde_json::from_slice(&lite.to_json_bytes()).expect("lite json");
+    let full_val: serde_json::Value =
+        serde_json::from_slice(&full.to_json_bytes()).expect("full json");
+
+    let container_bytes = serde_json::json!({
+        "version": "0.7.0",
+        "architecture": "SlimmableContainer",
+        "config": {
+            "submodels": [
+                {
+                    "max_value": 0.5,
+                    "model": lite_val
+                },
+                {
+                    "max_value": 1.0,
+                    "model": full_val
+                }
+            ]
+        }
+    })
+    .to_string()
+    .into_bytes();
+
+    let prepared = namir_nam::load(&container_bytes).expect("container should load");
+    let probe = deterministic_signal(123, A2_PARITY_PROBE_SAMPLES);
+
+    let reference = nam::reference_infer_a2(&full, &probe);
+    let mut state = prepared.new_state(probe.len());
+    let ours = prepared.process(&mut state, &probe);
+
+    assert_eq!(reference.len(), ours.len());
+
+    let mut sum_sq_err = 0.0f64;
+    let mut sum_sq_ref = 0.0f64;
+    for (&r, &o) in reference.iter().zip(ours.iter()) {
+        let d = f64::from(r) - f64::from(o);
+        sum_sq_err += d * d;
+        sum_sq_ref += f64::from(r) * f64::from(r);
+    }
+    let rms_err = (sum_sq_err / reference.len() as f64).sqrt();
+    let rms_ref = (sum_sq_ref / reference.len() as f64).sqrt();
+    let db = 20.0 * (rms_err / rms_ref).log10();
+
+    println!("container parity vs A2 Full reference: {db:.1} dB");
+    assert!(db < -100.0);
+}
+
+#[test]
+fn rejects_mutated_slimmable_container_without_panicking() {
+    let lite = nam::generate_a2(A2Shape::Lite, 10).expect("lite fixture");
+    let full = nam::generate_a2(A2Shape::Full, 10).expect("full fixture");
+
+    let lite_val: serde_json::Value =
+        serde_json::from_slice(&lite.to_json_bytes()).expect("lite json");
+    let full_val: serde_json::Value =
+        serde_json::from_slice(&full.to_json_bytes()).expect("full json");
+
+    let container_bytes = serde_json::json!({
+        "version": "0.7.0",
+        "architecture": "SlimmableContainer",
+        "config": {
+            "submodels": [
+                {
+                    "max_value": 0.5,
+                    "model": lite_val
+                },
+                {
+                    "max_value": 1.0,
+                    "model": full_val
+                }
+            ]
+        }
+    })
+    .to_string()
+    .into_bytes();
+
+    for seed in 0..20u64 {
+        for variant in namir_fixtures::mutate::seeded_corpus(&container_bytes, seed) {
+            let _ = namir_nam::load(&variant);
+            let _ = namir_nam::probe_metadata(&variant);
+        }
+    }
+}
