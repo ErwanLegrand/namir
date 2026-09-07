@@ -75,6 +75,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, O
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use clack_plugin::host::HostSharedHandle;
 use clack_plugin::plugin::PluginShared;
 use namir_core::ErrorCode;
 use namir_engine::{Command, ParamChange, TelemetryReader};
@@ -86,6 +87,7 @@ use namir_worker::library::{LibraryService, ScanHandle};
 use namir_worker::pool::ThreadPool;
 use namir_worker::{CommandSubmitter, Instance, ResourceCache, SubmitError};
 
+use crate::host_wake::HostWake;
 use crate::param_mirror::ParamMirror;
 use crate::params_ext::GestureState;
 
@@ -171,6 +173,11 @@ pub(crate) struct SharedInner {
     /// `crate::main_thread`'s `notify_params_changed`, and its `on_main_thread` for why this is a
     /// flag rather than a direct call.
     pub(crate) params_rescan_pending: AtomicBool,
+    /// The erased-lifetime [`clack_plugin::host::HostSharedHandle`] a worker-pool thread holds to
+    /// request an `on_main_thread` callback after a preset recall (issue #94) — see
+    /// `crate::host_wake` for the D-5.3 safety argument that makes the `'static` sound. `None` in
+    /// the host-less `SharedInner`s this crate's unit tests and benches build (`new`/`new_at`).
+    host_wake: HostWake,
 }
 
 /// How stale [`SharedInner::presets_snapshot`] lets its cached listing get before enumerating the
@@ -193,6 +200,7 @@ const THREAD_PRIORITY_OS_ERROR: u8 = 3;
 const THREAD_PRIORITY_UNSUPPORTED: u8 = 4;
 
 impl SharedInner {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         // M14 (§22 R-18, issue #22): `open_default` no longer reads `library-index.json` — the
         // parse was the whole of NFR-PERF-040's missing margin, once per instance with no sharing
@@ -214,7 +222,31 @@ impl SharedInner {
         Self::with_library(Some(service))
     }
 
+    /// Builds a `SharedInner` whose [`host_wake`](Self::host_wake) carries `host_wake` — the
+    /// shape `DefaultPluginFactory::new_shared` reaches through [`NamirShared::new`], so a real
+    /// plugin instance's host handle (erased to `'static`, see `crate::host_wake`) reaches the
+    /// same pool jobs that set [`Self::params_rescan_pending`]. The library is opened from the
+    /// per-user default, exactly as [`Self::new`] does.
+    pub(crate) fn with_host_wake(host_wake: HostWake) -> Self {
+        let library = LibraryService::open_default().map(|(service, _)| service);
+        Self::with_library_and_host_wake(library, host_wake)
+    }
+
+    /// [`Self::with_host_wake`] against an explicitly supplied per-user configuration directory,
+    /// for the one test that needs both an injected library *and* a real (host-wired) instance —
+    /// the same injectable-path seam [`Self::new_at`] exists for.
+    #[cfg(test)]
+    pub(crate) fn with_host_wake_at(host_wake: HostWake, config_dir: &std::path::Path) -> Self {
+        let (service, _warnings) = LibraryService::open_at(config_dir);
+        Self::with_library_and_host_wake(Some(service), host_wake)
+    }
+
+    #[cfg(test)]
     fn with_library(library: Option<LibraryService>) -> Self {
+        Self::with_library_and_host_wake(library, HostWake::empty())
+    }
+
+    fn with_library_and_host_wake(library: Option<LibraryService>, host_wake: HostWake) -> Self {
         Self {
             params: ParamMirror::new(),
             gestures: GestureState::new(),
@@ -245,6 +277,7 @@ impl SharedInner {
             presets: Mutex::new(Vec::new()),
             presets_listed_at: Mutex::new(None),
             params_rescan_pending: AtomicBool::new(false),
+            host_wake,
         }
     }
 
@@ -712,6 +745,22 @@ impl SharedInner {
         self.cancel_library_scan();
         self.pool.shutdown();
     }
+
+    /// Asks the host to schedule an `on_main_thread` callback — the wake that turns
+    /// [`Self::params_rescan_pending`] into an actual [`HostParams::rescan`] (issue #94). Called
+    /// from the pool thread that set the flag; safe there because `request_callback` is one of
+    /// `clap_host`'s explicitly thread-safe operations (`crate::host_wake`'s safety argument).
+    /// A no-op for a host-less instance ([`HostWake::empty`]).
+    pub(crate) fn request_host_callback(&self) {
+        self.host_wake.request_callback();
+    }
+
+    /// How many times [`request_host_callback`](Self::request_host_callback) has been invoked.
+    /// Test-only, mirroring [`crate::host_wake::HostWake::requested_callbacks`].
+    #[cfg(test)]
+    pub(crate) fn requested_host_callbacks(&self) -> usize {
+        self.host_wake.requested_callbacks()
+    }
 }
 
 /// A worker/library warning this crate has nowhere richer to send — it reaches no FR-UI-070 notice
@@ -740,10 +789,13 @@ fn log_worker_warning(w: &namir_worker::WorkerError) {
 /// that impl — nothing outside this crate can actually construct or name a useful value of this
 /// type, since every field and every constructor stays `pub(crate)`.
 ///
-/// No `HostSharedHandle` field: every site that needs one already has its own (`crate::audio`'s
-/// `NamirAudioProcessor::host`, `crate::main_thread`'s `NamirMainThread::host`), obtained
-/// straight from `activate`/`new_main_thread`'s own parameters — so `'a` is carried only via
-/// `PhantomData` here, not by storing a redundant third handle nothing reads.
+/// No `HostSharedHandle` field: `crate::audio`'s `NamirAudioProcessor::host` and
+/// `crate::main_thread`'s `NamirMainThread::host` each need one and obtain it straight from
+/// `activate`/`new_main_thread`'s own parameters, and the *pool* half of this instance (which
+/// neither of those threads reaches, and which needs to wake the main thread after a preset
+/// recall — issue #94) reaches the host through the erased-lifetime [`crate::host_wake::HostWake`]
+/// parsed into the `SharedInner` — so `'a` is carried only via `PhantomData` here, not by storing
+/// a redundant handle nothing reads.
 pub struct NamirShared<'a> {
     pub(crate) inner: Arc<SharedInner>,
     _lifetime: std::marker::PhantomData<&'a ()>,
@@ -752,9 +804,15 @@ pub struct NamirShared<'a> {
 impl<'a> PluginShared<'a> for NamirShared<'a> {}
 
 impl<'a> NamirShared<'a> {
-    pub(crate) fn new() -> Self {
+    /// Builds the instance's `[thread-safe]` half, erasing the host handle's `'a` lifetime into a
+    /// [`HostWake`] any worker-pool closure can hold (`crate::host_wake` carries the D-5.3 safety
+    /// argument). `host` is the `clap_host` clack passes to `DefaultPluginFactory::new_shared`.
+    pub(crate) fn new(host: &HostSharedHandle<'_>) -> Self {
+        let inner = Arc::new(SharedInner::with_host_wake(HostWake::from_shared(host)));
+        #[cfg(feature = "host-ext-tests")]
+        crate::__test_support::record_shared(&inner);
         Self {
-            inner: Arc::new(SharedInner::new()),
+            inner,
             _lifetime: std::marker::PhantomData,
         }
     }
@@ -883,8 +941,14 @@ mod tests {
     /// at once and `finished` was still false.
     #[test]
     fn destroy_does_not_return_while_a_worker_job_is_still_in_flight() {
-        let shared = NamirShared::new();
-        let inner = Arc::clone(&shared.inner);
+        // Built host-less (`SharedInner::new`, i.e. `HostWake::empty()`) — the drop behaviour
+        // under test joins the worker pool and is independent of whether there is a host to wake,
+        // and this test has no `clap_host` to pass to `NamirShared::new(&host)`.
+        let inner = Arc::new(SharedInner::new());
+        let shared = NamirShared {
+            inner: Arc::clone(&inner),
+            _lifetime: std::marker::PhantomData,
+        };
         let finished = Arc::new(AtomicBool::new(false));
 
         let job_inner = Arc::clone(&inner);

@@ -54,6 +54,7 @@ mod audio;
 mod audio_ports_ext;
 mod error_codes;
 mod gui;
+mod host_wake;
 mod latency_ext;
 mod main_thread;
 mod param_mirror;
@@ -75,6 +76,90 @@ use clack_plugin::prelude::*;
 use audio::NamirAudioProcessor;
 use main_thread::NamirMainThread;
 use shared::NamirShared;
+
+/// Internal seam for `tests/clap_host_state.rs` (issue #94). A test binary is a **separate
+/// crate**, so it cannot reach this crate's `pub(crate)` `SharedInner`/`worker_jobs::spawn_recall_preset` —
+/// the worker-pool preset-recall path that sets `params_rescan_pending` and wakes the host. This
+/// module records the live instance's `Arc<SharedInner>` at construction and exposes one narrow
+/// `pub` function that dispatches a preset recall through that same path, so the integration test
+/// can drive the real worker job and observe the resulting host callback without widening any
+/// production API. `#[doc(hidden)]`: this is a test seam, not public surface. Only compiled under
+/// the `host-ext-tests` feature, so it adds nothing to the production build.
+#[cfg(feature = "host-ext-tests")]
+#[doc(hidden)]
+pub mod __test_support {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use crate::shared::SharedInner;
+
+    /// The most recently constructed live instance's `SharedInner`, held so a test can recall a
+    /// preset through it. One per process (only one `TestHost` instance is active per test), and
+    /// dropped when the instance is dropped.
+    static LAST_SHARED: Mutex<Option<Arc<SharedInner>>> = Mutex::new(None);
+
+    /// Records `shared` as the live instance for [`recall_preset_for_test`]. Called from
+    /// [`shared::NamirShared::new`] under the `host-ext-tests` feature only.
+    pub(crate) fn record_shared(shared: &Arc<SharedInner>) {
+        // P8 poison recovery, matching `crate::shared`'s own `lock` helper.
+        *LAST_SHARED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(shared));
+    }
+
+    /// Recalls the preset at `path` through this instance's real worker-pool path
+    /// ([`crate::worker_jobs::spawn_recall_preset`]), the same code a GUI-triggered recall runs.
+    /// Panics if no instance has been constructed yet.
+    pub fn recall_preset_for_test(path: PathBuf) {
+        let shared = LAST_SHARED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .expect("no live plugin instance recorded; construct one before recalling a preset");
+        crate::worker_jobs::spawn_recall_preset(shared, path);
+    }
+
+    /// Diagnostic for `tests/clap_host_state.rs`'s issue-#94 test: whether the recalled instance
+    /// has raised `params_rescan_pending` (the flag the wake exists to service). Lets the test
+    /// distinguish "the recall job failed before the wake" from "the wake itself was not
+    /// delivered" when the host-callback counter does not move.
+    #[cfg(feature = "host-ext-tests")]
+    pub fn last_rescan_pending() -> bool {
+        let shared = LAST_SHARED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        shared
+            .map(|s| {
+                s.params_rescan_pending
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Diagnostic: the recorded instance's outstanding notice count, so the test can tell "the
+    /// recall job failed during adopt (raised a notice, never reached the wake)" from "the job
+    /// never ran / the wake died silently".
+    #[cfg(feature = "host-ext-tests")]
+    pub fn last_notice_count() -> usize {
+        let shared = LAST_SHARED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        shared.map(|s| s.notices().len()).unwrap_or(usize::MAX)
+    }
+
+    /// Diagnostic: how many live worker threads the recorded instance's pool has. `0` with a
+    /// `None`/dropped inner would be the sign that `LAST_SHARED` holds a shut-down (already
+    /// `destroy`ed) instance whose pool no longer accepts `spawn` — which would explain a job
+    /// that never runs.
+    #[cfg(feature = "host-ext-tests")]
+    pub fn last_pool_threads() -> usize {
+        let shared = LAST_SHARED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        shared.map(|s| s.pool.threads()).unwrap_or(usize::MAX)
+    }
+}
 
 /// The reverse-DNS plugin identifier FR-CLAP-010 requires — distinct from
 /// `spikes/s4-clack-clap`'s own `org.legrand.namir.spike.s4`, which is a throwaway spike id
@@ -113,7 +198,7 @@ impl DefaultPluginFactory for NamirClapPlugin {
             .with_features([AUDIO_EFFECT, STEREO])
     }
 
-    fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
+    fn new_shared(host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
         // FR-ERR-010, once per *process* rather than once per instance: several plugin instances
         // share one host process, and `namir_platform::logging::init` is idempotent behind a
         // `OnceLock`, so the first instance a host creates installs the writer and every later one
@@ -126,7 +211,7 @@ impl DefaultPluginFactory for NamirClapPlugin {
         // 8), so `NAMIR_LOG` is the plugin's only verbosity control in 1.0. Passing `None` is a
         // decision, not an omission — see `namir_platform::logging::resolve_level`.
         namir_platform::logging::init(None);
-        Ok(NamirShared::new())
+        Ok(NamirShared::new(&host))
     }
 
     fn new_main_thread<'a>(
