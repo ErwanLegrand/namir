@@ -27,7 +27,7 @@ Run this against a real, visible `namir-ui` window (see
 `manual_window_smoke` example, with its auto-close block commented out, or a real `namir-app`/
 `namir-clap` build).
 
-1. **Reset gesture, continuous control.** Change Input Trim away from its default (drag it or type
+1. **Reset gesture, continuous control.** Change Input Level away from its default (drag it or type
    a value — see `fr-ui-040-numeric-value-entry.md`). Double-click the control's *name label* (not
    its value). Confirm the value snaps back to its default (0.0 dB) immediately, and that a single
    click on the label does nothing (no reset, no other side effect).
@@ -37,7 +37,7 @@ Run this against a real, visible `namir-ui` window (see
    label) of a control that has been changed from default. Confirm this does **not** reset it —
    per the module doc comment, double-click-to-reset is scoped to the name label specifically so it
    never conflicts with `DragValue`'s own double-click-to-select-all behaviour on the value.
-4. **Fine adjustment, continuous control.** Click and hold on Input Trim's value to begin a normal
+4. **Fine adjustment, continuous control.** Click and hold on Input Level's value to begin a normal
    drag; note roughly how far the mouse must move to change the value by 1 dB. Release, then repeat
    the drag while holding Shift. Confirm the value changes more slowly per pixel of mouse movement
    (finer control) than the unmodified drag, and that the displayed precision increases while Shift

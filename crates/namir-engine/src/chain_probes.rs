@@ -47,14 +47,15 @@ enum Slot {
     Out,
 }
 
-/// **FR-CHAIN-010's order, as amended by its own `*Consequence (added M9a, 2026-08-09)*` note**:
-/// `input → noise gate → input trim → NAM → IR → EQ → output level → output`. Transcribed from the
-/// requirement, not from `build_default_chain` — the point of
+/// **FR-CHAIN-010's order**: `input → input trim → noise gate → NAM → IR → EQ → output level →
+/// output` — the requirement's original order, restored at M15 when D-9.8 was withdrawn and that
+/// requirement's M9a amendment superseded in turn. Transcribed from the requirement, not from
+/// `build_default_chain` — the point of
 /// [`fr_chain_010_a_probe_signal_pins_every_position_in_the_shipped_chain`] is that the two are
 /// compared rather than assumed equal.
 const FRS_ORDER: [Slot; 6] = [
-    Slot::Gate,
     Slot::Trim,
+    Slot::Gate,
     Slot::Nam,
     Slot::Ir,
     Slot::Eq,
@@ -94,7 +95,7 @@ fn build_in_order(order: &[Slot], ctx: &PrepareContext) -> Chain {
 ///
 /// **(1) The shipped chain is the chain the requirement names.** `build_default_chain`'s output is
 /// compared, sample for sample, against a hand-assembly of the same six prepared stages in
-/// [`FRS_ORDER`] — the amended requirement's order, transcribed from the document. Bit-exact, not
+/// [`FRS_ORDER`] — the requirement's order, transcribed from the document. Bit-exact, not
 /// approximate: both run identical arithmetic in identical sequence, so any inequality at all
 /// means the product's order moved.
 ///
@@ -104,14 +105,28 @@ fn build_in_order(order: &[Slot], ctx: &PrepareContext) -> Chain {
 /// empty chain. So every adjacent transposition of [`FRS_ORDER`] is run through a probe chosen to
 /// make *that* interaction observable, and the difference is measured:
 ///
-/// - **Gate↔Trim** — the pair D-9.8 is about. Probe: a −10 dBFS chirp with the gate threshold at
-///   −30 dBFS and the trim at −40 dB. Shipped (gate first) the gate sees −10 dBFS and stays open;
-///   swapped, it sees −50 dBFS and shuts. The difference is the whole signal.
-/// - **Trim↔Nam** and **Nam↔Ir** — the NAM stage is the chain's only nonlinearity, so it commutes
-///   with neither a gain nor a convolution. Probe: the same chirp driven hot (+12 dB trim) so that
-///   nonlinearity is actually engaged, with the output level pulled down 30 dB to keep the run
-///   clear of FR-CHAIN-090's ceiling — a clamped output would hide the very differences being
-///   measured.
+/// - **Trim↔Gate** — the pair D-9.8 was about, now ordered the other way. Probe: a chirp whose
+///   amplitude alternates between −10 and −30 dBFS every ~42 ms, with the trim at +12 dB and the
+///   gate threshold at −6 dBFS, chosen so the threshold falls *between* the untrimmed and the
+///   trimmed level of the loud segments. Shipped (trim first) the gate sees +2 dBFS on those
+///   segments and opens; swapped, it sees −10 dBFS and never opens at all. The difference is the
+///   whole signal.
+/// - **Gate↔Nam** — the same alternating probe, plus the gate's own envelope times inverted:
+///   50 ms attack, no hold, 1 ms release. This transposition is the hardest of the five to see and
+///   the reason is worth stating, because a weaker probe passes it vacuously. While the gate's
+///   gain is pinned at either end it is a constant, and a constant commutes with everything; what
+///   separates the two orders is the gate *in motion*, `g · nam(x)` against `nam(g · x)` for
+///   `0 < g < 1`. At the stage's default times the only slow movement is the 100 ms release, which
+///   by construction happens while the signal is quiet — exactly where this NAM model is closest
+///   to linear, and the difference lands around 1% of peak. Inverting the times moves the slow
+///   movement onto the *rising* edge instead, so the gate is mid-travel while the signal is at
+///   full level and NAM is visibly nonlinear; the difference is then over half the probe's peak.
+///   The alternation period (~42 ms) is shorter than the attack, so the gate never finishes
+///   opening and is in motion essentially throughout.
+/// - **Nam↔Ir** — the NAM stage is the chain's only nonlinearity, so it commutes with neither a
+///   gain nor a convolution. Probe: a plain chirp driven hot (+12 dB trim) so that nonlinearity is
+///   actually engaged, with the output level pulled down 30 dB to keep the run clear of
+///   FR-CHAIN-090's ceiling — a clamped output would hide the very differences being measured.
 /// - **Ir↔Eq** and **Eq↔Out** — measured, and asserted to be **indistinguishable**, which is the
 ///   honest result rather than a gap: convolution, biquads and a gain are all LTI, so those two
 ///   transpositions describe the same system and no probe signal can separate them. What pins
@@ -127,15 +142,40 @@ fn fr_chain_010_a_probe_signal_pins_every_position_in_the_shipped_chain() {
     let ctx = probe::ctx(ChannelConfig::Mono);
     let model = probe::nam_model(WaveNetShape::Nano, 7, SR);
     let cabinet = probe::mono_ir(3, 512, SR, BLOCK);
-    let signal = probe::chirp(FRAMES, 100.0, 8_000.0, SR, 0.3);
-    let input = probe::duplicated(&signal, 1);
+    let chirp = probe::chirp(FRAMES, 100.0, 8_000.0, SR, 0.3);
+    let hot_input = probe::duplicated(&chirp, 1);
+    // The same chirp with its amplitude alternating 20 dB every `SEGMENT` samples, so the gate is
+    // never given long enough to settle at either end of its range. `WARMUP` is discarded from the
+    // front; what remains is many full loud/quiet cycles.
+    const SEGMENT: usize = 2_000; // ~42 ms at 48 kHz, against a 30 ms hold and a 100 ms release.
+    let burst: Vec<f32> = chirp
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if (i / SEGMENT).is_multiple_of(2) {
+                *s
+            } else {
+                *s * 0.1
+            }
+        })
+        .collect();
+    let burst_input = probe::duplicated(&burst, 1);
 
     // Two probe configurations, because no single one makes all five transpositions observable:
-    // the gate/trim interaction needs the signal to straddle the gate threshold, and the two NAM
-    // interactions need the model driven into its nonlinearity.
+    // the two gate interactions need the signal to straddle the gate threshold, and Nam<->Ir needs
+    // the model driven into its nonlinearity by a signal the gate is not also acting on.
     let gate_probe = |chain: &mut Chain| {
-        probe::set_param(chain, gate::THRESHOLD_DB.id, -30.0);
-        probe::set_param(chain, trim::GAIN_DB.id, -40.0);
+        // The threshold sits between the burst's loud segments untrimmed (-10 dBFS) and trimmed
+        // (+2 dBFS), which is what makes the trim's position decide whether the gate ever opens;
+        // the quiet segments (-18 dBFS trimmed) sit below it either way, so the gate keeps moving.
+        probe::set_param(chain, gate::THRESHOLD_DB.id, -6.0);
+        // Slow open, instant close: puts the gate's travel on the loud segments, where NAM is
+        // nonlinear, instead of on the quiet ones, where it is not. See this test's doc comment.
+        probe::set_param(chain, gate::ATTACK_MS.id, 50.0);
+        probe::set_param(chain, gate::HOLD_MS.id, 0.0);
+        probe::set_param(chain, gate::RELEASE_MS.id, 1.0);
+        probe::set_param(chain, trim::GAIN_DB.id, 12.0);
+        probe::set_param(chain, out::GAIN_DB.id, -30.0);
     };
     let hot_probe = |chain: &mut Chain| {
         probe::set_param(chain, gate::THRESHOLD_DB.id, -80.0);
@@ -146,7 +186,7 @@ fn fr_chain_010_a_probe_signal_pins_every_position_in_the_shipped_chain() {
         probe::set_param(chain, out::GAIN_DB.id, -30.0);
     };
 
-    let run = |order: Option<&[Slot]>, configure: &dyn Fn(&mut Chain)| -> Vec<f32> {
+    let run = |order: Option<&[Slot]>, configure: &dyn Fn(&mut Chain), input: &[Vec<f32>]| {
         let mut chain = match order {
             Some(order) => build_in_order(order, &ctx),
             None => build_default_chain(&ctx).unwrap(),
@@ -154,35 +194,44 @@ fn fr_chain_010_a_probe_signal_pins_every_position_in_the_shipped_chain() {
         configure(&mut chain);
         probe::load_nam(&mut chain, model.clone(), &ctx);
         probe::load_ir(&mut chain, cabinet.clone(), &ctx);
-        probe::run(&mut chain, &input, BLOCK)[0][WARMUP..].to_vec()
+        probe::run(&mut chain, input, BLOCK)[0][WARMUP..].to_vec()
     };
 
-    let gated_reference = run(Some(&FRS_ORDER), &gate_probe);
-    let hot_reference = run(Some(&FRS_ORDER), &hot_probe);
+    let gated_reference = run(Some(&FRS_ORDER), &gate_probe, &burst_input);
+    let hot_reference = run(Some(&FRS_ORDER), &hot_probe, &hot_input);
 
     // (1) The product path and the requirement's order are the same chain, under both probes.
-    for (configure, mandated) in [
-        (&gate_probe as &dyn Fn(&mut Chain), &gated_reference),
-        (&hot_probe, &hot_reference),
+    for (configure, input, mandated) in [
+        (
+            &gate_probe as &dyn Fn(&mut Chain),
+            &burst_input,
+            &gated_reference,
+        ),
+        (&hot_probe, &hot_input, &hot_reference),
     ] {
-        let shipped = run(None, configure);
+        let shipped = run(None, configure, input);
         assert_eq!(
             probe::max_abs_difference(&shipped, mandated),
             0.0,
-            "build_default_chain no longer assembles FR-CHAIN-010's amended order \
-             (gate -> trim -> nam -> ir -> eq -> out)"
+            "build_default_chain no longer assembles FR-CHAIN-010's order \
+             (trim -> gate -> nam -> ir -> eq -> out)"
         );
     }
 
     // (2a) The three adjacent transpositions a probe signal can see.
-    for (position, configure, reference) in [
-        (0usize, &gate_probe as &dyn Fn(&mut Chain), &gated_reference), // Gate <-> Trim
-        (1, &hot_probe, &hot_reference),                                // Trim <-> Nam
-        (2, &hot_probe, &hot_reference),                                // Nam  <-> Ir
+    for (position, configure, input, reference) in [
+        (
+            0usize,
+            &gate_probe as &dyn Fn(&mut Chain),
+            &burst_input,
+            &gated_reference,
+        ), // Trim <-> Gate
+        (1, &gate_probe, &burst_input, &gated_reference), // Gate <-> Nam
+        (2, &hot_probe, &hot_input, &hot_reference),      // Nam  <-> Ir
     ] {
         let mut swapped_order = FRS_ORDER;
         swapped_order.swap(position, position + 1);
-        let swapped = run(Some(&swapped_order), configure);
+        let swapped = run(Some(&swapped_order), configure, input);
 
         let difference = probe::max_abs_difference(reference, &swapped);
         let scale = probe::peak(reference);
@@ -210,7 +259,7 @@ fn fr_chain_010_a_probe_signal_pins_every_position_in_the_shipped_chain() {
     for position in [3usize, 4] {
         let mut swapped_order = FRS_ORDER;
         swapped_order.swap(position, position + 1);
-        let swapped = run(Some(&swapped_order), &hot_probe);
+        let swapped = run(Some(&swapped_order), &hot_probe, &hot_input);
 
         let difference = probe::max_abs_difference(&hot_reference, &swapped);
         let scale = probe::peak(&hot_reference);
@@ -343,13 +392,24 @@ fn fr_chain_020_toggling_one_stages_bypass_mid_signal_leaves_the_others_undistur
 // ---------------------------------------------------------------------------------------------
 
 /// Trim's downmix applies −6 dB to **both** terms rather than averaging (`stages/trim.rs`'s own
-/// note), so a multi-channel configuration whose channels already carry the identical signal —
-/// which is every configuration by the time Trim runs, since Gate is upstream of it and mono-core
+/// note), so a two-channel configuration whose channels carry the identical signal — `MonoToStereo`
 /// — feeds the core `2 · db_to_linear(−6)` ≈ 1.0024 times that signal, where `Mono` feeds it
 /// unscaled. A probe comparing a widened configuration against a mono one has to account for that
 /// +0.02 dB or it is measuring the downmix rather than the core.
+///
+/// *Changed at M15.* `Stereo` no longer arrives at the downmix already flattened, for two
+/// independent reasons: Trim runs first (FR-CHAIN-010, D-9.8 withdrawn), and Gate no longer copies
+/// channel 0 over the other channels at all — it multiplies every channel by one shared gain curve.
+/// Its two channels therefore genuinely differ, and the core is fed `db_to_linear(−6) · (L + R)`
+/// rather than this factor times L alone. [`downmix_term`] is the per-term gain that case needs.
 fn downmix_scale() -> f32 {
-    2.0 * db_to_linear(-6.0)
+    2.0 * downmix_term()
+}
+
+/// The −6 dB Trim applies to each term of its sum, on its own — what a `Stereo` reference has to
+/// apply to `L + R` to reproduce what the mono core is fed.
+fn downmix_term() -> f32 {
+    db_to_linear(-6.0)
 }
 
 /// **FR-CHAIN-050's `Verify: I`, against a loaded chain.** "The engine core shall process a single
@@ -366,8 +426,17 @@ fn downmix_scale() -> f32 {
 ///    the same core input to within a tight tolerance, so the surrounding routing is the only
 ///    thing the configuration changed.
 /// 3. **Non-vacuous**, twice over: the output is not silence, and a `Stereo` run whose right
-///    channel carries a tone the left does not is *not* the run that tone alone would produce —
-///    which is what makes assertion 2 a statement about the core's input rather than an accident.
+///    channel carries a tone the left does not is *not* the run either channel alone would
+///    produce — which is what makes assertion 2 a statement about the core's input rather than an
+///    accident.
+///
+/// *Changed at M15.* Each configuration now carries its own mono reference, because `Stereo`'s
+/// core input changed: with Trim ahead of Gate the right channel genuinely reaches the sum, so the
+/// reference is `−6 dB · (L + R)` and not `−6 dB · 2L`. Before M15 the right channel's tone never
+/// reached the core at all — Gate's mono-core duplication overwrote channel 1, upstream of Trim —
+/// and assertion (3) recorded that as the shipped behaviour. Both halves of that are gone: the
+/// order moved *and* the duplication became a multiplication, so neither on its own could bring
+/// the old behaviour back.
 // trace: FR-CHAIN-050
 #[test]
 fn fr_chain_050_every_configuration_duplicates_one_mono_core_result() {
@@ -392,20 +461,37 @@ fn fr_chain_050_every_configuration_duplicates_one_mono_core_result() {
         probe::run(&mut chain, &input, BLOCK)
     };
 
-    // The reference: one channel in, one channel out, fed exactly what Trim's downmix hands the
-    // core in a two-channel configuration.
-    let scaled: Vec<f32> = left.iter().map(|s| s * downmix_scale()).collect();
-    let mono = run(ChannelConfig::Mono, vec![scaled]);
-    assert_eq!(mono.len(), 1);
-    let scale = probe::peak(&mono[0][WARMUP..]);
-    assert!(scale > 1e-3, "the probe produced no signal");
+    // Each configuration's reference: one channel in, one channel out, fed exactly what Trim's
+    // downmix hands the core in that configuration.
+    let duplicated_core: Vec<f32> = left.iter().map(|s| s * downmix_scale()).collect();
+    let summed_core: Vec<f32> = left
+        .iter()
+        .zip(&right)
+        .map(|(l, r)| (l + r) * downmix_term())
+        .collect();
 
-    for (channel_config, input) in [
+    for (channel_config, input, core) in [
         // A mono source arrives already duplicated across the chain's channels (`stage_io.rs`:
         // the channel count is fixed to `output_channels()` for the whole chain).
-        (ChannelConfig::MonoToStereo, probe::duplicated(&left, 2)),
-        (ChannelConfig::Stereo, vec![left.clone(), right.clone()]),
+        (
+            ChannelConfig::MonoToStereo,
+            probe::duplicated(&left, 2),
+            &duplicated_core,
+        ),
+        (
+            ChannelConfig::Stereo,
+            vec![left.clone(), right.clone()],
+            &summed_core,
+        ),
     ] {
+        let mono = run(ChannelConfig::Mono, vec![core.clone()]);
+        assert_eq!(mono.len(), 1);
+        let scale = probe::peak(&mono[0][WARMUP..]);
+        assert!(
+            scale > 1e-3,
+            "{channel_config:?}: the probe produced no signal"
+        );
+
         let widened = run(channel_config, input);
         assert_eq!(
             widened.len(),
@@ -430,21 +516,25 @@ fn fr_chain_050_every_configuration_duplicates_one_mono_core_result() {
         );
     }
 
-    // (3) The right channel's 3.1 kHz tone never reaches the core in `Stereo`: Gate is upstream of
-    // Trim (D-9.8) and copies channel 0 over channel 1 before Trim can sum them, so the shipped
-    // Stereo routing is FR-CHAIN-060's "L-only" input — which is what assertion (2) just measured.
-    // Stated here as the discriminator rather than assumed: a routing that carried the right
-    // channel into the core at all would put that tone in the output, and (2) would have failed.
-    let stereo = run(ChannelConfig::Stereo, vec![left, right.clone()]);
-    let right_only = run(
-        ChannelConfig::Mono,
-        vec![right.iter().map(|s| s * downmix_scale()).collect()],
-    );
-    assert!(
-        probe::max_abs_difference(&stereo[0][WARMUP..], &right_only[0][WARMUP..]) > 0.1 * scale,
-        "the Stereo configuration's output is indistinguishable from one fed the right channel \
-         alone, so this probe cannot tell which channel reached the core"
-    );
+    // (3) `Stereo` really is fed both channels, stated as a discriminator rather than assumed:
+    // assertion (2) compared it against a `−6 dB · (L + R)` reference, and that comparison only
+    // means something if a core fed one channel alone would have failed it. Both single-channel
+    // alternatives are run and both must be distinguishable.
+    let stereo = run(ChannelConfig::Stereo, vec![left.clone(), right.clone()]);
+    let stereo_scale = probe::peak(&stereo[0][WARMUP..]);
+    assert!(stereo_scale > 1e-3, "the Stereo probe produced no signal");
+    for (name, channel) in [("left", &left), ("right", &right)] {
+        let one_only = run(
+            ChannelConfig::Mono,
+            vec![channel.iter().map(|s| s * downmix_scale()).collect()],
+        );
+        assert!(
+            probe::max_abs_difference(&stereo[0][WARMUP..], &one_only[0][WARMUP..])
+                > 0.1 * stereo_scale,
+            "the Stereo configuration's output is indistinguishable from one fed the {name} \
+             channel alone, so this probe cannot tell which channels reached the core"
+        );
+    }
 }
 
 /// **FR-CHAIN-060's `Verify: I per configuration`, with an IR actually loaded into every row.**

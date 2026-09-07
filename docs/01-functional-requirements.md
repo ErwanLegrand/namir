@@ -277,6 +277,64 @@ which is not something FR-CHAIN-070 can be met by offering.
 `*Verify:*` line above stand exactly as written, and nothing here decides whether or how
 FR-CHAIN-070's control is built. Verified at each site cited, as of M9a.
 
+*Consequence (added M15, 2026-09-07 — restoring this requirement's original order, and superseding
+the M9a amendment above in turn)* — **The order in the M9a note is superseded.** The engine shall
+implement exactly this chain, in this order:
+
+```
+input → input trim → noise gate → NAM → IR → EQ → output level → output
+```
+
+which is this requirement's original block, restored unchanged. `02-architecture.md` **D-9.8** is
+withdrawn in the same pass and carries its own note; `build_default_chain`
+(`crates/namir-engine/src/stages/mod.rs`) is rebuilt to this order, so for the first time since the
+first commit the requirement and the code agree without either being amended to the other.
+
+**Why the reversal, when M9a resolved it the other way.** M9a weighed one argument, D-9.8's own: a
+gate threshold referenced to the interface's noise floor does not move when the player adjusts trim.
+That argument is real, and the cost of setting it aside is stated below rather than argued away.
+What M9a did not weigh is the thing its *own* note recorded two paragraphs later, as an observation
+about FR-CHAIN-060 and not as evidence about the ordering it had just settled: gate-first also puts
+Gate's mono-core channel-0-then-duplicate pattern **upstream of the chain's only cross-channel
+mixing**. FR-CHAIN-060's Stereo row offers `2 ch summed or L-only (FR-CHAIN-070)`; with the gate
+enabled — its descriptor default — the right channel was annihilated before Trim's sum could reach
+it, so `2 ch summed` was not merely un-chosen but unreachable except as a side effect of switching
+an unrelated stage off. Trim-first makes both of that row's options describable again, and makes the
+summing one what a host actually gets.
+
+*The defect underneath that symptom is fixed too, on its own footing.* Review of this change made
+the point that the annihilation is not a property of the gate's *position* but of what it did at
+that position: it gated channel 0 and copied the result over every other channel, which is strictly
+more than FR-CHAIN-050 asks of it — that requirement is about the core processing a single channel,
+not about the gate erasing the others on its way past. The gate now derives one gain curve from
+channel 0 and multiplies every channel by it: the identical single gate, applied to every channel,
+overwriting nothing (`namir_dsp::NoiseGate::compute_gains`, `crates/namir-engine/src/stages/gate.rs`).
+Recorded as a separate finding because it is separately true: with the copy gone, `2 ch summed`
+would be reachable under **either** order, so the reorder above no longer carries this argument
+alone and no future reordering can silently restore the old behaviour.
+
+**What changes about the product.** The gate's threshold now references the *trimmed* signal, so a
+player who raises the input trim raises what the gate hears and may have to lower the threshold to
+match. That is precisely the usability cost D-9.8 was written to avoid, and it is accepted, not
+disputed. In exchange a stereo input reaches the mono core as the −6 dB sum of both channels rather
+than as its left channel alone. See FR-CHAIN-070's own M15 note for what that does to *its*
+disposition, which is the one place the trade is not free.
+
+**Both of this document's other statements of placement stay literally true**, as they did under the
+M9a amendment: §1.2's "a noise gate ahead of the amp" and FR-GATE-010's "ahead of the NAM stage"
+hold under either order. The gate never moves relative to the amp; the trim is the only thing that
+has ever changed side.
+
+**One claim in the M9a note above has expired and is corrected here rather than edited there.** Its
+closing paragraph states that "no probe signal has ever been put through this chain to measure stage
+interaction". That was true when written and stopped being true at M14:
+`crates/namir-engine/src/chain_probes.rs`'s
+`fr_chain_010_a_probe_signal_pins_every_position_in_the_shipped_chain` compares the shipped assembly
+bit-for-bit against a hand-assembly in this requirement's order and then measures every adjacent
+transposition against a probe chosen to make that one observable. This reversal changed which order
+that test transcribes and which probes two of its five transpositions need; it did not change
+whether the `*Verify:*` method runs.
+
 **FR-CHAIN-020 (Must)** — Each of the noise gate, NAM, IR and EQ stages shall be individually
 bypassable without disturbing the other stages and without an audible click or discontinuity.
 *Verify:* U per stage; I for click-freedom (see FR-PARAM-040).
@@ -336,6 +394,32 @@ an unrelated stage is not the *choice* this requirement asks for — it does not
 And the stale comment M9a identified as the likely source of the confusion,
 `crates/namir-engine/src/stages/trim.rs:19-21`'s reference to "FR-CHAIN-060's default", is still
 there; correcting it is a source change this documents-only pass does not make.
+
+*Consequence (added M15, 2026-09-07)* — **The reorder the note above declined has since happened,
+for a different reason, and it moves this requirement's shipped default from one of its three
+options to another.** FR-CHAIN-010's own M15 note puts the input trim ahead of the noise gate and
+withdraws D-9.8, on the strength of that requirement's original text rather than of anything here.
+
+**This requirement is still not implemented, and is now unmet on a second clause as well.** There is
+still no chooser, which is what the note above records. What has changed is the fixed behaviour the
+absent chooser falls back to: the mono core is now fed the −6 dB sum of both channels, so "The
+default shall be left channel" is no longer met either. Stated rather than absorbed, because the
+note above rests part of its case on left-only being what ships.
+
+**FR-CHAIN-060 is unaffected and remains satisfied.** Its Stereo row permits `2 ch summed or L-only
+(FR-CHAIN-070)`, and the product has moved from the second of those two to the first. Both are
+inside the row; no Must changes disposition, in either direction, and the "dropping it costs no
+Must" reasoning above survives the move intact.
+
+**The trade the note above weighed is not the trade that was made.** It rejected reordering as
+"moving a **Must**'s behaviour to serve a **Should**", which would have been the wrong direction.
+The reorder was made to satisfy FR-CHAIN-010 — a Must — against its own original text; this
+requirement's default flipping is a consequence of that, not its purpose, and no part of the
+decision was taken to serve this Should. It remains a recorded scope reduction for 1.0.
+
+*And the stale comment is no longer there.* `crates/namir-engine/src/stages/trim.rs` no longer calls
+the −6 dB sum "FR-CHAIN-060's default"; the pass that reordered the chain touched that file anyway
+and corrected it, which is the source change the paragraph above declined to make on its own.
 
 **FR-CHAIN-080 (Must)** — Every sample the engine emits shall be a finite number. If any stage
 produces a NaN or an infinity, the engine shall replace the affected block with silence, set a
@@ -1774,3 +1858,4 @@ of someone having looked at it rather than the check itself.
 | 0.6 | 2026-08-09 | M9a §14 adjudication pass. **Corrects 0.5's own record of the Stereo interaction**, by a further appended `*Consequence (added M9a, 2026-08-09)*` note at FR-CHAIN-010 rather than an edit to the paragraph it corrects. That paragraph overstated the finding, in the direction of severity: naming shipped Stereo behaviour "not FR-CHAIN-060's table default (both channels summed)" reads as FR-CHAIN-060 — a Must — being unmet, when FR-CHAIN-060's Stereo row reads `2 ch summed or L-only (FR-CHAIN-070)`, two permitted inputs with no default between them, and left-only is the second of them. FR-CHAIN-060 is **satisfied**. What cannot be met is **FR-CHAIN-070**, whose clause is that the user shall be able to *choose* left, right or the −6 dB sum: `params.lock` carries no stereo-source parameter among its twenty-nine live ones, so the choose clause fails before the chain order is reached. FR-CHAIN-070 is a **Should** (§1.5's sole priority marker), so it sits in no `03-implementation-roadmap.md` §14 row — §5.1 CHAIN's 8 Musts out of 9 requirements — and no §14 verdict or M8 exit-gate item follows; the finding is a Should left open, not a Must left broken. The mechanism is also restated with the condition 0.5 omitted: the right channel is discarded only while the gate is **on** (`gate.enabled` defaults to "On", `crates/namir-params/src/stages/gate.rs:8-16`); with the gate off, `stages/gate.rs:174-192`'s bypass crossfade settles at 0.0, each channel's pre-gate copy is restored, and `stages/trim.rs:145-156` sums both — so the sum is reachable, though only as a side effect of disabling an unrelated stage, which is not the choice FR-CHAIN-070 asks for. The same mistaken "FR-CHAIN-060's default" phrasing at `crates/namir-engine/src/stages/trim.rs:19-21` is recorded as the likely source, not repaired. No requirement text, priority or `*Verify:*` line is changed by this row. |
 | 0.7 | 2026-08-10 | M12 (brand, README and product identity). **NFR-DOC-040 and NFR-LIC-070 gain their first artifacts**: `README.md` and `TRADEMARK.md` at the repository root, both asserted by a new `xtask identity` static check wired into CI, which is what makes a `Verify: S` method executable rather than a claim. NFR-LIC-070 is tagged plainly; **NFR-DOC-040 is `trace-partial:`** — a substring check cannot reach its "stating what it does" clause, and the gap is written down rather than papered over by a plain tag. **FR-UI-110 gains an appended `*Consequence*` note** recording that only its brand-mark clause is in scope for M12 and that both icon clauses defer to M13: the executable icon by `02-architecture.md` D-17.3's refusal to admit a build script into a shipped crate for a cosmetic feature, the window icon because `baseview` 0.2.2 has no icon field at all — which also makes `03-implementation-roadmap.md` §19's window-option instruction unfollowable, corrected there rather than here. No requirement text, priority or `*Verify:*` line is changed by this row. |
 | 0.8 | 2026-08-12 | M14 Phase 0 (pre-1.0 closure; decisions only, no code). **Eighteen appended `*Consequence (added M14, 2026-08-12)*` notes; no requirement text, priority or `*Verify:*` line is changed by this row.** Three ratifications. **FR-NAM-060 gains the sub-40 kHz clause**: its "0.1 dB up to 20 kHz or the Nyquist frequency, whichever is lower" leaves a transition band only while 20 kHz is the lower of the two, so below a 40 kHz rate it is arithmetically unsatisfiable rather than merely unmet; Namir's supported **engine** sample-rate range is stated as 44.1 kHz to 192 kHz for both products (the range FR-CLAP-080 already gives the plugin), which puts every FR-NAM-050 conversion inside the satisfiable region, and the one path that reaches below it — FR-IR-030, via FR-IR-010's 8 kHz IR-file floor — gets the bar restated proportionally (0.1 dB to 0.45 x the lower rate, 100 dB from 0.5 x the lower rate up), unmeasured and said to be unmeasured. **FR-CHAIN-070's Should is dropped for 1.0** (roadmap §15 item 18): left-only ships, no chooser, costing no Must since FR-CHAIN-060's Stereo row admits it — the alternatives reopen D-9.8 or need a new `namir_dsp::NoiseGate` seam. **NFR-PORT-030 keeps its method** (item 19) with the cross-build recorded as a door-open check rather than a compliance check, so its **Done** cell is read as "the door is open at compile time", not "the five constraints hold". **FR-STATE-040** (item 21 / issue #27): the FRS line is **not** narrowed; the parser is to learn compound methods first and the schema check follows, against `04-state-and-preset-format.md` §§3-7, and until then this Must is not counted Done by hand whatever the tool prints. Six accepted limitations outright, plus two splits — eight requirements in all — recorded at their own requirements rather than carried into the 1.0 gate as open partials: NFR-DOC-040 ("stating what it does"), NFR-PERF-010 (the CI-regression-gate half; the figure passes with 34.4-41.8% headroom and closing it as written needs a self-hosted runner on the §2 machine), NFR-PERF-030 (the stronger audible marker — the earlier rejection is **ratified, not reopened**), FR-CLAP-030 (`audio-ports-config`, ratifying M9b's reduction), FR-NAM-090 (a true BS.1770 meter), FR-CLAP-090 (the memory benchmark), plus **two splits**: NFR-LIC-010's SPDX-header clause is accepted as NFR-LIC-060's work (a Should) while its licence-files-present clause is **refused acceptance** and stays booked, and FR-CFG-030's standalone "exercised" clause is accepted as needing a device no runner has while its other three clauses stay Phase 5 work. Five recorded as **still open, deliberately not decided here**: FR-IO-060 and FR-IO-070 (roadmap §15 item 16, the audio-device panel — both stay Partial and M14 does no device work), FR-STATE-090 (item 3 / AQ-4, noting the third resolution §21 names: it is a Should, §13 says no Should gates M8, so striking M8's checklist bullet is cheaper than either listed answer), FR-CLAP-100 (item 20 / issue #18, the plugin's missing editor on macOS and Linux) and FR-UI-030 (issue #35: `egui-baseview` wires no `accesskit` platform adapter, so running its script would fail). |
+| 0.9 | 2026-09-07 | M15. **FR-CHAIN-010's original chain order is restored and the M9a amendment superseded in turn**, by an appended `*Consequence (added M15, 2026-09-07)*` note: `input → input trim → noise gate → NAM → IR → EQ → output level → output`. `02-architecture.md` **D-9.8** is withdrawn in the same pass and `build_default_chain` (`crates/namir-engine/src/stages/mod.rs`) is rebuilt to match, so requirement and code now agree without either being amended to the other — the first time since `875068e`. **The reason is the argument M9a's own note recorded and did not weigh**: Gate is mono-core, copying channel 0 over every other channel to establish FR-CHAIN-050's invariant, so ordering it ahead of Trim — the chain's only cross-channel mixing — destroyed the right channel before the sum could reach it, making the first of FR-CHAIN-060's two permitted Stereo inputs unreachable except by switching the gate off. **The cost is stated, not argued away**: the gate's threshold now references the trimmed signal, which is exactly what D-9.8 was written to prevent. **FR-CHAIN-070 gains its own note**: still unimplemented, still no chooser, but the fixed behaviour its absent chooser falls back to moves from the left channel to the −6 dB sum, so its "default shall be left channel" clause is unmet too — recorded because M14's note settling roadmap §15 item 18 rests part of its case on left-only being what ships. FR-CHAIN-060 is unaffected and stays satisfied on the other of its two options; no Must changes disposition. Also corrected here: the M9a note's claim that no probe signal has ever been put through this chain, true when written and superseded by M14's `chain_probes.rs`; and `crates/namir-engine/src/stages/trim.rs`'s "FR-CHAIN-060's default" comment, which M14's note identified and declined to touch. **Unrelated to the order, in the same commit**: `trim.gain_db`'s display name becomes "Input Level" (its key and `ParamId` are unchanged), and FR-UI-020's screen puts both meters and both level controls at the top, each meter beneath the control it measures the output of. **The defect underneath the reorder's stereo argument is fixed with it, on its own footing** (raised in review): the annihilation was not a property of the gate's *position* but of the gate gating channel 0 and **copying the result over every other channel**, which is strictly more than FR-CHAIN-050 asks — that requirement is about the core processing a single channel, not about the gate erasing the others. `GateStage` now derives one gain curve from channel 0 (`namir_dsp::NoiseGate::compute_gains`) and multiplies every channel by it; channel 0's result is bit-identical to the old path, asserted in `namir-dsp`. `2 ch summed` is consequently reachable under **either** order, so the reorder is not load-bearing for it and no future reordering can restore the old behaviour by itself. |

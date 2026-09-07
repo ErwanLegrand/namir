@@ -55,16 +55,23 @@
 //!
 //! **It does not assert that the two channels are processed independently, because they are not,
 //! and asserting so would be false.** The chain is a mono core by design (FR-CHAIN-050):
-//! `GateStage` detects on channel 0 and copies its gated result over every other channel
-//! (`crates/namir-engine/src/stages/gate.rs:163-172`), and `TrimStage` re-establishes the same
-//! invariant after its downmix (`crates/namir-engine/src/stages/trim.rs:167-174`). Because D-9.8
-//! puts Gate *upstream* of Trim, and Gate is enabled by its own descriptor default, channel 1's
-//! input is annihilated before Trim's sum ever sees it — so the shipped Stereo behaviour is
-//! FR-CHAIN-060's second permitted Stereo input, `L-only (FR-CHAIN-070)`, not its `2 ch summed`
-//! sibling. That is a satisfied requirement, not a defect: the FRS says so in as many words at its
-//! own M9a correction to §5.3. The second test below pins it, so that a future change to the
-//! gate default or to D-9.8's ordering fails loudly here rather than silently changing which of
-//! the two permitted readings the product ships.
+//! `TrimStage` sums the input channels at −6 dB each and re-establishes the identical-channel
+//! invariant after that downmix (`crates/namir-engine/src/stages/trim.rs:167-174`), and
+//! `GateStage` downstream of it runs one detector on channel 0 and multiplies every channel by the
+//! gain curve it produces (`crates/namir-engine/src/stages/gate.rs`). Both channels reach the mono
+//! core; what they do not get is independent processing once there.
+//!
+//! *Changed at M15, in two independent ways, and it is the interesting half of this file.* Until
+//! M15 the gate did not multiply — it gated channel 0 and **copied the result over every other
+//! channel**, destroying their content — and D-9.8 placed it *upstream* of Trim, so that
+//! destruction happened before Trim's sum ever saw channel 1. The shipped Stereo behaviour was
+//! therefore FR-CHAIN-060's second permitted input, `L-only (FR-CHAIN-070)`, rather than its
+//! `2 ch summed` sibling; a satisfied requirement rather than a defect, and the second test below
+//! pinned it as the shipped reading. Both halves changed: D-9.8 is withdrawn and Trim runs first,
+//! **and** the gate stopped overwriting channels. The product ships `2 ch summed`, and that test
+//! now pins *that* — same role, opposite assertion. Because the copy is gone independently of the
+//! order, a future reordering can no longer bring the old behaviour back on its own; the test
+//! still fails loudly if either half regresses.
 
 mod support;
 
@@ -274,13 +281,11 @@ fn the_declared_audio_ports_are_one_in_place_stereo_pair_that_the_plugin_then_pr
 ///
 /// 1. Both declared output channels are written with a real signal, identical to each other
 ///    (FR-CHAIN-050).
-/// 2. Channel 1's *input* does not reach the output at all. This is the shipped reading of
-///    FR-CHAIN-060's Stereo row — `2 ch summed or L-only (FR-CHAIN-070)`, the second option — and
-///    it is bit-exact rather than approximate: Gate runs upstream of Trim (D-9.8) and, at its
-///    descriptor default of enabled, its bypass mix sits settled at exactly 1.0, so the dry term
-///    carrying channel 1 is multiplied by exactly `1.0 - 1.0`. Pinned here because it is the one
-///    observable difference between the two readings FR-CHAIN-060 permits, and nothing else in the
-///    tree asserts which one a host actually gets.
+/// 2. Channel 1's *input* reaches the output. This is the shipped reading of FR-CHAIN-060's
+///    Stereo row — `2 ch summed or L-only (FR-CHAIN-070)`, the **first** option, since M15 moved
+///    Trim ahead of Gate and its downmix therefore sees two genuinely different channels. Pinned
+///    here because it is the one observable difference between the two readings FR-CHAIN-060
+///    permits, and nothing else in the tree asserts which one a host actually gets.
 #[test]
 fn the_negotiated_stereo_pair_is_processed_left_only_as_fr_chain_060_permits() {
     let (_entry, mut instance) = instantiate_default();
@@ -291,13 +296,15 @@ fn the_negotiated_stereo_pair_is_processed_left_only_as_fr_chain_060_permits() {
     let with_silence = run_stereo_blocks(&mut instance, |dst| dst.fill(0.0));
     assert_declared_output_pair_was_written(&with_silence);
 
-    assert_eq!(
+    assert_ne!(
         with_signal, with_silence,
-        "channel 1 of the declared stereo input pair changed the output -- the shipped chain feeds \
-         its mono core the left channel alone (FR-CHAIN-060's `L-only (FR-CHAIN-070)` option), \
-         because Gate is enabled by default and overwrites channel 1 with channel 0's gated result \
-         (crates/namir-engine/src/stages/gate.rs:163-172) before Trim's downmix can sum it \
-         (crates/namir-engine/src/stages/trim.rs:145-156). If that is now intended, this test is \
+        "channel 1 of the declared stereo input pair left the output unchanged -- the shipped \
+         chain is supposed to sum both channels into its mono core at -6 dB each (FR-CHAIN-060's \
+         `2 ch summed` option), which Trim does first thing in the chain \
+         (crates/namir-engine/src/stages/trim.rs:145-156). A chain that ignores channel 1 has \
+         reverted to the `L-only (FR-CHAIN-070)` reading, which is what shipped while Gate ran \
+         upstream of Trim and overwrote channel 1 with channel 0's gated result \
+         (crates/namir-engine/src/stages/gate.rs:163-172). If that is now intended, this test is \
          what has to change -- but the change of reading is a real one and FR-CHAIN-070's control \
          is the requirement that decides it"
     );

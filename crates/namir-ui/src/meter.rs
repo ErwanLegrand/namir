@@ -2,9 +2,18 @@
 //! itself (it never sees an audio sample, per D-5.1) -- this module only maps an already-computed
 //! [`MeterReading`] onto something drawable.
 
-use egui::{ProgressBar, Ui};
+use egui::{Color32, ProgressBar, Ui};
+use namir_params::ParamDescriptor;
 
+use crate::UiIntent;
+use crate::brand::MARK_FILL;
+use crate::controls::param_control;
 use crate::host::MeterReading;
+
+/// The bar's fill colour: FR-UI-110's brand-mark orange, not `egui`'s default selection blue. The
+/// mark is the only other saturated colour on the screen, so a meter in a different hue reads as
+/// belonging to the toolkit rather than to this product.
+const FILL: Color32 = Color32::from_rgb(MARK_FILL[0], MARK_FILL[1], MARK_FILL[2]);
 
 /// The dB floor a meter reads as empty at -- matches this workspace's own silence-floor
 /// convention (`namir_params::stages::out::SILENCE_FLOOR_DB`, FR-OUT-010's "-60 dB or below is
@@ -56,21 +65,41 @@ pub fn format_db(db: f32) -> String {
     }
 }
 
-/// Renders one labelled meter bar for `reading`.
-pub fn render(ui: &mut Ui, label: &str, reading: MeterReading) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.add(
-            ProgressBar::new(normalize_db(reading.peak_db))
-                .text(format_db(reading.peak_db))
-                .desired_width(180.0),
-        )
-        .on_hover_text(format!(
-            "Peak {}, RMS {}",
-            format_db(reading.peak_db),
-            format_db(reading.rms_db)
-        ));
-    });
+/// A gain control with the meter that reads the signal *after* it, drawn as one object.
+///
+/// Both ends of the chain are this same shape, which is the point: `trim.gain_db` and
+/// `out.gain_db` are the two places a user sets a level, and in both the meter directly beneath
+/// shows the result of having set it. Neither meter reads the stage's input --
+/// `namir-engine`'s Trim and Out stages both meter after their own gain ramp
+/// (`stages/trim.rs`, `stages/out.rs`) -- so a meter drawn above its control, or drawn somewhere
+/// else on the screen entirely, would misdescribe what it is showing.
+///
+/// The bar carries no label of its own: the control immediately above it is the label, and
+/// repeating the word underneath is the duplication issue #103 is about.
+pub fn level_control(
+    ui: &mut Ui,
+    descriptor: &'static ParamDescriptor,
+    current: f32,
+    reading: MeterReading,
+    intents: &mut Vec<UiIntent>,
+) {
+    param_control(ui, descriptor, current, intents);
+    render(ui, reading);
+}
+
+/// Renders one meter bar for `reading`. Unlabelled -- see [`level_control`], its only caller.
+pub fn render(ui: &mut Ui, reading: MeterReading) {
+    ui.add(
+        ProgressBar::new(normalize_db(reading.peak_db))
+            .fill(FILL)
+            .text(format_db(reading.peak_db))
+            .desired_width(180.0),
+    )
+    .on_hover_text(format!(
+        "Peak {}, RMS {}",
+        format_db(reading.peak_db),
+        format_db(reading.rms_db)
+    ));
 }
 
 #[cfg(test)]
@@ -94,7 +123,7 @@ mod tests {
                 screen_rect: Some(window),
                 ..Default::default()
             },
-            |ui| render(ui, "Input", reading),
+            |ui| render(ui, reading),
         );
         let mut texts = Vec::new();
         for clipped in &output.shapes {

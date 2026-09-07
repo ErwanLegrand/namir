@@ -511,7 +511,7 @@ mod tests {
 
     const TRIM: ParamDescriptor = ParamDescriptor::new(
         "trim.gain_db",
-        "Input Trim",
+        "Input Level",
         Unit::Decibels,
         ParamKind::Continuous {
             min: -24.0,
@@ -628,7 +628,7 @@ mod tests {
         // Same key, same id, but now declared Stepped instead of Continuous.
         const TRIM_AS_STEPPED: ParamDescriptor = ParamDescriptor::new(
             "trim.gain_db",
-            "Input Trim",
+            "Input Level",
             Unit::None,
             ParamKind::Stepped {
                 values: &["Off", "On"],

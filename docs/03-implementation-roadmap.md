@@ -259,6 +259,11 @@ Nam and Ir each depend on one new piece of integration work first.
   - **Gate** — `namir-dsp::NoiseGate` (FR-GATE-010/020/030/040), placed *before* Trim in the
     actual chain per D-9.8 — this is `namir-dsp`'s own stated boundary (the primitive is
     trim-agnostic; ordering is `namir-engine`'s job, exercised here for the first time).
+    - *Amended (M15, 2026-09-07):* D-9.8 is withdrawn and Gate is placed **after** Trim, which is
+      FR-CHAIN-010's original order; the M9a amendment that had rewritten that requirement to match
+      this bullet is superseded in turn. The bullet's own point is untouched and is if anything
+      better made by having been exercised twice: `namir-dsp`'s gate primitive did not change in
+      either direction, because ordering was never its concern. See D-9.8's M15 consequence note.
   - **Nam** — `namir-nam::PreparedNam`/`NamState` wrapped with a `rubato` resampler per D-9.2/9.3
     (resampling around the NAM stage only, bypassed at 48 kHz for zero added cost/latency), built
     with the crossfade-capable dual-resource shape §3 calls out. WaveNet only until M3; a

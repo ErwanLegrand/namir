@@ -23,11 +23,11 @@ Run this against a real, visible `namir-ui` window (see
 `manual_window_smoke` example, with its auto-close block commented out, or a real `namir-app`/
 `namir-clap` build).
 
-1. **Numeric display on demand.** For a continuous control (e.g. Input Trim) and a stepped one
+1. **Numeric display on demand.** For a continuous control (e.g. Input Level) and a stepped one
    (e.g. Gate Enabled), confirm the control shows its current value as text next to/inside the
    control at all times, not only while being interacted with — no click or hover should be
    required to see the current value.
-2. **Typed entry, continuous control.** Click Input Trim's value to enter edit mode. Confirm a text
+2. **Typed entry, continuous control.** Click Input Level's value to enter edit mode. Confirm a text
    cursor appears and the field is editable. Type `6.0` and press Enter. Confirm the displayed value
    updates to `6.0` (or its formatted equivalent, e.g. `6.0 dB`) and the control's audible/visual
    effect (if monitoring audio) matches a +6 dB trim.
@@ -36,7 +36,7 @@ Run this against a real, visible `namir-ui` window (see
    typing a raw index (`1`) instead of a name; confirm it resolves to the corresponding named state
    ("On").
 4. **Out-of-range typed value.** Enter edit mode on a continuous control with a bounded range (e.g.
-   Input Trim, ±24 dB) and type a value outside that range (e.g. `999`). Confirm on commit (Enter)
+   Input Level, ±24 dB) and type a value outside that range (e.g. `999`). Confirm on commit (Enter)
    the value is clamped to the control's max/min rather than accepted verbatim or rejected outright
    — matching `continuous_clamps_above_range`/`continuous_clamps_below_range`'s automated behaviour,
    now confirmed through the real widget.

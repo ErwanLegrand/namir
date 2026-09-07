@@ -7,7 +7,7 @@ use crate::descriptor::{
 /// FR-IN-010: input trim, -24..24 dB, default 0, resolution no coarser than 0.1 dB.
 pub const GAIN_DB: ParamDescriptor = ParamDescriptor::new(
     "trim.gain_db",
-    "Input Trim",
+    "Input Level",
     Unit::Decibels,
     ParamKind::Continuous {
         min: -24.0,
