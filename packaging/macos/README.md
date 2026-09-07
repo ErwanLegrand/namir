@@ -141,10 +141,22 @@ restructuring anything. Seven secrets make a signed, notarized, stapled release:
 | `NAMIR_NOTARY_TEAM_ID` | the Apple Developer Team ID, 10 alphanumeric characters. |
 | `NAMIR_NOTARY_PASSWORD` | the Apple ID's **app-specific password**, created at appleid.apple.com — never the account password. |
 
-The release notes `publish` job writes are chosen from the same set: all seven present, the notes
-say the macOS installers are notarized and stapled and how to verify; any one missing, the notes say
-the binaries are unsigned. The workflow's `publish` job mirrors the list so the notes describe what
-the artifacts actually are.
+`make_installer.sh` reports whether it signed and notarized via `$GITHUB_OUTPUT`, which the macOS
+job exposes as its `signed` and `notarized` outputs. The `publish` job reads those outputs directly
+to choose the release notes wording (rather than re-deriving from secrets): when signed and
+notarized, the notes describe the macOS `.pkg` installers as signed, notarized and stapled, and
+explain how to verify; otherwise, the notes state that macOS binaries are unsigned. The Windows
+unsigned SmartScreen / Smart App Control warning is emitted unconditionally in the release notes.
+
+### Verifying signed artifacts
+
+Verification on macOS is performed with:
+
+```bash
+spctl --assess --type install -vv Namir-<version>.pkg
+xcrun stapler validate Namir-<version>.pkg
+pkgutil --check-signature Namir-<version>.pkg
+```
 
 ### Exporting the `.p12` from Keychain Access
 
@@ -171,8 +183,11 @@ does. An application gets Gatekeeper's "Open Anyway" path. A plugin loaded by a 
 user-visible override at all — it simply fails to load, with no dialog and nothing in the host's UI
 to click — and macOS 15 removed the Control-click bypass that used to work.
 
-Installing from the `.pkg` avoids quarantine, which is most of why the `.pkg` exists. Extracting the
-`.zip` does not: FR-PKG-050's archive is for people who know that.
+The `.pkg` inside `.dmg` is the recommended path because installation clears quarantine and carries
+the stapled ticket. Files extracted from the `.zip` *are* code-signed with Developer ID Application
+(`ditto` preserves signatures), but carry the quarantine attribute and no stapled ticket, requiring
+an online check with Apple's notary service on first launch. FR-PKG-050's archive is for people who
+know that.
 
 The caveat is in three places on purpose, not one: the script's header, the installer's own welcome
 pane (shown only when the build is actually unsigned — it is the one screen a user reliably sees
@@ -260,9 +275,10 @@ Everything, but not equally. In descending order of how likely it is to be wrong
    two-submission staple order works — is written from documentation. **The pipeline is built and
    ready for credentials**: `release.yml` now imports the `.p12` into a keychain (`import_cert`
    step), passes the documented secrets through to this script, and picks signed or unsigned
-   release notes from the same set. What remains untested is the *signed* run itself, which cannot
-   happen until a Developer ID is obtained and the seven secrets above are configured; until then,
-   the **unsigned** path is the one every run exercises, which is exactly D-18.3's point.
+   release notes from the macOS job's reported outputs. What remains untested is the *signed* run
+   itself, which cannot happen until a Developer ID is obtained and the seven secrets above are
+   configured; until then, the **unsigned** path is the one every run exercises, which is exactly
+   D-18.3's point.
 5. **`pkgbuild --analyze` on the app root.** The `PlistBuddy` loop assumes the component list is an
    array of dicts each carrying `BundleIsRelocatable`, and fails loudly if it finds no bundle at
    all. It has not been run against a real component plist.

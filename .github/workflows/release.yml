@@ -217,6 +217,11 @@ jobs:
   macos:
     name: macos aarch64 distribution
     runs-on: macos-latest
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 != '' }}
+    outputs:
+      signed: ${{ steps.package.outputs.signed }}
+      notarized: ${{ steps.package.outputs.notarized }}
     steps:
       - uses: actions/checkout@v4
 
@@ -256,7 +261,7 @@ jobs:
       # access, and the certificates themselves carry whatever the `.p12` password secret holds.
       - name: Import Apple Developer ID certificates to keychain
         id: import_cert
-        if: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 != '' }}
+        if: env.HAS_SIGNING_CERT == 'true'
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.NAMIR_APPLE_CERTIFICATE_PASSWORD }}
@@ -265,7 +270,7 @@ jobs:
           set -euo pipefail
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           echo "$CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
-
+          trap 'rm -f "$RUNNER_TEMP/certificate.p12"' EXIT
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -284,8 +289,6 @@ jobs:
 
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
-          rm -f "$RUNNER_TEMP/certificate.p12"
-
       # Signing is conditional on a secret being present, per D-18.3 and the script's own design:
       # every variable below is optional, an unset one takes the unsigned path, and the run goes
       # down the identical sequence either way. So this step is written once and needs no `if:`.
@@ -300,6 +303,7 @@ jobs:
       # the secrets unset -- today's state -- none of that matters and the artifacts are simply
       # unsigned.
       - name: Package (.pkg inside .dmg, plus FR-PKG-050's .zip and NFR-SEC-040's hashes)
+        id: package
         env:
           NAMIR_CODESIGN_IDENTITY: ${{ secrets.NAMIR_CODESIGN_IDENTITY }}
           NAMIR_INSTALLER_IDENTITY: ${{ secrets.NAMIR_INSTALLER_IDENTITY }}
@@ -314,7 +318,7 @@ jobs:
       # a best-effort scrub must never fail the job. Gated on the step having *run*, not on its
       # success -- a failed import deserves the same cleanup of whatever partial state it left.
       - name: Clean up temporary keychain
-        if: always() && steps.import_cert.outcome == 'success'
+        if: always() && steps.import_cert.outcome != 'skipped'
         run: |
           security delete-keychain "$RUNNER_TEMP/build.keychain" || true
 
@@ -435,16 +439,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          # Every secret `make_installer.sh` reads must be present for the macOS artifacts to be
-          # signed, notarized and stapled; `import_cert` alone proves nothing and neither does this
-          # job's copy of the list. The notes have to describe what the artifacts are, so the
-          # signed / unsigned wording is chosen here, from the same secrets (R-11).
-          NAMIR_APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 }}
-          NAMIR_CODESIGN_IDENTITY: ${{ secrets.NAMIR_CODESIGN_IDENTITY }}
-          NAMIR_INSTALLER_IDENTITY: ${{ secrets.NAMIR_INSTALLER_IDENTITY }}
-          NAMIR_NOTARY_APPLE_ID: ${{ secrets.NAMIR_NOTARY_APPLE_ID }}
-          NAMIR_NOTARY_TEAM_ID: ${{ secrets.NAMIR_NOTARY_TEAM_ID }}
-          NAMIR_NOTARY_PASSWORD: ${{ secrets.NAMIR_NOTARY_PASSWORD }}
+          MACOS_SIGNED: ${{ needs.macos.outputs.signed }}
+          MACOS_NOTARIZED: ${{ needs.macos.outputs.notarized }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -464,17 +460,13 @@ jobs:
           Each artifact is published with a `.sha256` file beside it. Verify before installing:
 
               sha256sum -c namir-<version>-<platform>.<ext>.sha256
+
+          **Windows binaries are unsigned.** SmartScreen warns on every download and Smart
+          App Control blocks the installer outright. Signing identities are not yet in place;
+          this is a known limitation, not a defect in a particular download.
           NOTES
 
-          # Exactly the signing set, mirrored from the macOS job's `import_cert` gate and the
-          # `Package` step's variables. Missing any one of them, the macOS run took the unsigned
-          # path and the notes must say so (R-11) -- a user discovering it is worse.
-          if [ -n "${NAMIR_APPLE_CERTIFICATE_P12_BASE64:-}" ] \
-             && [ -n "${NAMIR_CODESIGN_IDENTITY:-}" ] \
-             && [ -n "${NAMIR_INSTALLER_IDENTITY:-}" ] \
-             && [ -n "${NAMIR_NOTARY_APPLE_ID:-}" ] \
-             && [ -n "${NAMIR_NOTARY_TEAM_ID:-}" ] \
-             && [ -n "${NAMIR_NOTARY_PASSWORD:-}" ]; then
+          if [ "${MACOS_SIGNED:-}" = "true" ] && [ "${MACOS_NOTARIZED:-}" = "true" ]; then
             cat >> release-notes.md <<'NOTES'
 
           **macOS installers are signed, notarized and stapled.** The `.clap`, the app and the
@@ -483,20 +475,21 @@ jobs:
           approve the `.pkg` offline -- no "Open Anyway" prompt and no quarantine. Verify with the
           `.sha256` beside the artifact, and on a Mac with the Xcode command line tools:
 
-              spctl verify --verbose Namir-<version>.pkg
+              spctl --assess --type install -vv Namir-<version>.pkg
+              xcrun stapler validate Namir-<version>.pkg
 
-          Install from the `.pkg` inside the `.dmg`. Files extracted from the `.zip` are not
-          signed (the archive is a plain copy of the bundle) and may be quarantined by a DAW,
-          which is why the `.pkg` is the supported install path.
+          Install from the `.pkg` inside the `.dmg`. Files extracted from the `.zip` carry the
+          Developer ID Application signature but have the quarantine attribute and no stapled
+          ticket, so first-launch assessment requires reaching Apple's notary service (which fails
+          offline or behind strict firewalls). The `.pkg` inside the `.dmg` is the supported install path.
           NOTES
           else
             cat >> release-notes.md <<'NOTES'
 
-          **These binaries are unsigned.** On Windows, SmartScreen warns on every download and Smart
-          App Control blocks the installer outright. On macOS, an unsigned plugin extracted from the
-          `.zip` is quarantined and a DAW will fail to load it with no user-visible override --
-          install from the `.pkg` inside the `.dmg`, which avoids quarantine. Signing identities are
-          not yet in place; this is a known limitation, not a defect in a particular download.
+          **macOS binaries are unsigned.** An unsigned plugin extracted from the `.zip` is
+          quarantined and a DAW will fail to load it with no user-visible override --
+          install from the `.pkg` inside the `.dmg`, which avoids quarantine. Signing identities
+          are not yet in place; this is a known limitation, not a defect in a particular download.
           NOTES
           fi
 
