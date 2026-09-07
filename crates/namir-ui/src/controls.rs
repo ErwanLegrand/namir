@@ -73,12 +73,17 @@ pub fn param_control(
                 DragValue::new(&mut value)
                     .range(min..=max)
                     .speed(speed)
+                    .update_while_editing(false)
                     .custom_formatter(move |v, _| descriptor.format_value(v as f32))
                     .custom_parser(move |text| parse_value(descriptor, text)),
             )
             .labelled_by(label.id);
 
-        if response.changed() {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ui.data_mut(|data| data.remove_temp::<String>(response.id));
+        }
+
+        if response.changed() && value as f32 != current {
             intents.push(UiIntent::SetParam {
                 key: descriptor.key,
                 value: value as f32,
