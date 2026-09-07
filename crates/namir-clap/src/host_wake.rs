@@ -85,12 +85,15 @@
 //! for that host callback to return. A host implementation that holds a lock across
 //! `clap_plugin->destroy` that its own `request_callback` implementation also acquires would
 //! deadlock. This is an inherent consequence of synchronous worker-thread joining combined with
-//! outbound host calls. It is compliant with the CLAP specification: CLAP designates
-//! `request_callback` as `[thread-safe]`, meaning it must be callable concurrently from non-main
-//! threads without deadlocking the host's lock hierarchy. Hosts are expected not to hold internal
-//! mutexes across plugin destruction that block thread-safe host callbacks.
+//! outbound host calls. The hazard is real and is not addressed by CLAP's `[thread-safe]`
+//! designation (which permits calling from any thread, but makes no guarantee about host lock
+//! hierarchies across `destroy`). We accept this trade because no known host holds an internal
+//! lock across plugin destruction that `request_callback` also acquires, and the alternative (an
+//! asynchronous or fire-and-forget teardown) would forfeit the synchronous join that prevents the
+//! M9a `0xc0000005` teardown crash.
+//!
 //! **Why sound rather than a gap.** The erased handle stores *no* `SharedInner` data and exposes
-//! *one* method, `request_callback`, whose safety the three arguments pin to the CLAP contract
+//! *one* method, `request_callback`, whose safety the four arguments pin to the CLAP contract
 //! that the pointer outlives the instance and the pool-join guarantee that no worker thread
 //! survives `destroy`. There is no other field, no dereference of any `'a`-tied reference, and no
 //! way for the `'static` to leak into any other reasoning about the plugin. This is the same class
@@ -121,6 +124,8 @@ pub(crate) struct HostWake {
     /// a counter. See [`requested_callbacks`](Self::requested_callbacks).
     #[cfg(test)]
     callbacks_requested: AtomicUsize,
+    #[cfg(test)]
+    test_host: Option<Box<TestHostState>>,
 }
 
 impl HostWake {
@@ -134,6 +139,8 @@ impl HostWake {
             handle: None,
             #[cfg(test)]
             callbacks_requested: AtomicUsize::new(0),
+            #[cfg(test)]
+            test_host: None,
         }
     }
 
@@ -154,6 +161,8 @@ impl HostWake {
             handle: Some(handle),
             #[cfg(test)]
             callbacks_requested: AtomicUsize::new(0),
+            #[cfg(test)]
+            test_host: None,
         }
     }
 
@@ -175,20 +184,37 @@ impl HostWake {
         self.callbacks_requested.load(Ordering::Relaxed)
     }
 
-    /// A test host-wake slot backed by a static `clap_host` whose `request_callback` vtable
-    /// entry records the call. Used by `worker_jobs`'s unit test so the test exercises a real
-    /// `HostSharedHandle` with teeth (moving the increment inside `if let Some` means
-    /// `HostWake::empty()` cannot increment, and deleting `handle.request_callback()` fails
+    /// A test host-wake slot backed by a heap-allocated `TestHostState` whose `request_callback`
+    /// vtable entry records the call via `host_data`. Used by `worker_jobs`'s unit test so the test
+    /// exercises a real `HostSharedHandle` with teeth (moving the increment inside `if let Some`
+    /// means `HostWake::empty()` cannot increment, and deleting `handle.request_callback()` fails
     /// to invoke the host function).
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Self {
-        TEST_CALLBACKS_C_INVOKED.store(0, Ordering::Relaxed);
-        let raw = NonNull::from(&TEST_CLAP_HOST);
-        // SAFETY: TEST_CLAP_HOST is a static clap_host with static lifetime and valid function pointers.
+        let mut state = Box::new(TestHostState {
+            host: clap_sys::host::clap_host {
+                clap_version: clap_sys::version::CLAP_VERSION,
+                host_data: std::ptr::null_mut(),
+                name: c"namir_test_host".as_ptr(),
+                vendor: std::ptr::null(),
+                url: std::ptr::null(),
+                version: c"1.0".as_ptr(),
+                get_extension: None,
+                request_restart: None,
+                request_process: None,
+                request_callback: Some(test_request_callback),
+            },
+            callbacks_invoked: AtomicUsize::new(0),
+        });
+        state.host.host_data =
+            (&state.callbacks_invoked as *const AtomicUsize as *mut AtomicUsize).cast();
+        let raw = NonNull::from(&state.host);
+        // SAFETY: `state` is pinned on the heap by Box and outlives `handle` within this `HostWake` instance.
         let handle = unsafe { HostSharedHandle::from_raw(raw) };
         Self {
             handle: Some(handle),
             callbacks_requested: AtomicUsize::new(0),
+            test_host: Some(state),
         }
     }
 
@@ -196,28 +222,26 @@ impl HostWake {
     /// `HostSharedHandle`.
     #[cfg(test)]
     pub(crate) fn c_callbacks_invoked(&self) -> usize {
-        TEST_CALLBACKS_C_INVOKED.load(Ordering::Relaxed)
+        self.test_host
+            .as_ref()
+            .map(|s| s.callbacks_invoked.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 }
 
 #[cfg(test)]
-static TEST_CLAP_HOST: clap_sys::host::clap_host = clap_sys::host::clap_host {
-    clap_version: clap_sys::version::CLAP_VERSION,
-    host_data: std::ptr::null_mut(),
-    name: c"namir_test_host".as_ptr(),
-    vendor: std::ptr::null(),
-    url: std::ptr::null(),
-    version: c"1.0".as_ptr(),
-    get_extension: None,
-    request_restart: None,
-    request_process: None,
-    request_callback: Some(test_request_callback),
-};
+struct TestHostState {
+    host: clap_sys::host::clap_host,
+    callbacks_invoked: AtomicUsize,
+}
 
 #[cfg(test)]
-static TEST_CALLBACKS_C_INVOKED: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(test)]
-unsafe extern "C" fn test_request_callback(_host: *const clap_sys::host::clap_host) {
-    TEST_CALLBACKS_C_INVOKED.fetch_add(1, Ordering::Relaxed);
+unsafe extern "C" fn test_request_callback(host: *const clap_sys::host::clap_host) {
+    if !host.is_null() {
+        let host_ref = unsafe { &*host };
+        if !host_ref.host_data.is_null() {
+            let counter = unsafe { &*(host_ref.host_data as *const AtomicUsize) };
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }

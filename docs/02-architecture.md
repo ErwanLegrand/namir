@@ -441,7 +441,8 @@ it after the pointer dies; and `request_callback` is one of `clap_host`'s explic
 operations. (The re-entrancy hazard this introduces — `destroy` blocks joining a pool thread that
 may be mid-call in `host->request_callback`, so a host holding a lock across `destroy` that
 `request_callback` needs would deadlock — is documented in `host_wake.rs` as the trade-off of
-synchronous worker-thread joining, compliant with CLAP's `[thread-safe]` contract).
+synchronous worker-thread joining, accepted because the alternative would forfeit the synchronous join
+that prevents the M9a `0xc0000005` teardown crash).
 
 ---
 
