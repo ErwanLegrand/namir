@@ -333,6 +333,10 @@ pub fn run() {
     );
     input_params.share_mode = share_mode.mode;
     output_params.share_mode = share_mode.mode;
+    // Issue #166: the output stream asks the device for its own buffer in shared mode, so the
+    // render path keeps a reserve instead of being drained every callback. The engine's block
+    // size still comes from `buffer_frames` below -- see `audio_io::output_buffer_request`.
+    output_params.buffer_frames = crate::audio_io::output_buffer_request();
 
     let max_block_size = crate::audio_io::block_frames(buffer_frames);
     let channel_config = if output_channels >= 2 {
@@ -603,13 +607,21 @@ pub fn run() {
     // plain background poll rather than anything the callback itself does.
     if let Some(latency) = crate::latency::estimate_round_trip(
         max_block_size as u32,
-        max_block_size as u32,
+        output_params.buffer_frames,
         max_block_size as u32,
         sample_rate_hz,
     ) {
+        // "at least", not "~", when the device chose its own output buffer (issue #166): the
+        // figure is then a lower bound covering only what Namir itself buffers. Saying which it
+        // is costs one word and is the difference between a figure and a guess.
+        let qualifier = if latency.includes_output_buffer {
+            "~"
+        } else {
+            "at least ~"
+        };
         eprintln!(
-            "namir: {} Hz, {max_block_size}-frame buffer, ~{:.1} ms estimated round-trip latency \
-             (in: \"{}\", out: \"{}\")",
+            "namir: {} Hz, {max_block_size}-frame block, {qualifier}{:.1} ms estimated round-trip \
+             latency (in: \"{}\", out: \"{}\")",
             sample_rate_hz, latency.milliseconds, input.device.name, output.device.name
         );
     }

@@ -24,6 +24,22 @@ third term (`input + output + prefill`). Under the updated formula, that same 48
 at 48 kHz yields 480 + 480 + 480 = 1440 samples = ~30.0 ms (**unexecuted** against real hardware in
 this session).
 
+### Supplementary note (2026-09-07, issue #166)
+
+The output term is gone again, and the figure is now printed as a **lower bound**. `namir-app` no
+longer asks the output device for a buffer of its own choosing (`audio_io::output_buffer_request`):
+forcing a period the device had not chosen cost the output clock exactly the callback's duration on
+every cycle, which is what issue #166 records. `cpal` exposes no portable way to read back what the
+device then picked, so `estimate_round_trip` takes `None` for that term,
+`LatencyReport::includes_output_buffer` says so, and the line reads `at least ~`.
+
+**Executed, 2026-09-07, standalone only:** that same 480-frame configuration at 48 kHz printed
+`48000 Hz, 480-frame block, at least ~20.0 ms estimated round-trip latency` — 480 (input) + 480
+(prefill) = 960 samples = 20.0 ms, with the device's own output buffer excluded and declared. What
+is **not** executed, here or anywhere: any loopback measurement of the true round trip, which is
+still what this requirement's first clause asks for and still needs a cable. The lower bound is now
+demonstrably a lower bound rather than an estimate that happened to name three buffers.
+
 ## What is not built: a true *measured* loopback figure
 
 FR-IO-050's first clause ("measured round-trip latency") means playing a known impulse out through
