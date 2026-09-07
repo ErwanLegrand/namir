@@ -1055,7 +1055,10 @@ struct ResolvedLayerArrayShape {
 /// doesn't load ("condition_dsp is not yet supported") instead of the misleading `MALFORMED_JSON`
 /// it got before M10. Every key rejected below is **permanently** out of scope per D-9.12: none of
 /// `condition_dsp`, FiLM (all eight sites), gating, non-unity `groups_*`, `slimmable`, an active
-/// `head1x1`, or an inactive/grouped `layer1x1` is planned for any future milestone. M10's earlier
+/// `head1x1`, or an inactive/grouped `layer1x1` is planned for any future milestone. Note the
+/// distinction that wording draws and that this function did not, until issue #37: what is out of
+/// scope is *gating*, not the `gating_mode` key. A file may name the key and enable no gating with
+/// it, which every real A2 export does, and such a file loads — see [`active_gating_mode`]. M10's earlier
 /// phases (Step A1-A4) *removed* the temporary rejections this function used to also carry for
 /// `kernel_sizes`, `bottleneck`, the nested `head`, and object/per-layer `activation` — those are
 /// now real, implemented core-A2 features, resolved by [`resolve_layer_array`] instead of rejected
@@ -1065,6 +1068,33 @@ struct ResolvedLayerArrayShape {
 /// `PreparedWaveNet::from_file`'s ordering) [`validate_layer_array_dims`] — a file that is both
 /// unsupported and over some ceiling should be told which feature is unsupported, since that is
 /// the actionable message.
+/// Returns the first gating mode that actually *enables* gating, or `None` when the value means
+/// "no gating anywhere". Accepting the inert case is the whole point: `error_codes.rs`'s
+/// `UNSUPPORTED_CONFIGURATION` entry has always documented the rule as gating "`gating_mode` other
+/// than `"none"`", and [`crate::file::LayerArrayConfig`]'s own field comment as "only the
+/// all-`"none"` case" — but the check was written against the key's *presence*, so every export
+/// that writes the field out explicitly was refused however inert its value. Real A2 exports do
+/// exactly that (a 23-entry `["none", ...]` array per layer array), which is why this mattered.
+///
+/// Two accepted shapes, matching what the reference parser reads: the scalar `"none"`, and an
+/// array whose every entry is `"none"`. Anything else — a different mode, a non-string entry, a
+/// value that is neither string nor array — is reported, and reported *by value* so the message
+/// names what was actually found. Note the deliberate asymmetry with the sibling checks: this one
+/// is the only place a JSON value is inspected rather than a typed field, because
+/// `gating_mode` is held as an opaque [`serde_json::Value`] precisely so that nothing beyond
+/// "is it inert" is ever read from it.
+fn active_gating_mode(mode: &serde_json::Value) -> Option<String> {
+    const INERT: &str = "none";
+    match mode {
+        serde_json::Value::String(s) if s == INERT => None,
+        serde_json::Value::Array(entries) => entries
+            .iter()
+            .find(|e| e.as_str() != Some(INERT))
+            .map(|e| e.to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
 fn reject_unsupported_layer_features(
     cfg: &LayerArrayConfig,
     index: usize,
@@ -1083,8 +1113,14 @@ fn reject_unsupported_layer_features(
             "true (gating) is not supported",
         ));
     }
-    if cfg.gating_mode.is_some() {
-        return Err(unsupported(index, "gating_mode", "is not supported"));
+    if let Some(mode) = &cfg.gating_mode
+        && let Some(active) = active_gating_mode(mode)
+    {
+        return Err(unsupported(
+            index,
+            "gating_mode",
+            format!("{active} (gating) is not supported"),
+        ));
     }
     if cfg.secondary_activation.is_some() {
         return Err(unsupported(
@@ -2812,6 +2848,54 @@ mod tests {
             activation_post_film: None,
             layer1x1_post_film: None,
             head1x1_post_film: None,
+        }
+    }
+
+    /// The two inert spellings a real export actually writes. Before this, the check fired on the
+    /// key's presence, so a 23-entry `["none", ...]` array — what every A2 export from the current
+    /// trainer carries — was refused with "gating_mode is not supported" despite enabling no
+    /// gating at all. The scalar form is here too because `error_codes.rs`'s catalogue entry
+    /// phrases the rule as `gating_mode` "other than `"none"`", singular, and both spellings reach
+    /// the same conclusion.
+    #[test]
+    fn an_inert_gating_mode_is_accepted_however_it_is_spelled() {
+        for value in [
+            serde_json::json!("none"),
+            serde_json::Value::Array(vec![serde_json::json!("none"); 23]),
+            serde_json::json!([]),
+        ] {
+            let mut cfg = a2_minimal_layer_array();
+            cfg.gating_mode = Some(value.clone());
+            assert!(
+                reject_unsupported_layer_features(&cfg, 0).is_ok(),
+                "inert gating_mode {value} should load"
+            );
+        }
+    }
+
+    /// The other half: narrowing presence to value must not let real gating through. Each case
+    /// names the offending value in `detail`, not merely the key — one entry out of 23 is enough,
+    /// which is the case a whole-array equality check would have missed.
+    #[test]
+    fn an_active_gating_mode_is_rejected_and_named_by_value() {
+        let mut mixed = vec![serde_json::json!("none"); 23];
+        mixed[7] = serde_json::json!("blended");
+        for (value, expected) in [
+            (serde_json::json!("gated"), "gated"),
+            (serde_json::json!(mixed), "blended"),
+            (serde_json::json!(["none", null]), "null"),
+            (serde_json::json!(true), "true"),
+        ] {
+            let mut cfg = a2_minimal_layer_array();
+            cfg.gating_mode = Some(value.clone());
+            let err = reject_unsupported_layer_features(&cfg, 0)
+                .expect_err(&format!("active gating_mode {value} should be refused"));
+            assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+            assert!(
+                err.detail.contains("gating_mode") && err.detail.contains(expected),
+                "detail should name key and value, got {:?}",
+                err.detail
+            );
         }
     }
 

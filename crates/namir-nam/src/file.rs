@@ -24,9 +24,12 @@
 //! fix** (a well-formed-but-unsupported file misreported as malformed, or a genuinely malformed one
 //! misreported as merely unsupported):
 //!
-//! 1. `serde_json::Value` is used only for fields this crate never *reads* the contents of — the
-//!    permanently-rejected set (`condition_dsp`, `slimmable`, `gating_mode`, `secondary_activation`).
-//!    Presence and JSON kind (object vs. non-object) is all `wavenet.rs` inspects. Every field that
+//! 1. `serde_json::Value` is used only for fields whose contents this crate never *interprets* —
+//!    the out-of-scope set (`condition_dsp`, `slimmable`, `gating_mode`, `secondary_activation`).
+//!    What `wavenet.rs` inspects is presence, JSON kind (object vs. non-object), and — for
+//!    `gating_mode` alone — whether the value is the inert `"none"`, since rejecting that key on
+//!    presence refused every real A2 export for naming a feature it had switched off (issue #37).
+//!    Reading a value far enough to tell "off" from "on" is not the same as implementing it. Every field that
 //!    *is* consumed (`kernel_sizes`, `bottleneck`, `head.*`, activation parameters) keeps a concrete
 //!    type, so a wrong-typed value still fails at `serde` and is still reported as malformed.
 //! 2. **No untagged enum below gets a catch-all variant.** An `Other(serde_json::Value)` arm on
@@ -161,8 +164,11 @@ pub struct LayerArrayConfig {
     #[serde(default)]
     pub head: Option<LayerArrayHeadConfig>,
 
-    /// A1's legacy gating flag. Namir supports only `false` (core-A2 scope defers gating);
-    /// consulted only when `gating_mode` is absent, matching the reference parser's own precedence.
+    /// A1's legacy gating flag. Namir supports only `false` (core-A2 scope defers gating). The
+    /// reference parser consults this only when `gating_mode` is absent; Namir does not implement
+    /// that precedence and refuses `gated: true` either way, which is the conservative direction —
+    /// a file claiming both a legacy gate and an inert `gating_mode` is refused rather than
+    /// rendered as if ungated. No observed export writes that combination.
     #[serde(default)]
     pub gated: Option<bool>,
     /// A2's gating mode (`"none"` / `"gated"` / `"blended"`, scalar or per-layer array). Kept
