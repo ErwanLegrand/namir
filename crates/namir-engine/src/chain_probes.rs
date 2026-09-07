@@ -397,10 +397,11 @@ fn fr_chain_020_toggling_one_stages_bypass_mid_signal_leaves_the_others_undistur
 /// unscaled. A probe comparing a widened configuration against a mono one has to account for that
 /// +0.02 dB or it is measuring the downmix rather than the core.
 ///
-/// *Changed at M15.* Trim now runs first (FR-CHAIN-010, D-9.8 withdrawn), so `Stereo` no longer
-/// arrives at the downmix already flattened by Gate's mono-core duplication: its two channels
-/// genuinely differ, and the core is fed `db_to_linear(−6) · (L + R)` rather than this factor
-/// times L alone. [`downmix_term`] is the per-term gain that case needs.
+/// *Changed at M15.* `Stereo` no longer arrives at the downmix already flattened, for two
+/// independent reasons: Trim runs first (FR-CHAIN-010, D-9.8 withdrawn), and Gate no longer copies
+/// channel 0 over the other channels at all — it multiplies every channel by one shared gain curve.
+/// Its two channels therefore genuinely differ, and the core is fed `db_to_linear(−6) · (L + R)`
+/// rather than this factor times L alone. [`downmix_term`] is the per-term gain that case needs.
 fn downmix_scale() -> f32 {
     2.0 * downmix_term()
 }
@@ -432,8 +433,10 @@ fn downmix_term() -> f32 {
 /// *Changed at M15.* Each configuration now carries its own mono reference, because `Stereo`'s
 /// core input changed: with Trim ahead of Gate the right channel genuinely reaches the sum, so the
 /// reference is `−6 dB · (L + R)` and not `−6 dB · 2L`. Before M15 the right channel's tone never
-/// reached the core at all — Gate's mono-core duplication overwrote channel 1 upstream of Trim —
-/// and assertion (3) recorded that as the shipped behaviour.
+/// reached the core at all — Gate's mono-core duplication overwrote channel 1, upstream of Trim —
+/// and assertion (3) recorded that as the shipped behaviour. Both halves of that are gone: the
+/// order moved *and* the duplication became a multiplication, so neither on its own could bring
+/// the old behaviour back.
 // trace: FR-CHAIN-050
 #[test]
 fn fr_chain_050_every_configuration_duplicates_one_mono_core_result() {
