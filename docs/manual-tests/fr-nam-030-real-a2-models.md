@@ -44,6 +44,11 @@ full size"), and its render of a whole container was verified **bit-identical** 
 that container's extracted full-width submodel. So the extracted file is the same model the
 reference would run.
 
+*Update (2026-09-07, issue #172):* the first sentence describes the tree this run was executed
+against and is left as the record of it; namir loads containers now, so the extraction step is no
+longer forced. See the update note at the end of this document for what that does and does not
+change about the figures below.
+
 ## Script
 
 1. Build a 10-second, mono, 16-bit-PCM, 48 kHz probe signal containing clean, transient and
@@ -167,7 +172,9 @@ caught it.
   with its own general path is upstream's question, but a user of the reference gets the fast path
   by default, so this run does not describe what such a user hears.
 - **Not the container.** Every comparison used an extracted submodel. Namir still refuses the
-  container files themselves (#172).
+  container files themselves (#172). *Update (2026-09-07, issue #172):* namir no longer refuses
+  them — see the update note at the end of this document — but this bullet stands as written,
+  because no comparison here was re-run against a container file.
 - **Not the first ~85 ms of any model.** That region is excluded by construction, since the harness
   now prewarms. Its behaviour was #173's subject; #173 is fixed by making that region not exist —
   a loaded model is warm before its first real sample — rather than by measuring it, so this bullet
@@ -192,3 +199,27 @@ implementation. Combined with `crates/namir-nam/tests/golden_reference.rs`'s in-
 on generated fixtures, the shared-misreading risk roadmap §21 Phase 4b raised — generator and parser
 agreeing with each other while both disagree with the trainer — is now tested rather than assumed,
 and did not materialise.
+
+## Update (2026-09-07, issue #172): containers now load, and what that does not change
+
+`namir-nam` now accepts `architecture: "SlimmableContainer"` and prepares the container's last
+submodel through `model::load`, matching the reference's own default (`NAM/container.cpp`,
+`_active_index = _submodels.size() - 1`). So the extraction step this document's Script makes step 2
+is **no longer forced**: the same 63 files can now be handed to namir as they were downloaded.
+
+What this PR did **not** do, stated plainly so the figures above are not read as more than they are:
+
+- **The comparisons were not re-run.** Every number in the tables above was measured against an
+  extracted submodel `.nam`, on a tree that could not load a container. Nothing about them was
+  re-measured against a container file, and nothing about them changes.
+- **So "does the container path select the same submodel the reference does?" is not answered
+  here.** This document's evidence for that selection remains what it always was — the reference's
+  render of a whole container was verified bit-identical to its render of that container's extracted
+  full-width submodel, which pins the *reference's* choice, not namir's. Namir's own selection is
+  covered by its unit tests, not by this run.
+- **A2-Lite is not reachable through the container path at all.** The container load prepares the
+  last (full-width) submodel; the A2-Lite column above was measured on a submodel extracted by hand,
+  which is still the only way this document exercised that width.
+
+Re-running the script against the container files, with no extraction step, is the obvious next
+measurement and has not been done.

@@ -4671,6 +4671,12 @@ the `.namb` container are explicitly deferred** to a later milestone, not forgot
 the same boundary, and the reason for drawing it here is that each of those four is a separable
 feature with its own risk, none of which A2-Full or A2-Lite needs.
 
+*Amendment (added 2026-09-07, issue #172)* — one of the four is no longer deferred. `namir-nam` now
+loads `architecture: "SlimmableContainer"` models, so **three of the four remain deferred**:
+`condition_dsp`, FiLM conditioning and the `.namb` container. The paragraph above stands as
+written, being the scope M10 was actually executed under; D-9.12 carries the matching
+`*Consequence (added M15, 2026-09-07, issue #172)*` note in `docs/02-architecture.md`.
+
 **Deliverables, in five phases; the phase order is a dependency order, not a preference:**
 
 - **Phase 0 — fix the misleading rejection (FR-NAM-140).** An A2 file today fails with
