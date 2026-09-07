@@ -309,9 +309,15 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   `crates/namir-nam/tests/golden_reference.rs` and are plain — closed by building the missing
   evidence, not by promoting a tag. So the sentence above about S-1 being the only
   `NeuralAmpModelerCore` comparison in the tree no longer holds. What has *not* changed is the shape
-  of the lesson: no trainer-produced A2 export has ever been loaded, so a misreading of the schema
-  shared between generator, parser and reference target is still invisible to every test here. Read D-23.1 (`docs/02-architecture.md` §23) for the full rule before tagging
-  anything non-obvious.
+  of the lesson — and the lesson survived being acted on. **Updated 2026-09-07 (PR #174):** the
+  clause that used to stand here, "no trainer-produced A2 export has ever been loaded", is no longer
+  true. Ten submodels from five real Tone3000 exports were compared against the pinned reference at
+  -104.96 to -124.73 dB (`docs/manual-tests/fr-nam-030-real-a2-models.md`), and the shared misreading
+  the clause warned about did not turn out to exist. What the exercise did find is that two parser
+  defects (#169, #170) refused every one of those files on the *presence* of inert fields, so the
+  gap was real — it just sat one step earlier than expected, in what the parser would accept rather
+  than in what it computed. Read D-23.1 (`docs/02-architecture.md` §23) for the full rule before
+  tagging anything non-obvious.
 - **Expect `trace-partial:` to be the common case, not a rarity.** M9a swept every Must against
   D-23.1's two questions and demoted 54 tags from plain `trace:` in one comment-only pass — no test
   logic changed and nothing regressed; the tags stopped over-claiming. The tally that sweep left
