@@ -180,8 +180,26 @@ pub fn run(args: &NamParityArgs) -> bool {
         );
     }
 
-    let mut state = prepared.new_state(input.len().max(1));
+    // Prewarm before comparing (issue #173). The reference wrapper pushes `GetPrewarmSamples()`
+    // zeros through the model before its first real sample (`NAM/dsp.cpp`'s `DSP::prewarm`), so
+    // every `render.exe` output this is compared against was produced by an already-settled model.
+    // Comparing an un-prewarmed model from sample 0 measures that gap instead of the arithmetic
+    // this subcommand exists to check: measured over real models, the first <=4096 samples carry
+    // roughly -30 dB of error while everything after agrees to between -105 and -138 dB. Left
+    // uncorrected the tool reports a confident FR-NAM-030 failure for a reason that has nothing to
+    // do with FR-NAM-030.
+    //
+    // This used to prepend a deliberate over-estimate of one second of silence and drop the same
+    // count back off the output, because `namir-nam` exposed no prewarm length. It now does, and
+    // prewarms its own states (D-9.13), so this asks for the model a real host gets and compares
+    // from sample 0 with no offset arithmetic at all -- which is also what makes this tool a check
+    // on the shipped path rather than on a warm-up only the tool performs.
+    let mut state = prepared.new_state_prewarmed(input.len().max(1));
     let ours = prepared.process(&mut state, &input);
+    println!(
+        "nam-parity: prewarmed with {} sample(s) of silence before comparing (issue #173)",
+        prepared.prewarm_samples()
+    );
 
     let len = ours.len().min(reference.len());
     if len == 0 {

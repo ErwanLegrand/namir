@@ -41,14 +41,17 @@
 //!   `hidden_size`, and `in_channels`/`out_channels` both defaulting to `1` if absent
 //!   (`config.value("in_channels", 1)` / `config.value("out_channels", 1)`).
 //!
-//! **Not ported:** `LSTM::GetPrewarmSamples` (a half-second-of-audio warm-up the reference
-//! recommends feeding a fresh instance before trusting its output, "Hacky, but ... seems to work
-//! for most models" per that method's own comment). That is a caller-side *audio quality*
-//! recommendation, not part of FR-NAM-110's "processing latency in samples" — this forward pass
-//! still produces exactly one output sample per input sample with no added delay regardless of
-//! whether the caller prewarms it, so `latency_samples() == 0` is still correct either way. Not
-//! implementing prewarming is a known, undocumented-elsewhere gap (same spirit as the crate-level
-//! doc comment's other explicit out-of-scope FRs), not a silent omission.
+//! **Ported since issue #173:** `LSTM::GetPrewarmSamples` (a half-second-of-audio warm-up the
+//! reference feeds a fresh instance before its first real sample, "Hacky, but ... seems to work
+//! for most models" per that method's own comment) is [`PreparedLstm::prewarm_samples`], applied
+//! by `PreparedNam::new_state_prewarmed`. This paragraph previously recorded it as *not* ported
+//! and as "a known, undocumented-elsewhere gap"; D-9.13 settled that it is part of matching the
+//! reference under FR-NAM-030, and the gap is closed rather than merely documented.
+//!
+//! What has not changed is its relationship to latency: prewarming is a warm-up, not a delay, so
+//! it is still no part of FR-NAM-110's "processing latency in samples". This forward pass produces
+//! exactly one output sample per input sample regardless of whether the caller prewarms it, and
+//! `latency_samples() == 0` is correct either way.
 //!
 //! # `PreparedLstm`/`LstmState`, the D-9.1 split
 //!
@@ -401,11 +404,40 @@ impl PreparedLstm {
         self.sample_rate
     }
 
+    /// Issue #172: a `SlimmableContainer` may declare `sample_rate` at the container level while
+    /// its submodels omit it; `model::load_slimmable_container` applies the container's rate to
+    /// the selected submodel after loading it. `pub(crate)` — only the container loader calls it.
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        self.sample_rate = sample_rate;
+    }
+
+    /// Issue #172: fills any empty/`None` metadata field from `other` (the container's metadata),
+    /// leaving this submodel's own non-empty fields untouched. Keeps probe and load resolving
+    /// metadata identically: the submodel's field wins, the container's is the fallback.
+    pub(crate) fn merge_metadata(&mut self, other: &NamMetadata) {
+        self.metadata.fill_empty_from(other);
+    }
+
     /// FR-NAM-110: this LSTM produces exactly one output sample per input sample, with no added
     /// delay — see the module doc comment's note on why `GetPrewarmSamples` (a caller-side
     /// audio-quality recommendation in the reference) does not change this.
     pub fn latency_samples(&self) -> u32 {
         0
+    }
+
+    /// How many samples of silence this model wants pushed through it before its first real
+    /// sample (issue #173): half a second at the model's own declared rate, which is what
+    /// `NeuralAmpModelerCore`'s `LSTM::GetPrewarmSamples` returns (`NAM/lstm.cpp:127-134`, its
+    /// own comment calling the figure "Hacky, but ... seems to work for most models").
+    ///
+    /// Unlike WaveNet's, this is a fixed duration rather than a receptive field, and the two are
+    /// different mechanisms: an LSTM's state has no finite memory, so it approaches the silent
+    /// fixed point asymptotically and half a second is the reference's judgement of "close
+    /// enough", not an exact settling point. Reproducing that judgement rather than improving on
+    /// it is the whole objective -- the target is what the reference does, so a *better* figure
+    /// here would be a worse match.
+    pub fn prewarm_samples(&self) -> usize {
+        self.sample_rate.hz() as usize / 2
     }
 
     /// `max_block_size` is the largest block size this state will ever be asked to process; see

@@ -39,10 +39,18 @@
 //! M10 closed the actual FR-NAM-030 gap for *this crate's own code* (rather than the spike's):
 //! `tests/golden_reference.rs` compares `PreparedNam::process`'s real output against a real
 //! `NeuralAmpModelerCore` render, for both architectures — WaveNet to -137 dB, LSTM to the bit
-//! once the reference's default silent-prewarm behavior is matched (that file's own doc comment
-//! explains why prewarming is a host-convenience default the reference DSP wrapper applies, not
-//! part of the LSTM model's own mathematical definition, and so is reproduced only in the test,
-//! not in this crate's production `LstmState` initialization).
+//! once the reference's default silent-prewarm behavior is matched.
+//!
+//! **That prewarm is production behaviour since issue #173 (D-9.13), and this passage used to say
+//! the opposite.** It recorded prewarming as "a host-convenience default the reference DSP wrapper
+//! applies", reproduced in the test but deliberately not in `LstmState`'s initialization. The
+//! wrapper half is accurate and the conclusion drawn from it was not: every host running the
+//! reference gets that wrapper, so a settled model is what a model's author heard when they
+//! exported, and starting from a zeroed history is not "the model's declared initial state" so
+//! much as a state no listener has ever heard. Measured on real trainer-produced exports, the
+//! difference is ~-30 dB of error over the first ~85 ms. [`PreparedNam::prewarm_samples`] gives
+//! each architecture's count and [`PreparedNam::new_state_prewarmed`] applies it; `namir-engine`
+//! calls the latter in D-8.1's prepare step, off the audio thread.
 //!
 //! # Scope
 //!
@@ -94,9 +102,9 @@ mod wavenet;
 
 pub use error_codes::NamLoadError;
 pub use file::{
-    ActivationEntry, ActivationParams, ActivationSpec, Conv1x1FeatureConfig, FilmConfig,
-    LayerArrayConfig, LayerArrayHeadConfig, LstmConfigJson, LstmFile, NamFile, NamMetadata,
-    WaveNetConfig,
+    ActivationEntry, ActivationParams, ActivationSpec, ContainerConfig, ContainerFile,
+    Conv1x1FeatureConfig, FilmConfig, LayerArrayConfig, LayerArrayHeadConfig, LstmConfigJson,
+    LstmFile, NamFile, NamMetadata, SubmodelEntry, WaveNetConfig,
 };
 pub use model::{NamState, PreparedNam, load};
 pub use probe::{NamProbe, probe_metadata};
