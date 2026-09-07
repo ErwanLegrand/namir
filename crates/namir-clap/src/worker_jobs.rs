@@ -223,10 +223,15 @@ pub(crate) fn spawn_recall_preset(shared: Arc<SharedInner>, path: PathBuf) {
         }
         // The mirror now holds values the host has never seen. It cannot be told from here --
         // this is a pool thread and `HostParams::rescan` is `[main-thread]` -- so the request is
-        // parked for whichever main-thread callback comes next.
+        // parked for the *next* main-thread callback, and one is explicitly scheduled right now
+        // (issue #94): without it there was nothing to *guarantee* a callback would ever come
+        // (only a latency or thread-priority event happened to schedule one), and the host's
+        // cached values stayed stale until one did. `HostWake` is the erased-lifetime
+        // `HostSharedHandle` that makes this call legal from a pool thread (`crate::host_wake`).
         shared
             .params_rescan_pending
             .store(true, std::sync::atomic::Ordering::Release);
+        shared.request_host_callback();
         spawn_recall(Arc::clone(&shared));
     });
 }
@@ -532,6 +537,70 @@ mod tests {
             namir_worker::error_codes::FILE_TOO_LARGE.id,
             "an oversized preset must be refused before the read, not after `Document::parse` has \
              already been handed 256 MiB"
+        );
+
+        shared.shutdown_workers();
+        let _ = std::fs::remove_dir_all(&config);
+    }
+
+    /// Waits for `cond` to hold, at a fine cycle, returning once it does. Every job in this module
+    /// runs on the pool, so an assertion that depends on a job's side effect has to wait.
+    fn wait_until(cond: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if cond() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("condition did not hold within the deadline");
+    }
+
+    /// **Issue #94's wake.** `spawn_recall_preset` runs on a pool thread, where it cannot call
+    /// `HostParams::rescan` (`[main-thread]`); the fix is that after setting
+    /// `params_rescan_pending` it asks the host for an `on_main_thread` callback via
+    /// `request_host_callback` (the erased-lifetime `HostWake`, `crate::host_wake`). A successful
+    /// recall must therefore invoke it exactly once, and must leave the pending flag raised for
+    /// the callback to service.
+    #[test]
+    fn spawn_recall_preset_requests_a_host_callback_and_raises_the_rescan_pending_flag() {
+        let config = temp_config_dir("host_wake_recall");
+        let path = config.join("recall.namirpreset");
+        // A parameter-only document, matching `clap_host_state.rs`'s host-driven `state` load
+        // tests: adopted straight off the mirror ([`crate::state_ext::adopt_document_bytes`]) with
+        // no resource resolution, so the recall reaches the wake without touching a library.
+        std::fs::write(
+            &path,
+            br#"{ "format_version": 1, "parameters": { "trim.gain_db": -7.5 } }"#,
+        )
+        .unwrap();
+
+        // Built with an explicit test host-wake slot ([`HostWake::new_for_test`]) carrying a
+        // static C `clap_host` so the test can observe both the internal dispatch counter and
+        // the actual C vtable callback execution.
+        let shared = Arc::new(SharedInner::with_host_wake_at(
+            crate::host_wake::HostWake::new_for_test(),
+            &config,
+        ));
+
+        spawn_recall_preset(Arc::clone(&shared), path);
+
+        wait_until(|| shared.requested_host_callbacks() > 0);
+        assert!(
+            shared
+                .params_rescan_pending
+                .load(std::sync::atomic::Ordering::Acquire),
+            "the recall must raise the pending flag the serviced callback reads"
+        );
+        assert_eq!(
+            shared.requested_host_callbacks(),
+            1,
+            "a single recall must request exactly one host callback"
+        );
+        assert_eq!(
+            shared.c_callbacks_invoked(),
+            1,
+            "the C vtable's request_callback function must be invoked through the handle"
         );
 
         shared.shutdown_workers();
