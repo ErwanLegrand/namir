@@ -213,7 +213,9 @@ fn wavenet_matches_the_real_reference_implementation() {
     let reference = read_mono_f32_wav(&golden_path("wavenet_nano_reference.wav"));
 
     let prepared = namir_nam::load(&model_bytes).expect("golden WaveNet fixture should load");
-    let mut state = prepared.new_state(input.len());
+    // Prewarmed since #173 for the same reasons `assert_a2_golden` gives, and with the same
+    // absence of numerical effect on a zero-bias generated fixture.
+    let mut state = prepared.new_state_prewarmed(input.len());
     let ours = prepared.process(&mut state, &input);
 
     let db = rms_db(&reference, &ours);
@@ -234,9 +236,16 @@ fn wavenet_matches_the_real_reference_implementation() {
 /// -44 dB, not a structural bug -- prewarming is a host-convenience default the reference DSP
 /// wrapper applies, explicitly *not* part of the LSTM model's own mathematical definition or the
 /// `.nam` format, and `namir-nam`'s direct-from-`h0`/`c0` start is arguably the more faithful
-/// reading of "the model's declared initial state." Replicating it here (rather than in
-/// `namir-nam`'s production code) is a test-fairness fix: it makes this comparison match what
-/// `render.exe` actually, observably does, without changing what `namir-nam` does for a real host.
+/// reading of "the model's declared initial state."
+///
+/// **That last argument lost, at issue #173, and this comment used to end on it.** It said
+/// replicating the prewarm here rather than in production was "a test-fairness fix … without
+/// changing what `namir-nam` does for a real host", which conceded the whole point: a real host
+/// running the reference *does* get the warm-up, so leaving production cold made this test fair to
+/// the comparison and unfair to the user, and measured -30 dB of error over the first ~85 ms of
+/// every real model load. D-9.13 settled it the other way; `PreparedNam::new_state_prewarmed` is
+/// production behaviour now and this constant is checked against
+/// `PreparedNam::prewarm_samples` rather than used to hand-roll a warm-up the shipped path skips.
 /// WaveNet needs no analogous step here -- but not for the reason this comment gave until PR #174.
 /// `WaveNet` *does* override `GetPrewarmSamples` (`NAM/wavenet/model.h:71`, derived from the
 /// receptive field at `model.cpp:616-620`), so `render.exe` prewarms it too. It makes no difference
@@ -262,8 +271,13 @@ fn lstm_matches_the_real_reference_implementation() {
     let reference = read_mono_f32_wav(&golden_path("lstm_tiny_reference.wav"));
 
     let prepared = namir_nam::load(&model_bytes).expect("golden LSTM fixture should load");
-    let mut state = prepared.new_state(input.len().max(LSTM_PREWARM_SAMPLES));
-    let _ = prepared.process(&mut state, &vec![0.0f32; LSTM_PREWARM_SAMPLES]);
+    // `new_state_prewarmed` rather than a hand-rolled prewarm since #173: what this test needs to
+    // assert is that the model *a host gets* matches the reference from sample 0, and hand-rolling
+    // the warm-up here would assert it of a model no host ever runs. `LSTM_PREWARM_SAMPLES` stays
+    // as the independent statement of what the count should be, checked against the production
+    // accessor rather than used to drive the run.
+    assert_eq!(prepared.prewarm_samples(), LSTM_PREWARM_SAMPLES);
+    let mut state = prepared.new_state_prewarmed(input.len());
     let ours = prepared.process(&mut state, &input);
 
     let db = rms_db(&reference, &ours);
@@ -457,12 +471,15 @@ fn assert_a2_golden(name: &str) {
 
     let prepared = namir_nam::load(&model_bytes)
         .unwrap_or_else(|e| panic!("golden A2 fixture {name} should load: {e}"));
-    // No prewarm, unlike the LSTM test above -- and, corrected in PR #174, not because `WaveNet`
-    // skips it: it overrides `GetPrewarmSamples` (`NAM/wavenet/model.h:71`) and `render` does
-    // prewarm. These fixtures' biases are all exactly zero, so the settled state equals the zero
-    // state and the prewarm is a numerical no-op *here specifically*. See `LSTM_PREWARM_SAMPLES`'
-    // comment for the full argument and for why a real model behaves differently.
-    let mut state = prepared.new_state(input.len());
+    // Prewarmed since #173, like every other loaded model, and unlike this call before that issue.
+    // It makes no numerical difference *to these fixtures specifically* -- every bias
+    // `namir-fixtures` emits is exactly zero, so silence propagates as exact zeros and the settled
+    // state is the zero state, which is why the committed figures did not move when this changed.
+    // It is still what the test should call: `render` prewarms WaveNet too (it overrides
+    // `GetPrewarmSamples`, `NAM/wavenet/model.h:71` -- as PR #174 corrected), a real trainer-
+    // produced model has non-zero biases and does move, and driving the production path is the
+    // point. See `LSTM_PREWARM_SAMPLES`' comment for the full argument.
+    let mut state = prepared.new_state_prewarmed(input.len());
     let ours = prepared.process(&mut state, &input);
 
     let db = rms_db(&reference, &ours);

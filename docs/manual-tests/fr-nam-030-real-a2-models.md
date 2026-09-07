@@ -133,8 +133,19 @@ because LSTM state settles quickly; a WaveNet's receptive field makes the cold s
 
 `nam-parity` now prewarms before comparing, and the figures above are from the corrected tool. The
 underlying product gap — namir never prewarms a loaded model, so its first ~85 ms diverges from the
-reference by roughly -30 dB on every load — is **issue #173**, and is not fixed by that harness
+reference by roughly -30 dB on every load — is **issue #173**, and was not fixed by that harness
 change.
+
+*Update 2026-09-07: the product gap is now closed too (D-9.13).* `namir-nam` computes each
+architecture's prewarm length the way the reference does and `namir-engine` prewarms every model it
+loads, in D-8.1's prepare step on a worker thread. `nam-parity`'s one-second over-estimate is
+retired in favour of the model's own count, so the tool now compares from sample 0 with no offset
+at all — over the full 480 000 samples rather than 432 000 — and reproduces this document's
+`a2_full` control figure of -132.58 dB unchanged. **The figures in the table above are not
+re-measured and do not need to be**: they were taken through a harness that prewarmed by an
+over-estimate, and for a WaveNet an over-estimate is exactly equivalent to the receptive field, so
+the comparison they describe is the same one the tool performs today. What has changed is that a
+real host now hears the settled model those figures were measured against.
 
 Worth stating plainly: this is the second time in this project's history that the natural reading of
 a measurement was the wrong one, and both times a control run rather than more analysis is what
@@ -154,7 +165,9 @@ caught it.
 - **Not the container.** Every comparison used an extracted submodel. Namir still refuses the
   container files themselves (#172).
 - **Not the first ~85 ms of any model.** That region is excluded by construction, since the harness
-  now prewarms. Its behaviour is #173's subject, and no claim about it is made here.
+  now prewarms. Its behaviour was #173's subject; #173 is fixed by making that region not exist —
+  a loaded model is warm before its first real sample — rather than by measuring it, so this bullet
+  still stands as written and no claim about the cold region is made anywhere.
 - **Not tone.** This is arithmetic. A numerically-accurate render of a model says nothing about
   whether the model itself is a good capture.
 - **Not a canonical probe.** FR-NAM-030 specifies clean, transient and saturated *content*, not a

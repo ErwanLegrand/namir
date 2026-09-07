@@ -288,9 +288,21 @@ pub(crate) struct NamSlot {
 
 impl NamSlot {
     /// **Not RT-safe. This is D-8.1 step 1, and from M4 on it runs on a worker thread.** Builds a
-    /// fresh [`NamState`] (`PreparedNam::new_state` allocates every scratch buffer the model's
-    /// inference needs) and, only when `model.sample_rate()` differs from `engine_sample_rate`, a
-    /// [`SlotResampler`] (which itself allocates two `rubato` resamplers and their FIFOs).
+    /// fresh [`NamState`] (`PreparedNam::new_state_prewarmed` allocates every scratch buffer the
+    /// model's inference needs, then runs silence through it -- see below) and, only when
+    /// `model.sample_rate()` differs from
+    /// `engine_sample_rate`, a [`SlotResampler`] (which itself allocates two `rubato` resamplers
+    /// and their FIFOs).
+    ///
+    /// The state is *prewarmed* rather than merely allocated (D-9.13, issue #173): the reference
+    /// implementation runs every stateful model on its own prewarm length of silence before its
+    /// first real sample, so a model that starts from a zeroed history is not the model FR-NAM-030
+    /// says Namir shall match -- measured on real exports at ~-30 dB of error for the first ~85 ms.
+    /// This is the right step of the handover to pay for it: prewarming is thousands of samples of
+    /// inference, which NFR-RT-010 forbids on the audio thread and which install time (step 3) has
+    /// no room for, and here it costs the audio thread nothing at all. It is also why prewarming
+    /// belongs here rather than in `Command::load_nam` one level up: `NamStage::load_model` builds
+    /// a slot without going through a command, and both routes must warm.
     ///
     /// `pub(crate)` so [`crate::Command::load_nam`] can do this work off the audio thread. That is
     /// the whole reason a command carries a built slot rather than a bare `Arc<PreparedNam>`: an
@@ -311,7 +323,7 @@ impl NamSlot {
         let normalize_gain =
             GainRamp::new(engine_sample_rate, NORMALIZE_GAIN_RAMP_TIME_CONSTANT_MS);
         if model_rate.hz() == engine_sample_rate.hz() {
-            let state = model.new_state(max_block_size);
+            let state = model.new_state_prewarmed(max_block_size);
             Self {
                 model,
                 state,
@@ -321,7 +333,7 @@ impl NamSlot {
             }
         } else {
             let resample = SlotResampler::new(engine_sample_rate, model_rate, max_block_size);
-            let state = model.new_state(resample.model_block);
+            let state = model.new_state_prewarmed(resample.model_block);
             Self {
                 model,
                 state,
@@ -1112,11 +1124,19 @@ impl Stage for NamStage {
         // clearing a `VecDeque` (`.clear()`) drops its len to zero without releasing capacity.
         // Known gap, not silently worked around: `NamState`'s own causal-conv history has no
         // public reset (`namir-nam`'s own scope — see `namir_nam::NamState`'s doc comment), and
-        // the only way to clear it is a fresh `new_state`, which allocates and is therefore not
+        // the only way to rebuild it is a fresh state, which allocates and is therefore not
         // callable from here. A `reset()` on a loaded NAM stage currently leaves that history
         // intact; closing this gap needs either a `namir-nam` API addition or accepting the
         // history as part of what a reset does not clear, and is left to whoever wires transport
         // reset semantics for real (out of M2's scope here).
+        //
+        // Issue #173 narrowed what "rebuild" would have to mean, and it is worth stating here so
+        // the gap is not closed wrongly later: a slot's state is now *prewarmed* at load
+        // (`NamSlot::new`, D-9.13), so the condition a reset should restore is the settled one,
+        // not a zeroed one. A future RT reset therefore cannot be a memset even if `namir-nam`
+        // grew an allocation-free reset — it would have to end where
+        // `PreparedNam::new_state_prewarmed` ends, which is thousands of samples of inference and
+        // not audio-thread work. That makes this gap harder to close than it looked, not easier.
         for slot in self.slots.iter_mut().flatten() {
             if let Some(resampler) = &mut slot.resample {
                 resampler.into_model.reset();
