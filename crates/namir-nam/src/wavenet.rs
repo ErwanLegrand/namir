@@ -1906,6 +1906,57 @@ impl PreparedWaveNet {
         0
     }
 
+    /// How many samples of silence this model wants pushed through it before its first real
+    /// sample (issue #173) — this crate's counterpart to `NeuralAmpModelerCore`'s
+    /// `WaveNet::GetPrewarmSamples` override.
+    ///
+    /// **What this is derived from, and how far that can be checked here.** The reference source
+    /// is not vendored in this repository, so its formula cannot be read from the tree; what
+    /// issue #173 quotes of it is a `1` for an absent `condition_dsp` (this crate rejects
+    /// `condition_dsp` at load with `nam.load.unsupported_configuration`, so the term is
+    /// unconditionally `1`), plus a per-layer-array receptive field, plus a post-stack head term.
+    /// The value below transcribes that: `1` plus, per layer array, every dilated convolution's
+    /// `Conv1D::history_len()` — `(kernel_size - 1) * dilation`, which is the cross-block memory
+    /// each conv actually carries — plus the head rechannel's. Treat the citation as resting on
+    /// the issue's quotation rather than on a reading of the source, which is the same standing
+    /// caveat `tests/golden_reference.rs`'s header records for every other reference claim here.
+    ///
+    /// **What *is* checkable in-tree, and does check out.** This returns 6 347 for both real A2
+    /// shapes: 6 331 across the 23 dilated layers (kernels 6/15, dilations to 239) plus 15 for
+    /// the 16-tap head, which is the 6 346-sample receptive field already recorded independently
+    /// at `tests/a2_fixtures.rs`'s `A2_PARITY_PROBE_SAMPLES` and `tests/golden_reference.rs`'s
+    /// `assert_a2_golden`, plus the `1`. That is a real agreement between a figure computed from
+    /// `Conv1D` fields and one written down from the C++ months earlier, and it is asserted in
+    /// `tests/prewarm.rs` — but it corroborates the *layer* arithmetic only. It says nothing
+    /// about the head term, because these shapes have exactly one array with a kernel-over-1
+    /// head, so the over-estimate below happens to be zero for them. A1's head is a kernel-1
+    /// `Conv1D` (`head_rechannel`'s own doc comment) and contributes nothing at all.
+    ///
+    /// **Where this can differ from the reference, and why that is safe.** The reference (as
+    /// quoted) adds one post-stack head term; this sums the head term over *every* layer array,
+    /// so on a multi-array model with wide heads it can return a few samples more. It can only
+    /// over-estimate, never under, and for a WaveNet an over-estimate is *equivalent* rather than
+    /// merely close: the network's whole cross-block state is convolution histories, each
+    /// spanning at most the receptive field, so once that many zeros have gone through, every
+    /// history holds its settled-on-silence values and further zeros change nothing.
+    /// `tests/prewarm.rs` asserts that bit-exactly. (The claim is about *extra silence*, at one
+    /// fixed chunk size — not about chunking, which this crate's own block-vs-monolithic test
+    /// pins only to within `1e-4`.)
+    pub fn prewarm_samples(&self) -> usize {
+        1 + self
+            .arrays
+            .iter()
+            .map(|array| {
+                array
+                    .layers
+                    .iter()
+                    .map(|layer| layer.dilated.history_len())
+                    .sum::<usize>()
+                    + array.head_rechannel.history_len()
+            })
+            .sum::<usize>()
+    }
+
     /// `max_block_size` is the largest block size this state will ever be asked to process;
     /// every scratch buffer is sized once, here, and reused for the state's whole lifetime.
     pub fn new_state(&self, max_block_size: usize) -> WaveNetState {
