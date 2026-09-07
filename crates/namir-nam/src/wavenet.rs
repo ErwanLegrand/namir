@@ -1883,6 +1883,20 @@ impl PreparedWaveNet {
         self.sample_rate
     }
 
+    /// Issue #172: a `SlimmableContainer` may declare `sample_rate` at the container level while
+    /// its submodels omit it; `model::load_slimmable_container` applies the container's rate to
+    /// the selected submodel after loading it. `pub(crate)` — only the container loader calls it.
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        self.sample_rate = sample_rate;
+    }
+
+    /// Issue #172: fills any empty/`None` metadata field from `other` (the container's metadata),
+    /// leaving this submodel's own non-empty fields untouched. Keeps probe and load resolving
+    /// metadata identically: the submodel's field wins, the container's is the fallback.
+    pub(crate) fn merge_metadata(&mut self, other: &NamMetadata) {
+        self.metadata.fill_empty_from(other);
+    }
+
     /// FR-NAM-110: "Namir shall report the model stage's processing latency in samples, and
     /// shall report zero if the architecture is causal and introduces none." This WaveNet's
     /// dilated convolutions are causal (left-padding only — see `Conv1D::apply_into`) and it
