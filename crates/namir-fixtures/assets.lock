@@ -11,7 +11,7 @@
 # third-party asset redistributable under that licence), or `unrecorded` (which fails the gate).
 format_version 1
 crates/namir-clap/tests/golden/fr-cfg-020/input.f32 98304 19a47dfe6055d67ce3ad78e5e9bc292c522b8c0d02eca74271653b7cd4e2bce3 generated
-crates/namir-clap/tests/golden/fr-cfg-020/preset.namirpreset 13151 47f4b3f1444581db8a11a8eed82c878cfaa576cb3aefaef5c3976aabb913030c generated
+crates/namir-clap/tests/golden/fr-cfg-020/preset.namirpreset 13184 a2f8e9ccff2e725cca3e5964a2bba69d9b08e8e1d65423fe2921e54e68e3e519 generated
 crates/namir-ir/fuzz/corpus/load_ir/mutated_0.bin 174 22ccc18c29c083ed10fe687e875996c06c7512ee256296891b3e5228f14203c9 generated
 crates/namir-ir/fuzz/corpus/load_ir/mutated_1.bin 24 722947876ebc3a8699963eaf8491b77e14e1a2921f33682fd1a8ef0823386a08 generated
 crates/namir-ir/fuzz/corpus/load_ir/mutated_2.bin 174 21a330d6dc6b4d45f31f14a7baf5b3e07bf28ad6ed8c4881041a58e7c96249bc generated
