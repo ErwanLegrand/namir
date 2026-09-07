@@ -138,8 +138,23 @@ because LSTM state settles quickly; a WaveNet's receptive field makes the cold s
 
 `nam-parity` now prewarms before comparing, and the figures above are from the corrected tool. The
 underlying product gap — namir never prewarms a loaded model, so its first ~85 ms diverges from the
-reference by roughly -30 dB on every load — is **issue #173**, and is not fixed by that harness
+reference by roughly -30 dB on every load — is **issue #173**, and was not fixed by that harness
 change.
+
+*Update 2026-09-07: the product gap is now closed too (D-9.13).* `namir-nam` computes each
+architecture's prewarm length the way the reference does and `namir-engine` prewarms every model it
+loads, in D-8.1's prepare step on a worker thread. `nam-parity`'s one-second over-estimate is
+retired in favour of the model's own count, so the tool now compares from sample 0 with no offset
+arithmetic at all, and reproduces this document's `a2_full` control figure of -132.58 dB unchanged.
+(An earlier draft of this note claimed the compared span grew "from 432 000 to 480 000 samples".
+That was wrong, and line 109 above is its refutation: `bbe7d2a` prepended a second of silence and
+then discarded exactly the second it had prepended, so all 480 000 real samples were compared then
+too. What changed is the prewarm *length* — a fixed one-second over-estimate becomes the model's own
+count — not the span.) **The figures in the table above are not
+re-measured and do not need to be**: they were taken through a harness that prewarmed by an
+over-estimate, and for a WaveNet an over-estimate is exactly equivalent to the receptive field, so
+the comparison they describe is the same one the tool performs today. What has changed is that a
+real host now hears the settled model those figures were measured against.
 
 Worth stating plainly: this is the second time in this project's history that the natural reading of
 a measurement was the wrong one, and both times a control run rather than more analysis is what
@@ -161,7 +176,9 @@ caught it.
   them — see the update note at the end of this document — but this bullet stands as written,
   because no comparison here was re-run against a container file.
 - **Not the first ~85 ms of any model.** That region is excluded by construction, since the harness
-  now prewarms. Its behaviour is #173's subject, and no claim about it is made here.
+  now prewarms. Its behaviour was #173's subject; #173 is fixed by making that region not exist —
+  a loaded model is warm before its first real sample — rather than by measuring it, so this bullet
+  still stands as written and no claim about the cold region is made anywhere.
 - **Not tone.** This is arithmetic. A numerically-accurate render of a model says nothing about
   whether the model itself is a good capture.
 - **Not a canonical probe.** FR-NAM-030 specifies clean, transient and saturated *content*, not a

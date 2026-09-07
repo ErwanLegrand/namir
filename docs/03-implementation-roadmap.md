@@ -6070,6 +6070,20 @@ six of the ten activation variants go unreached, `LeakyReLU` among them, which i
   *presence* rather than value, so `gating_mode` and `secondary_activation` — inert in every real
   export, all `"none"` and all `null` — refused all 126 submodels of the 63 files sampled until
   #169 and #170 fixed them. The failure was in what the parser accepted, not in what it computed.
+  *Follow-on closed 2026-09-07 (issue #173).* The same exercise found a second gap one step later,
+  and it was not a schema question either: Namir never prewarmed a model, while the reference runs
+  every stateful model on silence before its first real sample, so the first ~85 ms of every load
+  sat at roughly -30 dB against a reference that agrees to -105 to -138 dB thereafter. Fixed at the
+  source rather than in the harness — `PreparedNam::prewarm_samples()`/`new_state_prewarmed()`,
+  applied by `namir-engine`'s `NamSlot::new` in D-8.1's prepare step, off the audio thread. The
+  stopgap `xtask nam-parity` carried (a deliberate one-second over-estimate, commit `bbe7d2a`) is
+  retired in favour of the model's own count, and the four committed goldens now drive the
+  production path and print the same figures they always did, because a zero-bias generated fixture
+  makes a prewarm a numerical no-op. **New Decision D-9.13** records that this was FR-NAM-030's own
+  requirement all along rather than a host convenience — the disposition this issue's scope note
+  asked to be decided deliberately rather than assumed. FR-NAM-030's text is unchanged and its tags
+  do not move; what moved is the strength of the artifact behind them.
+
 - **Real A2 models in the wild take a path Namir has never been compared against.**
   `NAM_ENABLE_A2_FAST` defaults to **ON** upstream and its `is_a2_shape` detector matches exactly
   the two shapes FR-NAM-150 names, so a default-built host runs them through `a2_fast.cpp`; the one

@@ -54,6 +54,35 @@ enum StateArchitecture {
 /// it was built from ([`PreparedNam::new_state`]) holds. Never shared across instances.
 pub struct NamState(StateArchitecture);
 
+/// NFR-SEC-020 ceiling on [`PreparedNam::prewarm_samples`]: 262 144 samples, ~5.5 s at 48 kHz.
+///
+/// Prewarming turns a model's declared shape into *work performed at load time*, which no other
+/// ceiling in this crate bounds. The existing dimension ceilings bound memory and weight counts,
+/// and both architectures can declare a legitimate-looking file whose prewarm length is
+/// astronomical while staying inside every one of them: a WaveNet's is a product of
+/// `MAX_LAYER_ARRAYS` x `MAX_DILATIONS_PER_LAYER_ARRAY` x `MAX_KERNEL_SIZE` x `MAX_DILATION`
+/// (~1e11 samples, reachable at ~18 M weights, well under `MAX_TOTAL_WEIGHTS`), and an LSTM's is
+/// half its declared `sample_rate`, which is validated only as nonzero — so `sample_rate:
+/// 4294967295` asks for ~2.1 G samples of inference. Either would hang a load indefinitely on a
+/// file that parses cleanly, which is precisely the shape NFR-SEC-020 exists to forbid ("an upper
+/// bound on the resources a single file can demand").
+///
+/// The bound is deliberately close above the real maximum rather than merely finite, because what
+/// it bounds is *time*, and a sample count alone does not bound work: a pathological model can be
+/// arbitrarily expensive per sample, so the honest statement of this ceiling is **relative** —
+/// loading a model now costs at most what playing ~5.5 s of audio through that same model costs.
+/// That is the right shape of bound, since a model too expensive to prewarm in that budget is one
+/// NFR-PERF-010 makes unusable for playback anyway; and it is why the constant is `1 << 18` rather
+/// than a rounder, larger number that would multiply the same worst case by four.
+///
+/// The real maxima sit just under it: 6 347 samples for the largest architecture this crate runs,
+/// and 192 000 for an LSTM at a 384 kHz model rate. Clamping is safe as well as bounded — for a
+/// WaveNet a prewarm *shorter* than the receptive field leaves the state not fully settled, but a
+/// model that clamps here has a receptive field longer than five seconds of audio, so its output
+/// is dominated by startup transient however this answers. No real model comes near it, so no real
+/// model is affected.
+const MAX_PREWARM_SAMPLES: usize = 1 << 18;
+
 impl PreparedNam {
     /// Builds a `PreparedNam` from an already-parsed [`NamFile`] — see this module's doc comment
     /// for why this can only ever produce the WaveNet variant, and why that's not a limitation in
@@ -110,6 +139,77 @@ impl PreparedNam {
             Architecture::WaveNet(p) => StateArchitecture::WaveNet(p.new_state(max_block_size)),
             Architecture::Lstm(p) => StateArchitecture::Lstm(p.new_state(max_block_size)),
         })
+    }
+
+    /// How many samples of silence this model wants pushed through it before its first real
+    /// sample, per architecture (issue #173). See each architecture's own accessor for what the
+    /// number is and where the reference computes it: `PreparedWaveNet::prewarm_samples` (the
+    /// receptive field, exactly equivalent once exceeded) and `PreparedLstm::prewarm_samples`
+    /// (a fixed half second, approached asymptotically).
+    ///
+    /// Exposed for callers that want to prewarm a state they already hold -- and, more usefully,
+    /// for tests that pin these counts against the reference's own arithmetic.
+    /// [`Self::new_state_prewarmed`] is what production code should call.
+    /// Clamped to [`MAX_PREWARM_SAMPLES`]; see that constant for why a bound is needed at all and
+    /// why clamping cannot affect a real model. The per-architecture accessors below it are
+    /// deliberately left unclamped, so each stays a faithful transcription of the reference's own
+    /// formula and the tests that pin them against it are pinning that formula rather than this
+    /// ceiling. Neither type is exported from this crate, so this is the only reachable surface.
+    pub fn prewarm_samples(&self) -> usize {
+        let uncapped = match &self.0 {
+            Architecture::WaveNet(p) => p.prewarm_samples(),
+            Architecture::Lstm(p) => p.prewarm_samples(),
+        };
+        uncapped.min(MAX_PREWARM_SAMPLES)
+    }
+
+    /// [`Self::new_state`], then [`Self::prewarm_samples`] samples of silence pushed through the
+    /// result -- what `NeuralAmpModelerCore`'s `DSP::prewarm` (`NAM/dsp.cpp`) does to every
+    /// stateful model before its first real sample, and therefore part of what "match the
+    /// reference implementation" means under FR-NAM-030 (D-9.13). A model that skips it spends
+    /// its first samples with a history that no host running the reference would ever present:
+    /// measured on real trainer-produced exports at roughly -30 dB of error for the first
+    /// ~85 ms, against -105 to -138 dB once settled
+    /// (`docs/manual-tests/fr-nam-030-real-a2-models.md`).
+    ///
+    /// **Not RT-safe**, for two independent reasons: `new_state` allocates, and the inference run
+    /// here is thousands of samples of unbounded-by-the-block-size work. It belongs in D-8.1's
+    /// *prepare* step on a worker thread, which is where `namir-engine`'s `NamSlot::new` calls it
+    /// from -- the audio thread pays nothing for it.
+    ///
+    /// One consequence worth stating rather than discovering: the settled state this produces
+    /// depends on `max_block_size`, because block-chunked inference is not bit-identical to
+    /// monolithic inference (`wavenet.rs`'s own chunk-vs-monolithic test pins the two only to
+    /// within `1e-4`). So two hosts opening the same model at different buffer sizes get states
+    /// that differ in the last bits. That is not new — ordinary processing already had this
+    /// property, and it is far below any audible threshold or any tolerance this project
+    /// asserts — but prewarming extends it to the state a model *starts* from, which it did not
+    /// reach before.
+    ///
+    /// The silence is fed in chunks of at most `max_block_size` because that is the bound
+    /// `process_block` panics on, and the prewarm count routinely exceeds a typical block size
+    /// (~6 347 samples for the real A2 shapes, 24 000 for a 48 kHz LSTM). A `max_block_size` of
+    /// zero prewarms nothing rather than panicking on a one-sample chunk the state cannot accept:
+    /// `namir-engine` cannot ask for one (`PrepareContext::new` rejects it with
+    /// `engine.prepare.max_block_size_zero`), but this is public API and a state that can process
+    /// no samples at all has nothing to warm.
+    pub fn new_state_prewarmed(&self, max_block_size: usize) -> NamState {
+        let mut state = self.new_state(max_block_size);
+        let chunk = max_block_size;
+        if chunk == 0 {
+            return state;
+        }
+        let silence = vec![0.0f32; chunk];
+        let mut remaining = self.prewarm_samples();
+        while remaining > 0 {
+            let n = remaining.min(chunk);
+            // `process` rather than `process_block`: it sizes its own output, so this stays
+            // correct for a model whose head widens the signal, and it is allocating code on an
+            // already-allocating, already-off-thread path.
+            let _ = self.process(&mut state, &silence[..n]);
+            remaining -= n;
+        }
+        state
     }
 
     /// The allocation-free RT-path entry point; forwards to whichever architecture is active.
