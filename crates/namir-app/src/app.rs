@@ -207,6 +207,10 @@ pub(crate) fn stream_failure_sink(
     move |failure| {
         if matches!(failure, StreamFailure::Xrun) {
             xruns.record();
+            // Temporary diagnostic (`NAMIR_CALLBACK_STATS=1`).
+            if crate::xrun::CallbackStats::enabled() {
+                crate::xrun::CallbackStats::global().record_backend_xrun();
+            }
             return;
         }
         // `StreamFailure` is `Copy` and owns no heap, so the value handed back by a full ring is
@@ -316,9 +320,38 @@ pub fn run() {
         channels: input_channels,
         share_mode: ShareMode::Shared,
     };
+    // Temporary experiment (`NAMIR_OUTPUT_BUFFER_MULT=<n>`): in WASAPI shared mode the requested
+    // buffer duration and the engine block size are the same number today, so the render path has
+    // only one block of slack. cpal's own `buffer_duration_for` notes the callback period stays
+    // `GetDevicePeriod()` whatever is requested here, so multiplying *this* number alone buys
+    // slack without changing the block size or the callback cadence.
+    let output_buffer_frames = match std::env::var("NAMIR_OUTPUT_BUFFER_MULT")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|m| *m != 1)
+    {
+        Some(0) => {
+            // `BufferSize::Default` -> cpal passes `hnsBufferDuration = 0`, which is the canonical
+            // shared-mode event-driven setup: WASAPI picks the buffer itself and fires the event
+            // per *device period* rather than per buffer, which is the only configuration in which
+            // the buffer can still hold a reserve when we are woken.
+            eprintln!(
+                "namir: requesting the device's own default output buffer against a                  {buffer_frames:?}-frame engine block (NAMIR_OUTPUT_BUFFER_MULT=0)"
+            );
+            None
+        }
+        Some(mult) => {
+            let scaled = buffer_frames.map(|f| f.saturating_mul(mult));
+            eprintln!(
+                "namir: requesting a {scaled:?}-frame output buffer against a                  {buffer_frames:?}-frame engine block (NAMIR_OUTPUT_BUFFER_MULT={mult})"
+            );
+            scaled
+        }
+        None => buffer_frames,
+    };
     let mut output_params = StreamParams {
         sample_rate_hz,
-        buffer_frames,
+        buffer_frames: output_buffer_frames,
         channels: output_channels,
         share_mode: ShareMode::Shared,
     };
@@ -745,6 +778,29 @@ fn spawn_xrun_logger(counter: Arc<XrunCounter>) -> XrunLog {
             if now != last {
                 eprintln!("namir: xrun count is now {now} (session total, FR-IO-060)");
                 last = now;
+            }
+            // Temporary diagnostic (`NAMIR_CALLBACK_STATS=1`); printed from here because
+            // `crate::stream` may not name a logger (`xtask rt-logging`).
+            if crate::xrun::CallbackStats::enabled() {
+                let (calls, mean_ns, max_ns, over, pulled, padded) =
+                    crate::xrun::CallbackStats::global().read();
+                if calls > 0 {
+                    let (in_calls, in_frames, in_dropped, backend) =
+                        crate::xrun::CallbackStats::global().read_input();
+                    let (out_gap, out_late, in_gap, in_late) =
+                        crate::xrun::CallbackStats::global().read_gaps();
+                    let (out_mean_gap, in_mean_gap) =
+                        crate::xrun::CallbackStats::global().take_means();
+                    eprintln!(
+                        "namir: out n={calls} mean={:.0}us max={:.0}us over={over}                          pulled={pulled} padded={padded} | in n={in_calls} frames={in_frames}                          dropped={in_dropped} | backend-xrun={backend} | gap out                          mean={:.3}ms max={:.1}ms late={out_late} / in mean={:.3}ms                          max={:.1}ms late={in_late}",
+                        mean_ns as f64 / 1000.0,
+                        max_ns as f64 / 1000.0,
+                        out_mean_gap as f64 / 1e6,
+                        out_gap as f64 / 1e6,
+                        in_mean_gap as f64 / 1e6,
+                        in_gap as f64 / 1e6,
+                    );
+                }
             }
         }
     });

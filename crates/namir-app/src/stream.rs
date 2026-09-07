@@ -316,7 +316,24 @@ fn build_input(
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
     let max_block = setup.max_block_size.max(1);
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(max_block);
+    // Temporary diagnostic (`NAMIR_CALLBACK_STATS=1`), same shape as `build_output`'s.
+    let stats_on = crate::xrun::CallbackStats::enabled();
+    let stats = crate::xrun::CallbackStats::global();
+    let in_budget_ns =
+        (max_block as u64 * 1_000_000_000) / setup.input_params.sample_rate_hz.max(1) as u64;
+    let mut prev_in_call: Option<std::time::Instant> = None;
     let on_data = Box::new(move |data: &[f32]| {
+        if stats_on {
+            let now = std::time::Instant::now();
+            if let Some(prev) = prev_in_call {
+                stats.record_gap(
+                    false,
+                    now.duration_since(prev).as_nanos() as u64,
+                    in_budget_ns,
+                );
+            }
+            prev_in_call = Some(now);
+        }
         if channel_count == 0 {
             return;
         }
@@ -341,8 +358,12 @@ fn build_input(
             // glitches concludes the counter works and the glitch is elsewhere. Counted the same
             // way `build_output` counts an underrun below: one xrun per callback chunk that lost
             // anything, not one per lost sample, so the two sources are commensurable.
-            if producer.push_captured(&mono_scratch) > 0 {
+            let dropped = producer.push_captured(&mono_scratch);
+            if dropped > 0 {
                 xruns.record();
+            }
+            if stats_on {
+                stats.record_input(mono_scratch.len() as u64, dropped as u64);
             }
         }
     });
@@ -383,7 +404,24 @@ fn build_output(
     let mut engine_left = vec![0.0f32; max_block];
     let mut engine_right = vec![0.0f32; max_block];
 
+    // Temporary diagnostic (`NAMIR_CALLBACK_STATS=1`): env read here, at build time, never in the
+    // callback. `budget_ns` is one `max_block` period at the stream's own rate.
+    let stats_on = crate::xrun::CallbackStats::enabled();
+    let stats = crate::xrun::CallbackStats::global();
+    let budget_ns =
+        (max_block as u64 * 1_000_000_000) / setup.output_params.sample_rate_hz.max(1) as u64;
+
+    let mut prev_out_call: Option<std::time::Instant> = None;
     let on_data = Box::new(move |out: &mut [f32]| {
+        let started = stats_on.then(std::time::Instant::now);
+        if let Some(now) = started {
+            if let Some(prev) = prev_out_call {
+                stats.record_gap(true, now.duration_since(prev).as_nanos() as u64, budget_ns);
+            }
+            prev_out_call = Some(now);
+        }
+        let mut pulled_frames = 0u64;
+        let mut padded_frames = 0u64;
         if !priority_elevated.swap(true, Ordering::AcqRel) {
             // D-13.2: once, lazily, from this callback thread itself -- see this module's doc
             // comment for why "first call inside the callback" is the only place cpal lets this
@@ -413,6 +451,8 @@ fn build_output(
             if padded > 0 {
                 xruns.record();
             }
+            pulled_frames += chunk as u64;
+            padded_frames += padded as u64;
 
             engine_left[..chunk].copy_from_slice(&mono_in[..chunk]);
             if engine_channel_count > 1 {
@@ -449,6 +489,15 @@ fn build_output(
             }
 
             done += chunk;
+        }
+
+        if let Some(started) = started {
+            stats.record(
+                started.elapsed().as_nanos() as u64,
+                budget_ns,
+                pulled_frames,
+                padded_frames,
+            );
         }
     });
 
