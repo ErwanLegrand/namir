@@ -389,6 +389,37 @@ pub struct NamMetadata {
     pub loudness: Option<f32>,
 }
 
+impl NamMetadata {
+    /// Fills every field this metadata leaves empty (or `None`) from `other`, leaving anything
+    /// already set untouched. Issue #172's submodel-first, container-fallback resolution.
+    ///
+    /// One implementation rather than three. `wavenet.rs` and `lstm.rs` carried byte-identical
+    /// 20-line copies of this and `probe::probe_metadata` inlined a third, each enumerating all
+    /// six fields by hand — so a seventh field added to this struct would have been silently
+    /// dropped by all three, with no compile error to catch it. Living here, next to the fields it
+    /// enumerates, is the only place a reader adding a field would look.
+    pub(crate) fn fill_empty_from(&mut self, other: &NamMetadata) {
+        if self.name.is_empty() {
+            self.name = other.name.clone();
+        }
+        if self.modeled_by.is_empty() {
+            self.modeled_by = other.modeled_by.clone();
+        }
+        if self.gear_type.is_empty() {
+            self.gear_type = other.gear_type.clone();
+        }
+        if self.tone_type.is_empty() {
+            self.tone_type = other.tone_type.clone();
+        }
+        if self.description.is_empty() {
+            self.description = other.description.clone();
+        }
+        if self.loudness.is_none() {
+            self.loudness = other.loudness;
+        }
+    }
+}
+
 /// Treats a present-but-`null` JSON value the same as an absent key: both become `T::default()`.
 /// Combined with `#[serde(default)]` (which only handles the absent-key case on its own), this is
 /// the standard serde pattern for "optional in practice, but not typed `Option<T>`, because the

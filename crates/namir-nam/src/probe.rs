@@ -34,10 +34,16 @@
 //!
 //! **Resolution precedence:** for a container, the *selected* (last) submodel is the model the
 //! container actually represents once loaded, so its own fields win, and the container's
-//! top-level fields fill in whatever the submodel omits — `sample_rate` and `version`:
-//! container first, submodel as fallback (a container-declared rate must win, see
+//! top-level fields fill in whatever the submodel omits — `version`: container first, selected
+//! submodel as fallback (a container-declared value must win, see
 //! `model::load_slimmable_container`'s consistency check); metadata (`name`, `modeled_by`,
-//! `gear_type`, `tone_type`, `description`, `loudness`): submodel first, container as fallback.
+//! `gear_type`, `tone_type`, `description`, `loudness`): selected submodel first, container as
+//! fallback. **`sample_rate` is container first and then *any* submodel that declares one**, not
+//! only the selected one: `load` proves every declared submodel rate is identical, so the first
+//! one found is the container's rate whichever submodel states it. Reading only the selected
+//! submodel reported `None` for a file that states its rate one submodel earlier, while `load`
+//! reported the rate — the same probe/load disagreement the first review round raised, one
+//! submodel over.
 //! `model::load_slimmable_container` applies exactly the same resolution to the loaded
 //! `PreparedNam`, so probing and loading a container always agree.
 
@@ -71,7 +77,8 @@ struct ProbeShape {
     version: Option<String>,
     architecture: String,
     #[serde(default)]
-    config: ProbeConfig,
+    #[allow(dead_code)]
+    config: IgnoredAny,
     #[serde(default)]
     #[allow(dead_code)]
     weights: IgnoredAny,
@@ -79,6 +86,32 @@ struct ProbeShape {
     sample_rate: Option<u32>,
     #[serde(default)]
     metadata: NamMetadata,
+}
+
+/// The container-only second pass (issue #172, and the review of PR #177 that sent it back).
+///
+/// This exists as a *separate* shape, deserialized from the same bytes only when [`ProbeShape`]
+/// has already reported `architecture == "SlimmableContainer"`, rather than as a typed `config`
+/// field on `ProbeShape` itself. That is not a stylistic preference — it is the only arrangement
+/// that keeps [`ProbeShape`]'s stated invariant true. A typed `config` there is imposed on *every*
+/// document, and `#[serde(default)]` only covers an **absent** key, not a present non-object one:
+/// `"config": null`, `5`, `[1,2]` and `"x"` are all values serde must then fail to deserialize
+/// into a struct, so every such file — plain WaveNet and LSTM included — is rejected as
+/// `nam.load.malformed_json` by a probe that used to accept it, and in `namir-library` the entry
+/// stays indexed while silently losing its name, architecture and sample rate.
+///
+/// `config: null` is not a shape today's real exports use. It is exactly the shape AGENTS.md's
+/// testing-philosophy section names from a real post-M6 defect ("a metadata field set to JSON
+/// `null` rather than omitted"), and the generated fixtures cannot catch it because they never
+/// emit it — which is why `file.rs`'s `NamMetadata` already carries a `null_or_default`
+/// deserializer for the same trap.
+///
+/// The cost of the second pass is one extra parse of container files only, and nothing at all for
+/// every other document.
+#[derive(Debug, Deserialize)]
+struct ProbeContainerShape {
+    #[serde(default)]
+    config: ProbeConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -137,38 +170,55 @@ pub fn probe_metadata(bytes: &[u8]) -> Result<NamProbe, NamLoadError> {
     // check), and probing must match what loading enforces.
     let mut metadata = NamMetadata::default();
 
-    if architecture == "SlimmableContainer"
-        && let Some(last_entry) = shape.config.submodels.last()
-        && let Some(sub) = &last_entry.model
-    {
-        if version.is_none() {
-            version = sub.version.clone();
+    if architecture == "SlimmableContainer" {
+        // Second, container-only parse of the same bytes (see `ProbeContainerShape`). A container
+        // whose `config` is not the shape a container needs is malformed *as a container*, and
+        // `model::load_slimmable_container` would reject the same bytes through
+        // `ContainerFile::parse`, so reporting the same code keeps this function's stated contract
+        // -- "a file this rejects would be rejected by a full parse too" -- intact.
+        let container: ProbeContainerShape =
+            serde_json::from_slice(bytes).map_err(|e| NamLoadError {
+                code: error_codes::MALFORMED_JSON,
+                detail: e.to_string(),
+            })?;
+
+        // NFR-SEC-020, and the asymmetry is the point: `load` has carried `MAX_SUBMODELS` since
+        // the first round of review on PR #177 and this path did not, so the *bounded* path
+        // rejected an over-ceiling container while the unbounded one accepted it and allocated a
+        // `String` per metadata field per submodel. That is backwards relative to exposure --
+        // `load` runs only on a file the user deliberately selected, while a library scan walks
+        // every `.nam` under a scan root through here and swallows the error
+        // (`namir-library`'s `probe.rs` degrades a probe failure to `ItemMetadata::None`).
+        crate::shared::check_max(
+            container.config.submodels.len(),
+            crate::shared::MAX_SUBMODELS,
+            "config.submodels.len()",
+        )?;
+
+        // The *selected* submodel's own rate, never an earlier one's. PR #177's review (item 10)
+        // asked for the container-wide agreed rate here instead; that was implemented and then
+        // withdrawn on reading the reference, which consults only the active submodel's own rate
+        // when the container declares none -- see `model::load_slimmable_container`'s comment at
+        // the `set_sample_rate` call for the full argument. Probe and load resolve identically,
+        // which is the property that matters, and they now do so by both matching the reference
+        // rather than by both diverging from it.
+        if let Some(last_entry) = container.config.submodels.last()
+            && let Some(sub) = &last_entry.model
+        {
+            if version.is_none() {
+                version = sub.version.clone();
+            }
+            if sample_rate.is_none() {
+                sample_rate = sub.sample_rate;
+            }
+            metadata = sub.metadata.clone();
         }
-        if sample_rate.is_none() {
-            sample_rate = sub.sample_rate;
-        }
-        metadata = sub.metadata.clone();
     }
 
-    // Container metadata as fallback: fill only the fields the submodel left empty/`None`.
-    if metadata.name.is_empty() {
-        metadata.name = shape.metadata.name.clone();
-    }
-    if metadata.modeled_by.is_empty() {
-        metadata.modeled_by = shape.metadata.modeled_by.clone();
-    }
-    if metadata.gear_type.is_empty() {
-        metadata.gear_type = shape.metadata.gear_type.clone();
-    }
-    if metadata.tone_type.is_empty() {
-        metadata.tone_type = shape.metadata.tone_type.clone();
-    }
-    if metadata.description.is_empty() {
-        metadata.description = shape.metadata.description.clone();
-    }
-    if metadata.loudness.is_none() {
-        metadata.loudness = shape.metadata.loudness;
-    }
+    // Container metadata as fallback: fill only the fields the submodel left empty/`None`. Shared
+    // with `PreparedWaveNet`/`PreparedLstm`'s `merge_metadata` rather than enumerated a third time
+    // here, so probe and load cannot drift when `NamMetadata` grows a field.
+    metadata.fill_empty_from(&shape.metadata);
 
     Ok(NamProbe {
         architecture,
@@ -271,6 +321,78 @@ mod tests {
 
         assert_eq!(probe.architecture, full.architecture);
         assert_eq!(probe.sample_rate, full.sample_rate);
+    }
+
+    /// PR #177's review, item 1 — the regression that sent this file back, pinned so it cannot
+    /// return. `#[serde(default)]` covers an *absent* key, never a present one holding the wrong
+    /// type, so a typed `config` field on `ProbeShape` turned every one of these into a hard
+    /// rejection of a file a probe had always accepted — for plain WaveNet and LSTM documents,
+    /// nothing to do with containers. In `namir-library` the entry stays indexed and silently
+    /// loses its name, architecture and sample rate, which is the quiet half of the failure.
+    ///
+    /// `null` is first in the list on purpose: AGENTS.md's testing-philosophy section names
+    /// exactly this shape from a real post-M6 defect, and the generated fixtures cannot produce it.
+    #[test]
+    fn probe_accepts_a_config_that_is_not_an_object_for_every_architecture() {
+        for config in ["null", "5", "[1,2]", "\"x\"", "{}"] {
+            for architecture in ["WaveNet", "LSTM"] {
+                let bytes = format!(
+                    r#"{{"architecture": "{architecture}", "config": {config}, "weights": [1.0], "sample_rate": 48000, "metadata": {{"name": "N"}}}}"#
+                )
+                .into_bytes();
+                let probe = probe_metadata(&bytes).unwrap_or_else(|e| {
+                    panic!(
+                        "config {config} on {architecture} should probe, got {}",
+                        e.code.id
+                    )
+                });
+                assert_eq!(probe.architecture, architecture);
+                assert_eq!(probe.sample_rate, Some(48_000));
+                assert_eq!(probe.metadata.name, "N");
+            }
+        }
+    }
+
+    /// PR #177's review, item 9. `load` has carried `MAX_SUBMODELS` since the first review round
+    /// and this path did not, so the bounded path rejected an over-ceiling container while the
+    /// unbounded one accepted it — backwards relative to exposure, since a library scan walks
+    /// every `.nam` under a scan root through here and swallows the error.
+    #[test]
+    fn probe_rejects_a_container_with_more_than_max_submodels() {
+        let submodels: Vec<String> = (0..crate::shared::MAX_SUBMODELS + 1)
+            .map(|i| {
+                format!(
+                    r#"{{"max_value": {}, "model": {{"architecture": "WaveNet", "metadata": {{"name": "s{i}"}}}}}}"#,
+                    i + 1
+                )
+            })
+            .collect();
+        let bytes = format!(
+            r#"{{"architecture": "SlimmableContainer", "config": {{"submodels": [{}]}}}}"#,
+            submodels.join(",")
+        )
+        .into_bytes();
+
+        let err = probe_metadata(&bytes).expect_err("over-ceiling container should be rejected");
+        assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+    }
+
+    /// PR #177's review, item 10, probe half — pinned to the *reference's* answer rather than to
+    /// the one the item asked for. A rate stated only by a non-selected submodel is not the
+    /// selected model's rate: with no top-level `sample_rate` the reference's container rate is
+    /// `NAM_UNKNOWN_EXPECTED_SAMPLE_RATE` and the active model reports whatever it itself
+    /// declares, which here is nothing. `None` is therefore the honest answer, and it means what
+    /// `NamProbe::sample_rate`'s doc says it means — the file declares nothing, so the "typically
+    /// 48 kHz" convention applies, which is exactly what the loaded model then applies.
+    #[test]
+    fn probe_ignores_a_rate_declared_only_by_a_non_selected_submodel() {
+        let bytes = br#"{"architecture": "SlimmableContainer", "config": {"submodels": [
+            {"max_value": 0.5, "model": {"architecture": "WaveNet", "sample_rate": 44100}},
+            {"max_value": 1.0, "model": {"architecture": "WaveNet", "metadata": {"name": "full"}}}
+        ]}}"#;
+        let probe = probe_metadata(bytes).unwrap();
+        assert_eq!(probe.sample_rate, None);
+        assert_eq!(probe.metadata.name, "full");
     }
 
     #[test]

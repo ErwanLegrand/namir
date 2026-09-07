@@ -216,14 +216,7 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
     )?;
 
     let mut prev_max = f64::NEG_INFINITY;
-    let mut common_sample_rate: Option<u32> = None;
     for (i, entry) in file.config.submodels.iter().enumerate() {
-        if !entry.max_value.is_finite() {
-            return Err(NamLoadError {
-                code: error_codes::NON_FINITE_VALUE,
-                detail: format!("submodel {i} max_value is not finite"),
-            });
-        }
         if entry.max_value <= prev_max {
             return Err(NamLoadError {
                 code: error_codes::INCONSISTENT_CONFIGURATION,
@@ -245,24 +238,47 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
                 detail: "nested SlimmableContainer is not supported".to_string(),
             });
         }
+        // Sample rates, mirroring `ContainerModel`'s constructor rather than improving on it.
+        //
+        // PR #177's review asked whether these invariants reject files the reference accepts,
+        // noting that #169 and #170 had just landed correcting exactly that twice over. The
+        // reference is not vendored here, but it is checked out on the machine these parity runs
+        // use (the reference checkout these parity runs already use, pinned `3cde95c`, at the
+        // path `docs/manual-tests/*` name), so the
+        // question was settled by reading `NAM/container.cpp:35-45` rather than by argument. Every
+        // submodel with a *known* rate is compared **against the container's own** declared rate,
+        // and the comparison is skipped entirely when either side is
+        // `NAM_UNKNOWN_EXPECTED_SAMPLE_RATE` (`-1.0`, which is what
+        // `get_sample_rate_from_nam_file` returns for an absent key, `get_dsp.cpp:280-286`).
+        //
+        // This code previously compared submodels **to each other** as well, which is strictly
+        // stricter: a container that declares no top-level rate and holds submodels at 44 100 and
+        // 48 000 loads in the reference and was refused here. No file among the 63 real Tone3000
+        // containers does that -- they all declare 48 000 on both submodels -- so it was latent,
+        // which is precisely how #169's and #170's defects were latent too. Being stricter than
+        // the reference is the failure mode this crate keeps having; it is not a safe default.
         if let Some(sr) = peek.sample_rate {
             if sr == 0 {
+                // Deliberate, narrow divergence, recorded rather than accidental: the reference
+                // has no zero check here, but a 0 Hz declaration is rejected crate-wide for a
+                // plain model (`wavenet.rs`/`lstm.rs`'s `INVALID_SAMPLE_RATE`), and accepting it
+                // only inside a container would make the container path the one place a
+                // nonsensical rate survives. Nothing real declares it.
                 return Err(NamLoadError {
                     code: error_codes::INVALID_SAMPLE_RATE,
                     detail: format!("submodel {i} declares sample_rate 0 Hz"),
                 });
             }
-            if let Some(existing) = common_sample_rate {
-                if existing != sr {
-                    return Err(NamLoadError {
-                        code: error_codes::INCONSISTENT_CONFIGURATION,
-                        detail: format!(
-                            "submodels have mismatched sample rates: {existing} vs {sr}"
-                        ),
-                    });
-                }
-            } else {
-                common_sample_rate = Some(sr);
+            if let Some(top_sr) = file.sample_rate
+                && top_sr != 0
+                && top_sr != sr
+            {
+                return Err(NamLoadError {
+                    code: error_codes::INCONSISTENT_CONFIGURATION,
+                    detail: format!(
+                        "container sample_rate ({top_sr}) does not match submodel {i}'s ({sr})"
+                    ),
+                });
             }
         }
     }
@@ -275,23 +291,13 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
         });
     }
 
-    if let Some(top_sr) = file.sample_rate {
-        if top_sr == 0 {
-            return Err(NamLoadError {
-                code: error_codes::INVALID_SAMPLE_RATE,
-                detail: "container declares sample_rate 0 Hz".to_string(),
-            });
-        }
-        if let Some(sub_sr) = common_sample_rate
-            && top_sr != sub_sr
-        {
-            return Err(NamLoadError {
-                code: error_codes::INCONSISTENT_CONFIGURATION,
-                detail: format!(
-                    "container sample_rate ({top_sr}) does not match submodel sample_rate ({sub_sr})"
-                ),
-            });
-        }
+    // The container's own rate: nonzero if declared. The submodel comparison it used to feed now
+    // happens per-submodel inside the loop above, where the reference does it.
+    if let Some(0) = file.sample_rate {
+        return Err(NamLoadError {
+            code: error_codes::INVALID_SAMPLE_RATE,
+            detail: "container declares sample_rate 0 Hz".to_string(),
+        });
     }
 
     // Everything above has validated the container itself; now the selected (last) submodel is
@@ -300,8 +306,23 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
     // after, so a submodel that omits `sample_rate`/metadata still reports the container's.
     let last = file.config.submodels.last().unwrap();
     let mut nam = load(last.model.get().as_bytes())?;
-    if let Some(top_sr) = file.sample_rate {
-        let sr = SampleRate::new(top_sr).expect("nonzero: top_sr == 0 is rejected above");
+    // The container's declared rate, and only that. PR #177's review (item 10) asked for the
+    // *agreed* rate to be applied as well, so that a container declaring nothing at top level,
+    // whose selected submodel also declares nothing, would still pick up a rate stated by an
+    // earlier submodel. That was implemented and then withdrawn on reading the reference: with no
+    // top-level `sample_rate` the container's own expected rate is
+    // `NAM_UNKNOWN_EXPECTED_SAMPLE_RATE` (`get_dsp.cpp:280-286`), the active model is the last
+    // submodel, and its rate is whatever that submodel itself declares -- an earlier submodel's
+    // rate is never consulted for it. Propagating one would have made namir report a rate the
+    // reference does not, which is the same class of divergence the item was raised to prevent,
+    // pointing the other way.
+    //
+    // The probe/load asymmetry the item actually observed -- probe `None`, load 48 000 -- is not a
+    // disagreement: `NamProbe::sample_rate`'s own doc says `None` means the file declares nothing
+    // and the "typically 48 kHz" convention applies, which is exactly what the loaded model then
+    // applies. `probe::probe_metadata` reads the same fields in the same order for the same reason.
+    if let Some(rate) = file.sample_rate {
+        let sr = SampleRate::new(rate).expect("nonzero: a zero rate is rejected above");
         nam.set_sample_rate(sr);
     }
     nam.merge_metadata(&file.metadata);
@@ -945,14 +966,18 @@ mod tests {
         assert!(err.detail.contains("config.submodels is empty"));
     }
 
+    /// There is no `is_finite` check in `load_slimmable_container` and there should not be one:
+    /// `max_value` is an `f64` deserialized by `serde_json`, which rejects an out-of-range literal
+    /// at parse time, and JSON has no `NaN`/`Infinity` literal at all -- so a non-finite
+    /// `max_value` cannot reach the validation loop. This test previously accepted
+    /// `NON_FINITE_VALUE || MALFORMED_JSON` and passed on the second disjunct every time, which
+    /// verified nothing while making an unreachable branch look covered. It now asserts the one
+    /// code the input actually produces, so it fails if that ever stops being true.
     #[test]
-    fn slimmable_container_rejects_non_finite_max_value() {
+    fn a_non_finite_max_value_is_rejected_at_json_parse() {
         let bytes = br#"{"architecture": "SlimmableContainer", "config": {"submodels": [{"max_value": 1e400, "model": {"architecture": "WaveNet"}}]}}"#;
         let err = expect_err(load(bytes));
-        assert!(
-            err.code.id == error_codes::NON_FINITE_VALUE.id
-                || err.code.id == error_codes::MALFORMED_JSON.id
-        );
+        assert_eq!(err.code.id, error_codes::MALFORMED_JSON.id);
     }
 
     #[test]
@@ -997,17 +1022,25 @@ mod tests {
         );
     }
 
+    /// Rewritten at PR #177's review item 12. This test used to declare no container-level rate
+    /// and assert that two disagreeing submodels were rejected — pinning a rule stricter than the
+    /// reference's, which compares each submodel against the *container's* rate and skips the
+    /// comparison when the container declares none. Its intent (a mismatch is caught) is kept by
+    /// declaring the container rate the reference actually compares against; the case it used to
+    /// cover is now pinned the other way, at
+    /// `slimmable_container_without_a_declared_rate_tolerates_differing_submodel_rates`.
     #[test]
     fn slimmable_container_rejects_mismatched_submodel_sample_rates() {
         let mut value: serde_json::Value =
             serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["sample_rate"] = serde_json::json!(48000);
         value["config"]["submodels"][0]["model"]["sample_rate"] = serde_json::json!(44100);
         value["config"]["submodels"][1]["model"]["sample_rate"] = serde_json::json!(48000);
         let bytes = serde_json::to_vec(&value).unwrap();
 
         let err = expect_err(load(&bytes));
         assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
-        assert!(err.detail.contains("mismatched sample rates"));
+        assert!(err.detail.contains("does not match submodel"));
     }
 
     #[test]
@@ -1094,6 +1127,70 @@ mod tests {
         let probe = crate::probe::probe_metadata(&bytes).unwrap();
         assert_eq!(probe.sample_rate, Some(44_100));
         assert_eq!(probe.sample_rate, Some(prepared.sample_rate().hz()));
+    }
+
+    /// PR #177's review, item 12 — the invariants were checked against the reference rather than
+    /// argued about, and one of them was wrong.
+    ///
+    /// A container that declares no top-level `sample_rate` and holds submodels at different rates
+    /// **loads**. `ContainerModel`'s constructor compares each submodel against the *container's*
+    /// expected rate and skips the comparison entirely when either side is
+    /// `NAM_UNKNOWN_EXPECTED_SAMPLE_RATE` — which is what an absent `sample_rate` key becomes — so
+    /// it never compares submodels to each other. This crate did, and refused a file the reference
+    /// accepts. Nothing among the 63 real Tone3000 containers triggers it (all declare 48 000 on
+    /// both submodels), which is exactly how #169's and #170's defects stayed invisible: the
+    /// stricter-than-the-reference reading only bites files nobody happened to have.
+    #[test]
+    fn slimmable_container_without_a_declared_rate_tolerates_differing_submodel_rates() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value.as_object_mut().unwrap().remove("sample_rate");
+        value["config"]["submodels"][0]["model"]["sample_rate"] = serde_json::json!(44100);
+        value["config"]["submodels"][1]["model"]["sample_rate"] = serde_json::json!(48000);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let prepared = load(&bytes).expect("the reference accepts this, so this crate must too");
+        // The active model is the last submodel, so its own rate is the one reported.
+        assert_eq!(prepared.sample_rate().hz(), 48_000);
+    }
+
+    /// The other half of the same reading: when the container *does* declare a rate, a submodel
+    /// disagreeing with **it** is still rejected — that comparison is the one the reference makes.
+    #[test]
+    fn slimmable_container_rejects_a_submodel_disagreeing_with_the_declared_container_rate() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["sample_rate"] = serde_json::json!(48000);
+        value["config"]["submodels"][0]["model"]["sample_rate"] = serde_json::json!(44100);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+    }
+
+    /// PR #177's review, item 10, pinned to the reference's answer rather than the item's request.
+    /// A rate stated only by a non-selected submodel is not the selected model's rate: the
+    /// container's own rate is unknown, and the active model reports what it itself declares,
+    /// which is nothing — so the 48 kHz convention applies, and the probe reports `None` meaning
+    /// exactly that. Probe and load agree; they now agree *with the reference* rather than with
+    /// each other alone.
+    #[test]
+    fn slimmable_container_ignores_a_rate_declared_only_by_a_non_selected_submodel() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value.as_object_mut().unwrap().remove("sample_rate");
+        value["config"]["submodels"][0]["model"]["sample_rate"] = serde_json::json!(44100);
+        value["config"]["submodels"][1]["model"]
+            .as_object_mut()
+            .unwrap()
+            .remove("sample_rate");
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let prepared = load(&bytes).expect("container should load");
+        assert_eq!(prepared.sample_rate().hz(), 48_000);
+
+        let probe = crate::probe::probe_metadata(&bytes).unwrap();
+        assert_eq!(probe.sample_rate, None);
     }
 
     /// Issue #172 review finding 1, submodel-declared side: when the submodels *do* declare a
