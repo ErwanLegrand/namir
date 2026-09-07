@@ -395,10 +395,10 @@ timing), `worker.file.too_large` (inducible but slow, and tests the same machine
 and `worker.job.panicked`, `clap.gui.invalid_parent`, `clap.activate.invalid_sample_rate` (each
 needs an internal fault or a misbehaving host).
 
-**Result: FAIL, 2026-08-27, both product configurations.** Non-modality and the never-interrupt-
-audio clause are met and observed. The requirement's second sentence is not met: no notice in the
-catalogue tells the user what they can do, and two notices name neither the file nor the device.
-Steps 4, 8 and 14 carry the detail; the remaining twelve steps pass.
+*Historical result (superseded by 2026-09-08 re-run):* FAIL, 2026-08-27, both product configurations.
+Non-modality and the never-interrupt-audio clause were met. The requirement's second sentence was not
+met: notices lacked remedy text and placeholders were rendered literally. Both defects were resolved
+in code (PR #45 / #15 / M14 W10) and verified by the 2026-09-08 re-run below.
 
 ---
 
@@ -491,3 +491,32 @@ stops after a few rows and scrolls, that the rest of the screen is still there, 
 notice in the list can be scrolled to and dismissed. A mouse wheel over the notice area is the
 gesture; there is no scrollbar drag to rely on if the host swallows the wheel, and if it does,
 **that** is the finding.
+
+---
+
+## Executed re-run — 2026-09-08
+
+**Executed 2026-09-08** by a human on the §2 reference machine (AMD Ryzen 9 5950X, Windows 11 Pro build 26200,
+AudioBox 22VSL) with a display, keyboard, mouse, and audio monitoring. Both product configurations were
+exercised: the standalone (`cargo run -p namir-app --release`) for steps 1–13, and the CLAP plugin in
+**Reaper** and **Studio One** for steps 14–15. **All fifteen steps pass.**
+
+| Step | Induction / Action | Observed Notice ID & Description | Verdict |
+|---|---|---|---|
+| 1 | Corrupt model (`corrupt_test.nam`) | `nam.load.malformed_json` (states what failed, path, full remedy; audio uninterrupted) | PASS |
+| 2 | Deleted file (`delete_me.nam`) | `worker.file.unreadable` (states file not found, path, rescan remedy; audio uninterrupted) | PASS |
+| 3 | Over-long IR (`ir_overlong_12s.wav`) | `worker.ir.truncated` (10s truncation notice, IR audible, audio uninterrupted) | PASS |
+| 4 | Notice text review | All notices state what failed, name file/device, and provide actionable remedy | PASS |
+| 5 | Non-modality | All controls, search, scroll, and window move/resize operational with notices displayed | PASS |
+| 6 | Individual notice dismissal | Clicking Dismiss on middle notice dismisses only that notice; audio unaffected | PASS |
+| 7 | Scan save failure (read-only index) | `app.host.scan_save_failed` (names temporary and destination path, remedy; audio uninterrupted) | PASS |
+| 8 | Device disconnection (unplug AudioBox) | `app.audio_io.device_lost` (no crash or hang; non-modal notice names device and remedy) | PASS |
+| 9 | Corrupt settings (`audio-settings.json`) | `app.settings.unreadable` (unreadable file kept as `.corrupt`, starts from defaults) | PASS |
+| 10 | Corrupt library index (`library-index.json`) | `library.index.corrupt` (starts with empty library, rescan notice displayed; rescan rebuilds) | PASS |
+| 11 | Remembered device unavailable | `app.audio_io.remembered_device_unavailable` (falls back to active device, names both) | PASS |
+| 12 | Exclusive mode unavailable (webcam mic) | `app.audio_io.exclusive_mode_unavailable` (truthful fallback to shared mode, names device & remedy) | PASS |
+| 13 | No audio device (unplugged + mic disabled) | `app.audio_io.no_device` (window opens non-modally, parameters editable, notice displayed) | PASS |
+| 14 | Plugin shell notices (Reaper, Studio One) | Load failure, truncation, and dismissal all verified in DAW with transport rolling | PASS |
+| 15 | Missing resource on DAW project reload | `state.reference.not_found` (names missing model, hash, remedy; DAW reloads & plays cleanly) | PASS |
+
+**Result: PASS, 2026-09-08, both product configurations.** All fifteen steps executed and verified on the current build.
