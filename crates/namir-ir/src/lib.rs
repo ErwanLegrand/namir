@@ -47,8 +47,11 @@
 //! - **FR-IR-020** (Should: AIFF/FLAC decode) — this crate reads WAV only.
 //! - **FR-IR-080** (Should: dual IR slots / crossfaded IR swap) — a stage-level concern, same
 //!   category as `namir-nam`'s out-of-scope crossfaded model swap.
-//! - **FR-IR-090** (Should: IR normalization/loudness matching) — not implemented; a caller gets
-//!   back exactly the gain the source WAV encodes.
+//! - **FR-IR-090**'s *policy* half (whether normalisation is on, and its live defeat switch) —
+//!   `namir-engine`'s `Ir` stage's job, same split as FR-IR-070's. This crate only *measures*:
+//!   [`PreparedIr::normalize_gain_db`] reports the gain that would bring the loaded taps to unity
+//!   broadband power, and the taps themselves are still returned at exactly the gain the source
+//!   WAV encodes.
 
 mod convolver;
 mod error_codes;

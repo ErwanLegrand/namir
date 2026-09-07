@@ -188,6 +188,43 @@ pub const DEFAULT_MAX_PARTITION: usize = 8192;
 /// caller's `engine_rate` and is only known after resampling.
 const MAX_LOAD_SECONDS_AT_ENGINE_RATE: u64 = 10;
 
+/// FR-IR-090's "stated target": **unity broadband power**. An IR normalised to it neither adds
+/// nor removes energy overall, so swapping cabinets changes tone without changing level — which
+/// is the whole point of the requirement. Stated as a number rather than left implicit because
+/// the requirement's wording ("normalised on load to a stated target") demands one.
+///
+/// Measured as mean per-channel tap power `sum(h^2) / channels`, so a stereo IR is not 3 dB
+/// quieter than the mono IR it was made from.
+const NORMALIZE_TARGET_POWER: f64 = 1.0;
+
+/// Clamp on [`PreparedIr::normalize_gain_db`], both ends. An IR file is untrusted input: a nearly
+/// silent one (a mis-exported file, a near-empty capture) has an arbitrarily small `sum(h^2)`, and
+/// an unclamped correction would answer it with an arbitrarily large boost of whatever noise the
+/// file does contain. +/-40 dB spans every plausible real cabinet IR by a wide margin; past it,
+/// the file is broken and the honest answer is to leave the user's own level control in charge.
+const NORMALIZE_GAIN_LIMIT_DB: f32 = 40.0;
+
+/// The gain, in dB, that brings `channel_taps` to [`NORMALIZE_TARGET_POWER`], clamped to
+/// +/-[`NORMALIZE_GAIN_LIMIT_DB`]. Computed over the taps *as the convolver will actually run
+/// them* — post-resample, post-truncation — so the figure describes the signal the stage
+/// produces, not the file on disk.
+///
+/// Returns `0.0` for an empty tap set; `from_wav_bytes` rejects that case (`EMPTY_IR`) before
+/// this is reached, and 0 dB is the correct no-op answer for a caller that constructs one anyway.
+fn normalize_gain_db(channel_taps: &[Vec<f32>]) -> f32 {
+    let total_power: f64 = channel_taps
+        .iter()
+        .flat_map(|taps| taps.iter())
+        .map(|&t| (t as f64) * (t as f64))
+        .sum();
+    if total_power <= 0.0 || channel_taps.is_empty() {
+        return 0.0;
+    }
+    let mean_power = total_power / channel_taps.len() as f64;
+    let gain_db = 10.0 * (NORMALIZE_TARGET_POWER / mean_power).log10();
+    (gain_db as f32).clamp(-NORMALIZE_GAIN_LIMIT_DB, NORMALIZE_GAIN_LIMIT_DB)
+}
+
 // ---------------------------------------------------------------------------------------------
 // D-9.4 schedule
 // ---------------------------------------------------------------------------------------------
@@ -703,6 +740,7 @@ pub struct PreparedIr {
     channels: Vec<PreparedChannel>,
     len_samples: usize,
     was_truncated: bool,
+    normalize_gain_db: f32,
 }
 
 /// Per-instance mutable convolution state: one `{ring buffers, in_pos, t}` set per
@@ -794,6 +832,7 @@ impl PreparedIr {
         }
 
         let len_samples = channel_taps.first().map(Vec::len).unwrap_or(0);
+        let normalize_gain_db = normalize_gain_db(&channel_taps);
 
         let channels = channel_taps
             .into_iter()
@@ -804,6 +843,7 @@ impl PreparedIr {
             channels,
             len_samples,
             was_truncated,
+            normalize_gain_db,
         })
     }
 
@@ -825,6 +865,15 @@ impl PreparedIr {
     /// stage uses this as its own `Stage::tail_samples()`.
     pub fn len_samples(&self) -> usize {
         self.len_samples
+    }
+
+    /// FR-IR-090: the gain in dB that would bring this IR to unity broadband power
+    /// ([`NORMALIZE_TARGET_POWER`]), clamped to +/-[`NORMALIZE_GAIN_LIMIT_DB`]. Measured over the
+    /// taps as they will actually be convolved (post-resample, post-truncation) and *not applied*
+    /// here: whether it is applied, and the requirement's defeat switch, belong to the engine's
+    /// `Ir` stage — the same split FR-IR-070's level control already uses.
+    pub fn normalize_gain_db(&self) -> f32 {
+        self.normalize_gain_db
     }
 
     /// D-9.4: this convolver's head partition equals the host block size, so it introduces zero
@@ -1011,6 +1060,47 @@ mod tests {
     // -------------------------------------------------------------------------------------
     // Schedule tests, ported from the spike plus new stagger-specific coverage.
     // -------------------------------------------------------------------------------------
+
+    /// FR-IR-090's measurement half, at the seam the engine's own end-to-end test cannot see:
+    /// that the figure is derived from mean *per-channel* power, so a stereo IR is not reported
+    /// 3 dB hotter than the mono IR it was built from.
+    #[test]
+    fn normalize_gain_measures_mean_per_channel_power() {
+        let taps = decaying_noise(4_096, 1, 400.0);
+        let mono = normalize_gain_db(std::slice::from_ref(&taps.to_vec()));
+        let stereo = normalize_gain_db(&[taps.to_vec(), taps.to_vec()]);
+        assert!(
+            (mono - stereo).abs() < 1e-4,
+            "duplicating a channel changed the correction: {mono} dB vs {stereo} dB"
+        );
+
+        // Unity power in, no correction out — the "stated target" stated as an assertion.
+        let unit = normalize_gain_db(&[vec![1.0f32]]);
+        assert!((unit).abs() < 1e-4, "a unit-power IR asked for {unit} dB");
+
+        // Halving the taps quarters the power, so the correction rises by exactly 6.02 dB.
+        let quiet: Vec<f32> = taps.iter().map(|t| t * 0.5).collect();
+        let delta_db = normalize_gain_db(&[quiet]) - mono;
+        assert!(
+            (delta_db - 6.0206).abs() < 1e-3,
+            "halving the taps moved the correction by {delta_db} dB, not 6.02"
+        );
+    }
+
+    /// The trust-boundary half: an IR file is untrusted input, and a near-silent one must not buy
+    /// an unbounded boost of whatever noise it does contain.
+    #[test]
+    fn normalize_gain_is_clamped_at_both_ends() {
+        let silent_ish = normalize_gain_db(&[vec![1e-12f32; 1_024]]);
+        assert_eq!(silent_ish, NORMALIZE_GAIN_LIMIT_DB);
+
+        let very_hot = normalize_gain_db(&[vec![1e6f32; 1_024]]);
+        assert_eq!(very_hot, -NORMALIZE_GAIN_LIMIT_DB);
+
+        // All-zero taps are `EMPTY_IR`'s job upstream, not an infinite boost here.
+        assert_eq!(normalize_gain_db(&[vec![0.0f32; 16]]), 0.0);
+        assert_eq!(normalize_gain_db(&[]), 0.0);
+    }
 
     #[test]
     fn schedule_is_causal() {
