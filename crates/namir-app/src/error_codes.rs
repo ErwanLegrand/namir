@@ -108,6 +108,15 @@ pub const REMEMBERED_DEVICE_UNAVAILABLE: ErrorCode = ErrorCode::new(
     "Reconnect the remembered device and restart Namir to go back to it. Closing Namir now saves \
      the substitute as the remembered device instead.",
 );
+/// FR-IO-040 / issue #167: a requested buffer size was not supported by the audio device, so the
+/// session opened with a supported size instead. **`Warning`, not `Error`:** audio still runs,
+/// which matches [`EXCLUSIVE_MODE_UNAVAILABLE`]'s degradation principle.
+pub const BUFFER_SIZE_DECLINED: ErrorCode = ErrorCode::new(
+    "app.audio_io.buffer_size_declined",
+    Severity::Warning,
+    "The requested buffer size is not supported by the audio device ({detail}).",
+    "Choose a supported buffer size in audio settings, or edit buffer_size_frames in audio-settings.json.",
+);
 
 /// FR-IO-080: the settings file on disk could not be parsed (corrupted, from an incompatible
 /// future version). Degrades to [`crate::settings::AppSettings::default`] (P8) rather than
@@ -144,6 +153,7 @@ const ALL: &[ErrorCode] = &[
     NO_SUPPORTED_CONFIG,
     NO_AUDIO_DEVICE,
     REMEMBERED_DEVICE_UNAVAILABLE,
+    BUFFER_SIZE_DECLINED,
     SETTINGS_UNREADABLE,
     SETTINGS_UNWRITABLE,
 ];
@@ -164,6 +174,11 @@ mod tests {
     fn an_unavailable_exclusive_mode_is_a_warning_because_audio_still_runs() {
         assert_eq!(EXCLUSIVE_MODE_UNAVAILABLE.severity, Severity::Warning);
         assert_eq!(DEVICE_OPEN_FAILED.severity, Severity::Error);
+    }
+    /// Issue #167: a declined buffer size is a `Warning`, not an `Error` — audio still runs.
+    #[test]
+    fn a_declined_buffer_size_is_a_warning_because_audio_still_runs() {
+        assert_eq!(BUFFER_SIZE_DECLINED.severity, Severity::Warning);
     }
 
     /// Issue #40: "no device at all" and "this device offers nothing usable" are different facts
