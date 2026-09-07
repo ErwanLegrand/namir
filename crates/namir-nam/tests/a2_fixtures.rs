@@ -269,6 +269,40 @@ fn slimmable_container_with_generated_a2_models_matches_full_reference() {
     assert!(db < -100.0);
 }
 
+/// Issue #172 review finding 1, against generated A2 submodels: a container declaring
+/// `sample_rate: 44100` with rate-less submodels loads at 44.1 kHz (never the 48 kHz default),
+/// and the probe agrees — the same propagation `model.rs`/`probe.rs` unit tests pin, exercised
+/// through real generated A2 documents end to end.
+#[test]
+fn slimmable_container_sample_rate_propagates_to_generated_submodels() {
+    let full = nam::generate_a2(A2Shape::Full, 42).expect("full fixture should generate");
+    let mut full_val: serde_json::Value =
+        serde_json::from_slice(&full.to_json_bytes()).expect("full json");
+    full_val
+        .as_object_mut()
+        .expect("submodel json is an object")
+        .remove("sample_rate");
+
+    let container_bytes = serde_json::json!({
+        "version": "0.7.0",
+        "architecture": "SlimmableContainer",
+        "sample_rate": 44_100,
+        "config": {
+            "submodels": [
+                { "max_value": 1.0, "model": full_val }
+            ]
+        }
+    })
+    .to_string()
+    .into_bytes();
+
+    let prepared = namir_nam::load(&container_bytes).expect("container should load");
+    assert_eq!(prepared.sample_rate().hz(), 44_100);
+
+    let probe = namir_nam::probe_metadata(&container_bytes).unwrap();
+    assert_eq!(probe.sample_rate, Some(44_100));
+}
+
 #[test]
 fn rejects_mutated_slimmable_container_without_panicking() {
     let lite = nam::generate_a2(A2Shape::Lite, 10).expect("lite fixture");
