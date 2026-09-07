@@ -121,6 +121,14 @@ jobs:
       - name: cargo test -p namir-clap --features host-ext-tests (D-18.7)
         run: cargo test -p namir-clap --features host-ext-tests --no-fail-fast
 
+      # The same hole one step up: the workspace clippy step above walks default features, so
+      # nothing ever linted the code this feature compiles. It accumulated three `-D warnings`
+      # errors unnoticed, found only when someone ran clippy with the feature by hand. Same
+      # single-feature form and the same **never `--all-features`** rule as the step above, for
+      # the same R-17 reason.
+      - name: cargo clippy -p namir-clap --features host-ext-tests
+        run: cargo clippy -p namir-clap --all-targets --features host-ext-tests -- -D warnings
+
   # Covers D-18.1's "the layering lint" (D-5.2) and "the params.lock diff" (FR-PARAM-020).
   # Pure static checks over the dependency graph and a checked-in manifest -- not
   # platform-dependent, so one OS is enough.

@@ -26,6 +26,7 @@
     "ir.level_db": -2.5,
     "ir.low_cut_enabled": 1.0,
     "ir.low_cut_freq_hz": 95.0,
+    "ir.normalize_enabled": 1.0,
     "nam.enabled": 1.0,
     "nam.normalize_enabled": 1.0,
     "nam.normalize_offset_db": -4.0,
