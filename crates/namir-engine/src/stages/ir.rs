@@ -66,6 +66,7 @@ use namir_ir::{IrState, PreparedIr};
 use namir_params::ParamKind;
 use namir_params::stages::ir::{
     ENABLED, HIGH_CUT_ENABLED, HIGH_CUT_FREQ_HZ, LEVEL_DB, LOW_CUT_ENABLED, LOW_CUT_FREQ_HZ,
+    NORMALIZE_ENABLED,
 };
 
 use crate::command::RetireSink;
@@ -97,6 +98,8 @@ const LOW_CUT_HIGH_CUT_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
 /// See [`ENABLED_ID`].
 const LEVEL_DB_ID: ParamId = ParamId(LEVEL_DB.id.0);
+/// See [`ENABLED_ID`].
+const NORMALIZE_ENABLED_ID: ParamId = ParamId(NORMALIZE_ENABLED.id.0);
 /// See [`ENABLED_ID`].
 const LOW_CUT_ENABLED_ID: ParamId = ParamId(LOW_CUT_ENABLED.id.0);
 /// See [`ENABLED_ID`].
@@ -171,6 +174,7 @@ impl StagePrep for IrPrep {
 
         let enabled_default_on = stepped_default_on(ENABLED);
         let level_db_default = continuous_default(LEVEL_DB);
+        let normalize_enabled_default = stepped_default_on(NORMALIZE_ENABLED);
         let low_cut_enabled_default = stepped_default_on(LOW_CUT_ENABLED);
         let low_cut_freq_hz_default = continuous_default(LOW_CUT_FREQ_HZ);
         let high_cut_enabled_default = stepped_default_on(HIGH_CUT_ENABLED);
@@ -206,6 +210,7 @@ impl StagePrep for IrPrep {
             prepared_for: *ctx,
             retired: None,
             level_db: level_db_default,
+            normalize_enabled: normalize_enabled_default,
             low_cut_enabled: low_cut_enabled_default,
             low_cut_freq_hz: low_cut_freq_hz_default,
             high_cut_enabled: high_cut_enabled_default,
@@ -243,6 +248,37 @@ pub(crate) struct IrSlot {
     /// This instance's own ring buffers/input accumulators/stream-time counter. Sized (via
     /// `PreparedIr::new_state`) to exactly what `ir` needs.
     state: IrState,
+    /// FR-IR-090: this IR's own measured correction toward unity broadband power, in dB
+    /// (`PreparedIr::normalize_gain_db`). Read once here, at construction, since it depends only
+    /// on the loaded taps and never on a live parameter — `nam.rs`'s `base_normalize_gain_db`
+    /// exactly, and for the same reason.
+    base_normalize_gain_db: f32,
+    /// FR-IR-090's applied gain, one `GainRamp` per *IR* channel (not per physical output
+    /// channel: this runs on the slot's own convolution output, upstream of the stage's
+    /// mono-to-stereo fan-out). Its target is recomputed every block from
+    /// `base_normalize_gain_db` and the stage's live `normalize_enabled`, so toggling the switch
+    /// ramps rather than steps.
+    ///
+    /// Built **already settled** at its first block's target, unlike `nam.rs`'s equivalent, which
+    /// starts at unity and ramps in. A brand-new slot has no prior output to click against — the
+    /// handover crossfade is what introduces it — so ramping in only slides the IR's level by its
+    /// whole correction across the first 25 ms of its own fade. That is not hypothetical: it fails
+    /// `chain_probes::a_first_load_is_audible_inside_its_own_fade_at_every_block_size`'s
+    /// "a fade, not a step" bound, which is exactly the defect that assertion exists to catch.
+    ///
+    /// **Per-slot rather than folded into the stage's `level` ramps**, which would be the smaller
+    /// change: during a handover the two slots are convolved separately and blended, so a single
+    /// post-blend gain would apply the incoming IR's correction to the outgoing IR as well —
+    /// exactly the level jump FR-IR-090 exists to remove, reintroduced in the crossfade window.
+    normalize: Vec<GainRamp>,
+    /// Clear until the first [`Self::process_wet`] has seated `normalize` at the target the stage
+    /// actually asks for. Which target that is depends on the stage's live `normalize_enabled`,
+    /// which `IrSlot::new` — running worker-side, off the stage — cannot see; re-seating a
+    /// `GainRamp` is a plain struct assignment, so the fixup is RT-safe and the `Vec` itself is
+    /// still allocated in `new`.
+    settled: bool,
+    /// Kept only to re-seat `normalize` on that first block.
+    sample_rate: SampleRate,
 }
 
 impl IrSlot {
@@ -250,9 +286,20 @@ impl IrSlot {
     /// `PreparedIr::new_state` allocates every per-channel ring buffer/accumulator the convolution
     /// needs. `pub(crate)` so [`crate::Command::load_ir`] can do this work off the audio thread,
     /// mirroring `NamSlot::new`'s identical contract and rationale.
-    pub(crate) fn new(ir: Arc<PreparedIr>) -> Self {
+    pub(crate) fn new(ir: Arc<PreparedIr>, sample_rate: SampleRate) -> Self {
         let state = ir.new_state();
-        Self { ir, state }
+        let base_normalize_gain_db = ir.normalize_gain_db();
+        let normalize = (0..ir.channel_count())
+            .map(|_| GainRamp::new(sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS))
+            .collect();
+        Self {
+            ir,
+            state,
+            base_normalize_gain_db,
+            normalize,
+            settled: false,
+            sample_rate,
+        }
     }
 
     /// `1` for a mono IR, `2` for a stereo IR — see [`PreparedIr::channel_count`].
@@ -279,12 +326,41 @@ impl IrSlot {
     /// construction, not a heap one (unlike a `Vec<&mut [f32]>` would be) — required so this
     /// stays allocation-free despite `PreparedIr::process_block`'s API wanting a slice of
     /// dynamically-many output channels.
-    fn process_wet(&mut self, mono_input: &[f32], wet: &mut [Vec<f32>; 2], n: usize) {
+    fn process_wet(
+        &mut self,
+        mono_input: &[f32],
+        wet: &mut [Vec<f32>; 2],
+        n: usize,
+        normalize_enabled: bool,
+    ) {
         let ir_channels = self.ir.channel_count();
         let (w0, w1) = wet.split_at_mut(1);
         let mut outs: [&mut [f32]; 2] = [&mut w0[0][..n], &mut w1[0][..n]];
         self.ir
             .process_block(&mut self.state, mono_input, &mut outs[..ir_channels]);
+
+        // FR-IR-090, immediately after the convolution and before anything blends this slot with
+        // another: retargeted every block so a live toggle glides. `0.0 dB` — not a skipped
+        // `process` call — is the defeated state, so the ramp keeps running and the switch is
+        // click-free in both directions.
+        let target_db = if normalize_enabled {
+            self.base_normalize_gain_db
+        } else {
+            0.0
+        };
+        for (ramp, out) in self
+            .normalize
+            .iter_mut()
+            .zip(outs[..ir_channels].iter_mut())
+        {
+            if !self.settled {
+                *ramp =
+                    GainRamp::new_at_db(self.sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS, target_db);
+            }
+            ramp.set_target_db(target_db);
+            ramp.process(out);
+        }
+        self.settled = true;
     }
 }
 
@@ -368,6 +444,9 @@ pub struct IrStage {
     /// D-8.1 step 4's holding pen — capacity one, for the reasons `nam.rs`'s identical field
     /// documents in full.
     retired: Option<Resource>,
+    /// FR-IR-090's defeat switch. Held here rather than in the slot because it is a stage
+    /// parameter that outlives any one loaded IR; each slot reads it every block.
+    normalize_enabled: bool,
     /// FR-IR-070 level, dB. Tracked alongside each channel's `GainRamp` target so `apply` doesn't
     /// need to re-derive it.
     level_db: f32,
@@ -407,7 +486,7 @@ impl IrStage {
     /// `active` is unaffected, matching `nam.rs`'s `load_model`'s identical rule.
     pub fn load_ir(&mut self, ir: Arc<PreparedIr>) {
         let ctx = self.prepared_for;
-        self.install(Box::new(IrSlot::new(ir)), ctx);
+        self.install(Box::new(IrSlot::new(ir, self.sample_rate)), ctx);
     }
 
     /// **RT-safe.** Installs an already-built slot and starts the handover fade — D-8.1 step 3's
@@ -582,7 +661,12 @@ impl IrStage {
             // overwrite in that case.
             if let Some(slot) = &mut self.slots[self.active] {
                 let produced = slot.channel_count();
-                slot.process_wet(&self.dry[0][..n], &mut self.crossfade_outgoing, n);
+                slot.process_wet(
+                    &self.dry[0][..n],
+                    &mut self.crossfade_outgoing,
+                    n,
+                    self.normalize_enabled,
+                );
                 for ch in 0..physical_channels {
                     let idx = wet_channel_index(ch, produced);
                     io.channel(ch)
@@ -609,7 +693,12 @@ impl IrStage {
             // successful finalization sets `self.active` *to* it.
             if let Some(slot) = &mut self.slots[incoming_idx] {
                 let produced = slot.channel_count();
-                slot.process_wet(&self.dry[0][..n], &mut self.crossfade_incoming, n);
+                slot.process_wet(
+                    &self.dry[0][..n],
+                    &mut self.crossfade_incoming,
+                    n,
+                    self.normalize_enabled,
+                );
                 for ch in 0..physical_channels {
                     let idx = wet_channel_index(ch, produced);
                     io.channel(ch)
@@ -622,7 +711,12 @@ impl IrStage {
         let outgoing_channels = match &mut self.slots[outgoing_idx] {
             Some(slot) => {
                 let produced = slot.channel_count();
-                slot.process_wet(&self.dry[0][..n], &mut self.crossfade_outgoing, n);
+                slot.process_wet(
+                    &self.dry[0][..n],
+                    &mut self.crossfade_outgoing,
+                    n,
+                    self.normalize_enabled,
+                );
                 produced
             }
             None => {
@@ -633,7 +727,12 @@ impl IrStage {
         let incoming_channels = match &mut self.slots[incoming_idx] {
             Some(slot) => {
                 let produced = slot.channel_count();
-                slot.process_wet(&self.dry[0][..n], &mut self.crossfade_incoming, n);
+                slot.process_wet(
+                    &self.dry[0][..n],
+                    &mut self.crossfade_incoming,
+                    n,
+                    self.normalize_enabled,
+                );
                 produced
             }
             None => {
@@ -797,6 +896,10 @@ impl Stage for IrStage {
             for ramp in &mut self.level {
                 ramp.set_target_db(change.value);
             }
+        } else if change.id == NORMALIZE_ENABLED_ID {
+            // No retarget call here: each slot recomputes its own ramp target from this flag on
+            // every block (`IrSlot::process_wet`), so a slot loaded later picks it up too.
+            self.normalize_enabled = change.value >= 0.5;
         } else if change.id == LOW_CUT_ENABLED_ID {
             self.low_cut_enabled = change.value >= 0.5;
             self.retarget_low_cut();
@@ -1044,12 +1147,84 @@ mod tests {
         );
     }
 
+    /// FR-IR-090, both clauses. The stage's settled output must be the raw convolution scaled by
+    /// the IR's own correction toward unity broadband power when the switch is on, and the raw
+    /// convolution when it is off — which is also what makes the correction's *sign* meaningful:
+    /// this `h` has `sum(h^2) = 0.4134`, a quiet IR, so normalising makes it **louder**, and a
+    /// test written against an over-hot IR alone would pass on a sign error.
+    ///
+    /// This is the requirement's own `Verify: U`, and it is deliberately an end-to-end assertion
+    /// on the stage rather than on `PreparedIr::normalize_gain_db` in isolation: the measurement
+    /// living in `namir-ir` while the application lives in `namir-engine` is exactly the seam a
+    /// unit test of either half alone would miss.
+    // trace: FR-IR-090
+    #[test]
+    fn normalisation_is_applied_and_defeatable() {
+        let sample_rate = 48_000;
+        let h = vec![0.6f32, -0.2, 0.1, 0.05, -0.03];
+        let energy: f32 = h.iter().map(|t| t * t).sum();
+        let expected_gain = (1.0 / energy).sqrt();
+        assert!(
+            expected_gain > 1.5,
+            "this fixture is meant to be a *quiet* IR, so the correction is a boost"
+        );
+
+        let total = 48_000usize;
+        let mut input = vec![0.0f32; total];
+        for (i, sample) in input.iter_mut().enumerate() {
+            *sample = 0.2 * ((i as f32) * 0.01).sin();
+        }
+        let reference = namir_ir::direct_convolve(&h, &input);
+        let settle = 19_200usize;
+
+        for (normalize_on, expected_scale) in [(true, expected_gain), (false, 1.0)] {
+            let mut stage = stage(sample_rate, ChannelConfig::Mono);
+            stage.apply(ParamChange {
+                id: NORMALIZE_ENABLED_ID,
+                value: if normalize_on { 1.0 } else { 0.0 },
+            });
+            stage.load_ir(mono_ir(sample_rate, &h, 64));
+
+            let mut out = Vec::with_capacity(total);
+            let mut offset = 0usize;
+            while offset < total {
+                let end = (offset + 64).min(total);
+                let n = end - offset;
+                let mut buf = input[offset..end].to_vec();
+                let mut channels: [&mut [f32]; 1] = [&mut buf];
+                let mut io = StageIo::new(&mut channels, n);
+                audio_section(|| stage.process(&mut io));
+                out.extend_from_slice(io.channel(0));
+                offset = end;
+            }
+
+            for i in settle..total {
+                let want = reference[i] * expected_scale;
+                assert!(
+                    (out[i] - want).abs() < 1e-4,
+                    "normalize={normalize_on}, sample {i}: stage {} vs expected {want}                      ({} x {expected_scale})",
+                    out[i],
+                    reference[i]
+                );
+            }
+        }
+    }
+
     #[test]
     fn loaded_ir_matches_direct_convolution_once_settled() {
         let sample_rate = 48_000;
         let mut stage = stage(sample_rate, ChannelConfig::Mono);
         let h = vec![0.6f32, -0.2, 0.1, 0.05, -0.03];
         let ir = mono_ir(sample_rate, &h, 64);
+
+        // FR-IR-090 defeated: this test's reference is `direct_convolve(&h, ..)`, the raw taps,
+        // and normalisation would legitimately scale the stage's output away from them (this
+        // `h` measures +3.8 dB from unity power). Defeating it here keeps the test about the
+        // convolution; `normalisation_is_applied_and_defeatable` below is what covers the gain.
+        stage.apply(ParamChange {
+            id: NORMALIZE_ENABLED_ID,
+            value: 0.0,
+        });
 
         stage.load_ir(ir);
 

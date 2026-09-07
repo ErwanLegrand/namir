@@ -219,6 +219,7 @@ const SECTION_5_DISCRETE: &[(&str, &str)] = &[
     ("nam.enabled", "FR-CHAIN-020"),
     ("nam.normalize_enabled", "FR-NAM-090"),
     ("ir.enabled", "FR-IR-070"),
+    ("ir.normalize_enabled", "FR-IR-090"),
     ("ir.low_cut_enabled", "FR-IR-070"),
     ("ir.high_cut_enabled", "FR-IR-070"),
     ("eq.enabled", "FR-CHAIN-020"),

@@ -39,6 +39,7 @@ ir.high_cut_freq_hz 3178613153 continuous live min=1000.0 max=20000.0 default=80
 ir.level_db 3704864057 continuous live min=-24.0 max=24.0 default=0.0
 ir.low_cut_enabled 1089690959 stepped live steps=2 default=0 values=1d6b388a
 ir.low_cut_freq_hz 1056762835 continuous live min=20.0 max=500.0 default=80.0
+ir.normalize_enabled 3379374801 stepped live steps=2 default=1 values=1d6b388a
 nam.enabled 1703077744 stepped live steps=2 default=1 values=1d6b388a
 nam.normalize_enabled 2036451968 stepped live steps=2 default=1 values=1d6b388a
 nam.normalize_offset_db 3562711459 continuous live min=-12.0 max=12.0 default=0.0

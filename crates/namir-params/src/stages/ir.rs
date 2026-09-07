@@ -31,6 +31,24 @@ pub const LEVEL_DB: ParamDescriptor = ParamDescriptor::new(
     SmoothingCategory::GainLike,
 );
 
+/// FR-IR-090: normalisation on/off, default on. Stepped rather than continuous because the
+/// requirement asks for a defeat switch, not a trim — the amount is measured from the IR itself
+/// (`namir_ir::PreparedIr::normalize_gain_db`), and FR-IR-070's `ir.level_db` is already the
+/// control for taste. Deliberately *not* paired with an offset the way `nam.normalize_offset_db`
+/// is: FR-NAM-090 normalises toward an absolute loudness target where an offset is meaningful,
+/// while this one targets unity power, where an offset is just level again.
+pub const NORMALIZE_ENABLED: ParamDescriptor = ParamDescriptor::new(
+    "ir.normalize_enabled",
+    "IR Normalize",
+    Unit::None,
+    ParamKind::Stepped {
+        values: &["Off", "On"],
+        default_index: StepIndex(1),
+    },
+    ValueFormat::Named,
+    SmoothingCategory::Stepped,
+);
+
 /// FR-IR-070: low cut, off or 20..500 Hz, default off.
 pub const LOW_CUT_ENABLED: ParamDescriptor = ParamDescriptor::new(
     "ir.low_cut_enabled",
@@ -89,11 +107,29 @@ pub const HIGH_CUT_FREQ_HZ: ParamDescriptor = ParamDescriptor::new(
 mod tests {
     use super::*;
 
+    /// FR-IR-090's "defeatable" clause: the switch exists, and defaults to normalising — the
+    /// requirement's own point is that swapping IRs should not jump the level, which an
+    /// off-by-default switch would not deliver.
+    #[test]
+    fn normalize_defaults_on() {
+        match NORMALIZE_ENABLED.kind {
+            ParamKind::Stepped {
+                values,
+                default_index,
+            } => {
+                assert_eq!(values, &["Off", "On"]);
+                assert_eq!(default_index.0, 1);
+            }
+            _ => panic!("ir.normalize_enabled is declared Stepped"),
+        }
+    }
+
     #[test]
     fn descriptors_have_distinct_keys() {
         let keys = [
             ENABLED.key,
             LEVEL_DB.key,
+            NORMALIZE_ENABLED.key,
             LOW_CUT_ENABLED.key,
             LOW_CUT_FREQ_HZ.key,
             HIGH_CUT_ENABLED.key,

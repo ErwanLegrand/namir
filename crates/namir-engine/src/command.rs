@@ -95,7 +95,7 @@ impl Command {
     /// **Not RT-safe — D-8.1 step 1, worker-side.** The Ir analogue of [`Self::load_nam`]; builds
     /// this instance's `IrState` (its convolution ring buffers and accumulators).
     pub fn load_ir(ir: Arc<PreparedIr>, ctx: &PrepareContext) -> Self {
-        let slot = IrSlot::new(ir);
+        let slot = IrSlot::new(ir, ctx.sample_rate());
         Self::Load(Resource::ir(Box::new(slot), *ctx))
     }
 
