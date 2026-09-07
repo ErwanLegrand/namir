@@ -77,6 +77,49 @@ pub fn block_frames(buffer_frames: Option<u32>) -> usize {
     buffer_frames.unwrap_or(DEFAULT_BLOCK_FRAMES).max(1) as usize
 }
 
+/// What the **output** stream asks the device for: `None`, meaning `cpal::BufferSize::Default` —
+/// the device's own buffer, never a size Namir picked.
+///
+/// # Why the output stream does not get the negotiated size (issue #166)
+///
+/// One number used to do two jobs: [`block_frames`] turns the negotiated size into the engine's
+/// `max_block_size`, *and* the same size was requested as each stream's buffer. For the input
+/// stream that is right. For the output stream it forces the device onto a period it did not
+/// choose, and the cost of that lands on the output clock.
+///
+/// Measured on the reference machine (AudioBox 22VSL, 48 kHz, **WASAPI exclusive mode**) with a
+/// synthetic callback cost injected into an otherwise empty chain — no IR, no model — so the
+/// figures are about this mechanism and nothing else:
+///
+/// | request | resulting period | callback cost | measured period | captured frames dropped |
+/// |---|---|---|---|---|
+/// | `Fixed(480)` | 10.000 ms | 900 us | **10.934 ms** | 12 224 |
+/// | `Default` (144 frames) | 3.000 ms | 900 us | 3.125 ms | 16 208 |
+/// | `Default` (144 frames) | 3.000 ms | 285 us | **3.000 ms** | **0** |
+///
+/// At the forced 10 ms period the slip is the callback duration, to three decimals: whatever the
+/// callback spends is taken straight out of the output clock. At the device's own period there is
+/// roughly 0.8 ms of headroom before any slip appears, which is ample at the ~10% occupancy a real
+/// chain needs (row 3) and merely reduces it at 30% (row 2). The slip is what fills
+/// [`crate::bridge`]'s ring until it refuses captured frames — heard as crackling, counted as
+/// FR-IO-060 xruns, and *not* caused by the DSP being late: `over-budget` was zero in every run.
+///
+/// **What is not claimed.** Why the device's own period has headroom and a forced one does not was
+/// not established — only that it does, repeatably, on this device. The measurement is exclusive
+/// mode on one interface; shared mode and the other platforms were not measured. The rule is
+/// unconditional anyway because "do not force a period the device did not choose" is the same
+/// argument in every mode, and `Default` is the ordinary request on every backend — `Fixed` was
+/// always the aggressive one.
+///
+/// **Consequence for FR-IO-040**, stated rather than buried: the user's buffer-size selection no
+/// longer sets the *output device's* period. It still sizes the engine block ([`block_frames`],
+/// which this deliberately does not touch) and the input stream, which is where its latency and
+/// CPU meaning lives. Whether that satisfies "select ... buffer size from those the selected device
+/// reports as supported" is a product question this fix raises and does not settle.
+pub fn output_buffer_request() -> Option<u32> {
+    None
+}
+
 /// One audio host API (WASAPI, ALSA, CoreAudio, ...), by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostInfo {
@@ -1963,6 +2006,20 @@ mod tests {
             }),
             256,
         );
+    }
+
+    /// Issue #166: the output stream asks the device for its own buffer, and the engine's block
+    /// size must **not** move with it. The two used to be one number; this pins them apart, which
+    /// is the whole content of the fix.
+    #[test]
+    fn the_output_stream_asks_the_device_for_its_own_buffer() {
+        assert_eq!(output_buffer_request(), None, "None == BufferSize::Default");
+
+        // The engine block still follows the negotiated value, whatever the output stream asks
+        // the device for. A regression here would silently change the chain's block size.
+        assert_eq!(block_frames(Some(480)), 480);
+        assert_eq!(block_frames(Some(64)), 64);
+        assert_eq!(block_frames(None), DEFAULT_BLOCK_FRAMES as usize);
     }
 
     /// The block size a session runs at is one number, not two: [`crate::app`]'s engine

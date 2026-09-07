@@ -612,6 +612,10 @@ impl AppHost {
         );
         input_params.share_mode = share_mode.mode;
         output_params.share_mode = share_mode.mode;
+        // Issue #166: the output stream asks the device for its own buffer in shared mode, so the
+        // render path keeps a reserve instead of being drained every callback. The engine's block
+        // size still comes from `buffer_frames` below -- see `audio_io::output_buffer_request`.
+        output_params.buffer_frames = crate::audio_io::output_buffer_request();
 
         let max_block_size = crate::audio_io::block_frames(buffer_frames);
         let channel_config = if output_channels >= 2 {
