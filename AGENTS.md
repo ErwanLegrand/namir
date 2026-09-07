@@ -174,18 +174,19 @@ table entirely. `spikes/` is throwaway, pins its own `Cargo.lock`, and is exclud
 workspace — do not port code from there without re-reviewing it; it's a proof of feasibility, not
 production code.
 
-## `unsafe` code — confined to two crates, three files
+## `unsafe` code — confined to two crates, four files
 
 Workspace-wide `unsafe_code = "forbid"` (not just `deny` — chosen specifically so no crate can
 locally `#![allow(unsafe_code)]` its way around it). Only `namir-platform` and `namir-clap` (plus a
 possible future SIMD kernel module) declare their own `[lints.rust] unsafe_code = "deny"` to opt
 back in. **`deny` is not permission either** — it fails the build the same way; what actually makes
-a file legal is a `#![allow(unsafe_code)]` at the top of that file, and exactly three files carry
-one: `namir-platform/src/denormal.rs`, `namir-platform/src/thread_priority.rs` and
-`namir-clap/src/gui.rs`. So it is **two** designated modules in `namir-platform`, not one — this
-file previously said "confined to one module each" and was wrong. Each carries a written
-`// SAFETY:` argument on every unsafe block and a module-level doc comment giving the fuller
-argument; see `namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for the house style.
+a file legal is a `#![allow(unsafe_code)]` at the top of that file, and exactly four files carry
+one: `namir-platform/src/denormal.rs`, `namir-platform/src/thread_priority.rs`,
+`namir-clap/src/gui.rs` and `namir-clap/src/host_wake.rs`. So it is **two** designated modules in
+`namir-platform` and **two** in `namir-clap`, not one each — this file previously said "confined to
+one module each" and was wrong. Each carries a written `// SAFETY:` argument on every unsafe block
+and a module-level doc comment giving the fuller argument; see `namir-platform/src/denormal.rs` or
+`namir-clap/src/gui.rs` for the house style.
 
 **Tests and benches get no exemption** (D-5.3's *Consequence (added M9, 2026-08-08)*). Cargo
 applies a package's `[lints]` table to bench and integration-test targets too, so a `namir-clap`
@@ -201,10 +202,11 @@ Cargo.toml comments), `rtrb` for both SPSC rings, and — decided at M9's P0 pas
 `clack-host` as a `namir-clap` **dev**-dependency for the in-process CLAP host harness, adopted
 precisely because `clack-extensions`' own `__doc_utils.rs` instantiates a plugin through
 `PluginEntry::load_from_clack` with no `unsafe` at all. Checked this pass: the only `unsafe` blocks
-anywhere under `crates/` are one in `gui.rs`, five in `denormal.rs` and six in
+anywhere under `crates/` are one in `gui.rs`, one in `host_wake.rs` (issue #94's erased-lifetime
+`HostSharedHandle`), five in `denormal.rs` and six in
 `thread_priority.rs` — plus that file's `unsafe extern "system"` declaration block, which edition
 2024 requires of any `extern` block — and none at all in any bench or integration test, where there
-should be none. Any new `unsafe` block outside those three files is a bug, not a style choice —
+should be none. Any new `unsafe` block outside those four files is a bug, not a style choice —
 inside a `forbid` crate the compiler enforces that; inside the two `deny` crates only review does,
 so say so in the review.
 

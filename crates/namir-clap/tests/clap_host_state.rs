@@ -37,6 +37,9 @@
 
 mod support;
 
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 use clack_extensions::params::ParamRescanFlags;
 use clack_extensions::state::PluginState;
 use clack_host::events::event_types::ParamValueEvent;
@@ -286,5 +289,86 @@ fn a_host_load_of_an_unreadable_document_fails_rather_than_adopting_it() {
         "and the state it saves afterwards must still be a valid document"
     );
 
+    drop(instance); // `clap_plugin.destroy`
+}
+
+/// **Issue #94, end to end.** A preset recalled from the plugin's own editor runs on a worker-pool
+/// thread (`crate::worker_jobs::spawn_recall_preset`), which cannot call `HostParams::rescan`
+/// (`[main-thread]`). The fix parks `params_rescan_pending` and then asks the host for an
+/// `on_main_thread` callback through the erased-lifetime `HostWake` — so the host must *wake up*
+/// of its own accord and, once the callback is serviced, must re-read every parameter.
+///
+/// [`a_host_load_asks_the_host_to_rescan_every_parameter_value`] above proves the serviced half (a
+/// load on the *main* thread rescans directly) but never touches the worker path; this test drives
+/// the real `spawn_recall_preset` through the [`crate::__test_support`] seam and observes both the
+/// callback request and the resulting rescan, closing issue #94's original gap (nothing waking the
+/// main thread).
+///
+/// The preset is a parameter-only `.namirpreset` document, adopted straight off the mirror with no
+/// resource resolution — the same shape as the host-driven `state` load tests above, so nothing is
+/// written under any library root and no scan can start.
+#[test]
+fn preset_recall_from_worker_requests_host_callback_and_rescans_params() {
+    let (_entry, mut instance) = instantiate_default();
+    instance.access_handler_mut(|main_thread| main_thread.reset_callback_counts());
+    instance.access_shared_handler(|shared| shared.reset_request_counts());
+
+    // A `.namirpreset` in this test binary's own temp dir (nothing under a library root).
+    let dir = std::env::temp_dir().join(format!(
+        "namir-clap-state-test-issue94-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the temporary directory must be creatable");
+    let path = dir.join("recall.namirpreset");
+    std::fs::write(
+        &path,
+        br#"{ "format_version": 1, "parameters": { "trim.gain_db": -7.5 } }"#,
+    )
+    .expect("the preset file must be writable");
+
+    // Dispatch the same worker-pool recall a GUI-triggered preset recall runs. Runs on the pool
+    // thread; `callback_requests`/`param_rescans` are read from the main (test) thread.
+    namir_clap::__test_support::recall_preset_for_test(path);
+
+    // Wait for the pool job to reach its wake (there is no CLAP host-visible "job finished"
+    // signal, and it must be the *request*, not a pre-existing counter, that goes over zero --
+    // the counters were reset above).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if instance.access_shared_handler(|shared| shared.callback_requests()) > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        instance.access_shared_handler(|shared| shared.callback_requests()) > 0,
+        "the worker-thread preset recall must request a host callback (issue #94) -- nothing \
+         else would ever wake the main thread to service the stale parameter cache \
+         (rescan_pending={}, notices={}, pool_threads={})",
+        namir_clap::__test_support::last_rescan_pending(),
+        namir_clap::__test_support::last_notice_count(),
+        namir_clap::__test_support::last_pool_threads()
+    );
+
+    // Service the requested callback; the plugin's `on_main_thread` sees `params_rescan_pending`
+    // and asks the host to re-read every parameter value.
+    instance.call_on_main_thread_callback();
+
+    let (rescans, flags) = instance.access_handler_mut(|main_thread| {
+        (main_thread.param_rescans(), main_thread.last_rescan_flags())
+    });
+    assert!(
+        rescans > 0,
+        "servicing the requested callback must make the plugin ask the host to re-read its \
+         parameters after a worker-thread preset recall"
+    );
+    assert_eq!(
+        flags,
+        Some(ParamRescanFlags::VALUES),
+        "the rescan should name VALUES: only the values changed, not the parameter set"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
     drop(instance); // `clap_plugin.destroy`
 }
