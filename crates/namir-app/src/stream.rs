@@ -259,7 +259,18 @@ pub fn open(
     on_output_failure: impl FnMut(StreamFailure) + Send + 'static,
 ) -> Result<RunningStreams, crate::audio_io::AudioIoError> {
     let capacity = (setup.max_block_size.max(1) * 8).next_power_of_two();
-    let (producer, consumer) = bridge(capacity);
+    let (mut producer, consumer) = bridge(capacity);
+    // One block of silence ahead of the first pull. The two callbacks are independently scheduled
+    // (see `crate::bridge`), so with an empty ring the steady-state occupancy sits at zero and any
+    // output callback that happens to run before its matching input one pads and counts an xrun --
+    // perpetually, not just at startup. Prefilling gives the pull one block of slack to absorb that
+    // jitter. The cost is one block of added latency, which `crate::latency::estimate_round_trip`
+    // accounts for as its `bridge_prefill_frames` term.
+    let dropped = producer.push_captured(&vec![0.0; setup.max_block_size.max(1)]);
+    debug_assert_eq!(
+        dropped, 0,
+        "fresh bridge with capacity >= 8 * max_block_size cannot drop prefill"
+    );
 
     let input_channel_index = setup.input_channel_index as usize;
     let input_channels = setup.input_params.channels as usize;
@@ -864,7 +875,9 @@ mod tests {
 
         input_cb(&[0.1f32; 64]);
         let mut out = [0.0f32; 128]; // 64 frames * 2 channels
-        output_cb(&mut out);
+        output_cb(&mut out); // drains `open`'s one-block prefill of silence
+        input_cb(&[0.1f32; 64]);
+        output_cb(&mut out); // and now the captured signal
 
         assert_eq!(
             xruns.count(),
@@ -878,7 +891,9 @@ mod tests {
     }
 
     /// FR-IO-060's bridge-underrun path: pulling with nothing pushed yet counts an xrun rather
-    /// than panicking or silently producing garbage.
+    /// than panicking or silently producing garbage — but only once `open`'s one-block prefill has
+    /// been drained, which is the whole point of that prefill: the *first* pull of a session runs
+    /// before any input callback has necessarily fired, and must not be a dropout.
     // trace-partial: FR-IO-060
     // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
     // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
@@ -899,8 +914,10 @@ mod tests {
 
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
         let mut out = [0.0f32; 128];
-        output_cb(&mut out); // no input_cb call first -- the ring is empty.
+        output_cb(&mut out); // 64 frames, exactly the prefill -- no input_cb call needed.
+        assert_eq!(xruns.count(), 0, "the prefill absorbs the first pull");
 
+        output_cb(&mut out); // the prefill is spent and input still has not run.
         assert!(xruns.count() > 0);
     }
 

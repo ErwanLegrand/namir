@@ -604,6 +604,7 @@ pub fn run() {
     if let Some(latency) = crate::latency::estimate_round_trip(
         max_block_size as u32,
         max_block_size as u32,
+        max_block_size as u32,
         sample_rate_hz,
     ) {
         eprintln!(
