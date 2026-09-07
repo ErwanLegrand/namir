@@ -4671,6 +4671,12 @@ the `.namb` container are explicitly deferred** to a later milestone, not forgot
 the same boundary, and the reason for drawing it here is that each of those four is a separable
 feature with its own risk, none of which A2-Full or A2-Lite needs.
 
+*Amendment (added 2026-09-07, issue #172)* — one of the four is no longer deferred. `namir-nam` now
+loads `architecture: "SlimmableContainer"` models, so **three of the four remain deferred**:
+`condition_dsp`, FiLM conditioning and the `.namb` container. The paragraph above stands as
+written, being the scope M10 was actually executed under; D-9.12 carries the matching
+`*Consequence (added M15, 2026-09-07, issue #172)*` note in `docs/02-architecture.md`.
+
 **Deliverables, in five phases; the phase order is a dependency order, not a preference:**
 
 - **Phase 0 — fix the misleading rejection (FR-NAM-140).** An A2 file today fails with
@@ -6054,6 +6060,30 @@ six of the ten activation variants go unreached, `LeakyReLU` among them, which i
   `deny_unknown_fields`, so a real file carrying a feature under an unanticipated key is silently
   ignored rather than rejected, which undercuts FR-NAM-140 *for real files* even though its test is
   sound. This is the class AGENTS.md warns about, citing the post-M6 `null`-vs-omitted bug.
+
+  *Closed 2026-09-07 (PR #174).* Ten submodels from five trainer-produced Tone3000 exports were
+  rendered through the pinned reference build and compared, at -104.96 to -124.73 dB against
+  FR-NAM-030's -90 dB floor, with a three-model real A1 control at -137 to -138 dB; recorded in
+  `docs/manual-tests/fr-nam-030-real-a2-models.md`. The shared misreading this bullet predicted did
+  not exist. The concern was not misplaced, though, and this bullet's second sentence is where it
+  actually landed: the `#[serde(default)] Option<_>` fields it names were being rejected on
+  *presence* rather than value, so `gating_mode` and `secondary_activation` — inert in every real
+  export, all `"none"` and all `null` — refused all 126 submodels of the 63 files sampled until
+  #169 and #170 fixed them. The failure was in what the parser accepted, not in what it computed.
+  *Follow-on closed 2026-09-07 (issue #173).* The same exercise found a second gap one step later,
+  and it was not a schema question either: Namir never prewarmed a model, while the reference runs
+  every stateful model on silence before its first real sample, so the first ~85 ms of every load
+  sat at roughly -30 dB against a reference that agrees to -105 to -138 dB thereafter. Fixed at the
+  source rather than in the harness — `PreparedNam::prewarm_samples()`/`new_state_prewarmed()`,
+  applied by `namir-engine`'s `NamSlot::new` in D-8.1's prepare step, off the audio thread. The
+  stopgap `xtask nam-parity` carried (a deliberate one-second over-estimate, commit `bbe7d2a`) is
+  retired in favour of the model's own count, and the four committed goldens now drive the
+  production path and print the same figures they always did, because a zero-bias generated fixture
+  makes a prewarm a numerical no-op. **New Decision D-9.13** records that this was FR-NAM-030's own
+  requirement all along rather than a host convenience — the disposition this issue's scope note
+  asked to be decided deliberately rather than assumed. FR-NAM-030's text is unchanged and its tags
+  do not move; what moved is the strength of the artifact behind them.
+
 - **Real A2 models in the wild take a path Namir has never been compared against.**
   `NAM_ENABLE_A2_FAST` defaults to **ON** upstream and its `is_a2_shape` detector matches exactly
   the two shapes FR-NAM-150 names, so a default-built host runs them through `a2_fast.cpp`; the one
