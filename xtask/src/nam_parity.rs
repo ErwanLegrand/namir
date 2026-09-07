@@ -196,7 +196,11 @@ pub fn run(args: &NamParityArgs) -> bool {
     // yet (that is #173's first deliverable), and over-prewarming is harmless in a way that
     // under-prewarming is not: a WaveNet's state is fully determined by its last receptive-field
     // samples, so additional silence changes nothing, and an LSTM's hidden state only settles
-    // further toward the same silent fixed point the reference's own half-second warm-up reaches.
+    // further toward the same silent fixed point `LSTM::GetPrewarmSamples`' own half second
+    // reaches (`NAM/lstm.cpp:127`). The two halves of that sentence are different mechanisms and
+    // the distinction matters: WaveNet's prewarm length is receptive-field-derived
+    // (`wavenet/model.cpp:616-620`), and only LSTM's is a fixed half second. For WaveNet the
+    // equivalence is exact; for LSTM it is asymptotic.
     // Revisit this constant when `prewarm_samples()` exists; it is a deliberate over-estimate, not
     // a guess at the right number.
     const PREWARM_SECONDS: usize = 1;

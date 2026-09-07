@@ -166,8 +166,9 @@ caught it.
 **Result: PASS.** For the claim this document exists to check: **for the ten real A2 submodels
 tested — five trainer-produced Tone3000 containers, each in both its A2-Full and A2-Lite width —
 `namir-nam`'s WaveNet inference matches `NeuralAmpModelerCore`'s own reference render to well inside
-FR-NAM-030's -90 dB floor**, the worst margin being 14.96 dB of headroom and the rest clustering
-between 30 and 35 dB below the floor. The three-model A1 control agrees at -137 to -138 dB.
+FR-NAM-030's -90 dB floor**: the worst margin is 14.96 dB of headroom, the next-worst 18.97 dB, and
+the remaining eight cluster between 30.25 and 34.73 dB below the floor. The three-model A1 control
+agrees at -137 to -138 dB.
 
 This is the first time any trainer-produced A2 export has been compared against the reference
 implementation. Combined with `crates/namir-nam/tests/golden_reference.rs`'s in-process comparison
