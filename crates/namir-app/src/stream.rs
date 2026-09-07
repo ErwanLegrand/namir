@@ -411,6 +411,10 @@ fn build_output(
     let budget_ns =
         (max_block as u64 * 1_000_000_000) / setup.output_params.sample_rate_hz.max(1) as u64;
 
+    let fake_load_us: u64 = std::env::var("NAMIR_FAKE_LOAD_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let mut prev_out_call: Option<std::time::Instant> = None;
     let on_data = Box::new(move |out: &mut [f32]| {
         let started = stats_on.then(std::time::Instant::now);
@@ -489,6 +493,18 @@ fn build_output(
             }
 
             done += chunk;
+        }
+
+        // Temporary diagnostic (`NAMIR_FAKE_LOAD_US=<n>`): burn `n` microseconds inside the
+        // callback, so the "does the period track the callback duration?" question can be swept
+        // without a GUI, a library or an IR. A spin rather than a sleep — the point is to occupy
+        // the callback exactly as real DSP would, not to yield the core.
+        if fake_load_us > 0 {
+            let spin_until = std::time::Duration::from_micros(fake_load_us);
+            let spin_from = std::time::Instant::now();
+            while spin_from.elapsed() < spin_until {
+                std::hint::spin_loop();
+            }
         }
 
         if let Some(started) = started {
