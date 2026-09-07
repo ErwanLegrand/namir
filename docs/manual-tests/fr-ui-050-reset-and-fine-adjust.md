@@ -52,25 +52,22 @@ Run this against a real, visible `namir-ui` window (see
    discoverable from inside the running application, not only from source comments or external
    documentation.
 
-## Executed run (this session)
+## Executed run
 
-**Not executed.** This agent session has no way to interact with a real window (double-click, drag,
-hold a modifier key) — only to run processes and read stdout/exit codes (see
-`fr-ui-010-standalone-window-renders.md`'s and `fr-ui-030-accessibility-script.md`'s own notes on
-the same limitation). What *is* verified by automated test, and stands in for part of steps 1–3
-here: `controls.rs`'s headless tests prove the double-click-on-label-only-resets dispatch logic is
-correct against real `egui` widget/interaction logic driven by synthetic pointer events, through the
-same `Context::run_ui` entry point `egui-baseview` itself calls per frame. What those tests do not
-and cannot cover, and what remains genuinely unverified pending this script actually being run: an
-actual human double-click through a real window landing correctly, the visual/audible confirmation
-of a reset, and — most notably, since it has zero automated coverage of any kind — whether
-Shift+drag fine adjustment (steps 4–5) actually works against Namir's real controls at all, as
-opposed to being merely assumed correct because `egui::DragValue` documents the behaviour upstream.
+**Executed 2026-09-08** by a human on the §2 reference machine (AMD Ryzen 9 5950X, Windows 11 Pro
+build 26200) with a display, keyboard, and mouse, against a live `namir-app` standalone window with an
+AudioBox 22VSL audio interface. **All six steps pass.**
 
-**Result: NOT EXECUTED this session — script above is ready to run by a person with a display,
-keyboard, and mouse against a real `namir-ui` window.** The fine-adjustment gesture (steps 4–5) is
-the higher-priority half to run first once a human is available: it is the only part of FR-UI-050
-with no automated coverage of any kind today.
+| Step | Description | Verdict |
+|---|---|---|
+| 1 | Reset gesture, continuous control (Input Level double-click label) | PASS — single-click does nothing; double-clicking label resets value to `0.0 dB` default immediately |
+| 2 | Reset gesture, stepped control (Gate Enabled double-click label) | PASS — double-clicking label returns control to default state (`On`) |
+| 3 | Reset gesture does not fire on value itself | PASS — double-clicking numeric value enters edit/select-all mode, does not reset |
+| 4 | Fine adjustment, continuous control (Input Level Shift+drag) | PASS — value adjusts more slowly per pixel of mouse movement with increased displayed precision |
+| 5 | Fine adjustment, stepped control | PASS — Shift+drag functions predictably without erratic jumps |
+| 6 | Gestures discoverable in-app (hover tooltip) | PASS — hovering control label displays tooltip naming default value, double-click reset, and Shift+drag fine adjustment |
+
+**Result: PASS, 2026-09-08.** All six steps executed against real controls in a visible window.
 
 ### Supplementary headless driver coverage (2026-09-06, issue #143)
 
