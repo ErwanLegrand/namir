@@ -231,8 +231,11 @@ mod host_ext {
             "{path:?} is not a whole number of little-endian f32 samples"
         );
         bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .copied()
+            .map(f32::from_le_bytes)
             .collect()
     }
 
@@ -874,8 +877,9 @@ mod host_ext {
             input_cb(chunk);
             device_buffer.fill(f32::NAN);
             output_cb(&mut device_buffer);
-            raw_out[0].extend(device_buffer.chunks_exact(2).map(|f| f[0]));
-            raw_out[1].extend(device_buffer.chunks_exact(2).map(|f| f[1]));
+            let (frames_out, _) = device_buffer.as_chunks::<2>();
+            raw_out[0].extend(frames_out.iter().map(|f| f[0]));
+            raw_out[1].extend(frames_out.iter().map(|f| f[1]));
         }
 
         let out = [
