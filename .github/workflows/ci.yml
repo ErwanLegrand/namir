@@ -38,9 +38,20 @@ jobs:
   #
   # NFR-BUILD-020's own partial sits beside the build/test steps below, which are the commands its
   # gap is about; D-23.1's adjacency rule takes one anchor per tag, so the three ids this site
-  # carried until M9a are now annotated separately rather than stacked here.
+  # carried until M9a are now annotated separately rather than stacked here. NFR-QUAL-060 moved to
+  # the fmt/clippy steps below for the same reason: this site now carries a `trace-partial:`, which
+  # takes exactly one id, and adjacency gives one anchor to the tag that ends this comment block.
   #
-  # trace: NFR-QUAL-050, NFR-QUAL-060
+  # trace-partial: NFR-QUAL-050
+  # uncovered: NFR-QUAL-050 — the platform-matrix half is this job's three-OS matrix, run on every
+  # uncovered: push and pull request. The requirement's second half, "and shall gate merges", is a
+  # uncovered: branch-protection setting held outside the repository, which no annotation inside it
+  # uncovered: can assert — `xtask traceability` reads checked-in files only, and a ruleset is not
+  # uncovered: one. Issue #29 established the setting by hand (a required-status-checks rule on
+  # uncovered: `trunk` naming this workflow's blocking jobs and `fuzz.yml`'s three, recorded in
+  # uncovered: docs/manual-tests/nfr-qual-050-merge-gating.md), but a hand-read setting is
+  # uncovered: supplementary evidence under D-18.6, not the traced artifact for a `Verify: S` Must,
+  # uncovered: and nothing re-reads it when it changes; closes M8
   build-test:
     name: build + test (${{ matrix.os }})
     strategy:
@@ -73,6 +84,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # trace: NFR-QUAL-060
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 

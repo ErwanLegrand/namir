@@ -6550,3 +6550,55 @@ repository's would red-block every pull request.
 33098357771 on the same day.** Both steps passed on `macos-latest`, the first execution of that
 script anywhere, and the two lines are gone. The lane blocks like every other, on evidence rather
 than on either party's prediction.
+
+### M14 addendum: CI now gates merges, and NFR-QUAL-050 still does not close, 2026-09-07
+
+Issue #29 asked a question no gate in this project can answer: NFR-QUAL-050's text says CI "shall
+gate merges", which is an assertion about a repository setting held outside the repository. It has
+now been answered by a human reading the setting, and the answer was the unwelcome one.
+
+**The finding was right.** Before this date `trunk`'s ruleset contained exactly two rules —
+`deletion` and `non_fast_forward` — with no required status checks and no pull-request requirement.
+A change could land on `trunk` with CI red or unrun. That is worth stating plainly rather than
+folding into the fix: every mechanical gate this project owns is enforced *by* CI — the traceability
+ratchet, `xtask layering`, `rt-logging`, `params-lock`, `attribution`, `identity`, `network-free`,
+`error-catalogue`, `feature-guard`, `assets`, `schema`, `ci-commands`, `cargo-deny`,
+`clap-validator`, the fuzz smokes — so for the whole period between D-18.1 and today, all of them
+were advisory in exactly the way D-18.5's split gate was designed to prevent, and M8's exit would
+have read a green row that had no way to know. Nothing is known to have landed red; that is a
+statement about what happened to be true, not about what was enforced.
+
+**The fix.** The maintainer added a required-status-checks rule on `trunk` naming every blocking job
+of `ci.yml` and `fuzz.yml`, matrix legs listed individually, plus a pull-request requirement. The
+list, the deliberate exclusions (the three `(informational)` jobs, and D-18.5's `continue-on-error`
+second traceability step, which sits inside an already-required job and could not be required
+separately in any case) and the standing obligation to re-read the list whenever a blocking job is
+added, removed or renamed are recorded in `docs/manual-tests/nfr-qual-050-merge-gating.md`. The
+issue's own list was stale by the time it was acted on — #145 had added five `xtask` steps, a
+headless-window job and three `bundle + inspect` legs — which is itself the argument for step 6 of
+that document.
+
+**Three things this does not do, recorded so the next reader does not over-read it.**
+
+- **NFR-QUAL-050 does not become Done.** Its `# trace:` at `ci.yml`'s `build-test` job was plain and
+  over-claiming; it is now a `# trace-partial:` whose `uncovered:` field names the merge-gating half
+  and closes at **M8**. Turning the setting on satisfies the requirement in fact without making it
+  verifiable from inside the repository, and D-23.1 asks the annotation to claim what its artifact
+  executes. Nothing re-reads the ruleset, so it can be narrowed or removed silently and this
+  addendum would still read as written. Promotion to a plain tag needs the requirement's own text or
+  `Verify:` method amended, not more work in this repository.
+- **§14 does not move.** The M9a re-audit already adjudicates NFR-QUAL-050 as Partial (§14's `6.4
+  QUAL` row, and the entry at the "ten where the ledger and the source disagree" list above), so the
+  demotion reconciles the source with a ledger that was already correct rather than changing a
+  count. This is one of the ten that pass named as candidates for demotion; the other nine are
+  untouched here.
+- **NFR-QUAL-060 was not demoted, it was moved.** A `trace-partial:` carries exactly one id and
+  D-23.1's adjacency rule gives one anchor to the tag that ends a comment block, so NFR-QUAL-060's
+  plain tag now sits directly above the `cargo fmt --check` step — the steps its own text is about —
+  rather than stacked at the job header. No claim about it changed.
+
+**Why this is filed under M14 Phase 3.** "Gates that do not gate" collected three mechanisms that
+exist, are green, and cannot detect what they were built to detect. This was a fourth and the
+largest of them, sitting one level above the others: the three in Phase 3 each failed to detect one
+thing, while this one meant *no* gate's verdict was binding. It was found by the same kind of
+adversarial re-read and is recorded in the same place.
