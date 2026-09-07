@@ -77,10 +77,14 @@ fast path is an upstream optimisation of the same arithmetic and is **not** cove
 Probe signal: as in the Script, used bit-for-bit identically as the input to both the reference
 render and `namir-nam`'s own inference for every model.
 
-Prerequisites, both open at the time of the run: PR #170 (`secondary_activation` rejected by value
-rather than presence) is required for any of these files to load at all, and was applied locally for
-the A2 rows. The `nam-parity` prewarm fix for issue #173 is required for the figures below to mean
-anything — see "The correction this run needed".
+Prerequisites: PR #170 (`secondary_activation` rejected by value rather than presence) is required
+for any of these files to load at all, and the `nam-parity` prewarm fix for issue #173 is required
+for the figures below to mean anything — see "The correction this run needed".
+
+The A2 rows were first measured with #170 applied locally, while it was still open. They were then
+re-measured after it merged, from a branch containing nothing but trunk plus the prewarm fix, and
+reproduced **identically to the digit in all ten cases**. So nothing here depends on a local patch:
+with #170 in trunk, this run reproduces from a clean checkout.
 
 ### A2 — five containers, both widths
 
