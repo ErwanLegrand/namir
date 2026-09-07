@@ -249,9 +249,19 @@ mod host_ext {
     /// Every `REGISTRY` key appears exactly once — [`the_golden_vector_is_intact`] checks that
     /// against `REGISTRY` itself rather than trusting this list — because "identical parameter
     /// values" is a clause about the whole parameter set, not about the handful a test happened to
-    /// touch. Two entries are deliberately *at* their default and say why: `global.bypass` must
-    /// stay off (a bypassed chain would compare two copies of the dry signal), and the four stage
-    /// `enabled` switches must stay on for the same reason.
+    /// touch. Several entries are deliberately *at* their default and each says why: `global.bypass`
+    /// must stay off (a bypassed chain would compare two copies of the dry signal), and the four
+    /// stage `enabled` switches must stay on for the same reason.
+    ///
+    /// The two `normalize_enabled` switches are at their default for a *different* reason, and it
+    /// is the reason a reader would otherwise get backwards: both stages' normalisation gains are
+    /// **derived from the loaded resource** — the model's declared loudness for `nam`, the IR's own
+    /// `sum(h^2)` for `ir` — so switching either off replaces a value this vector computes with a
+    /// compile-time `0.0 dB`. That is the one setting under which a shell that got the derivation
+    /// wrong, or applied it on one side only, would still compare equal. Off is the weaker test
+    /// here, not the stronger one, which is why "non-default" is not automatically the right answer
+    /// for a Stepped switch. [`the_golden_vector_is_intact`]'s "is at its default" assertion is
+    /// scoped to `ParamKind::Continuous` for exactly this class of case.
     const PARAM_OVERRIDES: &[(&str, f32, &str)] = &[
         ("eq.enabled", 1.0, "at default: the tone stack must run"),
         ("eq.high_pass_enabled", 1.0, "non-default"),
@@ -286,6 +296,11 @@ mod host_ext {
         ("ir.level_db", -2.5, "non-default"),
         ("ir.low_cut_enabled", 1.0, "non-default"),
         ("ir.low_cut_freq_hz", 95.0, "non-default"),
+        (
+            "ir.normalize_enabled",
+            1.0,
+            "at default: off would replace FR-IR-090's derived gain with a constant",
+        ),
         ("nam.enabled", 1.0, "at default: the amp must run"),
         ("nam.normalize_enabled", 1.0, "at default"),
         ("nam.normalize_offset_db", -4.0, "non-default"),
