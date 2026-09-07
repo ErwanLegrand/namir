@@ -1068,33 +1068,6 @@ struct ResolvedLayerArrayShape {
 /// `PreparedWaveNet::from_file`'s ordering) [`validate_layer_array_dims`] — a file that is both
 /// unsupported and over some ceiling should be told which feature is unsupported, since that is
 /// the actionable message.
-/// Returns the first gating mode that actually *enables* gating, or `None` when the value means
-/// "no gating anywhere". Accepting the inert case is the whole point: `error_codes.rs`'s
-/// `UNSUPPORTED_CONFIGURATION` entry has always documented the rule as gating "`gating_mode` other
-/// than `"none"`", and [`crate::file::LayerArrayConfig`]'s own field comment as "only the
-/// all-`"none"` case" — but the check was written against the key's *presence*, so every export
-/// that writes the field out explicitly was refused however inert its value. Real A2 exports do
-/// exactly that (a 23-entry `["none", ...]` array per layer array), which is why this mattered.
-///
-/// Two accepted shapes, matching what the reference parser reads: the scalar `"none"`, and an
-/// array whose every entry is `"none"`. Anything else — a different mode, a non-string entry, a
-/// value that is neither string nor array — is reported, and reported *by value* so the message
-/// names what was actually found. Note the deliberate asymmetry with the sibling checks: this one
-/// is the only place a JSON value is inspected rather than a typed field, because
-/// `gating_mode` is held as an opaque [`serde_json::Value`] precisely so that nothing beyond
-/// "is it inert" is ever read from it.
-fn active_gating_mode(mode: &serde_json::Value) -> Option<String> {
-    const INERT: &str = "none";
-    match mode {
-        serde_json::Value::String(s) if s == INERT => None,
-        serde_json::Value::Array(entries) => entries
-            .iter()
-            .find(|e| e.as_str() != Some(INERT))
-            .map(|e| e.to_string()),
-        other => Some(other.to_string()),
-    }
-}
-
 fn reject_unsupported_layer_features(
     cfg: &LayerArrayConfig,
     index: usize,
@@ -1199,6 +1172,33 @@ fn reject_unsupported_layer_features(
         }
     }
     Ok(())
+}
+
+/// Returns the first gating mode that actually *enables* gating, or `None` when the value means
+/// "no gating anywhere". Accepting the inert case is the whole point: `error_codes.rs`'s
+/// `UNSUPPORTED_CONFIGURATION` entry has always documented the rule as gating "`gating_mode` other
+/// than `"none"`", and [`crate::file::LayerArrayConfig`]'s own field comment as "only the
+/// all-`"none"` case" — but the check was written against the key's *presence*, so every export
+/// that writes the field out explicitly was refused however inert its value. Real A2 exports do
+/// exactly that (a 23-entry `["none", ...]` array per layer array), which is why this mattered.
+///
+/// Two accepted shapes, matching what the reference parser reads: the scalar `"none"`, and an
+/// array whose every entry is `"none"`. Anything else — a different mode, a non-string entry, a
+/// value that is neither string nor array — is reported, and reported *by value* so the message
+/// names what was actually found. Note the deliberate asymmetry with the sibling checks: this one
+/// is the only place a JSON value is inspected rather than a typed field, because
+/// `gating_mode` is held as an opaque [`serde_json::Value`] precisely so that nothing beyond
+/// "is it inert" is ever read from it.
+fn active_gating_mode(mode: &serde_json::Value) -> Option<String> {
+    const INERT: &str = "none";
+    match mode {
+        serde_json::Value::String(s) if s == INERT => None,
+        serde_json::Value::Array(entries) => entries
+            .iter()
+            .find(|e| e.as_str() != Some(INERT))
+            .map(|e| e.to_string()),
+        other => Some(other.to_string()),
+    }
 }
 
 /// Confirms `cfg` uses only features this build supports (via [`reject_unsupported_layer_features`])
