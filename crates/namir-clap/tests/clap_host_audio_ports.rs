@@ -57,19 +57,21 @@
 //! and asserting so would be false.** The chain is a mono core by design (FR-CHAIN-050):
 //! `TrimStage` sums the input channels at −6 dB each and re-establishes the identical-channel
 //! invariant after that downmix (`crates/namir-engine/src/stages/trim.rs:167-174`), and
-//! `GateStage` downstream of it detects on channel 0 and copies its gated result over every other
-//! channel (`crates/namir-engine/src/stages/gate.rs:163-172`). Both channels reach the mono core;
-//! what they do not get is independent processing once there.
+//! `GateStage` downstream of it runs one detector on channel 0 and multiplies every channel by the
+//! gain curve it produces (`crates/namir-engine/src/stages/gate.rs`). Both channels reach the mono
+//! core; what they do not get is independent processing once there.
 //!
-//! *Changed at M15, and it is the interesting half of this file.* Until M15, D-9.8 put Gate
-//! *upstream* of Trim, and Gate is enabled by its own descriptor default — so channel 1's input
-//! was annihilated before Trim's sum ever saw it, and the shipped Stereo behaviour was
-//! FR-CHAIN-060's second permitted Stereo input, `L-only (FR-CHAIN-070)`, rather than its
-//! `2 ch summed` sibling. That was a satisfied requirement rather than a defect, and the second
-//! test below pinned it as the shipped reading. With D-9.8 withdrawn and Trim moved ahead of Gate,
-//! the product ships the `2 ch summed` reading instead, and that test now pins *that* — same role,
-//! opposite assertion, so a future reordering still fails loudly here rather than silently
-//! changing which of the two permitted readings a host gets.
+//! *Changed at M15, in two independent ways, and it is the interesting half of this file.* Until
+//! M15 the gate did not multiply — it gated channel 0 and **copied the result over every other
+//! channel**, destroying their content — and D-9.8 placed it *upstream* of Trim, so that
+//! destruction happened before Trim's sum ever saw channel 1. The shipped Stereo behaviour was
+//! therefore FR-CHAIN-060's second permitted input, `L-only (FR-CHAIN-070)`, rather than its
+//! `2 ch summed` sibling; a satisfied requirement rather than a defect, and the second test below
+//! pinned it as the shipped reading. Both halves changed: D-9.8 is withdrawn and Trim runs first,
+//! **and** the gate stopped overwriting channels. The product ships `2 ch summed`, and that test
+//! now pins *that* — same role, opposite assertion. Because the copy is gone independently of the
+//! order, a future reordering can no longer bring the old behaviour back on its own; the test
+//! still fails loudly if either half regresses.
 
 mod support;
 
