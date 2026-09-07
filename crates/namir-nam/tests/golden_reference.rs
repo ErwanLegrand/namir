@@ -21,8 +21,10 @@
 //! this crate runs -- WaveNet-A1, WaveNet-A2 (both configurations FR-NAM-150 names) and LSTM -- and
 //! all four tags below are plain. **What that does and does not settle** is stated at
 //! [`a2_full_matches_the_real_reference_implementation`], because two things Phase 4b found stay
-//! open and are not closed by any render: no genuine trainer-produced A2 export has ever been
-//! loaded, and upstream's default `NAM_ENABLE_A2_FAST=ON` path is not what these renders exercise.
+//! open and are not closed by any render. The first of the two closed on 2026-09-07 (PR #174):
+//! trainer-produced A2 exports have now been compared against the reference, ten of them, recorded
+//! in `docs/manual-tests/fr-nam-030-real-a2-models.md`. What no render closes remains upstream's
+//! default `NAM_ENABLE_A2_FAST=ON` path, which is not what these renders exercise.
 //!
 //! Per D-19.1, the fixtures here are
 //! *generated*, not captured: `tests/golden/wavenet_nano.nam`, `tests/golden/lstm_tiny.nam`,
@@ -235,8 +237,16 @@ fn wavenet_matches_the_real_reference_implementation() {
 /// reading of "the model's declared initial state." Replicating it here (rather than in
 /// `namir-nam`'s production code) is a test-fairness fix: it makes this comparison match what
 /// `render.exe` actually, observably does, without changing what `namir-nam` does for a real host.
-/// WaveNet has no analogous step (`WaveNet` does not override `GetPrewarmSamples`, and the
-/// WaveNet golden test above already agrees to -137 dB with no such treatment).
+/// WaveNet needs no analogous step here -- but not for the reason this comment gave until PR #174.
+/// `WaveNet` *does* override `GetPrewarmSamples` (`NAM/wavenet/model.h:71`, derived from the
+/// receptive field at `model.cpp:616-620`), so `render.exe` prewarms it too. It makes no difference
+/// to *these* fixtures because every bias `namir-fixtures` emits is exactly zero (its `push_zeros`
+/// closure, `crates/namir-fixtures/src/nam/mod.rs:455` and `:943`), and `LeakyReLU(0) == 0`, so
+/// silence propagates as exact zeros and the settled state *is* the zero state, bit for bit. A real
+/// trainer-produced model has nonzero trained biases and the two states differ -- measured at
+/// -58.33 dB before prewarming and -138.27 dB after, in
+/// `docs/manual-tests/fr-nam-030-real-a2-models.md`. So the conclusion below stands and its stated
+/// reason did not.
 const LSTM_PREWARM_SAMPLES: usize = SAMPLE_RATE as usize / 2;
 const SAMPLE_RATE: u32 = 48_000;
 
@@ -447,9 +457,11 @@ fn assert_a2_golden(name: &str) {
 
     let prepared = namir_nam::load(&model_bytes)
         .unwrap_or_else(|e| panic!("golden A2 fixture {name} should load: {e}"));
-    // No prewarm, unlike the LSTM test above: `WaveNet` does not override `GetPrewarmSamples`, so
-    // `NAM::DSP::Reset`'s prewarm is a no-op for it and for A2, and `render` starts from the same
-    // zero history `namir-nam` does.
+    // No prewarm, unlike the LSTM test above -- and, corrected in PR #174, not because `WaveNet`
+    // skips it: it overrides `GetPrewarmSamples` (`NAM/wavenet/model.h:71`) and `render` does
+    // prewarm. These fixtures' biases are all exactly zero, so the settled state equals the zero
+    // state and the prewarm is a numerical no-op *here specifically*. See `LSTM_PREWARM_SAMPLES`'
+    // comment for the full argument and for why a real model behaves differently.
     let mut state = prepared.new_state(input.len());
     let ours = prepared.process(&mut state, &input);
 
@@ -500,8 +512,13 @@ fn assert_a2_golden(name: &str) {
 ///    A2 fields are `#[serde(default)] Option<_>` with no `deny_unknown_fields`, so a real file
 ///    carrying a feature under a key nobody anticipated is silently ignored rather than rejected,
 ///    which is FR-NAM-140's concern for real files even though its own test is sound. This is the
-///    class AGENTS.md warns about, citing the post-M6 `null`-vs-omitted bug, and it stays open: it
-///    is closed by obtaining a real export, not by any render.
+///    class AGENTS.md warns about, citing the post-M6 `null`-vs-omitted bug. **Closed 2026-09-07,
+///    PR #174**, in the only way it could be: ten submodels from five trainer-produced Tone3000
+///    exports were compared against the reference at -104.96 to -124.73 dB
+///    (`docs/manual-tests/fr-nam-030-real-a2-models.md`). The shared-misreading risk was real
+///    enough to be worth this test's caution -- two presence-vs-value parser defects had to be
+///    fixed (#169, #170) before any such file would load at all -- and, once loaded, the schema
+///    reading proved correct.
 /// 2. **That Namir agrees with what a default-built host runs.** See this module's header on
 ///    `NAM_ENABLE_A2_FAST`, which upstream defaults **ON** and this build turns off.
 ///

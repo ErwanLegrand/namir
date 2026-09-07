@@ -180,8 +180,40 @@ pub fn run(args: &NamParityArgs) -> bool {
         );
     }
 
-    let mut state = prepared.new_state(input.len().max(1));
-    let ours = prepared.process(&mut state, &input);
+    // Prewarm before comparing (issue #173). The reference wrapper pushes `GetPrewarmSamples()`
+    // zeros through the model before its first real sample (`NAM/dsp.cpp`'s `DSP::prewarm`), so
+    // every `render.exe` output this is compared against was produced by an already-settled model.
+    // `namir-nam` does not prewarm, so comparing from sample 0 measures that gap instead of the
+    // arithmetic this subcommand exists to check: measured over real models, the first <=4096
+    // samples carry roughly -30 dB of error while everything after agrees to between -105 and
+    // -138 dB. Left uncorrected the tool reports a confident FR-NAM-030 failure for a reason that
+    // has nothing to do with FR-NAM-030.
+    //
+    // Prepending silence and dropping the same count from the output is equivalent to the
+    // reference's own warm-up and needs no new API: the model sees `PREWARM_SECONDS` of zeros,
+    // then the real input begins against a settled state. One second is used rather than the
+    // reference's exact receptive field because `namir-nam` exposes no receptive-field accessor
+    // yet (that is #173's first deliverable), and over-prewarming is harmless in a way that
+    // under-prewarming is not: a WaveNet's state is fully determined by its last receptive-field
+    // samples, so additional silence changes nothing, and an LSTM's hidden state only settles
+    // further toward the same silent fixed point `LSTM::GetPrewarmSamples`' own half second
+    // reaches (`NAM/lstm.cpp:127`). The two halves of that sentence are different mechanisms and
+    // the distinction matters: WaveNet's prewarm length is receptive-field-derived
+    // (`wavenet/model.cpp:616-620`), and only LSTM's is a fixed half second. For WaveNet the
+    // equivalence is exact; for LSTM it is asymptotic.
+    // Revisit this constant when `prewarm_samples()` exists; it is a deliberate over-estimate, not
+    // a guess at the right number.
+    const PREWARM_SECONDS: usize = 1;
+    let prewarm = model_rate as usize * PREWARM_SECONDS;
+    let mut warmed = vec![0.0f32; prewarm];
+    warmed.extend_from_slice(&input);
+
+    let mut state = prepared.new_state(warmed.len().max(1));
+    let ours = prepared.process(&mut state, &warmed);
+    let ours = &ours[prewarm.min(ours.len())..];
+    println!(
+        "nam-parity: prewarmed with {prewarm} sample(s) of silence before comparing (issue #173)"
+    );
 
     let len = ours.len().min(reference.len());
     if len == 0 {
