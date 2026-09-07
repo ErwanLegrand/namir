@@ -26,15 +26,25 @@ pub struct LatencyReport {
     /// Whether this is a true measured figure (always `false` today — see this module's doc
     /// comment) or the buffer-based estimate.
     pub measured: bool,
+    /// Whether [`Self::samples`] includes the output stream's own buffer. `false` when the output
+    /// buffer is the device's own choice rather than a size Namir requested (issue #166 —
+    /// `audio_io::output_buffer_request`), which `cpal` gives no portable way to query. The figure
+    /// is then a **lower bound**: everything Namir itself buffers, and nothing for the device.
+    ///
+    /// Reported rather than papered over with the requested size, which would be a number that
+    /// reads as authoritative and is not: under a shared-mode `Default` request the device chose
+    /// 144 frames where the old code would have reported 480.
+    pub includes_output_buffer: bool,
 }
 
 /// Computes the buffer-based estimate: `input_buffer_frames + output_buffer_frames +
-/// bridge_prefill_frames`, converted to milliseconds at `sample_rate_hz`. Returns `None` if
+/// bridge_prefill_frames`, with `output_buffer_frames` `None` when the device chose its own buffer
+/// (the sum then omits that term and [`LatencyReport::includes_output_buffer`] says so), converted to milliseconds at `sample_rate_hz`. Returns `None` if
 /// `sample_rate_hz` is zero (nothing meaningful to report — the caller has a configuration error
 /// to surface separately, not a latency figure).
 pub fn estimate_round_trip(
     input_buffer_frames: u32,
-    output_buffer_frames: u32,
+    output_buffer_frames: Option<u32>,
     bridge_prefill_frames: u32,
     sample_rate_hz: u32,
 ) -> Option<LatencyReport> {
@@ -42,13 +52,14 @@ pub fn estimate_round_trip(
         return None;
     }
     let samples = input_buffer_frames
-        .saturating_add(output_buffer_frames)
+        .saturating_add(output_buffer_frames.unwrap_or(0))
         .saturating_add(bridge_prefill_frames);
     let milliseconds = samples as f64 * 1000.0 / sample_rate_hz as f64;
     Some(LatencyReport {
         samples,
         milliseconds,
         measured: false,
+        includes_output_buffer: output_buffer_frames.is_some(),
     })
 }
 
@@ -56,26 +67,50 @@ pub fn estimate_round_trip(
 mod tests {
     use super::*;
 
+    /// Issue #166: a shared-mode output stream takes the device's own buffer, which `cpal` gives
+    /// no portable way to query. The estimate then omits that term and says so, rather than
+    /// substituting the size Namir happened to request — which is not the size in use.
+    #[test]
+    fn a_device_chosen_output_buffer_is_excluded_and_declared() {
+        let report = estimate_round_trip(480, None, 480, 48_000).unwrap();
+        assert_eq!(
+            report.samples, 960,
+            "only the two buffers Namir itself sizes"
+        );
+        assert!(
+            !report.includes_output_buffer,
+            "the report must not claim to cover a buffer it never saw"
+        );
+
+        let known = estimate_round_trip(480, Some(480), 480, 48_000).unwrap();
+        assert!(known.includes_output_buffer);
+        assert!(
+            known.samples > report.samples,
+            "the known-output figure is the larger one, so the unknown case is a lower bound"
+        );
+    }
+
     /// FR-IO-050's literal arithmetic: at 48 kHz with 128-frame buffers on each side and a
     /// 128-frame bridge prefill block, the round trip is 3 × 128 = 384 samples, which is
     /// 384/48000 s = 8.0 ms.
     #[test]
     fn computes_samples_and_milliseconds_at_48khz() {
-        let report = estimate_round_trip(128, 128, 128, 48_000).unwrap();
+        let report = estimate_round_trip(128, Some(128), 128, 48_000).unwrap();
         assert_eq!(report.samples, 384);
         assert!((report.milliseconds - 8.0).abs() < 1e-3);
         assert!(!report.measured);
+        assert!(report.includes_output_buffer);
     }
 
     #[test]
     fn asymmetric_input_and_output_buffers_sum() {
-        let report = estimate_round_trip(64, 256, 32, 48_000).unwrap();
+        let report = estimate_round_trip(64, Some(256), 32, 48_000).unwrap();
         assert_eq!(report.samples, 352);
     }
 
     #[test]
     fn zero_sample_rate_yields_no_report() {
-        assert!(estimate_round_trip(128, 128, 128, 0).is_none());
+        assert!(estimate_round_trip(128, Some(128), 128, 0).is_none());
     }
 
     /// A degenerate but not impossible case (all three sides report a zero buffer): the
@@ -83,7 +118,7 @@ mod tests {
     /// incorrectly.
     #[test]
     fn zero_buffers_yield_zero_latency() {
-        let report = estimate_round_trip(0, 0, 0, 48_000).unwrap();
+        let report = estimate_round_trip(0, Some(0), 0, 48_000).unwrap();
         assert_eq!(report.samples, 0);
         assert_eq!(report.milliseconds, 0.0);
     }
@@ -93,8 +128,8 @@ mod tests {
     /// be ignored.
     #[test]
     fn bridge_prefill_block_adds_to_the_sum() {
-        let without = estimate_round_trip(128, 128, 0, 48_000).unwrap();
-        let with = estimate_round_trip(128, 128, 256, 48_000).unwrap();
+        let without = estimate_round_trip(128, Some(128), 0, 48_000).unwrap();
+        let with = estimate_round_trip(128, Some(128), 256, 48_000).unwrap();
         assert_eq!(without.samples, 256);
         assert_eq!(with.samples, 512);
     }
@@ -103,6 +138,10 @@ mod tests {
     /// false claim without a real loopback measurement.
     #[test]
     fn never_claims_to_be_measured() {
-        assert!(!estimate_round_trip(128, 128, 128, 44_100).unwrap().measured);
+        assert!(
+            !estimate_round_trip(128, Some(128), 128, 44_100)
+                .unwrap()
+                .measured
+        );
     }
 }
