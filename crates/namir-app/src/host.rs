@@ -768,6 +768,15 @@ impl AppHost {
                         self.supported_sample_rates = pending.supported_sample_rates;
                         self.supported_buffer_sizes = pending.supported_buffer_sizes;
                         self.hold_streams(running);
+                        if let Some(requested) = self.settings.buffer_size_frames
+                            && pending.buffer_frames != Some(requested)
+                        {
+                            let actual = pending.buffer_frames.unwrap_or(256);
+                            self.push_notice(
+                                crate::error_codes::BUFFER_SIZE_DECLINED,
+                                format!("requested {requested} frames, using {actual} frames"),
+                            );
+                        }
                         // FR-IO-080: persist the negotiated values immediately so the next launch
                         // starts from what actually worked, including any fallback (D-18.6 R-FR-IO-080).
                         self.persist_negotiated_audio(
@@ -819,6 +828,11 @@ impl AppHost {
     /// FR-IO-080: write the audio configuration that was actually negotiated and opened —
     /// including any fallback values — so the next launch starts from what worked this time.
     ///
+    /// Issue #167: if a specific buffer size was requested, preserve that requested size rather
+    /// than overwriting it with a declined fallback, so the user's preference is not silently
+    /// discarded. On a clean install where no buffer size was previously configured, persist the
+    /// negotiated buffer size.
+    ///
     /// Called right after a successful `RunningStreams::play()`, both at startup (from
     /// `crate::app::run`) and after a stream reopen (`apply_audio_reopen`).
     pub fn persist_negotiated_audio(
@@ -836,7 +850,11 @@ impl AppHost {
         settings.input_device_name = Some(input_device.to_string());
         settings.output_device_name = Some(output_device.to_string());
         settings.sample_rate_hz = Some(sample_rate_hz);
-        settings.buffer_size_frames = buffer_frames;
+        if self.settings.buffer_size_frames.is_some() {
+            settings.buffer_size_frames = self.settings.buffer_size_frames;
+        } else if settings.buffer_size_frames.is_none() {
+            settings.buffer_size_frames = buffer_frames;
+        }
         if let Err(w) = crate::settings::save(&path, &settings) {
             crate::diagnostics::record(w.code, &w.detail);
         }
@@ -2963,6 +2981,91 @@ mod tests {
             "{:?}",
             notices
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// Issue #167: persist_negotiated_audio preserves the user's requested buffer size
+    /// even if negotiation declined it and used a different size.
+    #[test]
+    fn persist_negotiated_audio_preserves_requested_buffer_size_when_declined() {
+        let dir = temp_dir("persist_declined_buffer");
+        let (mut host, _engine) = build_host(&dir);
+        host.watch_config_dir(dir.clone());
+        let initial_settings = AppSettings {
+            buffer_size_frames: Some(960),
+            ..Default::default()
+        };
+        host.settings = initial_settings.clone();
+        crate::settings::save(&crate::settings::settings_path(&dir), &initial_settings).unwrap();
+
+        // Negotiated buffer size is 480, but user requested 960
+        host.persist_negotiated_audio("Host", "In", "Out", 48_000, Some(480));
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert_eq!(loaded.buffer_size_frames, Some(960));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #167: on a clean install (no buffer size requested), persist_negotiated_audio
+    /// writes the negotiated buffer size to disk.
+    #[test]
+    fn persist_negotiated_audio_writes_negotiated_buffer_size_on_clean_install() {
+        let dir = temp_dir("persist_clean_install");
+        let (mut host, _engine) = build_host(&dir);
+        host.watch_config_dir(dir.clone());
+        assert!(host.settings.buffer_size_frames.is_none());
+
+        host.persist_negotiated_audio("Host", "In", "Out", 48_000, Some(480));
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert_eq!(loaded.buffer_size_frames, Some(480));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #167: when a dynamic stream reopen negotiates a buffer size different from
+    /// the requested buffer size, a BUFFER_SIZE_DECLINED notice is emitted.
+    #[test]
+    fn dynamic_audio_reopen_with_declined_buffer_size_emits_notice() {
+        let dir = temp_dir("declined_buffer_reopen");
+        let (mut host, engine) = build_host(&dir);
+        let backend = Arc::new(crate::stream::FakeBackend::new().with_devices(
+            vec![crate::audio_io::DeviceInfo {
+                name: "Mic".to_string(),
+                is_default: true,
+            }],
+            vec![crate::audio_io::DeviceInfo {
+                name: "Speakers".to_string(),
+                is_default: true,
+            }],
+        ));
+        let xruns = Arc::new(XrunCounter::new());
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+            host_info: HostInfo {
+                name: "fake".to_string(),
+            },
+            xruns,
+        });
+
+        // User requested 960 frames
+        host.settings.buffer_size_frames = Some(960);
+
+        let slot = EngineSlot::new();
+        slot.put(engine, host.telemetry.clone());
+        let mut pending = pending_stream_open(1, slot);
+        pending.buffer_frames = Some(256);
+        host.pending_reopen = Some(pending);
+
+        host.handle_event(AppEvent::AudioStreamReady { generation: 1 });
+
+        let notices = host.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(
+            notices[0].code.id,
+            crate::error_codes::BUFFER_SIZE_DECLINED.id,
+            "{:?}",
+            notices
+        );
+        assert_eq!(notices[0].detail, "requested 960 frames, using 256 frames");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

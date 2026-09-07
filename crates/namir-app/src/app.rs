@@ -500,6 +500,15 @@ pub fn run() {
     if let Some(detail) = share_mode.refusal_detail {
         host.report(crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE, detail);
     }
+    if let Some(requested) = settings.buffer_size_frames
+        && buffer_frames != Some(requested)
+    {
+        let actual = buffer_frames.unwrap_or(256);
+        host.report(
+            crate::error_codes::BUFFER_SIZE_DECLINED,
+            format!("requested {requested} frames, using {actual} frames"),
+        );
+    }
 
     let stream_setup = StreamSetup {
         backend: backend.as_ref(),
