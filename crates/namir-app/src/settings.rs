@@ -40,6 +40,11 @@ pub struct ChannelMapping {
 /// FR-IO-080's persisted record. Every field is an independent, optional "what was remembered" —
 /// never a hard requirement to honour on the next launch, since the device it names may be gone
 /// (see [`crate::device_state`] for the degrade-gracefully rule this record feeds).
+///
+/// `#[serde(default)]` enables partial JSON files (such as those hand-edited to specify only a
+/// subset of fields, e.g. `{"buffer_size_frames": 960}`) to deserialize cleanly to their default
+/// values. The explicit trade-off is that truncated-yet-valid JSON with missing keys will degrade
+/// to defaults without triggering [`crate::error_codes::SETTINGS_UNREADABLE`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -350,9 +355,9 @@ mod tests {
         assert!(!path.with_extension("json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
-    /// Issue #167: partial JSON deserialization populates specified fields and defaults the rest.
+    /// Issue #167: partial AppSettings JSON deserializes specified fields and defaults the rest.
     #[test]
-    fn partial_json_deserializes_cleanly() {
+    fn partial_app_settings_deserializes_cleanly() {
         let json = r#"{"buffer_size_frames": 960}"#;
         let settings: AppSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.buffer_size_frames, Some(960));
@@ -363,11 +368,19 @@ mod tests {
         assert!(!settings.exclusive_mode);
         assert_eq!(settings.channel_mapping, ChannelMapping::default());
         assert!(settings.library_roots.is_empty());
+    }
 
+    /// Issue #167: empty JSON object deserializes to AppSettings::default().
+    #[test]
+    fn empty_app_settings_deserializes_cleanly() {
         let empty_json = "{}";
         let empty_settings: AppSettings = serde_json::from_str(empty_json).unwrap();
         assert_eq!(empty_settings, AppSettings::default());
+    }
 
+    /// Issue #167: partial ChannelMapping JSON deserializes specified fields and defaults the rest.
+    #[test]
+    fn partial_channel_mapping_deserializes_cleanly() {
         let partial_channel = r#"{"input_channel": 2}"#;
         let mapping: ChannelMapping = serde_json::from_str(partial_channel).unwrap();
         assert_eq!(mapping.input_channel, Some(2));
