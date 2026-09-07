@@ -1054,15 +1054,15 @@ struct ResolvedLayerArrayShape {
 /// existing is that a well-formed but out-of-scope file gets a true statement about *why* it
 /// doesn't load ("condition_dsp is not yet supported") instead of the misleading `MALFORMED_JSON`
 /// it got before M10. Every key rejected below is **permanently** out of scope per D-9.12: none of
-/// `condition_dsp`, FiLM (all eight sites), gating, non-unity `groups_*`, `slimmable`, an active
-/// `head1x1`, or an inactive/grouped `layer1x1` is planned for any future milestone. Note the
-/// distinction that wording draws and that this function did not, until issue #37: what is out of
-/// scope is *gating*, not the `gating_mode` key. A file may name the key and enable no gating with
-/// it, which every real A2 export does, and such a file loads — see [`active_gating_mode`]. M10's earlier
-/// phases (Step A1-A4) *removed* the temporary rejections this function used to also carry for
-/// `kernel_sizes`, `bottleneck`, the nested `head`, and object/per-layer `activation` — those are
-/// now real, implemented core-A2 features, resolved by [`resolve_layer_array`] instead of rejected
-/// here.
+/// `condition_dsp`, FiLM (all eight sites), gating (both the mode and its `secondary_activation`),
+/// non-unity `groups_*`, `slimmable`, an active `head1x1`, or an inactive/grouped `layer1x1` is
+/// planned for any future milestone. Note the distinction that wording draws and that this
+/// function did not, until issue #37: what is out of scope is *gating*, not the `gating_mode` key.
+/// A file may name the key and enable no gating with it, which every real A2 export does, and such
+/// a file loads — see [`active_gating_mode`]. M10's earlier phases (Step A1-A4) *removed* the
+/// temporary rejections this function used to also carry for `kernel_sizes`, `bottleneck`, the
+/// nested `head`, and object/per-layer `activation` — those are now real, implemented core-A2
+/// features, resolved by [`resolve_layer_array`] instead of rejected here.
 ///
 /// Called before any dimension ceiling check or weight read, alongside (and ahead of, in
 /// `PreparedWaveNet::from_file`'s ordering) [`validate_layer_array_dims`] — a file that is both
@@ -1095,11 +1095,13 @@ fn reject_unsupported_layer_features(
             format!("{active} (gating) is not supported"),
         ));
     }
-    if cfg.secondary_activation.is_some() {
+    if let Some(secondary) = &cfg.secondary_activation
+        && let Some(named) = named_secondary_activation(secondary)
+    {
         return Err(unsupported(
             index,
             "secondary_activation",
-            "is not supported",
+            format!("{named} (gating) is not supported"),
         ));
     }
     if let Some(g) = cfg.groups_input
@@ -1183,12 +1185,19 @@ fn reject_unsupported_layer_features(
 /// exactly that (a 23-entry `["none", ...]` array per layer array), which is why this mattered.
 ///
 /// Two accepted shapes, matching what the reference parser reads: the scalar `"none"`, and an
-/// array whose every entry is `"none"`. Anything else — a different mode, a non-string entry, a
+/// array whose every entry is `"none"`. One deliberate divergence: the reference's fast-path
+/// detector also requires the array's length to equal the layer count (`a2_fast.cpp`'s
+/// `all_none_strings(*gm_it) || gm_it->size() != kNumLayers`), and this does not. A wrong-length
+/// all-`"none"` array is accepted here and would be refused there. That is a *malformed*-file
+/// question rather than an unsupported-feature one — it belongs with the weight-count and
+/// dimension checks under `INCONSISTENT_CONFIGURATION`, not in this function — and no observed
+/// export writes one, so it is left unenforced rather than half-answered here. The same applies
+/// to [`named_secondary_activation`] below. Anything else — a different mode, a non-string entry, a
 /// value that is neither string nor array — is reported, and reported *by value* so the message
-/// names what was actually found. Note the deliberate asymmetry with the sibling checks: this one
-/// is the only place a JSON value is inspected rather than a typed field, because
-/// `gating_mode` is held as an opaque [`serde_json::Value`] precisely so that nothing beyond
-/// "is it inert" is ever read from it.
+/// names what was actually found. Note the deliberate asymmetry with the sibling checks: this and
+/// [`named_secondary_activation`] are the only places a JSON value is inspected rather than a typed
+/// field, because both fields are held as opaque [`serde_json::Value`]s precisely so that nothing
+/// beyond "is it inert" is ever read from them.
 fn active_gating_mode(mode: &serde_json::Value) -> Option<String> {
     const INERT: &str = "none";
     match mode {
@@ -1197,6 +1206,37 @@ fn active_gating_mode(mode: &serde_json::Value) -> Option<String> {
             .iter()
             .find(|e| e.as_str() != Some(INERT))
             .map(|e| e.to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
+/// Returns the first secondary activation that actually *names* one, or `None` when the value
+/// selects no activation anywhere. The companion to [`active_gating_mode`], and inert for the
+/// same reason: this field is the gate/blend branch's activation, which the reference reads
+/// only where that layer's gating is active. Read against `NeuralAmpModelerCore` at
+/// `3cde95c354d5ba6da01316cad90b05cfc4855053` — the same commit `tests/golden_reference.rs`
+/// pins, so these citations stay checkable: `wavenet/model.cpp:1008-1041` and `1068-1082`
+/// guard the read behind `mode != GatingMode::NONE`, `detail.h:92-101` is its only consumer,
+/// and `a2_fast.cpp:853-859` is the shape detector's own by-value test. Every real A2 export
+/// writes the field as a per-layer array of JSON `null` — one null per layer, meaning "no
+/// secondary activation here" — and rejecting it on the key's presence refused those files
+/// for a field that selects nothing.
+///
+/// Accepted: an array whose every entry is `null` — the shape a file can actually present. (A
+/// bare JSON `null` is accepted too, but `serde` turns it into `None` before this is ever
+/// called, so that arm is defence in depth, reachable only from a hand-built value.) Anything
+/// that names an activation is still refused by name, and deliberately so even though the
+/// `gating_mode` check above has already established that gating is inert. A file that
+/// switches gating off and *still* names a gate activation is internally inconsistent; this
+/// build does not implement the branch that would consume it, so refusing with a message that
+/// names the value is the honest answer rather than silently ignoring a field whose presence
+/// suggests the exporter meant something by it.
+fn named_secondary_activation(secondary: &serde_json::Value) -> Option<String> {
+    match secondary {
+        serde_json::Value::Null => None,
+        serde_json::Value::Array(entries) => {
+            entries.iter().find(|e| !e.is_null()).map(|e| e.to_string())
+        }
         other => Some(other.to_string()),
     }
 }
@@ -2893,6 +2933,50 @@ mod tests {
             assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
             assert!(
                 err.detail.contains("gating_mode") && err.detail.contains(expected),
+                "detail should name key and value, got {:?}",
+                err.detail
+            );
+        }
+    }
+
+    /// The inert spellings a real export writes: a per-layer array of JSON `null`, one per layer,
+    /// meaning "no secondary activation here". Rejected on the key's presence before this, which
+    /// refused every current A2 export for a field that names nothing.
+    #[test]
+    fn an_empty_secondary_activation_is_accepted_however_it_is_spelled() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::Value::Array(vec![serde_json::Value::Null; 23]),
+            serde_json::json!([]),
+        ] {
+            let mut cfg = a2_minimal_layer_array();
+            cfg.secondary_activation = Some(value.clone());
+            assert!(
+                reject_unsupported_layer_features(&cfg, 0).is_ok(),
+                "empty secondary_activation {value} should load"
+            );
+        }
+    }
+
+    /// A named gate activation is still refused, and refused by name. Note the third case: one
+    /// named entry among 22 nulls is the shape a whole-array null check would have let through.
+    #[test]
+    fn a_named_secondary_activation_is_rejected_and_named_by_value() {
+        let mut mixed = vec![serde_json::Value::Null; 23];
+        mixed[7] = serde_json::json!("Sigmoid");
+        for (value, expected) in [
+            (serde_json::json!("Sigmoid"), "Sigmoid"),
+            (serde_json::json!(mixed), "Sigmoid"),
+            (serde_json::json!({"type": "Tanh"}), "Tanh"),
+        ] {
+            let mut cfg = a2_minimal_layer_array();
+            cfg.secondary_activation = Some(value.clone());
+            let err = reject_unsupported_layer_features(&cfg, 0).expect_err(&format!(
+                "named secondary_activation {value} should be refused"
+            ));
+            assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+            assert!(
+                err.detail.contains("secondary_activation") && err.detail.contains(expected),
                 "detail should name key and value, got {:?}",
                 err.detail
             );
