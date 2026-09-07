@@ -28,7 +28,7 @@ does not by itself prove the crate actually paints pixels when driven by a real
 3. Separately (interactively, not scripted): comment out the `send_viewport_cmd(Close)` block in
    the example, run it again, and actually look at the window. Confirm FR-UI-020's screen elements
    are visible and laid out sensibly: a top notice bar, a left library panel (search box plus the
-   two sample entries), and a central area with the input meter, Input Trim, Gate, Model name, IR
+   two sample entries), and a central area with the input meter, Input Level, Gate, Model name, IR
    name, EQ, Output (meter + level), and Global Bypass, all without switching tabs.
 
 ## Executed run (this session)

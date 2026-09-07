@@ -6,7 +6,7 @@
 //! isolation; this is the first benchmark that assembles the *real* product chain — every
 //! `StagePrep::prepare` call the shipped `build_default_chain` makes, a real generated WaveNet
 //! model and a real 2 s stereo IR actually loaded, gate and EQ actually engaged with non-default
-//! values — and runs `Chain::process` end to end, gate → trim → nam → ir → eq → out, per block.
+//! values — and runs `Chain::process` end to end, trim → gate → nam → ir → eq → out, per block.
 //!
 //! # Why this duplicates `stages::build_default_chain`'s body instead of calling it
 //!
@@ -510,11 +510,11 @@ fn main() {
     });
 
     // --- Box into the real chain, in the real runtime order (`stages/mod.rs`'s doc comment:
-    // "gate before trim", D-9.8), and turn on the same cross-cutting features
+    // "trim before gate", FR-CHAIN-010), and turn on the same cross-cutting features
     // `build_default_chain` does (FR-CHAIN-030/080/090).
     let stages: Vec<Box<dyn Stage>> = vec![
-        Box::new(gate_stage),
         Box::new(trim_stage),
+        Box::new(gate_stage),
         Box::new(nam_stage),
         Box::new(ir_stage),
         Box::new(eq_stage),
@@ -547,7 +547,7 @@ fn main() {
         .max(MIN_REPS);
     let block_period_ns = (BLOCK_SIZE as f64 / SAMPLE_RATE_F64 * 1e9) as u64;
 
-    println!("=== NFR-PERF-010: REAL six-stage chain (gate -> trim -> nam -> ir -> eq -> out) ===");
+    println!("=== NFR-PERF-010: REAL six-stage chain (trim -> gate -> nam -> ir -> eq -> out) ===");
     println!(
         "48 kHz, {BLOCK_SIZE}-sample blocks, standard WaveNet, 2 s stereo IR, gate + EQ active"
     );

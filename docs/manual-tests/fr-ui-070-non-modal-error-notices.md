@@ -100,7 +100,7 @@ and a model and IR loaded, and keep playing throughout.
    double-click that entry in the Library panel.
    *Pass:* a notice appears whose id is `app.host.load_failed`; **audio continues without a gap,
    click or mute**, still running the previously loaded model; the rest of the screen stays
-   interactive (drag `Input Trim` while the notice is showing and confirm it responds).
+   interactive (drag `Input Level` while the notice is showing and confirm it responds).
    *Fail:* any audible interruption, any dialog, or a frozen screen.
 2. **`worker.file.unreadable` / `app.host.load_failed` — a deleted file.** Delete a different
    library `.nam` after the scan has indexed it, then double-click its (still listed) entry.

@@ -28,18 +28,19 @@ use crate::stage::{Stage, StagePrep};
 /// crate's own tests still do) is test/scaffolding-only and does not get those features, per
 /// `Chain::prepare_crosscutting`'s own doc comment.
 ///
-/// Runtime order is **gate before trim**, not FR-CHAIN-010's literal prose order ("input trim →
-/// noise gate → ..."): `02-architecture.md` D-9.8 records this as a deliberate usability decision
-/// (the gate's threshold should reference the interface's actual noise floor, not move when the
-/// user adjusts trim), explicitly flagged there for review rather than an oversight, and
-/// `03-implementation-roadmap.md` §6 directs M2 to build the actual chain that way:
-/// `gate → trim → nam → ir → eq → out`.
+/// Runtime order is `trim → gate → nam → ir → eq → out`, which is FR-CHAIN-010's literal prose
+/// order ("input trim → noise gate → ...").
 ///
-/// *Amended (M9a, 2026-08-09):* D-9.8's flagged-for-review divergence is resolved, and resolved in
-/// this function's favour — FR-CHAIN-010 is amended to describe the shipped order rather than this
-/// chain rebuilt to the old prose. The paragraph above is therefore history, not a live deviation:
-/// `gate → trim → nam → ir → eq → out` is what the FRS and this function both say. See D-9.8's own
-/// M9a consequence note in `02-architecture.md`.
+/// *History, kept because the reversal is more interesting than the current state.* From M2 to
+/// M15 this function assembled **gate before trim**, on `02-architecture.md` D-9.8's usability
+/// argument (a gate threshold referenced to the interface's noise floor does not move when the
+/// user adjusts trim). M9a found that this contradicted FR-CHAIN-010's own text and resolved the
+/// contradiction by amending the requirement to the shipped order. M15 reverses that resolution:
+/// D-9.8 is withdrawn and the chain rebuilt to the requirement's original order, because
+/// gate-first also made Gate's mono-core channel-0 duplication run *upstream* of Trim's downmix,
+/// which silently reduced `ChannelConfig::Stereo` to a left-channel-only path and cost
+/// FR-CHAIN-060's "2 ch summed to the mono core at −6 dB" its meaning. See D-9.8's own M15
+/// consequence note in `02-architecture.md` for the trade accepted in exchange.
 ///
 /// None of the six stages has a resource loaded yet (no NAM model, no IR) — per FR-CHAIN-040/
 /// FR-NAM-130/FR-IR-100 every stage that can hold one already behaves as bypassed until a future
@@ -53,8 +54,8 @@ pub fn build_default_chain(ctx: &PrepareContext) -> Result<Chain, PrepareError> 
     let out_stage = out::OutPrep.prepare(ctx)?;
 
     let stages: Vec<Box<dyn Stage>> = vec![
-        Box::new(gate_stage),
         Box::new(trim_stage),
+        Box::new(gate_stage),
         Box::new(nam_stage),
         Box::new(ir_stage),
         Box::new(eq_stage),

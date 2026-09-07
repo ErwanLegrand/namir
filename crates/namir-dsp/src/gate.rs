@@ -1,9 +1,11 @@
 //! Noise gate with hysteresis (FR-GATE-010..040).
 //!
-//! This primitive is intentionally trim-agnostic: it knows nothing about D-9.8's "gate before
-//! input trim" ordering decision. That ordering is a chain-assembly concern for `namir-engine`
-//! to apply when it wires this gate into a stage — not something this crate should encode or
-//! re-litigate, since a primitive DSP block has no notion of "before" or "after" anything.
+//! This primitive is intentionally trim-agnostic: it knows nothing about where the input trim sits
+//! relative to it. That ordering is a chain-assembly concern for `namir-engine` to apply when it
+//! wires this gate into a stage — not something this crate should encode or re-litigate, since a
+//! primitive DSP block has no notion of "before" or "after" anything. (It has in fact moved once:
+//! FR-CHAIN-010 puts the trim first, D-9.8 put the gate first from M2 to M15, and nothing in this
+//! file changed either time — which is the point.)
 
 use namir_core::{SampleRate, linear_to_db};
 
@@ -281,6 +283,42 @@ impl NoiseGate {
         for x in buf.iter_mut() {
             let gain = self.step(x.abs());
             *x *= gain;
+        }
+    }
+
+    /// Advances the state machine over `detector` exactly as [`Self::process`] would, but writes
+    /// the gain produced for each sample into `gains` instead of applying it. Reads
+    /// `detector.len()` samples and writes that many gains; panics if `gains` is shorter.
+    /// Allocates nothing.
+    ///
+    /// # Why this exists beside `process`
+    ///
+    /// A multi-channel caller has to apply **one** gate to several channels — one detector, one
+    /// state machine, one envelope, or the channels drift apart and the gate chatters
+    /// independently per channel. The obvious way to get that from `process` alone is to gate one
+    /// channel and copy the result over the others, which is what `namir-engine`'s gate stage did
+    /// until M15. It does apply one gate; it also **replaces every other channel's content with
+    /// channel 0's**, which is far more than "one gate" and is destructive in a way nothing asks
+    /// for. A stereo pair that entered the gate as two different signals left it as two copies of
+    /// its left channel, so any later stage wanting to mix them had nothing left to mix.
+    ///
+    /// Handing the gain curve back instead lets the caller multiply each channel by it in turn:
+    /// the same single gate, applied to every channel, destroying nothing. Channels that were
+    /// identical on the way in stay identical on the way out, so a caller relying on that
+    /// invariant is unaffected.
+    ///
+    /// Shaped as a gain buffer rather than as a `&mut [&mut [f32]]` overload because
+    /// `namir-engine`'s `StageIo` reborrows `&mut self` on every channel access and so cannot
+    /// produce two channel slices at once — a constraint that crate documents at length and that
+    /// no API here should require it to work around.
+    ///
+    /// **Which channel feeds the detector is the caller's choice and this crate takes no view**,
+    /// consistent with the ordering boundary in this module's own doc comment. `namir-engine`
+    /// keys off channel 0; `max(|L|, |R|)` and the channel sum are the alternatives, and picking
+    /// one is a product decision, not a primitive's.
+    pub fn compute_gains(&mut self, detector: &[f32], gains: &mut [f32]) {
+        for (x, g) in detector.iter().zip(gains.iter_mut()) {
+            *g = self.step(x.abs());
         }
     }
 
@@ -886,5 +924,44 @@ mod tests {
         let mut gate = NoiseGate::new(sr(48_000));
         let mut buf = [0.1f32; 128];
         audio_section(|| gate.process(&mut buf));
+    }
+
+    /// `compute_gains` is `process` with the multiplication deferred to the caller, and that has
+    /// to be exact rather than approximately so: `namir-engine`'s gate stage applies the returned
+    /// curve to channel 0 among others, and a single-channel chain must be bit-identical to what
+    /// the old `process` path produced. Two gates driven by the same signal, one applying its own
+    /// gain and one handing it back, are compared sample for sample through a burst that opens the
+    /// gate, holds it and lets it close again, so the whole state machine is traversed.
+    #[test]
+    fn compute_gains_matches_process_exactly() {
+        let signal: Vec<f32> = (0..4_000)
+            .map(|i| {
+                let amplitude = if i < 2_000 { 0.5 } else { 0.0005 };
+                amplitude * (i as f32 * 0.05).sin()
+            })
+            .collect();
+
+        let mut applied = signal.clone();
+        NoiseGate::new(sr(48_000)).process(&mut applied);
+
+        let mut gains = vec![0.0f32; signal.len()];
+        NoiseGate::new(sr(48_000)).compute_gains(&signal, &mut gains);
+        let deferred: Vec<f32> = signal.iter().zip(&gains).map(|(x, g)| x * g).collect();
+
+        assert_eq!(applied, deferred);
+        // Non-vacuous: the burst really did move the gate across its range, so the equality above
+        // is not two silent buffers agreeing.
+        let min = gains.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = gains.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(min < 0.01, "the gate never closed: minimum gain {min}");
+        assert!(max > 0.99, "the gate never opened: maximum gain {max}");
+    }
+
+    #[test]
+    fn compute_gains_does_not_allocate() {
+        let mut gate = NoiseGate::new(sr(48_000));
+        let buf = [0.1f32; 128];
+        let mut gains = [0.0f32; 128];
+        audio_section(|| gate.compute_gains(&buf, &mut gains));
     }
 }

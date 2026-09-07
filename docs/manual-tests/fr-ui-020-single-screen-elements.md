@@ -81,20 +81,27 @@ Each step below names the on-screen text to look for. A step passes only if the 
 visible **at the same time as every other element in this list**, with no tab, menu, drawer,
 accordion or window switch used to reveal it.
 
-1. **Input meter.** A row labelled `Input` carrying a horizontal bar whose text reads
-   `<n>.<n> dBFS`. Hovering it shows `Peak <n>.<n> dBFS, RMS <n>.<n> dBFS`.
-   *Pass:* the row is present and the bar's fill and its dBFS text both track the instrument
+1. **Input meter.** In the **left column of the top panel**, directly beneath the `Input Level`
+   control, a horizontal bar whose text reads `<n>.<n> dBFS`, filled in the brand mark's orange.
+   Hovering it shows `Peak <n>.<n> dBFS, RMS <n>.<n> dBFS`. The bar carries no label of its own —
+   the control above it is its label.
+   *Pass:* the bar is present and its fill and its dBFS text both track the instrument
    signal — play into the input and confirm both move. *Fail:* absent, or the bar never moves
    while signal is audibly present.
-2. **Trim.** A heading `Input Trim`, below it a control named `Input Trim` reading a dB value
-   (default `0.0`), and a control named `DC Blocker` reading `On`/`Off` (default `On`).
-   *Pass:* both present, and dragging `Input Trim` changes its displayed value.
-   *Fail:* either control absent, or the value display does not follow the drag.
-3. **Input meter responds to trim.** With signal playing, raise `Input Trim` by ~+12 dB.
-   *Pass:* the `Input` meter's reading rises correspondingly (the meter is fed from
-   `telemetry.trim.*`, i.e. it reads the signal *after* trim). *Fail:* the meter is unaffected —
-   record the observed dBFS before and after either way, since which side of trim the meter reads
-   is exactly what this step pins down.
+2. **Input.** In the top panel's left column, a control named `Input Level` reading a dB value
+   (default `0.0`), the meter from step 1 beneath it, and a control named `DC Blocker` reading
+   `On`/`Off` (default `On`). **There is no heading above `Input Level`** — the control's own name
+   is the heading, and one above it would repeat the word directly above itself.
+   *Pass:* both controls present, no heading between them and the panel above, and dragging
+   `Input Level` changes its displayed value.
+   *Fail:* either control absent, a heading present, or the value display does not follow the drag.
+3. **Input meter responds to the input level.** With signal playing, raise `Input Level` by
+   ~+12 dB.
+   *Pass:* the input meter's reading rises correspondingly (the meter is fed from
+   `telemetry.trim.*`, i.e. it reads the signal *after* the control). *Fail:* the meter is
+   unaffected — record the observed dBFS before and after either way, since which side of the
+   control the meter reads is exactly what this step pins down, and it is the whole reason the two
+   are drawn as one object.
 4. **Gate controls.** A heading `Gate`, below it five controls: `Gate Enabled`, `Gate Threshold`,
    `Gate Attack`, `Gate Hold`, `Gate Release`.
    *Pass:* all five present and each shows a current value. *Fail:* any missing.
@@ -113,11 +120,12 @@ accordion or window switch used to reveal it.
    `EQ High Shelf Gain`, `EQ High-pass Enabled`, `EQ High-pass Freq`, `EQ Low-pass Enabled`,
    `EQ Low-pass Freq`.
    *Pass:* all twelve present, each showing a current value. *Fail:* any missing — list which.
-8. **Output meter and level.** A heading `Output`; below it a meter row labelled `Output` in the
-   same form as step 1, then a control named `Output Level`, then a control named `Output Ceiling`.
+8. **Output meter and level.** In the **right column of the top panel**, level with step 2's
+   column: a control named `Output Level`, an unlabelled meter bar beneath it in the same form as
+   step 1, then a control named `Output Ceiling`. No heading, for the same reason as step 2.
    *Pass:* the meter is present and moves with signal, and `Output Level` is present and adjustable
-   — change it and confirm the `Output` meter's reading follows. *Fail:* either half absent, or the
-   meter does not respond to `Output Level`.
+   — change it and confirm the meter's reading follows. *Fail:* either half absent, a heading
+   present, or the meter does not respond to `Output Level`.
 9. **Global bypass.** Below a horizontal separator, a control named `Global Bypass` reading
    `Off`/`On`.
    *Pass:* present, and toggling it to `On` audibly bypasses the whole chain (dry signal passes)
@@ -230,3 +238,28 @@ FR-CLAP-110. Neither D-13.x, `gui.rs`'s own comment, nor FR-CLAP-110's text note
 **Result: PASS, 2026-08-27, both product configurations**, under the explicit adjudication that
 scrolling within the single screen is not navigation. FR-UI-020's element list is present, labelled
 and reachable without tabs, menus or modes in the standalone and in Reaper alike.
+
+## The screen changed on 2026-09-07, and this run predates it
+
+The layout steps above were rewritten in the same commit that changed the screen, so they describe
+what to look for now. **The verdicts below them do not: they were recorded against the previous
+layout and no human has looked at the new one.** What moved: `trim.gain_db` is displayed as
+`Input Level` rather than `Input Trim`; the two level controls and their meters left the scrolling
+central column for two columns in the fixed top panel; each meter is drawn beneath its own control
+rather than above it, and lost its text label to the control; both bars are filled in the brand
+mark's orange. Steps 1, 2, 3, 8, 10 and 12 are the ones whose observations that invalidates —
+1, 2, 3 and 8 name elements that have moved or been renamed, 10 photographed a screen that no
+longer exists, and 12 repeated 1, 2 and 8 in the plugin editor. Steps 4-7, 9 and 11 name elements
+this change did not touch, but they were observed on the same screen and are not re-run either.
+
+The automated evidence that *did* move with the change is in `crates/namir-ui`: the layout is
+asserted from what `render` actually painted (`app.rs`'s
+`each_section_heading_is_painted_exactly_once`, which watches `Input Level` and `Output Level` for
+exactly the duplicate heading step 2 now forbids) and driven end to end headlessly
+(`tests/ui_interaction_scripts.rs`'s `single_screen_layout_paints_all_major_sections`). Neither is
+this requirement's `Verify: M` method, which is why it is not credited here.
+
+**Result: PARTIAL, 2026-09-07, both product configurations** — a placeholder verdict recording that
+the 2026-08-27 run's observations no longer describe the shipped screen. It is not a finding about
+the new layout, which has not been observed at all. Re-running the whole script on the new screen
+replaces both lines with one.

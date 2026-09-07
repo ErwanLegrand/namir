@@ -2,17 +2,30 @@
 //! shared per-stage bypass crossfade (FR-CHAIN-020), and FR-CHAIN-050's mono-core-then-duplicate
 //! channel handling.
 //!
-//! Runtime order is `gate → trim → ...` (D-9.8; see `stages/mod.rs`'s doc comment) — this module
-//! doesn't need to know that, it just implements Gate itself.
+//! Runtime order is `trim → gate → ...` (FR-CHAIN-010; see `stages/mod.rs`'s doc comment) — this
+//! module doesn't need to know that, it just implements Gate itself.
 //!
-//! # Why this is mono-core
+//! # Why this is mono-core, and what "mono-core" is allowed to mean
 //!
-//! FR-CHAIN-050 treats Gate as conceptually mono: by the time this stage runs, every channel of
-//! `io` already carries an identical signal (an invariant either Trim establishes downstream of
-//! here, for `channel_count() > 1`, or that trivially holds for a true mono chain) since Gate
-//! itself runs *before* Trim in this chain (D-9.8). Detecting and gating on channel 0 alone, then
-//! duplicating the result, keeps that invariant intact for whatever comes next rather than
-//! running (and potentially diverging) an independent detector per channel.
+//! FR-CHAIN-050 treats Gate as conceptually mono: **one** detector, one state machine, one
+//! envelope, keyed off channel 0. Running an independent detector per channel would let two
+//! channels open and close at different moments, which is a different product and is what
+//! FR-CHAIN-050 rules out.
+//!
+//! What that does **not** license is replacing the other channels' content. Until M15 this stage
+//! gated channel 0 and then copied the result over every other channel, which applies one gate and
+//! also destroys whatever those channels held. It now computes the gain curve from channel 0
+//! (`NoiseGate::compute_gains`) and multiplies **every** channel by that same curve: the identical
+//! single gate, with nothing overwritten. Channels that arrive identical — which is every
+//! configuration in the shipped chain, since Trim runs immediately upstream and establishes that
+//! invariant — stay identical, so nothing downstream sees a change; channels that arrive different
+//! stay different, which is what the copy was silently preventing.
+//!
+//! Both halves of that changed at M15 and they are independent of each other. This stage also ran
+//! *upstream* of Trim until then (D-9.8, now withdrawn), so the copy landed before the chain's only
+//! cross-channel mixing and made `Stereo` a left-channel-only path. The reorder alone would have
+//! fixed that symptom; the copy was the defect underneath it, and is fixed on its own footing so
+//! that no future reordering can bring the symptom back.
 
 use namir_dsp::{GateParams, NoiseGate};
 use namir_params::ParamKind;
@@ -68,8 +81,8 @@ impl StagePrep for GatePrep {
     type Prepared = GateStage;
 
     /// Sizes every buffer `GateStage::process` will ever touch: the per-channel dry scratch the
-    /// bypass crossfade needs, and the channel-0-then-duplicate shuttle buffer FR-CHAIN-050's
-    /// mono-core handling needs (`StageIo::channel`'s per-call reborrow of `&mut self` means two
+    /// bypass crossfade needs, and the per-sample gain buffer FR-CHAIN-050's mono-core handling
+    /// needs (`StageIo::channel`'s per-call reborrow of `&mut self` means two
     /// channels can never be borrowed at once — this crate's own cross-file gotcha, see
     /// `trim.rs`'s identical note).
     fn prepare(&self, ctx: &PrepareContext) -> Result<Self::Prepared, PrepareError> {
@@ -109,7 +122,7 @@ impl StagePrep for GatePrep {
             mix_target,
             mix_coeff,
             dry: vec![vec![0.0; max_block]; channel_count],
-            scratch: vec![0.0; max_block],
+            gains: vec![0.0; max_block],
         })
     }
 }
@@ -144,11 +157,13 @@ pub struct GateStage {
     /// output channel, each sized to `ctx.max_block_size()` in `prepare`; never resized in
     /// `process`.
     dry: Vec<Vec<f32>>,
-    /// Shuttle buffer for FR-CHAIN-050's channel-0-then-duplicate pattern: `StageIo::channel`'s
-    /// per-call reborrow means channel 0's gated result must be copied out before a fresh
-    /// mutable borrow of another channel can write it back in. Sized to `ctx.max_block_size()` in
-    /// `prepare`; never resized in `process`.
-    scratch: Vec<f32>,
+    /// The gain curve the detector produced for this block, read off channel 0 and then applied
+    /// to every channel in turn. Held here rather than derived per channel because there is one
+    /// gate, not one per channel (this module's doc comment), and because `StageIo::channel`'s
+    /// per-call reborrow means the detector's input and the channel being written cannot be
+    /// borrowed at the same time. Sized to `ctx.max_block_size()` in `prepare`; never resized in
+    /// `process`.
+    gains: Vec<f32>,
 }
 
 impl Stage for GateStage {
@@ -160,14 +175,16 @@ impl Stage for GateStage {
             self.dry[ch][..n].copy_from_slice(io.channel(ch));
         }
 
-        // Wet: mono-core gate on channel 0 (this module's own doc comment), then duplicate its
-        // gated result into every other channel via the scratch shuttle.
-        self.detector.process(io.channel(0));
-        if channel_count > 1 {
-            self.scratch[..n].copy_from_slice(io.channel(0));
-            let gated = &self.scratch[..n];
-            for ch in 1..channel_count {
-                io.channel(ch).copy_from_slice(gated);
+        // Wet: one gate, detected on channel 0 (this module's own doc comment) and applied to
+        // every channel by multiplying each by the same gain curve. Channel 0 gets exactly what
+        // `NoiseGate::process` would have given it -- `compute_gains` is that function with the
+        // multiplication deferred, asserted bit-identical in `namir-dsp`'s own tests.
+        self.detector
+            .compute_gains(io.channel(0), &mut self.gains[..n]);
+        for ch in 0..channel_count {
+            let gains = &self.gains[..n];
+            for (sample, gain) in io.channel(ch).iter_mut().zip(gains) {
+                *sample *= gain;
             }
         }
 
@@ -651,17 +668,59 @@ mod tests {
     }
 
     /// **FR-CHAIN-050's mono core, in both of this stage's multi-channel configurations.** Run for
-    /// `Stereo` and for `MonoToStereo`, which appeared in no test in this file until M14 — and with
-    /// a right channel that carries a *different* signal from the left, so "the two outputs agree"
-    /// is a statement about the channel-0-then-duplicate shuttle rather than an accident of both
-    /// channels having been fed the same thing.
+    /// `Stereo` and for `MonoToStereo`, with a right channel carrying a *different* signal from the
+    /// left, so every assertion below is about the gate's channel handling rather than an accident
+    /// of both channels having been fed the same thing.
+    ///
+    /// **What this test asserts changed at M15, and the distinction is the whole point.** It used
+    /// to assert that both output channels carry *channel 0's samples* — that the stage gates
+    /// channel 0 and copies the result over channel 1. That is one way to run one gate, and it is
+    /// strictly more than FR-CHAIN-050 asks for: the requirement is that the core process a single
+    /// channel, not that the gate erase the others on its way past. The copy is what made
+    /// `Stereo` unable to reach FR-CHAIN-060's `2 ch summed` input, since the right channel was
+    /// gone before the chain's only cross-channel mixing could use it.
+    ///
+    /// So the three claims below are the requirement, restated without the copy:
+    ///
+    /// 1. **One gain curve, not one per channel.** Both channels are scaled by the same factor,
+    ///    sample for sample — a single detector's output applied twice.
+    /// 2. **Channel 0 is the one that decides.** A left channel below the threshold closes the gate
+    ///    even while the right is loud enough to hold a gate of its own wide open. An independent
+    ///    per-channel detector would leave the right channel passing; this is what "the core
+    ///    processes a single channel" *means* here, and it is the claim the old copy-based
+    ///    assertion was really carrying.
+    /// 3. **Nothing is overwritten.** Each channel's own content survives, scaled by that shared
+    ///    gain, so a downstream stage still has two signals to work with when the configuration
+    ///    genuinely has two.
     // trace: FR-CHAIN-050
     #[test]
-    fn every_multi_channel_configuration_duplicates_the_mono_core_gate_result() {
+    fn every_multi_channel_configuration_applies_one_gate_to_every_channel() {
         let loud = db_to_linear(-10.0);
         // Loud enough to hold a gate of its own open, so a right channel that *did* reach the
         // detector would be visible rather than merely gated away.
         let other = db_to_linear(-4.0);
+        // Far below the -70 dBFS default threshold, so channel 0 alone can shut the gate.
+        let quiet = db_to_linear(-100.0);
+
+        /// Runs `blocks` blocks of a constant `(left, right)` through `stage` and returns the last
+        /// block's two output channels.
+        fn run(
+            stage: &mut GateStage,
+            left_in: f32,
+            right_in: f32,
+            blocks: usize,
+        ) -> (Vec<f32>, Vec<f32>) {
+            let mut last = (Vec::new(), Vec::new());
+            for _ in 0..blocks {
+                let mut left = [left_in; 64];
+                let mut right = [right_in; 64];
+                let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+                let mut io = StageIo::new(&mut channels, 64);
+                audio_section(|| stage.process(&mut io));
+                last = (io.channel(0).to_vec(), io.channel(1).to_vec());
+            }
+            last
+        }
 
         for channel_config in [ChannelConfig::Stereo, ChannelConfig::MonoToStereo] {
             let mut stage = stage(channel_config);
@@ -672,43 +731,53 @@ mod tests {
             );
 
             // Settle fully open (1 s, many times the 1 ms default attack).
-            for _ in 0..800 {
-                let mut left = [loud; 64];
-                let mut right = [other; 64];
-                let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
-                let mut io = StageIo::new(&mut channels, 64);
-                audio_section(|| stage.process(&mut io));
-            }
+            let (left_out, right_out) = run(&mut stage, loud, other, 800);
 
-            let mut left = [loud; 64];
-            let mut right = [other; 64];
-            let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
-            let mut io = StageIo::new(&mut channels, 64);
-            audio_section(|| stage.process(&mut io));
-
-            let left_out = io.channel(0).to_vec();
-            let right_out = io.channel(1).to_vec();
+            // (1) One gain curve: the same scaling on both channels.
             for (l, r) in left_out.iter().zip(right_out.iter()) {
+                let left_gain = l / loud;
+                let right_gain = r / other;
                 assert!(
-                    (l - r).abs() < 1e-6,
-                    "{channel_config:?}: channels diverged: {l} vs {r}"
+                    (left_gain - right_gain).abs() < 1e-5,
+                    "{channel_config:?}: the two channels were scaled differently                      ({left_gain} vs {right_gain}), so this is not one gate"
                 );
             }
-            // The duplicated result is channel 0's, not channel 1's — the core processed one
-            // channel and it was the one the routing nominates.
+
+            // (3) Nothing overwritten: each channel still carries its own signal, and the stage is
+            // a real passthrough rather than both channels silently zeroed.
             for &s in left_out.iter() {
                 assert!(
                     (s - loud).abs() < 1e-4,
-                    "{channel_config:?}: expected channel 0's own signal on both outputs, got {s}"
+                    "{channel_config:?}: channel 0 should pass its own signal, got {s}"
                 );
             }
-            // And it's a real passthrough, not both channels silently zeroed.
-            assert!(left_out.iter().any(|&s| s.abs() > 1e-3));
+            for &s in right_out.iter() {
+                assert!(
+                    (s - other).abs() < 1e-4,
+                    "{channel_config:?}: channel 1's own content was replaced -- got {s},                      expected its own {other}"
+                );
+            }
+
+            // (2) Channel 0 decides. Drop the left below the threshold and leave the right loud;
+            // 1 s is many times the 30 ms hold plus 100 ms release, so the gate settles shut.
+            let (left_closed, right_closed) = run(&mut stage, quiet, other, 800);
+            for &s in left_closed.iter() {
+                assert!(
+                    s.abs() < 1e-5,
+                    "{channel_config:?}: channel 0 stayed open below the threshold, got {s}"
+                );
+            }
+            for &s in right_closed.iter() {
+                assert!(
+                    s.abs() < 1e-5,
+                    "{channel_config:?}: the right channel held the gate open on its own -- got                      {s} where the detector, keyed off channel 0, had shut. That is a per-channel                      detector, which FR-CHAIN-050 rules out"
+                );
+            }
         }
     }
 
-    /// The path most likely to allocate if `dry`/`scratch` are undersized or absent: stereo, so
-    /// both the dry capture and the channel-0-then-duplicate shuttle run in the same block.
+    /// The path most likely to allocate if `dry`/`gains` are undersized or absent: stereo, so
+    /// both the dry capture and the shared gain curve are written in the same block.
     #[test]
     fn stereo_process_does_not_allocate() {
         let mut stage = stage(ChannelConfig::Stereo);
