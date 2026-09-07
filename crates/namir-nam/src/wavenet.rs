@@ -1055,11 +1055,11 @@ struct ResolvedLayerArrayShape {
 /// doesn't load ("condition_dsp is not yet supported") instead of the misleading `MALFORMED_JSON`
 /// it got before M10. Every key rejected below is **permanently** out of scope per D-9.12: none of
 /// `condition_dsp`, FiLM (all eight sites), gating (both the mode and its `secondary_activation`),
-/// non-unity `groups_*`, `slimmable`, an active
-/// `head1x1`, or an inactive/grouped `layer1x1` is planned for any future milestone. Note the
-/// distinction that wording draws and that this function did not, until issue #37: what is out of
-/// scope is *gating*, not the `gating_mode` key. A file may name the key and enable no gating with
-/// it, which every real A2 export does, and such a file loads — see [`active_gating_mode`]. M10's earlier
+/// non-unity `groups_*`, `slimmable`, an active `head1x1`, or an inactive/grouped `layer1x1` is
+/// planned for any future milestone. Note the distinction that wording draws and that this
+/// function did not, until issue #37: what is out of scope is *gating*, not the `gating_mode` key.
+/// A file may name the key and enable no gating with it, which every real A2 export does, and such
+/// a file loads — see [`active_gating_mode`]. M10's earlier
 /// phases (Step A1-A4) *removed* the temporary rejections this function used to also carry for
 /// `kernel_sizes`, `bottleneck`, the nested `head`, and object/per-layer `activation` — those are
 /// now real, implemented core-A2 features, resolved by [`resolve_layer_array`] instead of rejected
@@ -1214,11 +1214,19 @@ fn active_gating_mode(mode: &serde_json::Value) -> Option<String> {
 /// Returns the first secondary activation that actually *names* one, or `None` when the value
 /// selects no activation anywhere. The companion to [`active_gating_mode`], and inert for the same
 /// reason: this field is the gate/blend branch's activation, which the reference reads only where
-/// that layer's gating is active. Every real A2 export writes it as a per-layer array of JSON
-/// `null` — one null per layer, meaning "no secondary activation here" — and rejecting it on the
-/// key's presence refused those files for a field that selects nothing.
+/// that layer's gating is active. Read against `NeuralAmpModelerCore` at
+/// `3cde95c354d5ba6da01316cad90b05cfc4855053` — the same commit `tests/golden_reference.rs` pins,
+/// so these citations stay checkable: `wavenet/model.cpp:1008-1041` and `1068-1082` guard the read
+/// behind `mode != GatingMode::NONE`, `detail.h:92-101` is its only consumer, and
+/// `a2_fast.cpp:853-859` is the shape detector's own by-value test. Every real A2 export writes the
+/// field as a per-layer array of JSON `null` — one null per layer, meaning "no secondary activation
+/// here" — and rejecting it on the key's presence refused those files for a field that selects
+/// nothing.
 ///
-/// Accepted: `null`, and an array whose every entry is `null`. Anything that names an activation
+/// Accepted: an array whose every entry is `null` — the shape a file can actually present. (A bare
+/// JSON `null` is accepted too, but `serde` turns it into `None` before this is ever called, so
+/// that arm is defence in depth, reachable only from a hand-built value.) Anything that names an
+/// activation
 /// is still refused by name, and deliberately so even though the `gating_mode` check above has
 /// already established that gating is inert. A file that switches gating off and *still* names a
 /// gate activation is internally inconsistent; this build does not implement the branch that would

@@ -143,9 +143,9 @@ pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode::new(
 /// a feature this build does not implement (D-9.12's core-A2 scope boundary): `condition_dsp`,
 /// FiLM conditioning at any of the eight `*_film` sites, an active `head1x1`, an inactive
 /// `layer1x1`, gating (`gating_mode` other than `"none"`, a `secondary_activation` that names an
-/// activation, or the legacy `gated: true`), a `groups_*`
-/// value other than 1, or a `slimmable` container. `detail` names the offending key — that naming
-/// is FR-NAM-140's own requirement text, not a courtesy.
+/// activation, or the legacy `gated: true`), a `groups_*` value other than 1, or a `slimmable`
+/// container. `detail` names the offending key — that naming is FR-NAM-140's own requirement text,
+/// not a courtesy.
 ///
 /// Also the model's *output* width, added with issue #46: the last layer array's head width (A1's
 /// `head_size`, A2's `head.out_channels`) must be 1. That is the same scope limit
