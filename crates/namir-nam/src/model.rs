@@ -166,11 +166,113 @@ pub fn load(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
                 &file,
             )?)))
         }
+        "SlimmableContainer" => load_slimmable_container(bytes),
         other => Err(NamLoadError {
             code: error_codes::UNSUPPORTED_ARCHITECTURE,
             detail: format!("architecture: {other:?}"),
         }),
     }
+}
+
+fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
+    let file = file::ContainerFile::parse(bytes)?;
+
+    if file.config.submodels.is_empty() {
+        return Err(NamLoadError {
+            code: error_codes::INCONSISTENT_CONFIGURATION,
+            detail: "config.submodels is empty".to_string(),
+        });
+    }
+
+    let mut prev_max = f64::NEG_INFINITY;
+    for (i, entry) in file.config.submodels.iter().enumerate() {
+        if !entry.max_value.is_finite() {
+            return Err(NamLoadError {
+                code: error_codes::NON_FINITE_VALUE,
+                detail: format!("submodel {i} max_value is not finite"),
+            });
+        }
+        if entry.max_value <= prev_max {
+            return Err(NamLoadError {
+                code: error_codes::INCONSISTENT_CONFIGURATION,
+                detail: format!(
+                    "submodels must be sorted by strictly ascending max_value (index {i} has max_value {} <= previous {prev_max})",
+                    entry.max_value
+                ),
+            });
+        }
+        prev_max = entry.max_value;
+    }
+
+    let last_max = file.config.submodels.last().unwrap().max_value;
+    if last_max < 1.0 {
+        return Err(NamLoadError {
+            code: error_codes::INCONSISTENT_CONFIGURATION,
+            detail: format!("last submodel max_value must be >= 1.0, found {last_max}"),
+        });
+    }
+
+    let mut common_sample_rate: Option<u32> = None;
+    for (i, entry) in file.config.submodels.iter().enumerate() {
+        if !entry.model.is_object() {
+            return Err(NamLoadError {
+                code: error_codes::MALFORMED_JSON,
+                detail: format!("submodel {i} model is not a JSON object"),
+            });
+        }
+        if let Some(sr_val) = entry.model.get("sample_rate") {
+            let Some(sr) = sr_val.as_u64().map(|v| v as u32) else {
+                return Err(NamLoadError {
+                    code: error_codes::MALFORMED_JSON,
+                    detail: format!("submodel {i} sample_rate is not a valid integer"),
+                });
+            };
+            if sr == 0 {
+                return Err(NamLoadError {
+                    code: error_codes::INVALID_SAMPLE_RATE,
+                    detail: format!("submodel {i} declares sample_rate 0 Hz"),
+                });
+            }
+            if let Some(existing) = common_sample_rate {
+                if existing != sr {
+                    return Err(NamLoadError {
+                        code: error_codes::INCONSISTENT_CONFIGURATION,
+                        detail: format!(
+                            "submodels have mismatched sample rates: {existing} vs {sr}"
+                        ),
+                    });
+                }
+            } else {
+                common_sample_rate = Some(sr);
+            }
+        }
+    }
+
+    if let Some(top_sr) = file.sample_rate {
+        if top_sr == 0 {
+            return Err(NamLoadError {
+                code: error_codes::INVALID_SAMPLE_RATE,
+                detail: "container declares sample_rate 0 Hz".to_string(),
+            });
+        }
+        if let Some(sub_sr) = common_sample_rate
+            && top_sr != sub_sr
+        {
+            return Err(NamLoadError {
+                code: error_codes::INCONSISTENT_CONFIGURATION,
+                detail: format!(
+                    "container sample_rate ({top_sr}) does not match submodel sample_rate ({sub_sr})"
+                ),
+            });
+        }
+    }
+
+    let last = file.config.submodels.last().unwrap();
+    let submodel_bytes = serde_json::to_vec(&last.model).map_err(|e| NamLoadError {
+        code: error_codes::MALFORMED_JSON,
+        detail: format!("failed to serialize submodel JSON: {e}"),
+    })?;
+    load(&submodel_bytes)
 }
 
 #[cfg(test)]
@@ -649,5 +751,263 @@ mod tests {
         let mut lstm_state = lstm.new_state(4);
         let mut out = vec![0.0f32; 4];
         wavenet.process_block(&mut lstm_state, &[0.1, 0.2, 0.3, 0.4], &mut out);
+    }
+
+    fn minimal_container_json() -> Vec<u8> {
+        serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 0.5,
+                        "model": {
+                            "version": "0.7.0",
+                            "architecture": "WaveNet",
+                            "config": {
+                                "layers": [{
+                                    "input_size": 1,
+                                    "condition_size": 1,
+                                    "head_size": 1,
+                                    "channels": 1,
+                                    "kernel_size": 1,
+                                    "dilations": [1],
+                                    "activation": "Tanh",
+                                    "gated": false,
+                                    "head_bias": false
+                                }],
+                                "head_scale": 0.5,
+                                "head": null
+                            },
+                            "weights": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+                            "sample_rate": 48000,
+                            "metadata": {
+                                "name": "Lite Version",
+                                "loudness": -15.0
+                            }
+                        }
+                    },
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "version": "0.7.0",
+                            "architecture": "WaveNet",
+                            "config": {
+                                "layers": [{
+                                    "input_size": 1,
+                                    "condition_size": 1,
+                                    "head_size": 1,
+                                    "channels": 1,
+                                    "kernel_size": 1,
+                                    "dilations": [1],
+                                    "activation": "Tanh",
+                                    "gated": false,
+                                    "head_bias": false
+                                }],
+                                "head_scale": 0.5,
+                                "head": null
+                            },
+                            "weights": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.5],
+                            "sample_rate": 48000,
+                            "metadata": {
+                                "name": "Full Version",
+                                "loudness": -12.0
+                            }
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[test]
+    fn slimmable_container_loads_and_runs_last_submodel() {
+        let bytes = minimal_container_json();
+        let prepared = load(&bytes).expect("container should load");
+        assert_eq!(prepared.sample_rate().hz(), 48000);
+        assert_eq!(prepared.metadata().name, "Full Version");
+        assert_eq!(prepared.loudness_lufs(), Some(-12.0));
+
+        let mut state = prepared.new_state(4);
+        let out = prepared.process(&mut state, &[0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(out.len(), 4);
+    }
+
+    #[test]
+    fn slimmable_container_with_lstm_submodel_loads_and_runs() {
+        let bytes = serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "version": "0.5.4",
+                            "architecture": "LSTM",
+                            "config": {
+                                "num_layers": 1,
+                                "input_size": 1,
+                                "hidden_size": 1
+                            },
+                            "weights": vec![0.01f32; 16],
+                            "sample_rate": 44100,
+                            "metadata": {
+                                "name": "LSTM Container Submodel"
+                            }
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes();
+
+        let prepared = load(&bytes).expect("container with LSTM submodel should load");
+        assert_eq!(prepared.sample_rate().hz(), 44100);
+        assert_eq!(prepared.metadata().name, "LSTM Container Submodel");
+        let mut state = prepared.new_state(2);
+        assert_eq!(prepared.process(&mut state, &[0.1, 0.2]).len(), 2);
+    }
+
+    #[test]
+    fn slimmable_container_rejects_empty_submodels() {
+        let bytes = serde_json::json!({
+            "architecture": "SlimmableContainer",
+            "config": { "submodels": [] }
+        })
+        .to_string()
+        .into_bytes();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert!(err.detail.contains("config.submodels is empty"));
+    }
+
+    #[test]
+    fn slimmable_container_rejects_non_finite_max_value() {
+        let bytes = br#"{"architecture": "SlimmableContainer", "config": {"submodels": [{"max_value": 1e400, "model": {"architecture": "WaveNet"}}]}}"#;
+        let err = expect_err(load(bytes));
+        assert!(
+            err.code.id == error_codes::NON_FINITE_VALUE.id
+                || err.code.id == error_codes::MALFORMED_JSON.id
+        );
+    }
+
+    #[test]
+    fn slimmable_container_rejects_unsorted_max_values() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["config"]["submodels"][0]["max_value"] = serde_json::json!(1.0);
+        value["config"]["submodels"][1]["max_value"] = serde_json::json!(0.5);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert!(err.detail.contains("strictly ascending"));
+    }
+
+    #[test]
+    fn slimmable_container_rejects_equal_max_values() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["config"]["submodels"][0]["max_value"] = serde_json::json!(1.0);
+        value["config"]["submodels"][1]["max_value"] = serde_json::json!(1.0);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert!(err.detail.contains("strictly ascending"));
+    }
+
+    #[test]
+    fn slimmable_container_rejects_last_max_value_less_than_one() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["config"]["submodels"][0]["max_value"] = serde_json::json!(0.2);
+        value["config"]["submodels"][1]["max_value"] = serde_json::json!(0.8);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert!(
+            err.detail
+                .contains("last submodel max_value must be >= 1.0")
+        );
+    }
+
+    #[test]
+    fn slimmable_container_rejects_mismatched_submodel_sample_rates() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["config"]["submodels"][0]["model"]["sample_rate"] = serde_json::json!(44100);
+        value["config"]["submodels"][1]["model"]["sample_rate"] = serde_json::json!(48000);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert!(err.detail.contains("mismatched sample rates"));
+    }
+
+    #[test]
+    fn slimmable_container_rejects_zero_sample_rate_in_submodel() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["config"]["submodels"][0]["model"]["sample_rate"] = serde_json::json!(0);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INVALID_SAMPLE_RATE.id);
+        assert!(err.detail.contains("0 Hz"));
+    }
+
+    #[test]
+    fn slimmable_container_rejects_container_sample_rate_mismatch() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["sample_rate"] = serde_json::json!(96000);
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert!(err.detail.contains("container sample_rate"));
+    }
+
+    #[test]
+    fn slimmable_container_forwards_submodel_unsupported_architecture() {
+        let bytes = serde_json::json!({
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "architecture": "UnknownNet",
+                            "config": {}
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_ARCHITECTURE.id);
+        assert!(err.detail.contains("UnknownNet"));
+    }
+
+    #[test]
+    fn slimmable_container_forwards_submodel_unsupported_configuration() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["config"]["submodels"][1]["model"]["config"]["condition_dsp"] = serde_json::json!({});
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(err.detail.contains("condition_dsp"));
     }
 }

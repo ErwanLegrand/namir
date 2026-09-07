@@ -45,17 +45,46 @@ pub struct NamProbe {
 }
 
 /// The same field set [`NamFile`](crate::NamFile)/[`LstmFile`](crate::LstmFile) share, minus
-/// `config` and `weights`, both read as [`IgnoredAny`] so this deserializer never has to know
+/// `weights` and model layer configs, read as [`IgnoredAny`] so this deserializer never has to know
 /// which architecture's shape it is looking at and never allocates space for either's payload.
 #[derive(Debug, Deserialize)]
 struct ProbeShape {
     #[serde(default)]
     version: Option<String>,
     architecture: String,
-    // Never read: their entire purpose is to make serde skip over the JSON value at this key
-    // (whatever shape it is, for either architecture) without deserializing it into anything
-    // that would allocate proportionally to the model's size. That "never read" is the point,
-    // not an oversight -- see this module's doc comment.
+    #[serde(default)]
+    config: ProbeConfig,
+    #[serde(default)]
+    #[allow(dead_code)]
+    weights: IgnoredAny,
+    #[serde(default)]
+    sample_rate: Option<u32>,
+    #[serde(default)]
+    metadata: NamMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProbeConfig {
+    #[serde(default)]
+    submodels: Vec<ProbeSubmodelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeSubmodelEntry {
+    #[serde(default)]
+    #[allow(dead_code)]
+    max_value: Option<f64>,
+    #[serde(default)]
+    model: Option<ProbeSubmodel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeSubmodel {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    architecture: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     config: IgnoredAny,
@@ -79,11 +108,47 @@ pub fn probe_metadata(bytes: &[u8]) -> Result<NamProbe, NamLoadError> {
         code: error_codes::MALFORMED_JSON,
         detail: e.to_string(),
     })?;
+
+    let architecture = shape.architecture;
+    let mut version = shape.version;
+    let mut sample_rate = shape.sample_rate;
+    let mut metadata = shape.metadata;
+
+    if architecture == "SlimmableContainer"
+        && let Some(last_entry) = shape.config.submodels.last()
+        && let Some(sub) = &last_entry.model
+    {
+        if version.is_none() {
+            version = sub.version.clone();
+        }
+        if sample_rate.is_none() {
+            sample_rate = sub.sample_rate;
+        }
+        if metadata.name.is_empty() {
+            metadata.name = sub.metadata.name.clone();
+        }
+        if metadata.modeled_by.is_empty() {
+            metadata.modeled_by = sub.metadata.modeled_by.clone();
+        }
+        if metadata.gear_type.is_empty() {
+            metadata.gear_type = sub.metadata.gear_type.clone();
+        }
+        if metadata.tone_type.is_empty() {
+            metadata.tone_type = sub.metadata.tone_type.clone();
+        }
+        if metadata.description.is_empty() {
+            metadata.description = sub.metadata.description.clone();
+        }
+        if metadata.loudness.is_none() {
+            metadata.loudness = sub.metadata.loudness;
+        }
+    }
+
     Ok(NamProbe {
-        architecture: shape.architecture,
-        version: shape.version,
-        sample_rate: shape.sample_rate,
-        metadata: shape.metadata,
+        architecture,
+        version,
+        sample_rate,
+        metadata,
     })
 }
 
@@ -208,5 +273,96 @@ mod tests {
         let bytes = serde_json::to_vec(&value).unwrap();
         let err = probe_metadata(&bytes).unwrap_err();
         assert_eq!(err.code.id, error_codes::MALFORMED_JSON.id);
+    }
+
+    #[test]
+    fn probe_extracts_metadata_from_slimmable_container_submodel() {
+        let bytes = serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 0.5,
+                        "model": {
+                            "architecture": "WaveNet",
+                            "version": "0.7.0",
+                            "config": {},
+                            "weights": vec![0.0; 100],
+                            "sample_rate": 48_000,
+                            "metadata": {
+                                "name": "Lite Amp",
+                                "modeled_by": "Author",
+                                "gear_type": "Amp",
+                                "tone_type": "Clean",
+                                "description": "Lite model",
+                                "loudness": -14.5
+                            }
+                        }
+                    },
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "architecture": "WaveNet",
+                            "version": "0.7.0",
+                            "config": {},
+                            "weights": vec![0.0; 1000],
+                            "sample_rate": 48_000,
+                            "metadata": {
+                                "name": "Full Amp",
+                                "modeled_by": "Author",
+                                "gear_type": "Amp",
+                                "tone_type": "Lead",
+                                "description": "Full model",
+                                "loudness": -12.0
+                            }
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes();
+
+        let probe = probe_metadata(&bytes).unwrap();
+        assert_eq!(probe.architecture, "SlimmableContainer");
+        assert_eq!(probe.version.as_deref(), Some("0.7.0"));
+        assert_eq!(probe.sample_rate, Some(48_000));
+        assert_eq!(probe.metadata.name, "Full Amp");
+        assert_eq!(probe.metadata.modeled_by, "Author");
+        assert_eq!(probe.metadata.gear_type, "Amp");
+        assert_eq!(probe.metadata.tone_type, "Lead");
+        assert_eq!(probe.metadata.description, "Full model");
+        assert_eq!(probe.metadata.loudness, Some(-12.0));
+    }
+
+    #[test]
+    fn probe_succeeds_on_container_with_large_submodel_weights() {
+        let bytes = serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "architecture": "WaveNet",
+                            "config": {},
+                            "weights": vec![0.0f32; 2_000_000],
+                            "sample_rate": 48_000,
+                            "metadata": {
+                                "name": "Big Model"
+                            }
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes();
+
+        let probe = probe_metadata(&bytes).unwrap();
+        assert_eq!(probe.architecture, "SlimmableContainer");
+        assert_eq!(probe.metadata.name, "Big Model");
     }
 }
