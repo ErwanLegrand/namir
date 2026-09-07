@@ -52,7 +52,7 @@ enum StateArchitecture {
 /// it was built from ([`PreparedNam::new_state`]) holds. Never shared across instances.
 pub struct NamState(StateArchitecture);
 
-/// NFR-SEC-020 ceiling on [`PreparedNam::prewarm_samples`]: 1 048 576 samples, ~21.8 s at 48 kHz.
+/// NFR-SEC-020 ceiling on [`PreparedNam::prewarm_samples`]: 262 144 samples, ~5.5 s at 48 kHz.
 ///
 /// Prewarming turns a model's declared shape into *work performed at load time*, which no other
 /// ceiling in this crate bounds. The existing dimension ceilings bound memory and weight counts,

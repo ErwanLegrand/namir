@@ -1480,7 +1480,16 @@ mod tests {
         // front since `process`/`process_block` require the state's own `max_n` to cover the
         // block passed to it (`PreparedNam::process_block`'s own panic contract) and `process`
         // passes its whole input as a single block.
-        let mut reference_state = model.new_state(total);
+        //
+        // `new_state_prewarmed`, not `new_state`, and that has to track `NamSlot::new`: until
+        // D-9.13 (issue #173) the stage built its slot state cold with `new_state`, so a cold
+        // reference here was the matching run. The stage now prewarms every slot it makes live,
+        // and this assertion is exactly "the stage's output equals the model run directly" -- so a
+        // cold reference would compare a cold model against a warm one. Today that would still
+        // pass, because `tiny_model`'s generated weights are zero-bias and a prewarm on silence is
+        // then a numerical no-op; it would start failing the day a fixture carries a non-zero bias,
+        // for a reason with nothing to do with what this test asserts.
+        let mut reference_state = model.new_state_prewarmed(total);
 
         stage.load_model(Arc::clone(&model));
 
@@ -2356,7 +2365,14 @@ mod tests {
             // --- The offline path.
             let at_model_rate =
                 resample_offline(&probe, f64::from(engine_rate), f64::from(model_rate));
-            let mut state = model.new_state(at_model_rate.len());
+            // Prewarmed to match `NamSlot::new`, which since D-9.13 (issue #173) runs silence
+            // through every state it builds before the first real sample; before that it built
+            // state cold and a cold reference here was the matching run. This band comparison is
+            // against the stage's own output, so the two runs have to start from the same history
+            // or the figure carries the stage's prewarm as error. It measures the same today
+            // either way -- the generated fixture is zero-bias, making the prewarm a numerical
+            // no-op -- but that is a property of the fixture, not of what is being asserted.
+            let mut state = model.new_state_prewarmed(at_model_rate.len());
             let model_out = model.process(&mut state, &at_model_rate);
             let offline =
                 resample_offline(&model_out, f64::from(model_rate), f64::from(engine_rate));
