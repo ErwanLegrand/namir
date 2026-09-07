@@ -115,7 +115,8 @@ pub const BUFFER_SIZE_DECLINED: ErrorCode = ErrorCode::new(
     "app.audio_io.buffer_size_declined",
     Severity::Warning,
     "The requested buffer size is not supported by the audio device ({detail}).",
-    "Choose a supported buffer size in audio settings, or edit buffer_size_frames in audio-settings.json.",
+    "Choose a supported buffer size in audio settings, or edit buffer_size_frames in \
+     audio-settings.json.",
 );
 
 /// FR-IO-080: the settings file on disk could not be parsed (corrupted, from an incompatible

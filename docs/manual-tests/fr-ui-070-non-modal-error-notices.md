@@ -170,6 +170,14 @@ from which cause. Audio may or may not be running depending on the induction; no
     *Pass:* a window still opens (`open_window_without_audio`), parameters are still editable, and
     the notice states that nothing will be processed. *Fail:* the process exits silently, crashes,
     or opens no window.
+13b. **`app.audio_io.buffer_size_declined` (issue #167).** Edit `audio-settings.json` so
+     `buffer_size_frames` requests an unsupported buffer size (e.g. 960 frames against hardware
+     supporting only power-of-two sizes), then launch.
+     *Pass:* the application starts, audio runs with a supported fallback buffer size (or device
+     default), a `Warning` notice `app.audio_io.buffer_size_declined` is present non-modally in
+     the top panel from the first frame, stating the requested frames and actual frames used
+     (e.g. `requested 960 frames, using 512 frames` or `requested 960 frames, using the device default`),
+     and `audio-settings.json` preserves the requested `buffer_size_frames` across restarts.
 
 ## Part C — the CLAP plugin
 

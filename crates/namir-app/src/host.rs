@@ -769,16 +769,16 @@ impl AppHost {
                         self.supported_buffer_sizes = pending.supported_buffer_sizes;
                         self.hold_streams(running);
                         if let Some(requested) = self.settings.buffer_size_frames
-                            && pending.buffer_frames != Some(requested)
+                            && let Some(detail) = crate::audio_io::buffer_decline_detail(
+                                requested,
+                                pending.buffer_frames,
+                            )
                         {
-                            let actual = pending.buffer_frames.unwrap_or(256);
-                            self.push_notice(
-                                crate::error_codes::BUFFER_SIZE_DECLINED,
-                                format!("requested {requested} frames, using {actual} frames"),
-                            );
+                            self.push_notice(crate::error_codes::BUFFER_SIZE_DECLINED, detail);
                         }
-                        // FR-IO-080: persist the negotiated values immediately so the next launch
-                        // starts from what actually worked, including any fallback (D-18.6 R-FR-IO-080).
+                        // FR-IO-080: persist the negotiated device/rate/channel configuration so
+                        // the next launch starts from what worked, while preserving any requested
+                        // buffer size (D-18.6 R-FR-IO-080).
                         self.persist_negotiated_audio(
                             &host_info_name,
                             &input_name,
@@ -825,13 +825,15 @@ impl AppHost {
         }
     }
 
-    /// FR-IO-080: write the audio configuration that was actually negotiated and opened —
-    /// including any fallback values — so the next launch starts from what worked this time.
+    /// Persists the negotiated audio device, sample-rate, and channel configuration to
+    /// `audio-settings.json` (FR-IO-080) so the next launch starts from what worked this time,
+    /// while preserving the user's requested buffer size across fallbacks.
     ///
     /// Issue #167: if a specific buffer size was requested, preserve that requested size rather
     /// than overwriting it with a declined fallback, so the user's preference is not silently
-    /// discarded. On a clean install where no buffer size was previously configured, persist the
-    /// negotiated buffer size.
+    /// discarded. On a clean install where no buffer size was previously configured, leave
+    /// `buffer_size_frames` absent (`None`) so the device default continues to be used without
+    /// pinning a fallback size.
     ///
     /// Called right after a successful `RunningStreams::play()`, both at startup (from
     /// `crate::app::run`) and after a stream reopen (`apply_audio_reopen`).
@@ -841,7 +843,7 @@ impl AppHost {
         input_device: &str,
         output_device: &str,
         sample_rate_hz: u32,
-        buffer_frames: Option<u32>,
+        _buffer_frames: Option<u32>,
     ) {
         let Some(dir) = &self.config_dir else { return };
         let path = crate::settings::settings_path(dir);
@@ -852,8 +854,6 @@ impl AppHost {
         settings.sample_rate_hz = Some(sample_rate_hz);
         if self.settings.buffer_size_frames.is_some() {
             settings.buffer_size_frames = self.settings.buffer_size_frames;
-        } else if settings.buffer_size_frames.is_none() {
-            settings.buffer_size_frames = buffer_frames;
         }
         if let Err(w) = crate::settings::save(&path, &settings) {
             crate::diagnostics::record(w.code, &w.detail);
@@ -3006,9 +3006,10 @@ mod tests {
     }
 
     /// Issue #167: on a clean install (no buffer size requested), persist_negotiated_audio
-    /// writes the negotiated buffer size to disk.
+    /// leaves buffer_size_frames absent (None) so device default is used without falsely
+    /// triggering BUFFER_SIZE_DECLINED.
     #[test]
-    fn persist_negotiated_audio_writes_negotiated_buffer_size_on_clean_install() {
+    fn persist_negotiated_audio_leaves_buffer_size_absent_on_clean_install() {
         let dir = temp_dir("persist_clean_install");
         let (mut host, _engine) = build_host(&dir);
         host.watch_config_dir(dir.clone());
@@ -3017,7 +3018,7 @@ mod tests {
         host.persist_negotiated_audio("Host", "In", "Out", 48_000, Some(480));
 
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
-        assert_eq!(loaded.buffer_size_frames, Some(480));
+        assert_eq!(loaded.buffer_size_frames, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3066,6 +3067,55 @@ mod tests {
             notices
         );
         assert_eq!(notices[0].detail, "requested 960 frames, using 256 frames");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #167: when reopen uses device default (None), notice detail explains that.
+    #[test]
+    fn dynamic_audio_reopen_with_device_default_buffer_emits_device_default_notice() {
+        let dir = temp_dir("declined_buffer_default_reopen");
+        let (mut host, engine) = build_host(&dir);
+        let backend = Arc::new(crate::stream::FakeBackend::new().with_devices(
+            vec![crate::audio_io::DeviceInfo {
+                name: "Mic".to_string(),
+                is_default: true,
+            }],
+            vec![crate::audio_io::DeviceInfo {
+                name: "Speakers".to_string(),
+                is_default: true,
+            }],
+        ));
+        let xruns = Arc::new(XrunCounter::new());
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+            host_info: HostInfo {
+                name: "fake".to_string(),
+            },
+            xruns,
+        });
+
+        host.settings.buffer_size_frames = Some(960);
+
+        let slot = EngineSlot::new();
+        slot.put(engine, host.telemetry.clone());
+        let mut pending = pending_stream_open(1, slot);
+        pending.buffer_frames = None;
+        host.pending_reopen = Some(pending);
+
+        host.handle_event(AppEvent::AudioStreamReady { generation: 1 });
+
+        let notices = host.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(
+            notices[0].code.id,
+            crate::error_codes::BUFFER_SIZE_DECLINED.id,
+            "{:?}",
+            notices
+        );
+        assert_eq!(
+            notices[0].detail,
+            "requested 960 frames, using the device default"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

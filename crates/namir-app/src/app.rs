@@ -501,13 +501,9 @@ pub fn run() {
         host.report(crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE, detail);
     }
     if let Some(requested) = settings.buffer_size_frames
-        && buffer_frames != Some(requested)
+        && let Some(detail) = crate::audio_io::buffer_decline_detail(requested, buffer_frames)
     {
-        let actual = buffer_frames.unwrap_or(256);
-        host.report(
-            crate::error_codes::BUFFER_SIZE_DECLINED,
-            format!("requested {requested} frames, using {actual} frames"),
-        );
+        host.report(crate::error_codes::BUFFER_SIZE_DECLINED, detail);
     }
 
     let stream_setup = StreamSetup {
