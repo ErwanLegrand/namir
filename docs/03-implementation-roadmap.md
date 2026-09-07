@@ -6134,7 +6134,7 @@ NFR-LIC-030, NFR-BUILD-020). Add bundle-and-inspect lanes on all three platforms
   obtain an Apple Developer ID for 1.0, and `release.yml` now has the keychain-import step
   (`import_cert`) and the secrets plumbing that make the signed path runnable on tag push. What
   remains is the credentials side — the purchased identity, the repository secrets, a first signed
-  run — recorded at R-11's own row and at §22's changelog 0.43.
+  run — recorded at R-11's own row and at §22's changelog 0.47.
 
 ### Acceptance
 
@@ -6257,7 +6257,7 @@ now carries a dated note stating what M14 does and does not do around it.
 issue #23 turns on whether 1.0 is a public release. **Updated 2026-09-07**: the decision is taken —
 an Apple Developer ID will be obtained for 1.0 — and the signed CI path is no longer unbuilt;
 `release.yml`'s keychain import, secrets plumbing and the signed/unsigned release-notes choice are
-in place per changelog 0.43. What keeps the row open is the credentials side and a first signed
+in place per changelog 0.47. What keeps the row open is the credentials side and a first signed
 run, not pipeline structure.
 
 #### What the automated half of M14 will and will not attempt
