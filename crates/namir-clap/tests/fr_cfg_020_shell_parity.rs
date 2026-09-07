@@ -23,6 +23,9 @@
 //!   precisely so this path runs with no hardware ([`HarnessBackend`] below). Everything above
 //!   the device — the engine, the `namir_worker::Instance`, `namir_app::worker`'s background
 //!   thread and its `AppCommand::LoadState` recall — is the shipping code.
+//!   Because the standalone input→output bridge carries one block of silence prefill to absorb
+//!   callback jitter (PR #163), standalone output is bit-identical to the plugin modulo a fixed
+//!   one-block transport delay.
 //!
 //! # Why this file lives in `namir-clap` and takes a dev-dependency on `namir-app`
 //!
