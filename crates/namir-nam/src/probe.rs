@@ -22,6 +22,24 @@
 //! probe never looks inside `config` at all — it is read as [`serde::de::IgnoredAny`] regardless
 //! of architecture, so one shape covers every `.nam` variant this crate will ever support without
 //! needing a matching sibling type the way the full parsers do.
+//!
+//! # SlimmableContainer probing (issue #172)
+//!
+//! [`ProbeConfig`] exists to read one container-level thing — the `submodels` array — and even
+//! then only each entry's `max_value` and `model` field. Each [`ProbeSubmodel`] reads the fields
+//! a probe reports (version, `sample_rate`, metadata) and deliberately ignores everything else:
+//! its inner `config` and its `weights` are both [`serde::de::IgnoredAny`], so probing a
+//! container with a very large submodel never allocates that submodel's weight vector — the same
+//! guarantee the top-level probe gives a plain model, extended to the nested shape.
+//!
+//! **Resolution precedence:** for a container, the *selected* (last) submodel is the model the
+//! container actually represents once loaded, so its own fields win, and the container's
+//! top-level fields fill in whatever the submodel omits — `sample_rate` and `version`:
+//! container first, submodel as fallback (a container-declared rate must win, see
+//! `model::load_slimmable_container`'s consistency check); metadata (`name`, `modeled_by`,
+//! `gear_type`, `tone_type`, `description`, `loudness`): submodel first, container as fallback.
+//! `model::load_slimmable_container` applies exactly the same resolution to the loaded
+//! `PreparedNam`, so probing and loading a container always agree.
 
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -112,7 +130,12 @@ pub fn probe_metadata(bytes: &[u8]) -> Result<NamProbe, NamLoadError> {
     let architecture = shape.architecture;
     let mut version = shape.version;
     let mut sample_rate = shape.sample_rate;
-    let mut metadata = shape.metadata;
+    // Metadata resolves submodel-first, container-fallback (issue #172) — exactly the order
+    // `model::load_slimmable_container` applies to the loaded `PreparedNam`, so probe and load
+    // agree. `sample_rate`/`version` resolve the other way around (container first, submodel as
+    // fallback): a container-declared rate is the authoritative one (see `model.rs`'s consistency
+    // check), and probing must match what loading enforces.
+    let mut metadata = NamMetadata::default();
 
     if architecture == "SlimmableContainer"
         && let Some(last_entry) = shape.config.submodels.last()
@@ -124,24 +147,27 @@ pub fn probe_metadata(bytes: &[u8]) -> Result<NamProbe, NamLoadError> {
         if sample_rate.is_none() {
             sample_rate = sub.sample_rate;
         }
-        if metadata.name.is_empty() {
-            metadata.name = sub.metadata.name.clone();
-        }
-        if metadata.modeled_by.is_empty() {
-            metadata.modeled_by = sub.metadata.modeled_by.clone();
-        }
-        if metadata.gear_type.is_empty() {
-            metadata.gear_type = sub.metadata.gear_type.clone();
-        }
-        if metadata.tone_type.is_empty() {
-            metadata.tone_type = sub.metadata.tone_type.clone();
-        }
-        if metadata.description.is_empty() {
-            metadata.description = sub.metadata.description.clone();
-        }
-        if metadata.loudness.is_none() {
-            metadata.loudness = sub.metadata.loudness;
-        }
+        metadata = sub.metadata.clone();
+    }
+
+    // Container metadata as fallback: fill only the fields the submodel left empty/`None`.
+    if metadata.name.is_empty() {
+        metadata.name = shape.metadata.name.clone();
+    }
+    if metadata.modeled_by.is_empty() {
+        metadata.modeled_by = shape.metadata.modeled_by.clone();
+    }
+    if metadata.gear_type.is_empty() {
+        metadata.gear_type = shape.metadata.gear_type.clone();
+    }
+    if metadata.tone_type.is_empty() {
+        metadata.tone_type = shape.metadata.tone_type.clone();
+    }
+    if metadata.description.is_empty() {
+        metadata.description = shape.metadata.description.clone();
+    }
+    if metadata.loudness.is_none() {
+        metadata.loudness = shape.metadata.loudness;
     }
 
     Ok(NamProbe {
@@ -364,5 +390,85 @@ mod tests {
         let probe = probe_metadata(&bytes).unwrap();
         assert_eq!(probe.architecture, "SlimmableContainer");
         assert_eq!(probe.metadata.name, "Big Model");
+    }
+
+    /// Issue #172 review finding 1, probe half: a container declaring `sample_rate` with
+    /// rate-less submodels must probe at the container's rate (the 48 kHz fallback must not
+    /// apply), matching what `model::load` reports for the same bytes.
+    #[test]
+    fn probe_propagates_container_sample_rate_to_rate_less_submodels() {
+        let bytes = serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "architecture": "WaveNet",
+                            "config": {},
+                            "weights": vec![0.0f32; 100]
+                        }
+                    }
+                ]
+            },
+            "sample_rate": 44_100
+        })
+        .to_string()
+        .into_bytes();
+
+        let probe = probe_metadata(&bytes).unwrap();
+        assert_eq!(probe.sample_rate, Some(44_100));
+    }
+
+    /// Issue #172 review finding 2, probe half: metadata resolves submodel-first,
+    /// container-fallback — a non-empty selected-submodel field overrides the container's, and
+    /// the container fills the submodel's empty/`None` fields. Same resolution as the load path.
+    #[test]
+    fn probe_metadata_precedence_is_submodel_first_container_fallback() {
+        let bytes = serde_json::json!({
+            "version": "0.7.0",
+            "architecture": "SlimmableContainer",
+            "metadata": {
+                "name": "Container Model",
+                "modeled_by": "Container Author",
+                "gear_type": "Container Gear",
+                "tone_type": "Container Tone",
+                "description": "Container description",
+                "loudness": -9.5
+            },
+            "config": {
+                "submodels": [
+                    {
+                        "max_value": 1.0,
+                        "model": {
+                            "architecture": "WaveNet",
+                            "config": {},
+                            "weights": vec![0.0f32; 100],
+                            "metadata": {
+                                "name": "Submodel Model",
+                                "loudness": -12.0
+                            }
+                        }
+                    }
+                ]
+            }
+        })
+        .to_string()
+        .into_bytes();
+
+        let probe = probe_metadata(&bytes).unwrap();
+        // Submodel fields win where non-empty...
+        assert_eq!(probe.metadata.name, "Submodel Model");
+        assert_eq!(probe.metadata.loudness, Some(-12.0));
+        // ...container fields fill the submodel's gaps.
+        assert_eq!(probe.metadata.modeled_by, "Container Author");
+        assert_eq!(probe.metadata.gear_type, "Container Gear");
+        assert_eq!(probe.metadata.tone_type, "Container Tone");
+        assert_eq!(probe.metadata.description, "Container description");
+
+        // Load-agreement for the exact same resolution lives in `model.rs`'s
+        // `slimmable_container_metadata_resolution_matches_probe` (it needs a fully valid
+        // submodel to load; this probe-only fixture deliberately has none).
     }
 }

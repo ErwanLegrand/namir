@@ -22,6 +22,8 @@
 //! `namir-engine`'s and this crate's own tests that construct a `NamFile` directly and call this
 //! keep working unmodified.
 
+use serde::Deserialize;
+
 use namir_core::SampleRate;
 
 use crate::error_codes::{self, NamLoadError};
@@ -142,6 +144,25 @@ impl PreparedNam {
             ),
         }
     }
+
+    /// Issue #172: applies a container-declared `sample_rate` to the loaded submodel when the
+    /// submodel itself omitted one. `pub(crate)`: only `load_slimmable_container` calls it.
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        match &mut self.0 {
+            Architecture::WaveNet(p) => p.set_sample_rate(sample_rate),
+            Architecture::Lstm(p) => p.set_sample_rate(sample_rate),
+        }
+    }
+
+    /// Issue #172: fills any empty/`None` metadata field from the container's metadata, leaving
+    /// the loaded submodel's own non-empty fields untouched — the same submodel-first,
+    /// container-fallback resolution `probe::probe_metadata` applies.
+    pub(crate) fn merge_metadata(&mut self, container: &crate::file::NamMetadata) {
+        match &mut self.0 {
+            Architecture::WaveNet(p) => p.merge_metadata(container),
+            Architecture::Lstm(p) => p.merge_metadata(container),
+        }
+    }
 }
 
 /// Combines architecture sniffing, JSON-shape parsing, and semantic validation: the one function
@@ -184,7 +205,18 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
         });
     }
 
+    // Issue #172 (NFR-SEC-020 memory bound): bound the submodel count before any per-submodel
+    // scan. Only the selected (last) submodel is ever fully parsed; every other submodel is read
+    // only through the weight-free `SubmodelPeek` below, so the ceiling is what keeps a hostile
+    // container from forcing arbitrarily many scans.
+    crate::shared::check_max(
+        file.config.submodels.len(),
+        crate::shared::MAX_SUBMODELS,
+        "config.submodels.len()",
+    )?;
+
     let mut prev_max = f64::NEG_INFINITY;
+    let mut common_sample_rate: Option<u32> = None;
     for (i, entry) in file.config.submodels.iter().enumerate() {
         if !entry.max_value.is_finite() {
             return Err(NamLoadError {
@@ -202,31 +234,18 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
             });
         }
         prev_max = entry.max_value;
-    }
 
-    let last_max = file.config.submodels.last().unwrap().max_value;
-    if last_max < 1.0 {
-        return Err(NamLoadError {
-            code: error_codes::INCONSISTENT_CONFIGURATION,
-            detail: format!("last submodel max_value must be >= 1.0, found {last_max}"),
-        });
-    }
-
-    let mut common_sample_rate: Option<u32> = None;
-    for (i, entry) in file.config.submodels.iter().enumerate() {
-        if !entry.model.is_object() {
+        let peek = peek_submodel(&entry.model, i)?;
+        if peek.architecture.as_deref() == Some("SlimmableContainer") {
+            // Issue #172: without this explicit check, a submodel that is itself a container
+            // would recurse through `load` indefinitely on a maliciously nested file. Nested
+            // containers are out of scope, so they are rejected up front.
             return Err(NamLoadError {
-                code: error_codes::MALFORMED_JSON,
-                detail: format!("submodel {i} model is not a JSON object"),
+                code: error_codes::UNSUPPORTED_CONFIGURATION,
+                detail: "nested SlimmableContainer is not supported".to_string(),
             });
         }
-        if let Some(sr_val) = entry.model.get("sample_rate") {
-            let Some(sr) = sr_val.as_u64().map(|v| v as u32) else {
-                return Err(NamLoadError {
-                    code: error_codes::MALFORMED_JSON,
-                    detail: format!("submodel {i} sample_rate is not a valid integer"),
-                });
-            };
+        if let Some(sr) = peek.sample_rate {
             if sr == 0 {
                 return Err(NamLoadError {
                     code: error_codes::INVALID_SAMPLE_RATE,
@@ -248,6 +267,14 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
         }
     }
 
+    let last_max = file.config.submodels.last().unwrap().max_value;
+    if last_max < 1.0 {
+        return Err(NamLoadError {
+            code: error_codes::INCONSISTENT_CONFIGURATION,
+            detail: format!("last submodel max_value must be >= 1.0, found {last_max}"),
+        });
+    }
+
     if let Some(top_sr) = file.sample_rate {
         if top_sr == 0 {
             return Err(NamLoadError {
@@ -267,12 +294,44 @@ fn load_slimmable_container(bytes: &[u8]) -> Result<PreparedNam, NamLoadError> {
         }
     }
 
+    // Everything above has validated the container itself; now the selected (last) submodel is
+    // parsed through the regular `load` path, feeding it the submodel's own raw bytes straight
+    // out of the `RawValue` (zero re-serialization). Sample-rate and metadata resolution happen
+    // after, so a submodel that omits `sample_rate`/metadata still reports the container's.
     let last = file.config.submodels.last().unwrap();
-    let submodel_bytes = serde_json::to_vec(&last.model).map_err(|e| NamLoadError {
+    let mut nam = load(last.model.get().as_bytes())?;
+    if let Some(top_sr) = file.sample_rate {
+        let sr = SampleRate::new(top_sr).expect("nonzero: top_sr == 0 is rejected above");
+        nam.set_sample_rate(sr);
+    }
+    nam.merge_metadata(&file.metadata);
+    Ok(nam)
+}
+
+/// Issue #172: reads only the fields a `SlimmableContainer` loader needs from a submodel's raw
+/// JSON — its `architecture` (to reject a nested container) and `sample_rate` (consistency
+/// across submodels) — without materializing the submodel's `weights` (up to ~10M `f32` in a
+/// large WaveNet). Unknown fields are skipped by serde without allocating; only the selected
+/// (last) submodel is ever fully parsed, by the recursive `load` call.
+#[derive(Debug, Deserialize)]
+struct SubmodelPeek {
+    #[serde(default)]
+    architecture: Option<String>,
+    #[serde(default)]
+    sample_rate: Option<u32>,
+}
+
+/// Parses a submodel entry's raw JSON as a [`SubmodelPeek`]. A non-object `model` (JSON allows
+/// any value) fails the struct parse and is reported as `MALFORMED_JSON`, the same code the
+/// pre-`RawValue` implementation used for "submodel model is not a JSON object".
+fn peek_submodel(
+    raw: &serde_json::value::RawValue,
+    index: usize,
+) -> Result<SubmodelPeek, NamLoadError> {
+    serde_json::from_str(raw.get()).map_err(|e| NamLoadError {
         code: error_codes::MALFORMED_JSON,
-        detail: format!("failed to serialize submodel JSON: {e}"),
-    })?;
-    load(&submodel_bytes)
+        detail: format!("submodel {index} model is not a valid JSON object: {e}"),
+    })
 }
 
 #[cfg(test)]
@@ -1009,5 +1068,152 @@ mod tests {
         let err = expect_err(load(&bytes));
         assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
         assert!(err.detail.contains("condition_dsp"));
+    }
+
+    /// Issue #172 review finding 1: with the container declaring `sample_rate: 44100` and the
+    /// submodels omitting it, the loaded model must report 44100 Hz (matching the probe), not
+    /// fall back to 48 kHz. The container's declaration is authoritative — the whole point of
+    /// declaring it once at the top level instead of once per submodel.
+    #[test]
+    fn slimmable_container_propagates_container_sample_rate_to_rate_less_submodels() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["sample_rate"] = serde_json::json!(44100);
+        for i in 0..2 {
+            value["config"]["submodels"][i]["model"]
+                .as_object_mut()
+                .unwrap()
+                .remove("sample_rate");
+        }
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let prepared = load(&bytes).expect("container with container-level rate should load");
+        assert_eq!(prepared.sample_rate().hz(), 44_100);
+
+        // Probe and load must resolve the same way (review finding 2's "identical resolution").
+        let probe = crate::probe::probe_metadata(&bytes).unwrap();
+        assert_eq!(probe.sample_rate, Some(44_100));
+        assert_eq!(probe.sample_rate, Some(prepared.sample_rate().hz()));
+    }
+
+    /// Issue #172 review finding 1, submodel-declared side: when the submodels *do* declare a
+    /// rate and the container says the same, the loaded model reports it (no double-default).
+    /// This is the pre-existing behavior, pinned here so the propagation fix cannot regress it.
+    #[test]
+    fn slimmable_container_propagates_matching_submodel_sample_rate() {
+        let bytes = minimal_container_json();
+        let prepared = load(&bytes).expect("container should load");
+        assert_eq!(prepared.sample_rate().hz(), 48_000);
+
+        let probe = crate::probe::probe_metadata(&bytes).unwrap();
+        assert_eq!(probe.sample_rate, Some(48_000));
+    }
+
+    /// Issue #172 review finding 2: metadata resolves submodel-first, container-fallback — a
+    /// non-empty submodel field must keep overriding the container's, and an empty submodel
+    /// field must be filled from the container's. The loaded `PreparedNam` and the probe must
+    /// agree field by field.
+    ///
+    /// Fixture: submodel 1 ("Full Version", `loudness: -12.0`) overrides the container's name;
+    /// every submodel metadata field the submodels leave empty is filled from the container's.
+    #[test]
+    fn slimmable_container_metadata_resolution_matches_probe() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["metadata"] = serde_json::json!({
+            "name": "Container Model",
+            "modeled_by": "Container Author",
+            "gear_type": "Container Gear",
+            "tone_type": "Container Tone",
+            "description": "Container description",
+            "loudness": -9.5
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let prepared = load(&bytes).expect("container should load");
+        // Submodel fields win where non-empty...
+        assert_eq!(prepared.metadata().name, "Full Version");
+        assert_eq!(prepared.loudness_lufs(), Some(-12.0));
+        // ...container fields fill the submodel's gaps.
+        assert_eq!(prepared.metadata().modeled_by, "Container Author");
+        assert_eq!(prepared.metadata().gear_type, "Container Gear");
+        assert_eq!(prepared.metadata().tone_type, "Container Tone");
+        assert_eq!(prepared.metadata().description, "Container description");
+
+        let probe = crate::probe::probe_metadata(&bytes).unwrap();
+        assert_eq!(probe.metadata.name, prepared.metadata().name);
+        assert_eq!(probe.metadata.modeled_by, prepared.metadata().modeled_by);
+        assert_eq!(probe.metadata.gear_type, prepared.metadata().gear_type);
+        assert_eq!(probe.metadata.tone_type, prepared.metadata().tone_type);
+        assert_eq!(probe.metadata.description, prepared.metadata().description);
+        assert_eq!(probe.metadata.loudness, prepared.metadata().loudness);
+    }
+
+    /// Issue #172 review finding 3: a submodel that is itself a `SlimmableContainer` is
+    /// rejected up front with `UNSUPPORTED_CONFIGURATION` — without this check, a nested
+    /// container would recurse through `load` indefinitely on a maliciously nested file.
+    #[test]
+    fn slimmable_container_rejects_nested_container_submodel() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&minimal_container_json()).unwrap();
+        value["config"]["submodels"][1]["model"]["architecture"] =
+            serde_json::json!("SlimmableContainer");
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(
+            err.detail
+                .contains("nested SlimmableContainer is not supported")
+        );
+    }
+
+    /// Issue #172 review finding 3: `submodels.len() > MAX_SUBMODELS` is rejected with
+    /// `DIMENSION_LIMIT_EXCEEDED` — the NFR-SEC-020 ceiling that bounds how many submodels a
+    /// hostile container may force the loader to scan. 33 entries, one past the ceiling of 32.
+    #[test]
+    fn slimmable_container_rejects_more_than_max_submodels() {
+        let submodels: Vec<serde_json::Value> = (0..=crate::shared::MAX_SUBMODELS)
+            .map(|i| {
+                serde_json::json!({
+                    "max_value": i as f64,
+                    "model": { "architecture": "WaveNet" }
+                })
+            })
+            .collect();
+        let bytes = serde_json::json!({
+            "architecture": "SlimmableContainer",
+            "config": { "submodels": submodels }
+        })
+        .to_string()
+        .into_bytes();
+
+        let err = expect_err(load(&bytes));
+        assert_eq!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
+        assert!(err.detail.contains("config.submodels.len()"));
+    }
+
+    /// The boundary the ceiling produces: exactly `MAX_SUBMODELS` submodels passes the ceiling
+    /// check (each is minimal, so the load still gets past the peek and fails later on the
+    /// unsupported `"WaveNet"` stub — the point is only that it is *not* a ceiling rejection).
+    #[test]
+    fn slimmable_container_accepts_exactly_max_submodels() {
+        let submodels: Vec<serde_json::Value> = (0..crate::shared::MAX_SUBMODELS)
+            .map(|i| {
+                serde_json::json!({
+                    "max_value": i as f64,
+                    "model": { "architecture": "WaveNet", "config": {} }
+                })
+            })
+            .collect();
+        let bytes = serde_json::json!({
+            "architecture": "SlimmableContainer",
+            "config": { "submodels": submodels }
+        })
+        .to_string()
+        .into_bytes();
+
+        let err = expect_err(load(&bytes));
+        assert_ne!(err.code.id, error_codes::DIMENSION_LIMIT_EXCEEDED.id);
     }
 }

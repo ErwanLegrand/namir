@@ -10,6 +10,13 @@
 
 use crate::error_codes::{self, NamLoadError};
 
+/// Issue #172 (NFR-SEC-020 memory bound): a `SlimmableContainer` may hold at most this many
+/// submodels. Bounds the per-submodel scan (architecture + `sample_rate` peek) a hostile
+/// container could otherwise force to unbounded length; only the selected (last) submodel is ever
+/// fully parsed, and that submodel is itself subject to the same `MAX_SUBMODELS` ceiling when it
+/// is itself a container — see `model::load_slimmable_container`.
+pub const MAX_SUBMODELS: usize = 32;
+
 /// Sequentially consumes floats off the front of a model's flat `weights` array, the same way
 /// for every architecture: each `.nam` format's own doc comment (`wavenet.rs`'s, `lstm.rs`'s)
 /// specifies the exact order its fields are read in; this type only provides the "read `n`, or

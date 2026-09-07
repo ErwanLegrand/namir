@@ -512,8 +512,12 @@ pub struct ContainerConfig {
 pub struct SubmodelEntry {
     /// The threshold value associated with this submodel.
     pub max_value: f64,
-    /// The submodel's JSON document, parsed during model loading.
-    pub model: serde_json::Value,
+    /// The submodel's raw JSON document, kept as an owned [`serde_json::value::RawValue`] so a
+    /// container load never materializes every submodel's `weights` as a `serde_json::Value` —
+    /// only the selected (last) submodel is fully parsed, and then straight from these raw bytes
+    /// via `model::load` (`RawValue::get()` returns the exact source text, so the recursive load
+    /// does zero re-serialization).
+    pub model: Box<serde_json::value::RawValue>,
 }
 
 impl ContainerFile {
@@ -830,5 +834,20 @@ mod tests {
     fn sniff_architecture_reads_slimmable_container_files() {
         let arch = sniff_architecture(&minimal_valid_container_json()).unwrap();
         assert_eq!(arch, "SlimmableContainer");
+    }
+
+    /// Issue #172: `SubmodelEntry::model` is kept as raw JSON (`Box<RawValue>`) so a container
+    /// parse never materializes any submodel's `weights` as a `serde_json::Value`. Pins the
+    /// property that the raw text still round-trips — re-parsing it yields the exact submodel
+    /// document, which is what `model::load_slimmable_container` feeds to `load`.
+    #[test]
+    fn container_submodel_model_round_trips_as_raw_json() {
+        let file = ContainerFile::parse(&minimal_valid_container_json()).unwrap();
+        let last = file.config.submodels.last().unwrap();
+        let reparsed: serde_json::Value =
+            serde_json::from_str(last.model.get()).expect("raw submodel JSON must parse");
+        assert_eq!(reparsed["architecture"], "WaveNet");
+        assert_eq!(reparsed["sample_rate"], 48_000);
+        assert!(reparsed.get("weights").is_some());
     }
 }
