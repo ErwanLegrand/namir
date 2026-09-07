@@ -1894,24 +1894,7 @@ impl PreparedWaveNet {
     /// leaving this submodel's own non-empty fields untouched. Keeps probe and load resolving
     /// metadata identically: the submodel's field wins, the container's is the fallback.
     pub(crate) fn merge_metadata(&mut self, other: &NamMetadata) {
-        if self.metadata.name.is_empty() {
-            self.metadata.name = other.name.clone();
-        }
-        if self.metadata.modeled_by.is_empty() {
-            self.metadata.modeled_by = other.modeled_by.clone();
-        }
-        if self.metadata.gear_type.is_empty() {
-            self.metadata.gear_type = other.gear_type.clone();
-        }
-        if self.metadata.tone_type.is_empty() {
-            self.metadata.tone_type = other.tone_type.clone();
-        }
-        if self.metadata.description.is_empty() {
-            self.metadata.description = other.description.clone();
-        }
-        if self.metadata.loudness.is_none() {
-            self.metadata.loudness = other.loudness;
-        }
+        self.metadata.fill_empty_from(other);
     }
 
     /// FR-NAM-110: "Namir shall report the model stage's processing latency in samples, and

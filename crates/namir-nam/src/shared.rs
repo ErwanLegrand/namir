@@ -13,8 +13,12 @@ use crate::error_codes::{self, NamLoadError};
 /// Issue #172 (NFR-SEC-020 memory bound): a `SlimmableContainer` may hold at most this many
 /// submodels. Bounds the per-submodel scan (architecture + `sample_rate` peek) a hostile
 /// container could otherwise force to unbounded length; only the selected (last) submodel is ever
-/// fully parsed, and that submodel is itself subject to the same `MAX_SUBMODELS` ceiling when it
-/// is itself a container — see `model::load_slimmable_container`.
+/// fully parsed. The ceiling therefore applies to exactly one level: a submodel that is itself a
+/// container is rejected outright (`nam.load.unsupported_configuration`) rather than recursed
+/// into, so there is no nesting for a second application of this bound to govern — see
+/// `model::load_slimmable_container`. This comment described that recursion before it was replaced
+/// by the rejection; the ceiling is enforced on both the load and the probe path
+/// (`probe::probe_metadata`).
 pub const MAX_SUBMODELS: usize = 32;
 
 /// Sequentially consumes floats off the front of a model's flat `weights` array, the same way
