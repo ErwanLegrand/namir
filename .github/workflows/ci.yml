@@ -298,7 +298,7 @@ jobs:
         run: cargo run -p xtask -- traceability --allow-uncovered
 
       - name: xtask traceability -- uncovered Musts (NFR-QUAL-010, informational until M14 Phase 6)
-        run: cargo run -p xtask -- traceability || true
+        run: cargo run -p xtask -- traceability
         continue-on-error: true
 
   # M15 (issue #143): does the interface actually open and paint on a machine with no display?

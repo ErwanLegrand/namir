@@ -98,10 +98,11 @@ const DROPOUT_PEAK_THRESHOLD: f32 = 1e-4;
 /// exactly the failure mode FR-LIB-020's "off the audio thread" clause forbids.
 ///
 /// While `rt_stress.rs` uses `200` for a 6-file corpus, under a 10,000-file scan with concurrent
-/// thread-pool disk hashing and UI polling, OS scheduler preemption in debug mode on CI runner VMs
-/// (such as macOS Apple Silicon) can reach ~350ms. Sized to `600` (allowing up to 800ms for a
-/// 64-sample block), it tolerates runner scheduler preemption while any genuine thread blocking on
-/// the multi-second scan would still be caught well above this threshold.
+/// thread-pool disk hashing and UI polling, observed ~350 ms OS scheduler preemption on shared CI
+/// runner VMs (e.g. macOS Apple Silicon runners during 10k-file scan under AllocDisabler) can occur
+/// in debug mode. Sized to `600` (allowing up to 800ms for a 64-sample block), it tolerates runner
+/// scheduler preemption while any genuine thread blocking on the multi-second scan would still be
+/// caught well above this threshold.
 const MAX_BLOCK_MULTIPLE: u32 = 600;
 
 /// The UI thread's frame interval — 60 Hz, the rate `namir-ui` is written against and twice the
@@ -412,12 +413,7 @@ fn fr_lib_020_a_ten_thousand_file_scan_blocks_neither_the_audio_thread_nor_the_u
     assert!(
         audio.max_block_duration <= block_period * MAX_BLOCK_MULTIPLE,
         "a block took {:?}, over {MAX_BLOCK_MULTIPLE}x the block period {block_period:?} -- the \
-         audio thread waited on something while the library was being scanned. 200 was originally \
-         copied from rt_stress.rs (which tests only a 6-file corpus), whereas under a 10,000-file \
-         scan with concurrent thread-pool disk hashing and UI polling, OS scheduler preemption in \
-         debug mode on CI runner VMs (such as macOS Apple Silicon) can reach ~350ms, while any \
-         genuine thread blocking on the multi-second scan would still be caught well above this \
-         threshold.",
+         audio thread waited on something while the library was being scanned",
         audio.max_block_duration
     );
     assert!(

@@ -409,7 +409,7 @@ jobs:
   #   * it `needs` all three build jobs, so nothing is published unless every platform built;
   #   * it **checks out nothing**, so there is no source tree here to build from and no repository
   #     file that could be published by accident;
-#   * its only input is `actions/download-artifact@v8` with no `run-id`, `repository` or
+  #   * its only input is `actions/download-artifact@v8` with no `run-id`, `repository` or
   #     `github-token` -- inputs that would let it pull artifacts from *another* run or repository.
   #     Without them the action can only see artifacts this run produced;
   #   * it runs no build or packaging command of its own; and
