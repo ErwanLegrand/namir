@@ -82,9 +82,25 @@ fn prewarm_length_matches_the_reference_formula_for_every_architecture() {
 }
 
 /// The property that makes an over-estimate safe for WaveNet, and the one that would break if
-/// `prewarm_samples` ever returned less than the true receptive field: past that many samples of
-/// silence, the state is settled, so *more* silence changes nothing at all. Asserted bit-exactly,
-/// because it is an exact claim about a finite-memory network rather than a numerical tolerance.
+/// `prewarm_samples()` ever returned less than the true receptive field: once that many samples of
+/// silence have gone through, the state is settled, so *more* silence changes nothing at all.
+/// Asserted bit-exactly, because it is an exact claim about a finite-memory network rather than a
+/// numerical tolerance.
+///
+/// **The signal lead-in is what gives this teeth, and the first version of this test had none.**
+/// It compared two freshly prewarmed states and was vacuous against every fixture that exists:
+/// each bias `namir-fixtures` emits is exactly zero, so under silence every convolution output is
+/// `W·0 + 0 = 0` and the settled state *is* the zero state a fresh `new_state` already starts
+/// from. Both sides were therefore bit-equal for reasons having nothing to do with the receptive
+/// field, and the assertion would have held unchanged had `prewarm_samples()` returned `0`. That
+/// mattered because this test is cited as the evidence for the head-term over-estimate
+/// (`PreparedWaveNet::prewarm_samples`) and for D-9.13's clamping argument, and it could not carry
+/// either. Raised in review on PR #179.
+///
+/// Driving real signal through first fills every convolution history with non-zero values, so the
+/// question becomes whether a prewarm's worth of silence is *enough to flush them* — which is
+/// exactly the claim, and which a wrong receptive field fails: under-count, and the shorter run
+/// still holds residue the longer one has flushed, so the two states differ.
 #[test]
 fn a_wavenet_is_fully_settled_once_its_prewarm_length_of_silence_has_gone_through() {
     let model = load(
@@ -92,20 +108,26 @@ fn a_wavenet_is_fully_settled_once_its_prewarm_length_of_silence_has_gone_throug
             .expect("A2 fixture")
             .to_json_bytes(),
     );
-    let probe: Vec<f32> = (0..512).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+    let block = 512;
+    let signal: Vec<f32> = (0..block).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+    let probe: Vec<f32> = (0..block).map(|i| (i as f32 * 0.11).sin() * 0.2).collect();
 
-    let mut exact = model.new_state_prewarmed(probe.len());
-    let from_exact = model.process(&mut exact, &probe);
+    // Both runs see the same signal, so both start the silence from the same non-zero state.
+    let settle = |silence_blocks: usize| {
+        let mut state = model.new_state(block);
+        let _ = model.process(&mut state, &signal);
+        for _ in 0..silence_blocks {
+            let _ = model.process(&mut state, &vec![0.0f32; block]);
+        }
+        model.process(&mut state, &probe)
+    };
 
-    let mut over = model.new_state_prewarmed(probe.len());
-    for _ in 0..4 {
-        let _ = model.process(&mut over, &vec![0.0f32; probe.len()]);
-    }
-    let from_over = model.process(&mut over, &probe);
-
+    // Enough silence to cover the prewarm length, and then four times as much again.
+    let blocks = model.prewarm_samples().div_ceil(block);
     assert_eq!(
-        from_exact, from_over,
-        "extra silence past the prewarm length must change nothing"
+        settle(blocks),
+        settle(5 * blocks),
+        "past the prewarm length the state is settled, so further silence must change nothing"
     );
 }
 
