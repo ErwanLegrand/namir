@@ -142,7 +142,8 @@ pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode::new(
 /// FR-NAM-140: the file is well-formed and its `architecture` is supported, but its `config` uses
 /// a feature this build does not implement (D-9.12's core-A2 scope boundary): `condition_dsp`,
 /// FiLM conditioning at any of the eight `*_film` sites, an active `head1x1`, an inactive
-/// `layer1x1`, gating (`gating_mode` other than `"none"` or the legacy `gated: true`), a `groups_*`
+/// `layer1x1`, gating (`gating_mode` other than `"none"`, a `secondary_activation` that names an
+/// activation, or the legacy `gated: true`), a `groups_*`
 /// value other than 1, or a `slimmable` container. `detail` names the offending key — that naming
 /// is FR-NAM-140's own requirement text, not a courtesy.
 ///
