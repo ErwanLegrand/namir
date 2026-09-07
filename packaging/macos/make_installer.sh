@@ -804,6 +804,23 @@ main() {
 	log "  ${OUT_DIR}/${ZIP_NAME}   (FR-PKG-050's plain archive, same artifacts)"
 	log "  ${OUT_DIR}/${PKG_NAME}   (the installer alone, for inspection)"
 
+	if [ -n "${GITHUB_OUTPUT:-}" ]; then
+		local is_signed="false"
+		if [ -n "${NAMIR_CODESIGN_IDENTITY:-}" ] && [ -n "${NAMIR_INSTALLER_IDENTITY:-}" ]; then
+			is_signed="true"
+		fi
+		local is_notarized="false"
+		if [ "$is_signed" = "true" ]; then
+			if [ -n "${NAMIR_NOTARY_PROFILE:-}" ]; then
+				is_notarized="true"
+			elif [ -n "${NAMIR_NOTARY_APPLE_ID:-}" ] && [ -n "${NAMIR_NOTARY_TEAM_ID:-}" ] \
+				&& [ -n "${NAMIR_NOTARY_PASSWORD:-}" ]; then
+				is_notarized="true"
+			fi
+		fi
+		echo "signed=${is_signed}" >> "$GITHUB_OUTPUT"
+		echo "notarized=${is_notarized}" >> "$GITHUB_OUTPUT"
+	fi
 	if [ -z "${NAMIR_CODESIGN_IDENTITY:-}" ] || [ -z "${NAMIR_INSTALLER_IDENTITY:-}" ]; then
 		printf '\n'
 		log "WARNING -- this build is not fully signed, and risk R-11 applies:"
