@@ -287,7 +287,7 @@ impl HeadlessUiDriver {
     fn type_into_control_value(&mut self, label_name: &str, new_text: &str) {
         let (_, rect) = self.locate_value_for_control(label_name);
         self.click_at(rect.center());
-        // Select all and replace with new_text, then press Enter
+        // Frame 1: Select all and replace with new_text
         self.frame(vec![
             Event::Key {
                 key: Key::A,
@@ -297,19 +297,23 @@ impl HeadlessUiDriver {
                 physical_key: None,
             },
             Event::Text(new_text.to_string()),
-            Event::Key {
-                key: Key::Enter,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-                repeat: false,
-                physical_key: None,
-            },
         ]);
+        // Frame 2: Press Enter to commit edit
+        self.frame(vec![Event::Key {
+            key: Key::Enter,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            physical_key: None,
+        }]);
+        // Frame 3: Empty frame to settle post-focus-loss state
+        self.frame(vec![]);
     }
 
     fn type_and_escape_control_value(&mut self, label_name: &str, new_text: &str) {
         let (_, rect) = self.locate_value_for_control(label_name);
         self.click_at(rect.center());
+        // Frame 1: Select all and replace with new_text
         self.frame(vec![
             Event::Key {
                 key: Key::A,
@@ -319,14 +323,17 @@ impl HeadlessUiDriver {
                 physical_key: None,
             },
             Event::Text(new_text.to_string()),
-            Event::Key {
-                key: Key::Escape,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-                repeat: false,
-                physical_key: None,
-            },
         ]);
+        // Frame 2: Press Escape to cancel edit
+        self.frame(vec![Event::Key {
+            key: Key::Escape,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            physical_key: None,
+        }]);
+        // Frame 3: Empty frame to verify post-focus-loss state
+        self.frame(vec![]);
     }
 
     fn current_param(&self, key: &'static str) -> f32 {
@@ -495,10 +502,33 @@ fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
     });
 
     driver.type_and_escape_control_value("Input Level", "12.0");
-    assert_eq!(driver.current_param(trim::GAIN_DB.key), 6.0);
+    assert_eq!(
+        driver.current_param(trim::GAIN_DB.key),
+        6.0,
+        "parameter value must remain at pre-edit value immediately after Escape"
+    );
 
     let (text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text, "6.0");
+
+    // Advance additional frames to verify no late commit occurs on lost focus (e.g. frame after Escape)
+    driver.frame(vec![]);
+    driver.frame(vec![]);
+
+    assert_eq!(
+        driver.current_param(trim::GAIN_DB.key),
+        6.0,
+        "parameter value must remain at pre-edit value across subsequent frames"
+    );
+
+    let (text_after, _) = driver.locate_value_for_control("Input Level");
+    assert_eq!(text_after, "6.0");
+
+    let intents = driver.dispatched_intents();
+    assert!(
+        intents.is_empty(),
+        "no SetParam intent with aborted value must be dispatched, got: {intents:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
