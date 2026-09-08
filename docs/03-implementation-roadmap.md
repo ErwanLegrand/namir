@@ -2916,6 +2916,27 @@ that happens to depend on them first.
     M14's silence is not the item answered in the negative. FR-IO-010, -040 and -050 are unmoved for
     the same reason. Answer 3 — keeping the current silence — is what this note refuses on the
     item's behalf: the item stays open and dated, which is not the same thing.
+
+    **Resolved 2026-09-08, answered by construction: the panel shipped in PR #159 (merge `11cdf11`,
+    2026-09-07), and issue #26 is closed.** Four new `UiIntent`s (`SelectInputDevice`,
+    `SelectOutputDevice`, `SelectSampleRate`, `SelectBufferSize`) call `initiate_audio_reopen()` in
+    `crates/namir-app/src/host.rs:1422-1444`, reopening the audio stream in-session rather than only
+    across an application restart. `UiSnapshot` carries `audio_panel_open: bool` and
+    `audio_panel: Option<AudioDevicePanelSnapshot>` (`crates/namir-ui/src/host.rs`). What it does
+    and does not cover:
+
+    - **Covered:** in-session device, sample-rate and buffer-size selection in `namir-app`.
+    - **Not covered (latency):** no latency field is carried on the panel
+      (`AudioDevicePanelSnapshot` has no latency member); FR-IO-050 still needs both a measurement
+      and a display. `docs/manual-tests/fr-io-050-round-trip-latency.md` remains PARTIAL.
+    - **Not covered (xrun reset):** no xrun field is carried on the panel, and FR-IO-060's
+      "resettable by the user" clause remains unreachable: `XrunCounter::reset` still has no caller
+      outside its own unit tests and no `UiIntent` reaches it.
+
+    The nine Musts M14 Phase 1 deferred as "gated on item 16" (and the passages across M14 Phase 0
+    describing item 16 as unanswered/overdue) are no longer gated on it; whether each requirement
+    moved is a per-cell adjudication not yet done. See §21 `### M14 addendum: item 16 answered by
+    construction, 2026-09-08` for the superseding scope record.
 17. ~~**Which milestone closes FR-CFG-030, NFR-LIC-030 and FR-IO-070.** Raised 2026-08-09 by M9a's
     sweep, whose `// uncovered:` fields had to declare a closing milestone for each and, for these
     three alone of the 54, could not take one this document assigns. FR-CFG-030 and NFR-LIC-030 both
@@ -6602,6 +6623,81 @@ exist, are green, and cannot detect what they were built to detect. This was a f
 largest of them, sitting one level above the others: the three in Phase 3 each failed to detect one
 thing, while this one meant *no* gate's verdict was binding. It was found by the same kind of
 adversarial re-read and is recorded in the same place.
+
+### M14 addendum: item 16 answered by construction, 2026-09-08
+
+Roadmap §15 item 16 ("whether 1.0 ships an audio-device panel in `namir-ui`") was answered by
+construction: the audio-device panel shipped in PR #159 (merge `11cdf11`, 2026-09-07), and GitHub
+issue #26 is closed.
+
+This addendum supersedes in place the earlier M14 planning and scoping passages that described item
+16 as unanswered, overdue, or gating M14 device work:
+
+1. **§21 "Why this milestone exists"** (`:5887`): "§15 item 16 — whether 1.0 ships an audio-device
+   panel — was due before M9b's start, has not been taken, and is upstream of five Musts'
+   user-facing clauses."
+2. **§21 "Phase 0 — Decisions, before any of it is built"** (`:5908`): "§15 item 16 — the
+   audio-device panel. Overdue. Answer 1 (build it) makes Phase 1 materially larger... Answer 3
+   (silence) is not available at a 1.0 gate. This is the single decision with the largest effect on
+   this milestone's size, and it must be first."
+3. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5948`): "The nine Musts whose mechanism does not
+   exist. Scope depends on Phase 0's item 16 answer."
+4. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5968`): "FR-IO-060, FR-IO-070 — xrun count and
+   device re-selection. The xrun counter surfaces only through `eprintln!`. Gated on item 16."
+5. **§21 "What was deliberately left open"** (`:6260`): "§15 item 16 — the audio-device panel. §21
+   called this 'the single decision with the largest effect on this milestone's size, and it must be
+   first', and it is nonetheless not taken... Consequence for this milestone, stated as scope: M14
+   does no device work of any kind, and FR-IO-060 and FR-IO-070 stay Partial through it."
+6. **§21 "What the automated half of M14 will and will not attempt"** (`:6292`): "All of §21 Phase 1
+   is deferred... several of them are gated on item 16, which is unanswered."
+7. **§21 "What the automated half of M14 will and will not attempt"** (`:6296`): "No device work.
+   Per item 16, above."
+8. **§21 "M14 status — Category B"** (`:6397`): "§15 item 16 / issue #26, the audio-device panel:
+   FR-IO-060, FR-IO-070. Overdue before M9b started, and M14 scoped itself around it rather than
+   deciding it to suit a measurement."
+
+**What was built on trunk:**
+- `crates/namir-ui/src/host.rs`: `UiSnapshot.audio_panel_open: bool`,
+  `UiSnapshot.audio_panel: Option<AudioDevicePanelSnapshot>`; `AudioDevicePanelSnapshot` carries
+  input and output device lists, `current_output_device`, `supported_sample_rates`,
+  `current_sample_rate`, `supported_buffer_sizes`, and `current_buffer_size`. New intents
+  `UiIntent::SelectInputDevice`, `SelectOutputDevice`, `SelectSampleRate`, and `SelectBufferSize`.
+- `crates/namir-app/src/host.rs:1422-1444`: each of the four intents invokes
+  `initiate_audio_reopen()`, so device, rate, and buffer changes now occur dynamically in-session
+  rather than only across a restart.
+
+**What remains not covered and how the traceability gate behaves:**
+- The panel carries no latency field and no xrun field.
+- **FR-IO-050:** measured round-trip latency still requires both a measurement mechanism and a
+  display (`docs/manual-tests/fr-io-050-round-trip-latency.md` stays PARTIAL). Its M9a reason in
+  §14's 5.11 IO bullet (`:2053-2055`) holds verbatim: `crates/namir-app/src/latency.rs:43` hardcodes
+  `measured: false` and the panel carries no latency field.
+- **FR-IO-060:** the "resettable by the user" clause remains unreachable; `XrunCounter::reset` has
+  no caller outside unit tests and no `UiIntent` reaches it.
+- The nine Musts M14 Phase 1 deferred as "gated on item 16" are no longer gated on item 16; whether
+  each requirement moved is a per-cell adjudication not yet done.
+- **Gate effect and the worst-verdict-wins fix across multiple manual documents:**
+  `xtask/src/traceability.rs` previously used `manual_test_docs.iter().find(..)`, which enforced
+  worst-verdict-wins within a document but took the first matching document across files. It was
+  fixed to fold the worst verdict across all documents declaring a requirement id. Consequently,
+  uncovered Musts moved from 4 to 6: PR #159's own scripts
+  `docs/manual-tests/fr-io-010-device-selection.md` and
+  `docs/manual-tests/fr-io-040-sample-rate-and-buffer-size.md` (both `NOT EXECUTED`) had been masked
+  because `fr-io-010-device-enumeration.md` sorts first and records PASS. Both are now marked
+  `**UNRESOLVED**` in `docs/03-test-plan.md`, bringing the uncovered set to six: FR-IN-020,
+  FR-IO-010, FR-IO-030, FR-IO-040, FR-IO-050, FR-UI-030 (42 trace-partials; §14's denominator check
+  still passes at 24 rows / 130 Musts).
+- **No §14 cell moves for this:** §14's `5.11 IO — 2 / 6 / 0` bullet (`:2022`) already counted
+  FR-IO-010 and FR-IO-040 as **Partial** (the two Done being FR-IO-080 and FR-IO-020). The ledger
+  was already stricter than the gate.
+- **Stale M9a reason text in §14:** while the verdicts in §14's 5.11 IO bullet stand, two M9a reason
+  texts are now factually stale: FR-IO-010's text stating "'the user shall be able to select' has no
+  interactive surface at all; selection happens once at start-up" (`:2046-2048`) and FR-IO-040's
+  stating "neither selection clause is built and 'always displayed' is served by an `eprintln!`"
+  (`:2051-2053`). PR #159 built both selection surfaces; both cells stay Partial because their
+  dedicated manual test scripts are unexecuted rather than because the surface is absent, and
+  FR-IO-040's "always displayed" clause needs re-checking against the panel (the panel displays
+  `current_sample_rate` and `current_buffer_size`).
 
 ### Four `Verify: M` UI Musts executed on real hardware, 2026-09-08 — §14's 5.13 UI row moves
 

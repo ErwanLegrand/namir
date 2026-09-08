@@ -45,6 +45,17 @@ Four consequences worth knowing before you write one:
 - **The worst verdict in a document wins**, not the first. A document may carry more than one
   verdict line (a later run recording one step of a script the rest of which is still unexecuted);
   the gate takes the least favourable.
+- **The worst verdict across a requirement's documents wins too** (added 2026-09-08). A requirement
+  can be matched by more than one document — by filename prefix, or by a document's
+  `**Requirement (literal…):**` block declaring its id — and every match is read, so one script's
+  `PASS` never speaks for a sibling script's unexecuted steps. Until this pass the lookup stopped
+  at the first match, and PR #159's two new scripts, `fr-io-010-device-selection.md` and
+  `fr-io-040-sample-rate-and-buffer-size.md`, were invisible: `fr-io-010-device-enumeration.md`
+  sorts first, declares both ids and records a `PASS` earned against the pre-panel surface, so both
+  Musts read plainly covered while the scripts written for the surface that had just shipped had
+  never been run. **Practical consequence when you add a document:** a new script for an existing
+  requirement takes that requirement uncovered until it is executed. That is the intended
+  behaviour, not a regression — write the script anyway.
 - **`PASS` may not contradict itself.** A `PASS` line that goes on to say some part was `NOT
   EXECUTED` / `NOT RUN` is refused, not quietly downgraded. Write `PARTIAL` and keep the sentence.
 
