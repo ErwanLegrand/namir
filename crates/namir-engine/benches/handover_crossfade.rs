@@ -236,11 +236,11 @@ fn run_arm(arm: Arm, period: usize, model_bytes: &[u8], ir_bytes: &[u8]) -> ArmR
 
     let mut chain = build_default_chain(&ctx).unwrap();
     chain.apply(namir_engine::ParamChange {
-        id: namir_engine::ParamId(namir_params::stages::gate::THRESHOLD_DB.id.0),
+        id: namir_params::stages::gate::THRESHOLD_DB.id,
         value: GATE_THRESHOLD_DB,
     });
     chain.apply(namir_engine::ParamChange {
-        id: namir_engine::ParamId(namir_params::stages::eq::LOW_SHELF_GAIN_DB.id.0),
+        id: namir_params::stages::eq::LOW_SHELF_GAIN_DB.id,
         value: EQ_LOW_SHELF_GAIN_DB,
     });
 

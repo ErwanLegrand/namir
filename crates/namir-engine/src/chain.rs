@@ -17,9 +17,9 @@ const TELEMETRY_FAULT_COUNT: u32 = namir_params::ParamId::from_key("telemetry.ch
 /// keys — the identical per-stage convention `stages/trim.rs`'s `GAIN_DB_ID` documents, applied
 /// here to the two chain-level (not stage-owned) descriptors `namir_params::global` declares.
 /// [`Chain::apply`] matches on these the same way a stage's own `apply` matches on its ids.
-const GLOBAL_BYPASS_ID: ParamId = ParamId(GLOBAL_BYPASS.id.0);
+const GLOBAL_BYPASS_ID: ParamId = GLOBAL_BYPASS.id;
 /// See [`GLOBAL_BYPASS_ID`].
-const OUTPUT_CEILING_DB_ID: ParamId = ParamId(OUTPUT_CEILING_DB.id.0);
+const OUTPUT_CEILING_DB_ID: ParamId = OUTPUT_CEILING_DB.id;
 
 /// D-6.1: "the chain is `Vec<Box<dyn Stage>>` built once during preparation." Building that
 /// vector — running each configured stage's `StagePrep::prepare` and boxing the result — is the

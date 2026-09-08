@@ -164,7 +164,7 @@ use namir_engine::stages::ir::{IrPrep, IrStage};
 use namir_engine::stages::nam::{NamPrep, NamStage};
 use namir_engine::stages::out::OutPrep;
 use namir_engine::stages::trim::TrimPrep;
-use namir_engine::{Chain, ParamChange, ParamId, PrepareContext, Stage, StageIo, StagePrep};
+use namir_engine::{Chain, ParamChange, PrepareContext, Stage, StageIo, StagePrep};
 use namir_fixtures::ir::decaying_noise;
 use namir_fixtures::nam::{WaveNetShape, generate};
 use namir_ir::PreparedIr;
@@ -354,19 +354,19 @@ fn assemble_real_chain(
     ir_stage.load_ir(Arc::clone(ir));
 
     gate_stage.apply(ParamChange {
-        id: ParamId(gate::ENABLED.id.0),
+        id: gate::ENABLED.id,
         value: 1.0,
     });
     gate_stage.apply(ParamChange {
-        id: ParamId(gate::THRESHOLD_DB.id.0),
+        id: gate::THRESHOLD_DB.id,
         value: GATE_THRESHOLD_DB,
     });
     eq_stage.apply(ParamChange {
-        id: ParamId(eq::ENABLED.id.0),
+        id: eq::ENABLED.id,
         value: 1.0,
     });
     eq_stage.apply(ParamChange {
-        id: ParamId(eq::LOW_SHELF_GAIN_DB.id.0),
+        id: eq::LOW_SHELF_GAIN_DB.id,
         value: EQ_LOW_SHELF_GAIN_DB,
     });
 
@@ -492,11 +492,11 @@ fn build_stage(
         StageKind::Gate => {
             let mut stage: GateStage = GatePrep.prepare(ctx).expect("GatePrep::prepare");
             stage.apply(ParamChange {
-                id: ParamId(gate::ENABLED.id.0),
+                id: gate::ENABLED.id,
                 value: 1.0,
             });
             stage.apply(ParamChange {
-                id: ParamId(gate::THRESHOLD_DB.id.0),
+                id: gate::THRESHOLD_DB.id,
                 value: GATE_THRESHOLD_DB,
             });
             Box::new(stage)
@@ -515,11 +515,11 @@ fn build_stage(
         StageKind::Eq => {
             let mut stage: EqStage = EqPrep.prepare(ctx).expect("EqPrep::prepare");
             stage.apply(ParamChange {
-                id: ParamId(eq::ENABLED.id.0),
+                id: eq::ENABLED.id,
                 value: 1.0,
             });
             stage.apply(ParamChange {
-                id: ParamId(eq::LOW_SHELF_GAIN_DB.id.0),
+                id: eq::LOW_SHELF_GAIN_DB.id,
                 value: EQ_LOW_SHELF_GAIN_DB,
             });
             Box::new(stage)

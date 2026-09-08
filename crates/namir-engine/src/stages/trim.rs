@@ -52,14 +52,8 @@ const DC_BLOCKER_CORNER_HZ: f32 = 20.0;
 /// summing, rather than a plain 0.5/0.5 average, per that requirement's own wording.
 const DOWNMIX_EACH_TERM_DB: f32 = -6.0;
 
-/// This stage's RT-facing `namir_engine::ParamId`, converted once from `namir_params`'s own id
-/// for the same key. The two crates carry distinct `ParamId` types on purpose (see
-/// `namir_params`'s crate doc: `namir-engine`'s is "a separate, deliberately bare RT-path type"),
-/// so matching in `apply` goes through this converted constant rather than comparing across
-/// types.
-const GAIN_DB_ID: ParamId = ParamId(GAIN_DB.id.0);
-/// See [`GAIN_DB_ID`].
-const DC_BLOCKER_ENABLED_ID: ParamId = ParamId(DC_BLOCKER_ENABLED.id.0);
+const GAIN_DB_ID: ParamId = GAIN_DB.id;
+const DC_BLOCKER_ENABLED_ID: ParamId = DC_BLOCKER_ENABLED.id;
 
 /// Telemetry signal ids, derived from a namespaced string the same way `namir-params`'s real
 /// parameter ids are (this crate's shared telemetry-id convention) — these are readouts, not

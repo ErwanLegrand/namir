@@ -78,7 +78,7 @@ use namir_engine::stages::ir::{IrPrep, IrStage};
 use namir_engine::stages::nam::{NamPrep, NamStage};
 use namir_engine::stages::out::OutPrep;
 use namir_engine::stages::trim::TrimPrep;
-use namir_engine::{Chain, ParamChange, ParamId, PrepareContext, Stage, StageIo, StagePrep};
+use namir_engine::{Chain, ParamChange, PrepareContext, Stage, StageIo, StagePrep};
 use namir_fixtures::ir::decaying_noise;
 use namir_fixtures::nam::{WaveNetShape, generate};
 use namir_params::stages::{eq, gate, ir, out, trim};
@@ -269,10 +269,7 @@ enum Settings {
 }
 
 fn set(chain: &mut Chain, id: namir_params::ParamId, value: f32) {
-    chain.apply(ParamChange {
-        id: ParamId(id.0),
-        value,
-    });
+    chain.apply(ParamChange { id, value });
 }
 
 impl Settings {
