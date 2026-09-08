@@ -49,7 +49,11 @@ Run this against a real, visible `namir-ui` window (see
    happens if it differs from this expectation, since this is `DragValue`'s own upstream behaviour
    and has not previously been observed against a real Namir control.
 
-## Executed run (this session)
+## Executed run (this session) — kept as written, superseded by the run below
+
+*(Restored verbatim: it records which automated evidence stands in for which step, and that record
+is still true. Only its verdict line's marker is demoted, so the gate reads one live verdict rather
+than the worst of two — see this directory's README on worst-verdict-wins.)*
 
 **Not executed.** This agent session has no way to interact with a real window (click, type, read
 back a rendered value) — only to run processes and read stdout/exit codes (see
@@ -62,8 +66,35 @@ actually painting on screen, `DragValue`'s click-to-edit/Enter-to-commit/Escape-
 a real control, and whether a real OS text-input event reaches `custom_parser` the same way a
 synthetic call does.
 
-**Result: NOT EXECUTED this session — script above is ready to run by a person with a display and
-keyboard against a real `namir-ui` window.**
+**Superseded verdict — this agent session: NOT EXECUTED** — the script was ready to run by a person
+with a display and keyboard against a real `namir-ui` window, and the run below is that person's.
+
+## Executed run on a real window (2026-09-08)
+
+**Executed 2026-09-08** by a human on the §2 reference machine (AMD Ryzen 9 5950X, Windows 11 Pro
+build 26200) with a display and keyboard, against a live `namir-app` standalone window with an
+AudioBox 22VSL audio interface. **All six steps pass.** Step 6 is the one that changed the code:
+it failed first (Escape committed the typed value), and `crates/namir-ui/src/controls.rs`'s
+three-part fix — see its comment for why all three lines are needed — is what this PASS is against.
+
+| Step | Description | Verdict |
+|---|---|---|
+| 1 | Numeric display on demand (Input Level, Gate Enabled) | PASS — current numeric values visible at all times without click/hover |
+| 2 | Typed entry, continuous control (Input Level `6.0`) | PASS — updates to `+6.0 dB`, applying +6 dB gain to incoming signal |
+| 3 | Typed entry, stepped control (Gate Enabled `off` / `1`) | PASS — resolves case-insensitively to "Off", and index `1` to "On" |
+| 4 | Out-of-range typed value (Input Level `999`) | PASS — clamped cleanly to max range (`+24.0 dB`) |
+| 5 | Non-numeric typed input (Input Level `loud`) | PASS — rejected; value reverted to previous setting |
+| 6 | Escape/focus-loss cancellation (Input Level `12.0` + Escape) | PASS — in-progress edit discarded and reverted to previous value |
+
+### A behaviour change no step in this script observes
+
+`update_while_editing(false)` (part 1 of the Escape fix) also changes what a typed edit does
+*before* it is committed: a value now applies once, on commit, rather than on every keystroke. That
+is the intended behaviour — a per-keystroke apply is what made an edit uncancellable, and dragging
+is unaffected — but no step above distinguishes the two, so this run's PASS is not evidence either
+way. A step for it belongs in this script's next revision.
+
+**Result: PASS, 2026-09-08.** All six steps executed against real controls in a visible window.
 
 ### Supplementary headless driver coverage (2026-09-06, issue #143)
 

@@ -52,7 +52,11 @@ Run this against a real, visible `namir-ui` window (see
    discoverable from inside the running application, not only from source comments or external
    documentation.
 
-## Executed run (this session)
+## Executed run (this session) — kept as written, superseded by the run below
+
+*(Restored verbatim: it records which automated evidence stands in for which step, and which half
+had none. Only its verdict line's marker is demoted, so the gate reads one live verdict rather than
+the worst of two — see this directory's README on worst-verdict-wins.)*
 
 **Not executed.** This agent session has no way to interact with a real window (double-click, drag,
 hold a modifier key) — only to run processes and read stdout/exit codes (see
@@ -67,10 +71,27 @@ of a reset, and — most notably, since it has zero automated coverage of any ki
 Shift+drag fine adjustment (steps 4–5) actually works against Namir's real controls at all, as
 opposed to being merely assumed correct because `egui::DragValue` documents the behaviour upstream.
 
-**Result: NOT EXECUTED this session — script above is ready to run by a person with a display,
-keyboard, and mouse against a real `namir-ui` window.** The fine-adjustment gesture (steps 4–5) is
-the higher-priority half to run first once a human is available: it is the only part of FR-UI-050
-with no automated coverage of any kind today.
+**Superseded verdict — this agent session: NOT EXECUTED** — the script was ready to run by a person
+with a display, keyboard and mouse, and named the fine-adjustment gesture (steps 4–5) as the
+higher-priority half to run first, it being the only part of FR-UI-050 with no automated coverage of
+any kind at the time. The run below is that person's, and it ran those steps.
+
+## Executed run on a real window (2026-09-08)
+
+**Executed 2026-09-08** by a human on the §2 reference machine (AMD Ryzen 9 5950X, Windows 11 Pro
+build 26200) with a display, keyboard, and mouse, against a live `namir-app` standalone window with
+an AudioBox 22VSL audio interface. **All six steps pass.**
+
+| Step | Description | Verdict |
+|---|---|---|
+| 1 | Reset gesture, continuous control (Input Level double-click label) | PASS — single-click does nothing; double-clicking label resets value to `0.0 dB` default immediately |
+| 2 | Reset gesture, stepped control (Gate Enabled double-click label) | PASS — double-clicking label returns control to default state (`On`) |
+| 3 | Reset gesture does not fire on value itself | PASS — double-clicking numeric value enters edit/select-all mode, does not reset |
+| 4 | Fine adjustment, continuous control (Input Level Shift+drag) | PASS — value adjusts more slowly per pixel of mouse movement with increased displayed precision |
+| 5 | Fine adjustment, stepped control | PASS — Shift+drag functions predictably without erratic jumps |
+| 6 | Gestures discoverable in-app (hover tooltip) | PASS — hovering control label displays tooltip naming default value, double-click reset, and Shift+drag fine adjustment |
+
+**Result: PASS, 2026-09-08.** All six steps executed against real controls in a visible window.
 
 ### Supplementary headless driver coverage (2026-09-06, issue #143)
 
