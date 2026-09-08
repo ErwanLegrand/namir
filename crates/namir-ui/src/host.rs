@@ -137,6 +137,17 @@ pub struct PresetSummary {
     /// this crate never reads it, only hands it back.
     pub path: PathBuf,
 }
+
+impl PresetSummary {
+    /// Constructs a list of `PresetSummary` from `(name, path)` tuples as reported by
+    /// `namir_platform::presets::list_preset_files`.
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, std::path::PathBuf)>) -> Vec<Self> {
+        pairs
+            .into_iter()
+            .map(|(name, path)| Self { name, path })
+            .collect()
+    }
+}
 /// FR-IO-010/040: Audio device configuration panel state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioDevicePanelSnapshot {
