@@ -77,6 +77,23 @@ pub fn block_frames(buffer_frames: Option<u32>) -> usize {
     buffer_frames.unwrap_or(DEFAULT_BLOCK_FRAMES).max(1) as usize
 }
 
+/// Detail string for [`crate::error_codes::BUFFER_SIZE_DECLINED`].
+///
+/// Returns `Some(...)` when `actual` differs from `requested`, or `None` if the backend gave
+/// the requested size. When `actual` is `None` (the device chose its default), the detail explains
+/// that rather than fabricating a frame count.
+pub(crate) fn buffer_decline_detail(requested: u32, actual: Option<u32>) -> Option<String> {
+    match actual {
+        Some(act) if act != requested => {
+            Some(format!("requested {requested} frames, using {act} frames"))
+        }
+        None => Some(format!(
+            "requested {requested} frames, using the device default"
+        )),
+        _ => None,
+    }
+}
+
 /// What the **output** stream asks the device for: `None`, meaning `cpal::BufferSize::Default` —
 /// the device's own buffer, never a size Namir picked.
 ///
@@ -2030,5 +2047,20 @@ mod tests {
         assert_eq!(block_frames(None), DEFAULT_BLOCK_FRAMES as usize);
         assert_eq!(block_frames(Some(0)), 1);
         assert_eq!(block_frames(Some(256)), 256);
+    }
+
+    /// Issue #167: buffer_decline_detail explains what happened when a requested buffer size was
+    /// declined, without fabricating a frame count when the device used its own default.
+    #[test]
+    fn buffer_decline_detail_formats_expected_descriptions() {
+        assert_eq!(buffer_decline_detail(480, Some(480)), None);
+        assert_eq!(
+            buffer_decline_detail(960, Some(480)),
+            Some("requested 960 frames, using 480 frames".to_string())
+        );
+        assert_eq!(
+            buffer_decline_detail(960, None),
+            Some("requested 960 frames, using the device default".to_string())
+        );
     }
 }
