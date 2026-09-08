@@ -88,7 +88,7 @@ use namir_engine::stages::ir::{IrPrep, IrStage};
 use namir_engine::stages::nam::{NamPrep, NamStage};
 use namir_engine::stages::out::OutPrep;
 use namir_engine::stages::trim::TrimPrep;
-use namir_engine::{Chain, ParamChange, ParamId, PrepareContext, Stage, StageIo, StagePrep};
+use namir_engine::{Chain, ParamChange, PrepareContext, Stage, StageIo, StagePrep};
 use namir_fixtures::ir::decaying_noise;
 use namir_fixtures::nam::{WaveNetShape, generate};
 use namir_params::stages::{eq, gate};
@@ -253,19 +253,19 @@ fn main() {
     );
 
     gate_stage.apply(ParamChange {
-        id: ParamId(gate::ENABLED.id.0),
+        id: gate::ENABLED.id,
         value: 1.0,
     });
     gate_stage.apply(ParamChange {
-        id: ParamId(gate::THRESHOLD_DB.id.0),
+        id: gate::THRESHOLD_DB.id,
         value: GATE_THRESHOLD_DB,
     });
     eq_stage.apply(ParamChange {
-        id: ParamId(eq::ENABLED.id.0),
+        id: eq::ENABLED.id,
         value: 1.0,
     });
     eq_stage.apply(ParamChange {
-        id: ParamId(eq::LOW_SHELF_GAIN_DB.id.0),
+        id: eq::LOW_SHELF_GAIN_DB.id,
         value: EQ_LOW_SHELF_GAIN_DB,
     });
 

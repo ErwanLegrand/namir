@@ -92,22 +92,13 @@ const LEVEL_RAMP_TIME_CONSTANT_MS: f32 = 25.0;
 /// `HIGH_PASS_LOW_PASS_Q` constant for its own HP/LP pair.
 const LOW_CUT_HIGH_CUT_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
-/// This stage's RT-facing `namir_engine::ParamId`s, converted once from `namir_params`'s own ids
-/// for the same keys — see `trim.rs`'s identical convention and its doc comment for why the two
-/// crates carry distinct `ParamId` types on purpose.
-const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const LEVEL_DB_ID: ParamId = ParamId(LEVEL_DB.id.0);
-/// See [`ENABLED_ID`].
-const NORMALIZE_ENABLED_ID: ParamId = ParamId(NORMALIZE_ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const LOW_CUT_ENABLED_ID: ParamId = ParamId(LOW_CUT_ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const LOW_CUT_FREQ_HZ_ID: ParamId = ParamId(LOW_CUT_FREQ_HZ.id.0);
-/// See [`ENABLED_ID`].
-const HIGH_CUT_ENABLED_ID: ParamId = ParamId(HIGH_CUT_ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const HIGH_CUT_FREQ_HZ_ID: ParamId = ParamId(HIGH_CUT_FREQ_HZ.id.0);
+const ENABLED_ID: ParamId = ENABLED.id;
+const LEVEL_DB_ID: ParamId = LEVEL_DB.id;
+const NORMALIZE_ENABLED_ID: ParamId = NORMALIZE_ENABLED.id;
+const LOW_CUT_ENABLED_ID: ParamId = LOW_CUT_ENABLED.id;
+const LOW_CUT_FREQ_HZ_ID: ParamId = LOW_CUT_FREQ_HZ.id;
+const HIGH_CUT_ENABLED_ID: ParamId = HIGH_CUT_ENABLED.id;
+const HIGH_CUT_FREQ_HZ_ID: ParamId = HIGH_CUT_FREQ_HZ.id;
 
 /// Telemetry signal id: whether `slots[active]` currently holds an IR (post-handover; see
 /// `nam.rs`'s identical `TELEMETRY_LOADED` for why this is deliberately `slots[active]`, not

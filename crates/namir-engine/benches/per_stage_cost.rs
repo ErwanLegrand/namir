@@ -70,7 +70,7 @@ use namir_engine::stages::ir::{IrPrep, IrStage};
 use namir_engine::stages::nam::{NamPrep, NamStage};
 use namir_engine::stages::out::OutPrep;
 use namir_engine::stages::trim::TrimPrep;
-use namir_engine::{ParamChange, ParamId, PrepareContext, Stage, StageIo, StagePrep};
+use namir_engine::{ParamChange, PrepareContext, Stage, StageIo, StagePrep};
 use namir_fixtures::ir::decaying_noise;
 use namir_fixtures::nam::{WaveNetShape, generate};
 use namir_params::stages::{eq, gate};
@@ -292,22 +292,21 @@ fn main() {
     // Same activation as `six_stage_chain.rs`: explicit enable plus one real non-default value
     // each, so gate and EQ do real work rather than running at identity.
     gate_stage.apply(ParamChange {
-        id: ParamId(gate::ENABLED.id.0),
+        id: gate::ENABLED.id,
         value: 1.0,
     });
     gate_stage.apply(ParamChange {
-        id: ParamId(gate::THRESHOLD_DB.id.0),
+        id: gate::THRESHOLD_DB.id,
         value: GATE_THRESHOLD_DB,
     });
     eq_stage.apply(ParamChange {
-        id: ParamId(eq::ENABLED.id.0),
+        id: eq::ENABLED.id,
         value: 1.0,
     });
     eq_stage.apply(ParamChange {
-        id: ParamId(eq::LOW_SHELF_GAIN_DB.id.0),
+        id: eq::LOW_SHELF_GAIN_DB.id,
         value: EQ_LOW_SHELF_GAIN_DB,
     });
-
     let mut rng_state = 0xC0DE_CAFEu64 ^ 0x9E37_79B9_7F4A_7C15;
 
     // Measured in the chain's own runtime order (FR-CHAIN-010: trim before gate), purely so the
