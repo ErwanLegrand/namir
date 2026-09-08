@@ -52,11 +52,35 @@ Run this against a real, visible `namir-ui` window (see
    discoverable from inside the running application, not only from source comments or external
    documentation.
 
-## Executed run
+## Executed run (this session) — kept as written, superseded by the run below
+
+*(Restored verbatim: it records which automated evidence stands in for which step, and which half
+had none. Only its verdict line's marker is demoted, so the gate reads one live verdict rather than
+the worst of two — see this directory's README on worst-verdict-wins.)*
+
+**Not executed.** This agent session has no way to interact with a real window (double-click, drag,
+hold a modifier key) — only to run processes and read stdout/exit codes (see
+`fr-ui-010-standalone-window-renders.md`'s and `fr-ui-030-accessibility-script.md`'s own notes on
+the same limitation). What *is* verified by automated test, and stands in for part of steps 1–3
+here: `controls.rs`'s headless tests prove the double-click-on-label-only-resets dispatch logic is
+correct against real `egui` widget/interaction logic driven by synthetic pointer events, through the
+same `Context::run_ui` entry point `egui-baseview` itself calls per frame. What those tests do not
+and cannot cover, and what remains genuinely unverified pending this script actually being run: an
+actual human double-click through a real window landing correctly, the visual/audible confirmation
+of a reset, and — most notably, since it has zero automated coverage of any kind — whether
+Shift+drag fine adjustment (steps 4–5) actually works against Namir's real controls at all, as
+opposed to being merely assumed correct because `egui::DragValue` documents the behaviour upstream.
+
+**Superseded verdict — this agent session: NOT EXECUTED** — the script was ready to run by a person
+with a display, keyboard and mouse, and named the fine-adjustment gesture (steps 4–5) as the
+higher-priority half to run first, it being the only part of FR-UI-050 with no automated coverage of
+any kind at the time. The run below is that person's, and it ran those steps.
+
+## Executed run on a real window (2026-09-08)
 
 **Executed 2026-09-08** by a human on the §2 reference machine (AMD Ryzen 9 5950X, Windows 11 Pro
-build 26200) with a display, keyboard, and mouse, against a live `namir-app` standalone window with an
-AudioBox 22VSL audio interface. **All six steps pass.**
+build 26200) with a display, keyboard, and mouse, against a live `namir-app` standalone window with
+an AudioBox 22VSL audio interface. **All six steps pass.**
 
 | Step | Description | Verdict |
 |---|---|---|

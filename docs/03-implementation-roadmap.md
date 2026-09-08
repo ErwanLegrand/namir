@@ -1848,7 +1848,7 @@ not adjudicate them further.
 | 5.10 LIB | 5 | 3 | 2 | 0 |
 | 5.11 IO | 8 | 2 | 6 | 0 |
 | 5.12 CLAP | 11 | 4 | 7 | 0 |
-| 5.13 UI | 7 | 3 | 4 | 0 |
+| 5.13 UI | 7 | 6 | 1 | 0 |
 | 5.14 ERR | 6 | 3 | 3 | 0 |
 | 5.15 PKG | 4 | 3 | 1 | 0 |
 | 6.1 RT | 4 | 0 | 4 | 0 |
@@ -1859,7 +1859,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 1 | 2 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **66** | **64** | **0** |
+| **Total** | **130** | **69** | **61** | **0** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -6602,3 +6602,44 @@ exist, are green, and cannot detect what they were built to detect. This was a f
 largest of them, sitting one level above the others: the three in Phase 3 each failed to detect one
 thing, while this one meant *no* gate's verdict was binding. It was found by the same kind of
 adversarial re-read and is recorded in the same place.
+
+### Four `Verify: M` UI Musts executed on real hardware, 2026-09-08 — §14's 5.13 UI row moves
+
+Appended per this document's convention; nothing above is edited. Not a milestone close-out — one
+human session against four scripts, plus the one code defect that session found.
+
+**5.13 UI becomes 6 / 1 / 0** (was 3 / 4 / 0); **Total becomes 69 / 61 / 0** (was 66 / 64 / 0). The
+§14 table's cells are updated in place, as every earlier movement subsection has done. Every moved
+cell names its evidence, per D-23.2:
+
+- **FR-UI-040 — Partial → Done.** `Verify: M`, so its manual document is the traced artifact under
+  D-18.6 (`docs/manual-tests/fr-ui-040-numeric-value-entry.md`, `**Result: PASS, 2026-09-08**`, six
+  of six steps on the §2 reference machine). M9a's Partial rested on the document reading NOT
+  EXECUTED; it now records a run. **Step 6 failed first**: Escape committed the typed value instead
+  of cancelling it, which is the defect `crates/namir-ui/src/controls.rs:70-104` fixes and
+  `crates/namir-ui/tests/ui_interaction_scripts.rs`'s Escape script pins as a red/green pair.
+- **FR-UI-050 — Partial → Done.** Same shape
+  (`docs/manual-tests/fr-ui-050-reset-and-fine-adjust.md`, six of six). This one retires a
+  standing gap rather than merely a verdict: steps 4-5, Shift+drag fine adjustment, are the half
+  M9a recorded as having "no automated coverage of any kind", and they were exercised by a human on
+  real controls.
+- **FR-UI-070 — Partial → Done.** `docs/manual-tests/fr-ui-070-non-modal-error-notices.md`, fifteen
+  of fifteen in both shells. M9b's close-out kept this Partial because the 2026-08-27 run recorded
+  `FAIL` on the requirement's third clause — no catalogue entry told the user what to do, and two
+  notices named neither file nor device. Both were built after that run (issue #41's `remedy` field;
+  finding 7 / #44's classification change) and this run is the first to observe them.
+- **FR-UI-020 — stays Done, on refreshed evidence.** Its cell moved at M9b's close-out and is not
+  moved again here. What changed is that the 2026-09-07 layout change had invalidated the run
+  underneath it — the document read `PARTIAL` while the cell read Done, which is exactly the
+  divergence §22 **R-14** is about — and the twelve steps are now executed against the shipped
+  screen.
+
+**FR-UI-030 stays Partial and is the row's last cell.** Nothing here touches it: `egui-baseview`
+0.6.0 still wires no accesskit adapter, so accessible names exist at the data level only and the
+document remains NOT EXECUTED.
+
+**What this does not claim.** These are four `Verify: M` documents, credited exactly as D-18.6
+credits them — a human's written record of a run on one machine, unreproducible by CI by
+construction. `xtask traceability` confirms the mechanical half only: the uncovered-Must count falls
+from 8 to 4 (FR-IN-020, FR-IO-030, FR-IO-050, FR-UI-030 remain), and the generated
+`docs/03-test-plan.md` was regenerated rather than hand-edited.

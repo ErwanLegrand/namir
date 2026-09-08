@@ -395,10 +395,23 @@ timing), `worker.file.too_large` (inducible but slow, and tests the same machine
 and `worker.job.panicked`, `clap.gui.invalid_parent`, `clap.activate.invalid_sample_rate` (each
 needs an internal fault or a misbehaving host).
 
-*Historical result (superseded by 2026-09-08 re-run):* FAIL, 2026-08-27, both product configurations.
-Non-modality and the never-interrupt-audio clause were met. The requirement's second sentence was not
-met: notices lacked remedy text and placeholders were rendered literally. Both defects were resolved
-in code (PR #45 / #15 / M14 W10) and verified by the 2026-09-08 re-run below.
+**Superseded verdict — 2026-08-27, both product configurations: FAIL.** *(Kept verbatim; only the
+marker is demoted so the gate reads the 2026-09-08 verdict rather than the worst of two — see this
+directory's README on worst-verdict-wins.)* Non-modality and the never-interrupt-
+audio clause are met and observed. The requirement's second sentence is not met: no notice in the
+catalogue tells the user what they can do, and two notices name neither the file nor the device.
+Steps 4, 8 and 14 carry the detail; the remaining twelve steps pass.
+
+*How that verdict's two defects map onto the code that followed, stated here as an interpretation
+rather than written over the sentence above.* "No notice tells the user what they can do" is
+**issue #41**, closed by `ErrorCode`'s fourth field, `remedy` (D-16.1's
+*Consequence (added M14, 2026-08-28)*; all 74 entries carry one and two checks enforce it).
+"Two notices name neither the file nor the device" is **finding 7 (#44)** in the section below —
+`StreamFailure`'s `Display` plus choosing the catalogue entry from the classification rather than
+the stream direction — for `app.audio_io.device_lost`, and `app.settings.unreadable`'s path is
+named by the same pass's rename-to-`.corrupt` work (#45), which the 2026-08-27 record filed as an
+observation *outside* FR-UI-070's clauses. The literal `{placeholder}` tokens (**#15**) were a third
+finding of that run, not one of the two this verdict line names.
 
 ---
 
@@ -410,6 +423,10 @@ FR-UI-070's `Verify:` is `M`; `xtask traceability` reads that line and reports t
 a human re-executing the fifteen steps on a machine with a display, a real interface and an
 instrument can produce that, and this section exists so that whoever does knows what to expect to
 have changed and what to look at hardest.
+
+*(Note appended 2026-09-08: that human re-run has now happened — see the final section of this
+document. This paragraph's statement about the gate reporting `**UNRESOLVED**` was true while the
+2026-08-27 `FAIL` was the document's live verdict and is kept as written.)*
 
 **The seven findings, and what was done about each.**
 
@@ -518,5 +535,22 @@ exercised: the standalone (`cargo run -p namir-app --release`) for steps 1–13,
 | 13 | No audio device (unplugged + mic disabled) | `app.audio_io.no_device` (window opens non-modally, parameters editable, notice displayed) | PASS |
 | 14 | Plugin shell notices (Reaper, Studio One) | Load failure, truncation, and dismissal all verified in DAW with transport rolling | PASS |
 | 15 | Missing resource on DAW project reload | `state.reference.not_found` (names missing model, hash, remedy; DAW reloads & plays cleanly) | PASS |
+
+### One notice this run could not reach, because the run predates it
+
+**Reconciled 2026-09-08, this branch having landed second.** PR #183 merged first, adding a
+thirteenth `app.audio_io.*` entry, `app.audio_io.buffer_size_declined` (issue #167), and step 13b
+to the script above for it. The entry is therefore in this branch's build now — but it was not when
+the run above was executed, so none of those fifteen steps exercises it and their `PASS` makes no
+claim about it.
+
+**Step 13b: NOT EXECUTED.** It stays unexecuted until someone hand-edits `buffer_size_frames` to a
+value the device does not support, relaunches, and observes the notice. Recorded here rather than
+as a row in the table above, so that this run's fifteen-step `PASS` stays a statement about what
+was actually observed on 2026-09-08.
+
+*(The paragraph this replaces asked whichever PR landed second to do exactly this — keep both step
+13b and the run below, and put 13b's verdict in this section rather than in the table. That is what
+the text above does; nothing in the run's own record was altered.)*
 
 **Result: PASS, 2026-09-08, both product configurations.** All fifteen steps executed and verified on the current build.
