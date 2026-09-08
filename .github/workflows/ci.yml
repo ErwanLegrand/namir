@@ -64,7 +64,7 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # M6: `namir-app` takes `cpal` (D-13.1), and `cpal`'s ALSA backend (`alsa-sys`) needs real
       # ALSA development headers at build time -- its own `build.rs` shells out to `pkg-config
@@ -148,7 +148,7 @@ jobs:
     name: layering + rt-logging + params.lock + attribution + identity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -339,7 +339,7 @@ jobs:
     name: headless window smoke (FR-UI-010, issue #143)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -385,7 +385,7 @@ jobs:
     name: cargo-deny license audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -435,7 +435,7 @@ jobs:
     name: cargo-deny network-free build (D-18.2)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -520,7 +520,7 @@ jobs:
     name: clap-validator (FR-CLAP-020)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -610,7 +610,7 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # See `build-test`'s identical step: `namir-app` takes `cpal`, whose ALSA backend needs real
       # development headers at build time, and this job builds the whole workspace in release.
@@ -761,7 +761,7 @@ jobs:
     name: MSRV check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # See `build-test`'s identical step for why this is needed as of M6 (`namir-app`'s `cpal`
       # dependency, ALSA backend).
@@ -800,7 +800,7 @@ jobs:
     name: build with no C++ compiler (NFR-PORT-040)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # See `build-test`'s identical step for why this is needed as of M6. Installed *before* the
       # g++/clang++ removal below on the theory that apt itself should run against an ordinary,
@@ -925,7 +925,7 @@ jobs:
     name: mobile cross-build (aarch64-linux-android)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -969,7 +969,7 @@ jobs:
     name: mobile cross-build (aarch64-apple-ios)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -999,7 +999,7 @@ jobs:
     name: coverage (informational)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # See `build-test`'s identical step for why this is needed as of M6.
       - name: Install ALSA development headers (for cpal's alsa-sys)
@@ -1016,7 +1016,7 @@ jobs:
       - name: cargo llvm-cov --workspace
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lcov.info
           path: lcov.info
@@ -1054,7 +1054,7 @@ jobs:
     name: NFR-PERF-010 chain benchmark (informational)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1065,7 +1065,7 @@ jobs:
           NAMIR_PERF_010_INFORMATIONAL: "1"
         run: cargo bench -p namir-engine --bench six_stage_chain | tee six-stage-chain-bench.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: six-stage-chain-bench.txt
           path: six-stage-chain-bench.txt
@@ -1093,7 +1093,7 @@ jobs:
     name: NFR-PERF-030 start-up benchmark (informational, cannot certify)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1107,7 +1107,7 @@ jobs:
           NAMIR_STARTUP_ALLOW_NOT_AUDIBLE: "1"
         run: cargo bench -p namir-app --bench startup_to_audible | tee startup-to-audible-bench.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: startup-to-audible-bench.txt
           path: startup-to-audible-bench.txt

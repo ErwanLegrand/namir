@@ -53,7 +53,7 @@ name: Release
 
 # FR-PKG-010's first clause: **a tag, and only a tag.** No `branches:`, and no `workflow_dispatch`
 # -- a manual dispatch would let a release be cut from an arbitrary ref, which is the thing "built
-# by CI from a tagged source tree" exists to rule out. `actions/checkout@v4` with no `ref:` input
+# by CI from a tagged source tree" exists to rule out. `actions/checkout@v7` with no `ref:` input
 # checks out the pushed tag's own commit, so the tagged source tree is what every job builds.
 on:
   push:
@@ -82,7 +82,7 @@ jobs:
     name: windows x86-64 distribution
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -196,7 +196,7 @@ jobs:
 
       # `if-no-files-found: error` on every upload in this file: an empty artifact that publishes
       # successfully is the one failure mode a release pipeline must not have.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: namir-windows-x86_64
           if-no-files-found: error
@@ -223,7 +223,7 @@ jobs:
       signed: ${{ steps.package.outputs.signed }}
       notarized: ${{ steps.package.outputs.notarized }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -322,7 +322,7 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/build.keychain" || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: namir-macos-aarch64
           if-no-files-found: error
@@ -341,7 +341,7 @@ jobs:
     name: linux x86-64 distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `cpal`'s ALSA backend (`alsa-sys`) needs real ALSA development headers at build time; see
       # `ci.yml`'s identical step. The *installed* product needs only `libasound.so.2` at run time,
@@ -393,7 +393,7 @@ jobs:
           ( cd target/package && sha256sum "${PKG}.tar.gz" > "${PKG}.tar.gz.sha256" )
           cat "target/package/${PKG}.tar.gz.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: namir-linux-x86_64
           if-no-files-found: error
@@ -409,7 +409,7 @@ jobs:
   #   * it `needs` all three build jobs, so nothing is published unless every platform built;
   #   * it **checks out nothing**, so there is no source tree here to build from and no repository
   #     file that could be published by accident;
-  #   * its only input is `actions/download-artifact@v4` with no `run-id`, `repository` or
+  #   * its only input is `actions/download-artifact@v8` with no `run-id`, `repository` or
   #     `github-token` -- inputs that would let it pull artifacts from *another* run or repository.
   #     Without them the action can only see artifacts this run produced;
   #   * it runs no build or packaging command of its own; and
@@ -427,7 +427,7 @@ jobs:
       contents: write
     steps:
       - name: Download every platform job's artifacts (this run only)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
