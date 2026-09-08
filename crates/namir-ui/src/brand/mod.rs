@@ -219,7 +219,7 @@ mod tests {
         ctx.enable_accesskit();
         let mut cache = None;
 
-        let output = ctx.run_ui(frame_input(), |ui| render(ui, &mut cache));
+        let output = crate::run_ui(&ctx, frame_input(), |ui| render(ui, &mut cache));
 
         let update = output
             .platform_output
@@ -248,7 +248,7 @@ mod tests {
         let mut heading_height = 0.0;
         let mut mark_rect = egui::Rect::ZERO;
 
-        let _ = ctx.run_ui(frame_input(), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(), |ui| {
             heading_height = ui.text_style_height(&egui::TextStyle::Heading);
             let before = ui.next_widget_position();
             render(ui, &mut cache);
@@ -273,7 +273,7 @@ mod tests {
     fn the_texture_is_uploaded_with_mipmapping_enabled() {
         let ctx = egui::Context::default();
         let mut cache = None;
-        let _ = ctx.run_ui(frame_input(), |ui| render(ui, &mut cache));
+        let _ = crate::run_ui(&ctx, frame_input(), |ui| render(ui, &mut cache));
 
         let id = cache.as_ref().expect("uploaded on the first frame").id();
         let manager = ctx.tex_manager();
@@ -294,11 +294,11 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = None;
 
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| render(ui, &mut cache));
+        let _ = crate::run_ui(&ctx, egui::RawInput::default(), |ui| render(ui, &mut cache));
         let first = cache.as_ref().expect("uploaded on the first frame").id();
 
         for _ in 0..4 {
-            let _ = ctx.run_ui(egui::RawInput::default(), |ui| render(ui, &mut cache));
+            let _ = crate::run_ui(&ctx, egui::RawInput::default(), |ui| render(ui, &mut cache));
         }
 
         assert_eq!(

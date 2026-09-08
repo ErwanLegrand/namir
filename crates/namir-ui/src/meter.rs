@@ -118,7 +118,8 @@ mod tests {
             }
         }
         let ctx = egui::Context::default();
-        let output = ctx.run_ui(
+        let output = crate::run_ui(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(window),
                 ..Default::default()

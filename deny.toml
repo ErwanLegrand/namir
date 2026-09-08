@@ -130,4 +130,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # list allows the repository, not a revision) and, if the pin ever proves insufficient, vendoring
 # the fork into the tree. If the change is accepted upstream, D-13.4 reverts to a version bump and
 # this line is deleted along with it.
-allow-git = ["https://github.com/ErwanLegrand/cpal"]
+allow-git = [
+    "https://github.com/ErwanLegrand/cpal",
+    "https://github.com/ErwanLegrand/baseview",
+    "https://github.com/ErwanLegrand/egui-baseview",
+]

@@ -88,3 +88,14 @@ pub use library_view::{LibraryViewState, entry_label};
 // The list-side half of FR-UI-070, shared by both shells rather than copied into each -- see
 // `notices`' own module doc comment for the duplicate-notice and unbounded-list defects it closes.
 pub use notices::{MAX_NOTICES, push_deduplicated};
+
+#[cfg(test)]
+pub(crate) fn run_ui(
+    ctx: &egui::Context,
+    raw_input: egui::RawInput,
+    run_ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut out = ctx.run_ui(raw_input, run_ui);
+    out.textures_delta.clear();
+    out
+}

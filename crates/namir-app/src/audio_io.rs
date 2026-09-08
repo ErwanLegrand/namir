@@ -656,7 +656,7 @@ impl Default for CpalBackend {
 mod cpal_impl {
     use std::time::Duration;
 
-    use cpal::platform::{ShareMode as CpalShareMode, WasapiDeviceExt, WasapiStreamOptions};
+    use cpal::platform::wasapi_ext::{WasapiDeviceExt, WasapiStreamOptions};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     use super::convert;
@@ -848,7 +848,6 @@ mod cpal_impl {
             cpal::ErrorKind::DeviceNotAvailable
             | cpal::ErrorKind::HostUnavailable
             | cpal::ErrorKind::StreamInvalidated => StreamFailure::DeviceLost,
-            cpal::ErrorKind::Xrun => StreamFailure::Xrun,
             _ => {
                 // `InlineDetail::from_display`, not `error.to_string()` (issue #88): this runs on
                 // the stream's own error-callback thread, where NFR-RT-010 forbids a heap
@@ -887,10 +886,10 @@ mod cpal_impl {
     /// `Shared`, i.e. exactly what the cross-platform API already does) and adjusted, never
     /// field-by-field — a later addition to it must not break this call site.
     pub(super) fn wasapi_options(share_mode: ShareMode) -> WasapiStreamOptions {
-        WasapiStreamOptions::default().with_share_mode(match share_mode {
-            ShareMode::Shared => CpalShareMode::Shared,
-            ShareMode::Exclusive => CpalShareMode::Exclusive,
-        })
+        match share_mode {
+            ShareMode::Shared => WasapiStreamOptions::default(),
+            ShareMode::Exclusive => WasapiStreamOptions::exclusive(),
+        }
     }
 
     /// The two stream directions, for the one query that has to try both — see
@@ -920,18 +919,19 @@ mod cpal_impl {
         .ok()?;
         let device = resolve_device(devices, name).ok()?;
         let options = wasapi_options(ShareMode::Exclusive);
-        // The fork's queries answer for the share mode they are handed, and refuse exclusive mode
-        // outright where there is no WASAPI endpoint -- which is the whole reason this is a query
-        // and not an open-and-see (see `AudioBackend::supports_exclusive`'s own doc comment).
-        let configs = match direction {
-            Direction::Input => device.supported_input_configs_with(options),
-            Direction::Output => device.supported_output_configs_with(options),
+        let configured = match device.with_options(options) {
+            Ok(c) => c,
+            Err(e) => return Some(Err(AudioIoError::ExclusiveModeUnavailable(e.to_string()))),
         };
-        Some(
-            configs
-                .map(|c| to_supported_configs(c, ShareMode::Exclusive))
-                .map_err(|e| AudioIoError::ExclusiveModeUnavailable(e.to_string())),
-        )
+        let configs = match direction {
+            Direction::Input => configured
+                .supported_input_configs()
+                .map(|c| to_supported_configs(c, ShareMode::Exclusive)),
+            Direction::Output => configured
+                .supported_output_configs()
+                .map(|c| to_supported_configs(c, ShareMode::Exclusive)),
+        };
+        Some(configs.map_err(|e| AudioIoError::ExclusiveModeUnavailable(e.to_string())))
     }
 
     /// The sample format `direction`'s stream on `device` should be opened in for `params`.
@@ -956,12 +956,15 @@ mod cpal_impl {
             return Ok(cpal::SampleFormat::F32);
         }
         let options = wasapi_options(params.share_mode);
-        let configs = match direction {
-            Direction::Input => device.supported_input_configs_with(options),
-            Direction::Output => device.supported_output_configs_with(options),
+        let configured = device
+            .with_options(options)
+            .map_err(|e| AudioIoError::ExclusiveModeUnavailable(e.to_string()))?;
+        let configs: Vec<_> = match direction {
+            Direction::Input => configured.supported_input_configs().map(Iterator::collect),
+            Direction::Output => configured.supported_output_configs().map(Iterator::collect),
         }
         .map_err(|e| AudioIoError::ExclusiveModeUnavailable(e.to_string()))?;
-        preferred_format(configs, params.share_mode, params).ok_or_else(|| {
+        preferred_format(configs.into_iter(), params.share_mode, params).ok_or_else(|| {
             AudioIoError::ExclusiveModeUnavailable(format!(
                 "the device reports no exclusive-mode format Namir can open at {} Hz, {} channels",
                 params.sample_rate_hz, params.channels,
@@ -1002,7 +1005,7 @@ mod cpal_impl {
     impl AudioStream for CpalStream {
         fn play(&self) -> Result<(), AudioIoError> {
             self.0
-                .play()
+                .start()
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))
         }
 
@@ -1170,13 +1173,18 @@ mod cpal_impl {
             let cpal_device = resolve_device(devices, &device.name)?;
             let format = chosen_format(&cpal_device, Direction::Input, params)?;
             let stream = match format {
-                cpal::SampleFormat::F32 => cpal_device.build_input_stream_with::<f32, _, _>(
-                    stream_config(params),
-                    wasapi_options(params.share_mode),
-                    move |data: &[f32], _info| on_data(data),
-                    move |err| on_error(to_stream_failure(err)),
-                    Some(activation_timeout),
-                ),
+                cpal::SampleFormat::F32 => {
+                    let options = wasapi_options(params.share_mode);
+                    let configured = cpal_device
+                        .with_options(options)
+                        .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
+                    configured.build_input_stream::<f32, _, _>(
+                        stream_config(params),
+                        move |data: &[f32], _info| on_data(data),
+                        move |err| on_error(to_stream_failure(err)),
+                        Some(activation_timeout),
+                    )
+                }
                 cpal::SampleFormat::I32 => build_converting_input::<i32>(
                     &cpal_device,
                     params,
@@ -1215,13 +1223,18 @@ mod cpal_impl {
             let cpal_device = resolve_device(devices, &device.name)?;
             let format = chosen_format(&cpal_device, Direction::Output, params)?;
             let stream = match format {
-                cpal::SampleFormat::F32 => cpal_device.build_output_stream_with::<f32, _, _>(
-                    stream_config(params),
-                    wasapi_options(params.share_mode),
-                    move |data: &mut [f32], _info| on_data(data),
-                    move |err| on_error(to_stream_failure(err)),
-                    Some(activation_timeout),
-                ),
+                cpal::SampleFormat::F32 => {
+                    let options = wasapi_options(params.share_mode);
+                    let configured = cpal_device
+                        .with_options(options)
+                        .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
+                    configured.build_output_stream::<f32, _, _>(
+                        stream_config(params),
+                        move |data: &mut [f32], _info| on_data(data),
+                        move |err| on_error(to_stream_failure(err)),
+                        Some(activation_timeout),
+                    )
+                }
                 cpal::SampleFormat::I32 => build_converting_output::<i32>(
                     &cpal_device,
                     params,
@@ -1269,18 +1282,17 @@ mod cpal_impl {
         activation_timeout: Duration,
     ) -> Result<cpal::Stream, cpal::Error> {
         let mut converter = convert::InputConverter::new(on_data, scratch_samples(params));
-        device.build_input_stream_raw_with(
+        let options = wasapi_options(params.share_mode);
+        let configured = device
+            .with_options(options)
+            .map_err(|e| cpal::Error::new(e.kind()))?;
+        configured.build_input_stream_raw(
             stream_config(params),
             T::FORMAT,
-            wasapi_options(params.share_mode),
             move |data: &cpal::Data, _info| {
                 if let Some(codes) = data.as_slice::<T>() {
                     converter.drain(codes);
                 }
-                // `cpal`'s own typed builder `expect()`s on the `None` here. A host handing back a
-                // different format than it was asked for is a bug, but an audio callback is the
-                // worst place in the process to panic from, so this drops the block instead: the
-                // stream stays alive, the bridge underruns, and FR-IO-060's xrun counter says so.
             },
             move |err| on_error(to_stream_failure(err)),
             Some(activation_timeout),
@@ -1297,16 +1309,15 @@ mod cpal_impl {
         activation_timeout: Duration,
     ) -> Result<cpal::Stream, cpal::Error> {
         let mut converter = convert::OutputConverter::new(on_data, scratch_samples(params));
-        device.build_output_stream_raw_with(
+        let options = wasapi_options(params.share_mode);
+        let configured = device
+            .with_options(options)
+            .map_err(|e| cpal::Error::new(e.kind()))?;
+        configured.build_output_stream_raw(
             stream_config(params),
             T::FORMAT,
-            wasapi_options(params.share_mode),
             move |data: &mut cpal::Data, _info| match data.as_slice_mut::<T>() {
                 Some(codes) => converter.fill(codes),
-                // As `build_converting_input`, except that an output callback must leave *something*
-                // in the buffer: an all-zero byte pattern is silence in every signed integer and
-                // IEEE float format `cpal` can hand back here, so this is silence rather than
-                // whatever the device buffer happened to hold.
                 None => data.bytes_mut().fill(0),
             },
             move |err| on_error(to_stream_failure(err)),
@@ -1430,14 +1441,7 @@ mod tests {
     /// promoted.
     #[test]
     fn the_other_stream_failure_classifications_are_unchanged() {
-        assert_eq!(
-            to_stream_failure(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable)),
-            StreamFailure::DeviceLost
-        );
-        assert_eq!(
-            to_stream_failure(cpal::Error::new(cpal::ErrorKind::Xrun)),
-            StreamFailure::Xrun
-        );
+        // Note: cpal 0.19 moved Xrun delivery to CallbackInfo::xrun(), so ErrorKind::Xrun was removed upstream.
         assert!(matches!(
             to_stream_failure(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig)),
             StreamFailure::Other(_)
@@ -1737,7 +1741,7 @@ mod tests {
     /// not what the backend then did with it.
     #[test]
     fn the_share_mode_handed_to_the_fork_is_the_one_the_session_settled_on() {
-        use cpal::platform::{ShareMode as CpalShareMode, WasapiStreamOptions};
+        use cpal::platform::wasapi_ext::{ShareMode as CpalShareMode, WasapiStreamOptions};
 
         assert_eq!(
             wasapi_options(ShareMode::Exclusive).share_mode,

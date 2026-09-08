@@ -474,6 +474,11 @@ impl<H: UiHost> NamirUi<H> {
         ui.ctx().request_repaint();
     }
 }
+impl<H: UiHost + 'static> egui_baseview::App for NamirUi<H> {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut egui_baseview::Frame) {
+        self.frame(ui);
+    }
+}
 
 fn default_window_size() -> baseview::dpi::Size {
     // FR-UI-080 (Should): usable on a window as small as 800x600 logical pixels. This is the
@@ -600,13 +605,14 @@ where
     };
     let host = Arc::new(Mutex::new(host));
     open_with_srgb_fallback(settings, |settings| {
-        egui_baseview::EguiWindow::open_blocking(
+        let window = egui_baseview::EguiWindow::create(
             settings,
             NamirUi::new(SharedHost(Arc::clone(&host))),
-            |_ctx, _cmds, _state: &mut NamirUi<SharedHost<H>>| {},
-            |_output, _viewport, _state: &mut NamirUi<SharedHost<H>>| {},
-            |ui, _cmds, state: &mut NamirUi<SharedHost<H>>| state.frame(ui),
-        );
+        )
+        .expect("could not create egui-baseview window");
+        window
+            .run_until_closed()
+            .expect("egui-baseview event loop failed");
     });
 }
 
@@ -618,7 +624,7 @@ where
 ///
 /// Goes through [`open_with_srgb_fallback`] for the same reason [`open_blocking`] does, and shares
 /// `host` with the retry the same way.
-pub fn open_parented<H, P>(parent: &P, title: impl Into<String>, host: H) -> baseview::WindowHandle
+pub fn open_parented<H, P>(parent: &P, title: impl Into<String>, host: H) -> baseview::Window
 where
     H: UiHost + 'static,
     P: raw_window_handle::HasWindowHandle,
@@ -626,18 +632,20 @@ where
     let settings = egui_baseview::EguiWindowSettings {
         title: title.into(),
         size: default_window_size(),
+        parent: Some(baseview::ParentWindowHandle::from_window(parent)),
         ..Default::default()
     };
     let host = Arc::new(Mutex::new(host));
     open_with_srgb_fallback(settings, |settings| {
-        egui_baseview::EguiWindow::open_parented(
-            parent,
+        let window = egui_baseview::EguiWindow::create(
             settings,
             NamirUi::new(SharedHost(Arc::clone(&host))),
-            |_ctx, _cmds, _state: &mut NamirUi<SharedHost<H>>| {},
-            |_output, _viewport, _state: &mut NamirUi<SharedHost<H>>| {},
-            |ui, _cmds, state: &mut NamirUi<SharedHost<H>>| state.frame(ui),
         )
+        .expect("could not create parented egui-baseview window");
+        window
+            .show()
+            .expect("could not show parented egui-baseview window");
+        window
     })
 }
 
@@ -650,7 +658,8 @@ mod tests {
 
     fn headless_frame(view: &mut ViewState, snapshot: &UiSnapshot, intents: &mut Vec<UiIntent>) {
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(
+        let _ = crate::run_ui(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -763,7 +772,8 @@ mod tests {
         let mut namir_ui = NamirUi::new(host);
 
         let ctx = egui::Context::default();
-        let output = ctx.run_ui(
+        let output = crate::run_ui(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -873,12 +883,13 @@ mod tests {
         let ctx = egui::Context::default();
 
         // Frame 0, no input: find where `render` put the control's value, by its own painted text.
-        let output = ctx.run_ui(frame_input(0.0, Vec::new()), |ui| namir_ui.frame(ui));
+        let output = crate::run_ui(&ctx, frame_input(0.0, Vec::new()), |ui| namir_ui.frame(ui));
         let value_rect = unique_text_rect(&output, &gate::THRESHOLD_DB.format_value(before));
         let pos = value_rect.center();
 
         // Frame 1: press on it. Pressing alone changes nothing, so nothing may reach the host yet.
-        let _ = ctx.run_ui(
+        let _ = crate::run_ui(
+            &ctx,
             frame_input(
                 0.2,
                 vec![
@@ -902,7 +913,8 @@ mod tests {
         // Frame 2: drag right. This is the frame `DragValue::changed()` fires on, so this is the
         // frame `render` appends a `SetParam` and `frame` hands it to the host.
         let moved = pos + egui::vec2(40.0, 0.0);
-        let _ = ctx.run_ui(
+        let _ = crate::run_ui(
+            &ctx,
             frame_input(0.2, vec![egui::Event::PointerMoved(moved)]),
             |ui| namir_ui.frame(ui),
         );
@@ -926,7 +938,8 @@ mod tests {
 
         // Frame 3: release. The intent already dispatched stands; nothing new is invented on the
         // way out of the gesture.
-        let _ = ctx.run_ui(
+        let _ = crate::run_ui(
+            &ctx,
             frame_input(
                 0.3,
                 vec![egui::Event::PointerButton {
@@ -994,7 +1007,7 @@ mod tests {
             self.time += 0.1;
             let time = self.time;
             let ui = &mut self.ui;
-            self.ctx.run_ui(frame_input(time, events), |u| ui.frame(u))
+            crate::run_ui(&self.ctx, frame_input(time, events), |u| ui.frame(u))
         }
 
         /// Where the control painting exactly `needle` ended up, once the layout has settled.
@@ -1200,10 +1213,10 @@ mod tests {
             screen_rect: Some(TALL),
             ..Default::default()
         };
-        let _ = ctx.run_ui(input(), |ui| {
+        let _ = crate::run_ui(&ctx, input(), |ui| {
             render(ui, &mut view, &snapshot, &mut intents);
         });
-        let output = ctx.run_ui(input(), |ui| {
+        let output = crate::run_ui(&ctx, input(), |ui| {
             render(ui, &mut view, &snapshot, &mut intents);
         });
         let painted = painted_texts(&output);
@@ -1268,10 +1281,10 @@ mod tests {
         // Two frames: `egui` sizes a panel from what it measured the frame before, so nothing
         // inside the top panel is painted on the first one.
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(frame_input(0.0, Vec::new()), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(0.0, Vec::new()), |ui| {
             render(ui, &mut view, &snapshot, &mut intents);
         });
-        let output = ctx.run_ui(frame_input(0.1, Vec::new()), |ui| {
+        let output = crate::run_ui(&ctx, frame_input(0.1, Vec::new()), |ui| {
             render(ui, &mut view, &snapshot, &mut intents);
         });
         let painted = painted_texts(&output);
