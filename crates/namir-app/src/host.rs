@@ -1926,14 +1926,14 @@ mod tests {
     /// thread, and not before the report). The fourth is `select_device`'s re-selection, in the
     /// test below.
     // trace-partial: FR-IO-070
-    // uncovered: FR-IO-070 — "allow the user to select another device" is spanned only by the
-    // uncovered: restart-mediated substitute below (`device_state::select_device` picking a
-    // uncovered: replacement on the next launch); no in-session device chooser exists in either
-    // uncovered: shell, so the clause as written is unimplemented (issue #26, roadmap §15 item 16)
-    // uncovered: and no test can reach it. The failable device is also virtual, so what a real
-    // uncovered: removal makes the OS and cpal do stays evidenced only by
-    // uncovered: docs/manual-tests/fr-io-070-device-removal.md, whose steps 1 and 3 are still
-    // uncovered: NOT EXECUTED; closes M8
+    // uncovered: FR-IO-070 — "allow the user to select another device" is now built and tested:
+    // uncovered: UiIntent::SelectInputDevice reopens the stream in-session (PR #159, issue #26),
+    // uncovered: covered by select_input_device_updates_snapshot_and_persists_settings and
+    // uncovered: dynamic_stream_reconfiguration_reopens_and_plays_on_fake_backend. The residue is
+    // uncovered: that the failable device is virtual, so what a real removal makes the OS and cpal
+    // uncovered: do stays evidenced only by docs/manual-tests/fr-io-070-device-removal.md, whose
+    // uncovered: worst verdict is NOT EXECUTED (step 2 ran 2026-08-27 and is PARTIAL; no real
+    // uncovered: failable device has ever been available for steps 1 and 3); closes M8
     #[test]
     fn a_device_lost_mid_stream_is_reported_and_stops_both_streams_cleanly() {
         let dir = temp_dir("device_lost_mid_stream");
