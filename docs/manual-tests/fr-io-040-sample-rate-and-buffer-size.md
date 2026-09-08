@@ -15,6 +15,11 @@ always be displayed."
 5. Select a different buffer size from the supported buffer sizes list.
 6. Confirm that the selected sample rate and buffer size update in the UI, audio actually plays through cleanly and runs at the selected rate and buffer size, and the values persist across restarts.
 7. Close the audio settings overlay and close the application.
+8. **Declined buffer size notice (issue #167, `app.audio_io.buffer_size_declined`):**
+   - In `audio-settings.json`, set `"buffer_size_frames"` to a value not supported by the current device (e.g. `960` on a device supporting only power-of-two buffer sizes).
+   - Launch the application: confirm audio plays using a supported fallback buffer size (or device default).
+   - Confirm that a `Warning` notice `app.audio_io.buffer_size_declined` is displayed non-modally in the top bar (`"The requested buffer size is not supported by the audio device (requested 960 frames, using <actual> frames)"` or `"using the device default"`).
+   - Verify that `audio-settings.json` still retains `"buffer_size_frames": 960` rather than overwriting it with the fallback value.
 
 ## Executed run (this session)
 

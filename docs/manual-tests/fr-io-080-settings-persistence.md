@@ -18,8 +18,12 @@ correctly on the next real launch. This script covers that.
    (macOS), if present.
 2. Run `namir`, let it negotiate devices, close it (via the window's close control, not a task-kill
    — FR-IO-080's save happens after the window closes, per `crate::app::run`'s own structure).
-3. Inspect the settings file: confirm it now names the real device(s)/rate/buffer this session
-   negotiated.
+3. Inspect the settings file: confirm it now names the real device(s)/rate this session negotiated.
+   **Since issue #167 (2026-09-08) `buffer_size_frames` is deliberately absent here** — a clean
+   install requested no buffer size, and the negotiated fallback is no longer written back as if it
+   had been requested. To check the buffer-size half of this requirement, set `buffer_size_frames`
+   by hand (or from the audio settings overlay), relaunch twice, and confirm the value survives both
+   launches even when the device declines it and negotiation falls back.
 4. Hand-edit the settings file to name a device that does not exist (e.g. append `" XYZ"` to a
    device name). Run `namir` again.
 5. Confirm: the application still starts (no crash, no hang — FR-IO-080's own "degrade gracefully"
@@ -103,3 +107,16 @@ is straight-line, unconditional code reached by the exact same fallback branch
 exactly this scenario), so it is very likely correct, but "very likely" is not "confirmed by
 looking at the screen" — a human should glance at the window during step 5 to close this one
 remaining gap.
+
+**Amended 2026-09-08 (issue #167), and what that does to the run above.** Step 3's buffer-size
+clause is the one line of this script the code no longer satisfies as originally written:
+`AppHost::persist_negotiated_audio` used to write the negotiated buffer size unconditionally, which
+is why the transcript above shows `"buffer_size_frames": 480` after a clean install. It now writes
+that field only when one was actually requested, so a clean install leaves it absent and a declined
+request survives the fallback instead of being overwritten by it (`app.audio_io.buffer_size_declined`
+says so non-modally). **The `PASS` above stands for what it executed** — real device/rate/channel
+persistence and the graceful-degrade clause, none of which this change touches — but its step 3
+transcript records pre-#167 behaviour, and the amended clause plus the requested-size round trip it
+now asks for have **not** been executed. FR-IO-080 is `Verify: I`, so under D-18.6 this document is
+supplementary evidence and the traced artifacts are the tests in `crates/namir-app/src/host.rs`
+(`persist_negotiated_audio_*`), which do cover both branches.

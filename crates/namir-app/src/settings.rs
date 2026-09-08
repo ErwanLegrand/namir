@@ -27,6 +27,7 @@ use crate::error_codes;
 /// here — [`crate::stream`] is what would actually honour a non-default mapping, and doing so is
 /// this crate's own manual-test-documented gap (see `docs/manual-tests/fr-io-090-channel-mapping.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ChannelMapping {
     /// Physical input channel index feeding the engine's mono input.
     pub input_channel: Option<u16>,
@@ -39,7 +40,13 @@ pub struct ChannelMapping {
 /// FR-IO-080's persisted record. Every field is an independent, optional "what was remembered" —
 /// never a hard requirement to honour on the next launch, since the device it names may be gone
 /// (see [`crate::device_state`] for the degrade-gracefully rule this record feeds).
+///
+/// `#[serde(default)]` enables partial JSON files (such as those hand-edited to specify only a
+/// subset of fields, e.g. `{"buffer_size_frames": 960}`) to deserialize cleanly to their default
+/// values. The explicit trade-off is that truncated-yet-valid JSON with missing keys will degrade
+/// to defaults without triggering [`crate::error_codes::SETTINGS_UNREADABLE`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
     /// The host API name last selected (e.g. `"WASAPI"`), or `None` for "use the system default
     /// host" — the FR-IO-080 default before any session has ever chosen one.
@@ -347,5 +354,37 @@ mod tests {
         save(&path, &AppSettings::default()).unwrap();
         assert!(!path.with_extension("json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// Issue #167: partial AppSettings JSON deserializes specified fields and defaults the rest.
+    #[test]
+    fn partial_app_settings_deserializes_cleanly() {
+        let json = r#"{"buffer_size_frames": 960}"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.buffer_size_frames, Some(960));
+        assert!(settings.host_name.is_none());
+        assert!(settings.input_device_name.is_none());
+        assert!(settings.output_device_name.is_none());
+        assert!(settings.sample_rate_hz.is_none());
+        assert!(!settings.exclusive_mode);
+        assert_eq!(settings.channel_mapping, ChannelMapping::default());
+        assert!(settings.library_roots.is_empty());
+    }
+
+    /// Issue #167: empty JSON object deserializes to AppSettings::default().
+    #[test]
+    fn empty_app_settings_deserializes_cleanly() {
+        let empty_json = "{}";
+        let empty_settings: AppSettings = serde_json::from_str(empty_json).unwrap();
+        assert_eq!(empty_settings, AppSettings::default());
+    }
+
+    /// Issue #167: partial ChannelMapping JSON deserializes specified fields and defaults the rest.
+    #[test]
+    fn partial_channel_mapping_deserializes_cleanly() {
+        let partial_channel = r#"{"input_channel": 2}"#;
+        let mapping: ChannelMapping = serde_json::from_str(partial_channel).unwrap();
+        assert_eq!(mapping.input_channel, Some(2));
+        assert_eq!(mapping.output_channel_left, None);
+        assert_eq!(mapping.output_channel_right, None);
     }
 }
