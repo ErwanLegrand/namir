@@ -784,7 +784,6 @@ impl AppHost {
                             &input_name,
                             &output_name,
                             pending.sample_rate_hz,
-                            pending.buffer_frames,
                         );
                     }
                     Err(e) => {
@@ -825,15 +824,17 @@ impl AppHost {
         }
     }
 
-    /// Persists the negotiated audio device, sample-rate, and channel configuration to
-    /// `audio-settings.json` (FR-IO-080) so the next launch starts from what worked this time,
-    /// while preserving the user's requested buffer size across fallbacks.
+    /// Persists the negotiated audio device, sample-rate and channel configuration to
+    /// `audio-settings.json` (FR-IO-080) so the next launch starts from what worked this time.
     ///
-    /// Issue #167: if a specific buffer size was requested, preserve that requested size rather
-    /// than overwriting it with a declined fallback, so the user's preference is not silently
-    /// discarded. On a clean install where no buffer size was previously configured, leave
-    /// `buffer_size_frames` absent (`None`) so the device default continues to be used without
-    /// pinning a fallback size.
+    /// **The negotiated buffer size is deliberately not among them** (issue #167). A buffer size in
+    /// this file means "somebody asked for this" — either a hand edit or `UiIntent::SelectBufferSize`
+    /// — so writing a negotiated fallback here would make the next launch indistinguishable from a
+    /// request, warn about a decline the user never asked for, and pin the file to the first size the
+    /// first device happened to grant. A requested size is therefore carried through unchanged even
+    /// when negotiation declined it, and a clean install leaves the field absent. That is why this
+    /// method takes no buffer size: see the `*Consequence (added 2026-09-08, from issue #167)*` note
+    /// at D-13.1 for what it costs against FR-IO-080's literal wording.
     ///
     /// Called right after a successful `RunningStreams::play()`, both at startup (from
     /// `crate::app::run`) and after a stream reopen (`apply_audio_reopen`).
@@ -843,7 +844,6 @@ impl AppHost {
         input_device: &str,
         output_device: &str,
         sample_rate_hz: u32,
-        _buffer_frames: Option<u32>,
     ) {
         let Some(dir) = &self.config_dir else { return };
         let path = crate::settings::settings_path(dir);
@@ -2983,6 +2983,7 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
     /// Issue #167: persist_negotiated_audio preserves the user's requested buffer size
     /// even if negotiation declined it and used a different size.
     #[test]
@@ -2997,8 +2998,8 @@ mod tests {
         host.settings = initial_settings.clone();
         crate::settings::save(&crate::settings::settings_path(&dir), &initial_settings).unwrap();
 
-        // Negotiated buffer size is 480, but user requested 960
-        host.persist_negotiated_audio("Host", "In", "Out", 48_000, Some(480));
+        // Negotiation declined 960 and opened at 480; the request must survive it.
+        host.persist_negotiated_audio("Host", "In", "Out", 48_000);
 
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.buffer_size_frames, Some(960));
@@ -3015,7 +3016,7 @@ mod tests {
         host.watch_config_dir(dir.clone());
         assert!(host.settings.buffer_size_frames.is_none());
 
-        host.persist_negotiated_audio("Host", "In", "Out", 48_000, Some(480));
+        host.persist_negotiated_audio("Host", "In", "Out", 48_000);
 
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.buffer_size_frames, None);

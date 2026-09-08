@@ -225,7 +225,9 @@ catalogue of FR-ERR-020**", so which entries went unexercised is part of the res
 rolling, for Part C. Fixtures from `cargo run -p namir-fixtures --example seed-library`.
 
 **Twelve of fifteen steps pass. Three fail: 4, 8 and 14.** Every notice below is transcribed
-verbatim, as the script demands.
+verbatim, as the script demands. (Those counts are this run's and stand as written: step 13b was
+added to the script on 2026-09-08 for `app.audio_io.buffer_size_declined`, a catalogue entry that
+did not exist on 2026-08-27, and is unexecuted.)
 
 | Step | Induction | Verdict |
 |---|---|---|
@@ -242,6 +244,7 @@ verbatim, as the script demands.
 | 11 | `app.audio_io.remembered_device_unavailable` | PASS |
 | 12 | `app.audio_io.exclusive_mode_unavailable` | PASS |
 | 13 | `app.audio_io.no_supported_config` | PASS |
+| 13b | `app.audio_io.buffer_size_declined` | NOT EXECUTED — step added 2026-09-08 (issue #167), after this run |
 | 14 | steps 1-6 in Reaper | **FAIL** (dismissal clause) |
 | 15 | missing file reference on project reload | PASS |
 
