@@ -91,18 +91,31 @@ const BLOCK: usize = 64;
 /// FR-NAM-070's dropout threshold, the same figure `rt_stress.rs` reuses rather than re-invents.
 const DROPOUT_PEAK_THRESHOLD: f32 = 1e-4;
 
-/// A generous multiple of one block's period (`BLOCK / SR`), originally copied from `rt_stress.rs`
+/// A multiple of one block's period (`BLOCK / SR`), originally copied from `rt_stress.rs`
 /// along with its reasoning: **not a performance measurement**, since this binary runs under
 /// `AllocDisabler` and a wall-clock figure gathered here would misrepresent NFR-PERF-010 if quoted as
 /// one (D-2.1/D-2.5). What it detects is the audio thread genuinely blocked on something — which is
 /// exactly the failure mode FR-LIB-020's "off the audio thread" clause forbids.
 ///
-/// While `rt_stress.rs` uses `200` for a 6-file corpus, under a 10,000-file scan with concurrent
-/// thread-pool disk hashing and UI polling, observed ~350 ms OS scheduler preemption on shared CI
-/// runner VMs (e.g. macOS Apple Silicon runners during 10k-file scan under AllocDisabler) can occur
-/// in debug mode. Sized to `600` (allowing up to 800ms for a 64-sample block), it tolerates runner
-/// scheduler preemption while any genuine thread blocking on the multi-second scan would still be
-/// caught well above this threshold.
+/// This is the **sharp** term, and it stays at the `200` `rt_stress.rs` uses rather than being
+/// raised: a shared CI runner preempts this thread for a few hundred milliseconds now and again, and
+/// raising the per-block bound to cover that blunts the detector for every block of the run. Run
+/// `34161569482`'s `build + test (macos-latest)` job (2026-09-07T21:06:26Z, trunk) failed here at
+/// `a block took 349.991ms, over 200x the block period 1.333333ms` — one block out of a 2.29 s scan.
+/// What is tolerated is therefore a bounded *number* of exceedances ([`MAX_SLOW_BLOCKS`]), not a
+/// bigger ceiling; the ceiling a single block may never cross is [`MAX_BLOCK_MULTIPLE`] below.
+const SOFT_BLOCK_MULTIPLE: u32 = 200;
+
+/// How many blocks may cross [`SOFT_BLOCK_MULTIPLE`] before the run is read as blocking rather than
+/// preempted. A scheduler preemption is an isolated event a handful of times across the thousands of
+/// blocks this loop runs; a scan running *on* this thread, or behind a lock it takes, delays every
+/// block that touches the contended path, so a genuine violation clears this by orders of magnitude.
+const MAX_SLOW_BLOCKS: usize = 8;
+
+/// The absolute ceiling no single block may cross, catching the one failure the count above cannot:
+/// the audio thread parked once for the scan's whole duration, which is a single exceedance and
+/// arbitrarily long. `600` — 800 ms for a 64-sample block at 48 kHz — sits above the observed
+/// preemption and below the multi-second park that failure produces.
 const MAX_BLOCK_MULTIPLE: u32 = 600;
 
 /// The UI thread's frame interval — 60 Hz, the rate `namir-ui` is written against and twice the
@@ -161,6 +174,11 @@ struct AudioThread {
     blocks_run: usize,
     dropout_windows: usize,
     max_block_duration: Duration,
+    /// Blocks that crossed [`SOFT_BLOCK_MULTIPLE`] — the count the sharp term asserts on, since one
+    /// preempted block on a shared runner is not evidence of blocking and a run of them is.
+    slow_blocks: usize,
+    /// `SOFT_BLOCK_MULTIPLE` block periods, precomputed so the per-block path stays float-free.
+    slow_block_threshold: Duration,
 }
 
 impl AudioThread {
@@ -173,6 +191,9 @@ impl AudioThread {
             blocks_run: 0,
             dropout_windows: 0,
             max_block_duration: Duration::ZERO,
+            slow_blocks: 0,
+            slow_block_threshold: Duration::from_secs_f64(BLOCK as f64 / SR as f64)
+                * SOFT_BLOCK_MULTIPLE,
         }
     }
 
@@ -196,6 +217,9 @@ impl AudioThread {
 
         let peak = io.channel(0).iter().fold(0.0f32, |m, s| m.max(s.abs()));
         self.max_block_duration = self.max_block_duration.max(elapsed);
+        if elapsed > self.slow_block_threshold {
+            self.slow_blocks += 1;
+        }
         if peak <= DROPOUT_PEAK_THRESHOLD {
             self.dropout_windows += 1;
         }
@@ -415,6 +439,14 @@ fn fr_lib_020_a_ten_thousand_file_scan_blocks_neither_the_audio_thread_nor_the_u
         "a block took {:?}, over {MAX_BLOCK_MULTIPLE}x the block period {block_period:?} -- the \
          audio thread waited on something while the library was being scanned",
         audio.max_block_duration
+    );
+    assert!(
+        audio.slow_blocks <= MAX_SLOW_BLOCKS,
+        "{} of {} blocks took over {SOFT_BLOCK_MULTIPLE}x the block period {block_period:?} \
+         (at most {MAX_SLOW_BLOCKS} are read as runner preemption) -- the audio thread waited on \
+         something while the library was being scanned",
+        audio.slow_blocks,
+        audio.blocks_run
     );
     assert!(
         audio.blocks_run > 1_000,
