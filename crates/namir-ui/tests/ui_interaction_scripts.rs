@@ -93,20 +93,22 @@ impl HeadlessUiDriver {
         self.frame_with_modifiers(events, Modifiers::NONE)
     }
 
-    fn frame_with_modifiers(&mut self, events: Vec<Event>, modifiers: Modifiers) -> FullOutput {
+    fn frame_with_modifiers(&mut self, mut events: Vec<Event>, modifiers: Modifiers) -> FullOutput {
         self.time += 0.1;
         let time = self.time;
         let ui = &mut self.ui;
-        self.ctx.run_ui(
+        events.insert(0, Event::ModifiersChanged(modifiers));
+        let mut output = self.ctx.run_ui(
             RawInput {
                 time: Some(time),
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(960.0, 640.0))),
                 events,
-                modifiers,
                 ..Default::default()
             },
             |u| ui.frame(u),
-        )
+        );
+        output.textures_delta.clear();
+        output
     }
 
     fn painted_texts(output: &FullOutput) -> Vec<(String, Rect)> {

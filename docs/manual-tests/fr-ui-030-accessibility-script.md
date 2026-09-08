@@ -17,17 +17,12 @@ widget type every control in this crate is built from — see `controls.rs`'s mo
 why) is natively keyboard-operable once focused: Tab cycles focus, Enter/click enters edit mode,
 arrow keys step the value, typing replaces it.
 
-**What is not yet true, and is worth stating plainly rather than leaving implicit:**
-`egui-baseview` 0.6.0 (the version this crate is pinned to, matching `spikes/s3-egui-baseview`'s
-own `Cargo.lock`) does not itself forward `egui`'s `accesskit` tree to a platform screen reader —
-there is no `accesskit`-to-Windows-UI-Automation adapter wired into the `baseview` window this
-crate opens. So the accessible name is real at the `egui`/`accesskit` *data* level (a future
-platform adapter, or a different windowing backend with one wired in, would see it correctly) but a
-real screen reader (NVDA, Narrator) running against a `namir-ui` window today would not currently
-announce it. This is a gap in the M6 dependency stack, not a gap in how `namir-ui` uses it —
-closing it is future work (wiring an `accesskit` platform adapter into `namir-app`/`namir-clap`'s
-window, or a `baseview` version that does this itself), out of scope for this crate alone.
-
+**Accessibility platform adapters (updated 2026-09-09, issue #35 closed):**
+`egui-baseview` and `baseview` have been upgraded to forks with AccessKit platform adapter integration
+(`accesskit_windows` and `accesskit_macos`). On Windows and macOS, when an assistive technology connects,
+`egui`'s accessibility tree is now forwarded to the OS accessibility API (UI Automation on Windows,
+NSAccessibility on macOS). Accessibility scope is explicitly reduced to Windows and macOS; on Linux/X11,
+accessibility events remain a compiled no-op.
 ## Script
 
 Run this against a real, visible `namir-ui` window (see
@@ -67,8 +62,9 @@ anything screen-reader-observable.
 
 **Result: NOT EXECUTED this session — script above is ready to run by a person with a display,
 keyboard, and mouse against a real `namir-ui` window.** The one substantive finding worth acting on
-before this is run for real: **wiring a real `accesskit` platform adapter is still open work**,
-tracked here rather than silently assumed done because `Response::labelled_by` is called correctly.
+before this is run for real: AccessKit platform adapters are now wired on Windows and macOS, and
+executing this script with a real screen reader (Narrator/NVDA on Windows, VoiceOver on macOS) is now
+actionable.
 
 ### Supplementary headless driver coverage (2026-09-06, issue #143)
 

@@ -109,7 +109,7 @@ raw-window-handle = "0.6"
 # (`namir_ui::app::open_parented`'s return type) -- this crate never opens a `baseview` window
 # itself. Pinned to the same 0.2.x line `namir-ui`'s own `Cargo.toml` uses (and `spikes/
 # s4-clack-clap`'s `Cargo.lock` resolved to).
-baseview = "0.2"
+baseview = { git = "https://github.com/ErwanLegrand/baseview", branch = "accesskit-design" }
 
 [dev-dependencies]
 # Test-only: `host_wake.rs`'s unit test builds a test `clap_host` with an active `request_callback`

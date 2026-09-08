@@ -183,9 +183,7 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
 
         // A prior embedded window, still present because a (spec-violating) host called
         // `set_parent` twice without an intervening `destroy()`: close it explicitly first.
-        // `baseview::WindowHandle` has no `Drop` impl (`.close()` is the only teardown path), so
-        // simply overwriting `self.window` below would leak the native child window rather than
-        // merely leaking Rust memory.
+        // Closing it explicitly ensures the window and its handler are torn down immediately.
         if let Some(previous) = self.window.take() {
             previous.close();
         }

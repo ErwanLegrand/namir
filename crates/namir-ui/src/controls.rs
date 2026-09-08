@@ -202,14 +202,14 @@ mod tests {
         // position, so this position is stable across every subsequent frame that runs the same
         // widget code first.
         let mut label_rect = None;
-        let _ = ctx.run_ui(frame_input(0.0, Vec::new()), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(0.0, Vec::new()), |ui| {
             label_rect = Some(add_name_label(ui, "Input Level", "0.0").rect);
         });
         let pos = label_rect.expect("label laid out in frame 0").center();
 
         // Frame 1: first click. Not yet a double-click.
         let mut first_double_clicked = None;
-        let _ = ctx.run_ui(frame_input(0.0, click_events(pos)), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(0.0, click_events(pos)), |ui| {
             first_double_clicked = Some(add_name_label(ui, "Input Level", "0.0").double_clicked());
         });
         assert_eq!(
@@ -220,7 +220,7 @@ mod tests {
 
         // Frame 2: second click, well inside egui's default 0.3s double-click window.
         let mut second_double_clicked = None;
-        let _ = ctx.run_ui(frame_input(0.05, click_events(pos)), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(0.05, click_events(pos)), |ui| {
             second_double_clicked = Some(add_name_label(ui, "Input Level", "0.0").double_clicked());
         });
         assert_eq!(
@@ -244,14 +244,14 @@ mod tests {
         // frame, so discovering the position this way finds the exact rect `param_control`'s own
         // label occupies.
         let mut label_rect = None;
-        let _ = ctx.run_ui(frame_input(0.0, Vec::new()), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(0.0, Vec::new()), |ui| {
             label_rect = Some(add_name_label(ui, trim::GAIN_DB.name, "0.0").rect);
         });
         let pos = label_rect.expect("label laid out").center();
 
         // First click: primes the double-click timer, must not itself reset anything.
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(frame_input(0.0, click_events(pos)), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(0.0, click_events(pos)), |ui| {
             param_control(ui, &trim::GAIN_DB, 6.0, &mut intents);
         });
         assert!(
@@ -261,7 +261,7 @@ mod tests {
 
         // Second click: the double-click.
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(frame_input(0.05, click_events(pos)), |ui| {
+        let _ = crate::run_ui(&ctx, frame_input(0.05, click_events(pos)), |ui| {
             param_control(ui, &trim::GAIN_DB, 6.0, &mut intents);
         });
         assert_eq!(

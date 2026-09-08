@@ -1148,6 +1148,8 @@ what the milestone deliberately does not do, "unless Phase 0 says otherwise", an
 say otherwise. The keyboard-operability half of this requirement is independent of the adapter and
 is still owed a human running the script.
 
+*Consequence (added 2026-09-09, issue #35 closed)* — **Accessibility platform adapters wired for Windows and macOS via `ErwanLegrand/baseview` and `ErwanLegrand/egui-baseview` forks; accessibility scope reduced to Windows and macOS.** `accesskit_windows` and `accesskit_macos` platform adapters forward `egui`'s `accesskit` accessibility tree to platform screen readers on Windows and macOS. On Linux/X11, accessibility is a no-op; accessibility support is scoped to Windows and macOS only.
+
 **FR-UI-040 (Must)** — Every control shall display its current value numerically on demand, and
 shall accept a typed numeric value.
 *Verify:* M.

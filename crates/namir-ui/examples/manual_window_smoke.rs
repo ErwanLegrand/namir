@@ -152,34 +152,37 @@ fn main() {
         // that could satisfy the assertion below without a single complete run.
         counter.store(0, Ordering::Relaxed);
         let frames = Arc::clone(&counter);
-        let mut host = SmokeHost;
-        let mut view = ViewState::default();
+        let host = SmokeHost;
+        let view = ViewState::default();
 
-        EguiWindow::open_blocking(
-            settings,
-            (),
-            |_ctx, _cmds, _state| {
-                println!("build: egui context created");
-            },
-            |_output, _viewport, _state| {},
-            move |ui, _cmds, _state| {
-                let snapshot = host.snapshot();
+        struct SmokeApp {
+            frames: Arc<std::sync::atomic::AtomicU64>,
+            host: SmokeHost,
+            view: ViewState,
+        }
+
+        impl egui_baseview::App for SmokeApp {
+            fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut egui_baseview::Frame) {
+                let snapshot = self.host.snapshot();
                 let mut intents = Vec::new();
-                namir_ui::render(ui, &mut view, &snapshot, &mut intents);
+                namir_ui::render(ui, &mut self.view, &snapshot, &mut intents);
                 for intent in intents {
-                    host.dispatch(intent);
+                    self.host.dispatch(intent);
                 }
-                // After `render` returned, never before it: a frame that panicked half-way through
-                // painting is not a frame this example may count.
-                let drawn = frames.fetch_add(1, Ordering::Relaxed) + 1;
+                let drawn = self.frames.fetch_add(1, Ordering::Relaxed) + 1;
                 ui.ctx().request_repaint();
 
                 if drawn >= FRAMES_BEFORE_CLOSE {
                     println!("rendered {drawn} frames; closing");
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-            },
-        );
+            }
+        }
+
+        let app = SmokeApp { frames, host, view };
+
+        let window = EguiWindow::create(settings, app).expect("could not create smoke window");
+        let _ = window.run_until_closed();
     });
 
     let drawn = rendered.load(Ordering::Relaxed);
