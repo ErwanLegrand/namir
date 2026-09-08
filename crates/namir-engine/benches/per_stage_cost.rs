@@ -307,6 +307,7 @@ fn main() {
         id: eq::LOW_SHELF_GAIN_DB.id,
         value: EQ_LOW_SHELF_GAIN_DB,
     });
+
     let mut rng_state = 0xC0DE_CAFEu64 ^ 0x9E37_79B9_7F4A_7C15;
 
     // Measured in the chain's own runtime order (FR-CHAIN-010: trim before gate), purely so the

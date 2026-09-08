@@ -12,11 +12,11 @@ use crate::telemetry::{TelemetryEntry, TelemetrySink};
 /// never added to `namir_params::REGISTRY` and `params.lock` is unaffected.
 const TELEMETRY_FAULT_COUNT: u32 = namir_params::ParamId::from_key("telemetry.chain.fault_count").0;
 
-/// D-10.4: this chain's own RT-facing `namir_engine::ParamId`s for FR-CHAIN-030's global bypass
-/// and FR-CHAIN-090's output ceiling, converted once from `namir_params`'s own ids for the same
-/// keys — the identical per-stage convention `stages/trim.rs`'s `GAIN_DB_ID` documents, applied
-/// here to the two chain-level (not stage-owned) descriptors `namir_params::global` declares.
-/// [`Chain::apply`] matches on these the same way a stage's own `apply` matches on its ids.
+/// D-10.4: this chain's own RT-facing `ParamId`s for FR-CHAIN-030's global bypass and
+/// FR-CHAIN-090's output ceiling — the identical per-stage convention `stages/trim.rs`'s
+/// `GAIN_DB_ID` documents, applied here to the two chain-level (not stage-owned) descriptors
+/// `namir_params::global` declares. [`Chain::apply`] matches on these the same way a stage's own
+/// `apply` matches on its ids.
 const GLOBAL_BYPASS_ID: ParamId = GLOBAL_BYPASS.id;
 /// See [`GLOBAL_BYPASS_ID`].
 const OUTPUT_CEILING_DB_ID: ParamId = OUTPUT_CEILING_DB.id;
