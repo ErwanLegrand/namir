@@ -234,7 +234,39 @@ FR-CLAP-110. Neither D-13.x, `gui.rs`'s own comment, nor FR-CLAP-110's text note
   of trim the meter reads is settled (post-trim); by how much is not on the record.
 - **The enlarged window's exact size is not recorded**, only that it was enlarged from 960x640 on a
   1440p display until every element fitted.
-**Result: PASS, 2026-08-27, both product configurations** (historical run on previous layout).
+
+**Superseded verdict — 2026-08-27, both product configurations: PASS**, under the explicit
+adjudication that scrolling within the single screen is not navigation. FR-UI-020's element list is
+present, labelled and reachable without tabs, menus or modes in the standalone and in Reaper alike.
+
+## The screen changed on 2026-09-07, and the run above predates it
+
+*(Kept verbatim from the 2026-09-07 entry. It is the record of why this document read PARTIAL, and
+the 2026-09-08 run below is what supersedes it. Only its verdict line's marker is demoted, so that
+the gate reads one live verdict rather than the worst of three — see this directory's README on
+worst-verdict-wins.)*
+
+The layout steps above were rewritten in the same commit that changed the screen, so they describe
+what to look for now. **The verdicts below them do not: they were recorded against the previous
+layout and no human has looked at the new one.** What moved: `trim.gain_db` is displayed as
+`Input Level` rather than `Input Trim`; the two level controls and their meters left the scrolling
+central column for two columns in the fixed top panel; each meter is drawn beneath its own control
+rather than above it, and lost its text label to the control; both bars are filled in the brand
+mark's orange. Steps 1, 2, 3, 8, 10 and 12 are the ones whose observations that invalidates —
+1, 2, 3 and 8 name elements that have moved or been renamed, 10 photographed a screen that no
+longer exists, and 12 repeated 1, 2 and 8 in the plugin editor. Steps 4-7, 9 and 11 name elements
+this change did not touch, but they were observed on the same screen and are not re-run either.
+
+The automated evidence that *did* move with the change is in `crates/namir-ui`: the layout is
+asserted from what `render` actually painted (`app.rs`'s
+`each_section_heading_is_painted_exactly_once`, which watches `Input Level` and `Output Level` for
+exactly the duplicate heading step 2 now forbids) and driven end to end headlessly
+(`tests/ui_interaction_scripts.rs`'s `single_screen_layout_paints_all_major_sections`). Neither is
+this requirement's `Verify: M` method, which is why it is not credited here.
+
+**Superseded verdict — 2026-09-07, both product configurations: PARTIAL** — a placeholder verdict
+recording that the 2026-08-27 run's observations no longer describe the shipped screen. It is not a
+finding about the new layout, which had not been observed at all. The run below is that observation.
 
 ## Executed run on the new layout (2026-09-08)
 
@@ -242,7 +274,7 @@ FR-CLAP-110. Neither D-13.x, `gui.rs`'s own comment, nor FR-CLAP-110's text note
 build 26200, AudioBox 22VSL) against the top-panel meter layout introduced on 2026-09-07. Both
 product configurations were exercised: the standalone (`cargo run -p namir-app --release`) for
 steps 1–11, and the CLAP plugin in **Reaper** and **Studio One** for step 12. **All twelve steps
-pass.**
+pass** — including the six the 2026-09-07 entry above named as invalidated.
 
 | Step | Element | Verdict |
 |---|---|---|
@@ -250,13 +282,20 @@ pass.**
 | 2 | Input (`Input Level`, `DC Blocker`) | PASS — controls present, no redundant "Input" heading |
 | 3 | Input meter responds to trim | PASS — meter rises with +12 dB trim boost (reads post-trim) |
 | 4 | Gate controls (five) | PASS — all five present with current values |
-| 5 | Loaded model's name | PASS — updates from placeholder to filename on library double-click (observation: Model and NAM headings could be unified in a future cleanup) |
+| 5 | Loaded model's name | PASS — updates from placeholder to filename on library double-click |
 | 6 | Loaded IR's name | PASS — updates from placeholder to filename on library double-click |
 | 7 | EQ controls (twelve) | PASS — all twelve present with current values |
 | 8 | Output meter, `Output Level`, `Output Ceiling` | PASS — top panel right column, meter tracks audio and follows level adjustments |
 | 9 | Global bypass | PASS — clean unity-gain dry passthrough bypassing gain stages |
 | 10 | All at once, in one screenshot | PASS — all elements simultaneously visible when window is enlarged |
-| 11 | Without navigation | PASS — confirmed adjudication that scrolling within single screen is not navigation; no tabs, menus or drawers |
+| 11 | Without navigation | PASS — on the same adjudication the 2026-08-27 run recorded: scrolling within the single screen is not navigation; no tabs, menus or drawers |
 | 12 | The plugin shell (Reaper, Studio One) | PASS — all elements present, scrolling works in host window, standalone controls omitted as designed |
 
-**Result: PASS, 2026-09-08, both product configurations.** All twelve steps executed and verified on the new layout.
+### Observations outside FR-UI-020's own clauses
+
+- **The `Model` and `NAM` headings could be unified.** Step 5 passes as written — the loaded
+  model's name is present and updates on load — and this is a cosmetic grouping observation about
+  two adjacent headings, filed here rather than left inside a verdict cell so it is findable.
+
+**Result: PASS, 2026-09-08, both product configurations.** All twelve steps executed and verified on
+the new layout.

@@ -67,6 +67,27 @@ pub fn param_control(
             });
         }
 
+        // FR-UI-040's "Escape cancels an in-progress edit" needs three lines together, and each
+        // one is load-bearing — removing any of them fails `ui_interaction_scripts`. The defect
+        // they fix is a two-frame window inside `egui` 0.35:
+        //
+        // 1. `update_while_editing` defaults to **true**, so every keystroke inside the inline
+        //    editor reports `changed()` and would dispatch a `SetParam` before the user commits.
+        //    Turning it off is what makes an edit cancellable at all — and it is a real behaviour
+        //    change beyond Escape: a typed value now applies on commit, never per keystroke.
+        // 2. Escape clears keyboard focus, but `Memory::lost_focus(id)` answers
+        //    `id_previous_frame || id_two_frames_ago`. On the frame *after* the Escape,
+        //    `key_pressed(Escape)` is already false while `lost_focus` is still true, so
+        //    `DragValue`'s focus-loss path parses the staged text and commits the very edit that
+        //    was cancelled. Dropping the staged `String` on the Escape frame is what closes that
+        //    window; it is scoped to `lost_focus()` because that is precisely the signal the
+        //    window is about — `has_focus()` is already false here, so scoping on it silently
+        //    reintroduces the bug.
+        // 3. `value as f32 != current` is **not** a defensive extra: (1) makes `DragValue` report
+        //    `changed()` once with the value unmoved, and without this guard three unrelated
+        //    numeric-entry tests see a spurious leading `SetParam` carrying the pre-edit value.
+        //    The comparison is exact rather than an epsilon hazard — `value` is `f64::from(current)`
+        //    and the round trip is lossless, so this reads as "did the widget move it".
         let mut value = f64::from(current);
         let response: Response = ui
             .add(
@@ -79,7 +100,7 @@ pub fn param_control(
             )
             .labelled_by(label.id);
 
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             ui.data_mut(|data| data.remove_temp::<String>(response.id));
         }
 
