@@ -1162,6 +1162,10 @@ pub fn declared_requirement_ids(content: &str) -> Vec<String> {
 /// e.g. `fr-io-010-device-enumeration.md` also covering FR-IO-040, is real and must not be missed
 /// just because its filename only names the first one).
 ///
+/// **All** of a requirement's matching documents are read and the least favourable verdict
+/// decides, so one script's `PASS` cannot speak for a sibling script's unexecuted steps; see the
+/// `'M'` arm's own comment for the two documents this caught.
+///
 /// The second arm read the **whole file** until M13 narrowed it, and that was a live defect rather
 /// than a theoretical one: any prose mention of an id credited that id in full. Roadmap §15 item 15
 /// caught FR-UI-020 resolving to `fr-clap-030-audio-ports-negotiation.md` on a parenthesis about
@@ -1198,25 +1202,45 @@ pub fn build_report(
 
         if needs_manual_document(&req.verify) {
             let prefix = format!("{}-", manual_test_prefix(&req.id));
-            match manual_test_docs.iter().find(|(name, content)| {
+            // **Every** matching document is read, not the first one found (issue #34, M15's fix
+            // finished at M14). Worst-verdict-wins was built *within* a document
+            // (`parse_manual_verdict` folds a file's own verdict lines) and the lookup here was a
+            // `find`, so across documents it was first-match-wins -- and a second document per
+            // requirement is now the ordinary case rather than a curiosity. PR #159 added
+            // `fr-io-010-device-selection.md` and `fr-io-040-sample-rate-and-buffer-size.md` for
+            // the surface it built, both `NOT EXECUTED`; both were invisible, because
+            // `fr-io-010-device-enumeration.md` sorts first and records `PASS` -- so the panel's
+            // own scripts, written and never run, credited two Musts in full. That is the same
+            // defect issue #34 opened against the document-exists-so-it-passed rule, one level up.
+            //
+            // One non-pass document blocks the requirement and is the one named, whichever
+            // document passed: `PASS` on one script never speaks for another script's steps.
+            let mut passing: Option<&String> = None;
+            let mut blocking: Option<(&String, String)> = None;
+            for (file, content) in manual_test_docs.iter().filter(|(name, content)| {
                 name.to_lowercase().starts_with(&prefix)
                     || declared_requirement_ids(content).contains(&req.id)
             }) {
-                // Issue #34: the document existing is not the script having been run. A verdict
-                // that is not a clean pass leaves the requirement **uncovered**, and the document
-                // is still named -- in the plan and in the gate's own list -- so the reader is
-                // pointed at the evidence that does exist rather than told there is none.
-                Some((file, content)) => match manual_verdict_reason(&manual_test_verdict(content))
-                {
-                    None => {
-                        manual_hits.insert(req.id.clone(), file.clone());
-                    }
-                    Some(reason) => {
-                        manual_unexecuted.insert(req.id.clone(), (file.clone(), reason));
-                        unresolved.push('M');
-                    }
-                },
-                None => unresolved.push('M'),
+                match manual_verdict_reason(&manual_test_verdict(content)) {
+                    // Issue #34: the document existing is not the script having been run. A
+                    // verdict that is not a clean pass leaves the requirement **uncovered**, and
+                    // the document is still named -- in the plan and in the gate's own list -- so
+                    // the reader is pointed at the evidence that does exist rather than told there
+                    // is none.
+                    Some(reason) if blocking.is_none() => blocking = Some((file, reason)),
+                    Some(_) => {}
+                    None => passing = passing.or(Some(file)),
+                }
+            }
+            match (blocking, passing) {
+                (Some((file, reason)), _) => {
+                    manual_unexecuted.insert(req.id.clone(), (file.clone(), reason));
+                    unresolved.push('M');
+                }
+                (None, Some(file)) => {
+                    manual_hits.insert(req.id.clone(), file.clone());
+                }
+                (None, None) => unresolved.push('M'),
             }
         }
 
@@ -2635,6 +2659,57 @@ mod tests {
             report.manual_hits.get("FR-IO-040").unwrap(),
             "fr-io-010-device-enumeration.md"
         );
+    }
+
+    #[test]
+    fn a_second_document_recording_no_run_blocks_a_requirement_its_first_one_passes() {
+        // The defect this fixes, in the shape it actually had. PR #159 built the audio-device
+        // panel and wrote two scripts for it, `fr-io-010-device-selection.md` and
+        // `fr-io-040-sample-rate-and-buffer-size.md`, both `NOT EXECUTED`. Neither was ever read:
+        // the lookup was a `find`, and `fr-io-010-device-enumeration.md` -- which declares both
+        // ids and records a pass earned against the pre-panel surface -- comes first. So both
+        // Musts read plainly covered in `docs/03-test-plan.md` on the strength of a script that
+        // does not exercise what the panel added.
+        let reqs = vec![
+            Requirement {
+                id: "FR-IO-010".into(),
+                verify: vec!['M'],
+                section: String::new(),
+            },
+            Requirement {
+                id: "FR-IO-040".into(),
+                verify: vec!['M'],
+                section: String::new(),
+            },
+        ];
+        let docs = vec![
+            (
+                "fr-io-010-device-enumeration.md".to_string(),
+                "**Requirement (literal):** FR-IO-010 ... FR-IO-040 ...\n\n**Result: PASS.**\n"
+                    .to_string(),
+            ),
+            (
+                "fr-io-010-device-selection.md".to_string(),
+                "**Result: NOT EXECUTED.**\n".to_string(),
+            ),
+            (
+                "fr-io-040-sample-rate-and-buffer-size.md".to_string(),
+                "**Result: NOT EXECUTED.**\n".to_string(),
+            ),
+        ];
+        let report = build_report(&reqs, &docs, &HashMap::new(), &HashMap::new());
+        assert!(report.manual_hits.is_empty(), "{:?}", report.manual_hits);
+        assert_eq!(report.missing.len(), 2);
+        // The unexecuted document is the one named, not the passing one: the reader is pointed at
+        // the script whose steps are owed, which is the actionable half.
+        for (id, expected) in [
+            ("FR-IO-010", "fr-io-010-device-selection.md"),
+            ("FR-IO-040", "fr-io-040-sample-rate-and-buffer-size.md"),
+        ] {
+            let (file, reason) = report.manual_unexecuted.get(id).unwrap();
+            assert_eq!(file, expected);
+            assert!(reason.contains("NOT EXECUTED"), "{reason}");
+        }
     }
 
     #[test]
