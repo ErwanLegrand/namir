@@ -567,14 +567,14 @@ pub fn run() {
                     startup_probe::audible(library_index_entries, default_state_params);
                     eprintln!("namir: audio stream started");
                     host.hold_streams(running);
-                    // FR-IO-080: persist the negotiated values immediately — including any fallback
-                    // from the default-device path — so the next launch starts from what worked.
+                    // FR-IO-080: persist the negotiated device/rate/channel configuration
+                    // immediately so the next launch starts from what worked. The buffer size is
+                    // not among them since issue #167 — see `AppHost::persist_negotiated_audio`.
                     host.persist_negotiated_audio(
                         &host_info.name,
                         &input.device.name,
                         &output.device.name,
                         sample_rate_hz,
-                        buffer_frames,
                     );
                 }
                 Err(e) => {
@@ -636,9 +636,10 @@ pub fn run() {
 
     xrun_log.stop();
 
-    // FR-IO-080: device/rate/buffer are now persisted at the point of negotiation (see
+    // FR-IO-080: device/rate/channels are persisted at the point of negotiation (see
     // `host.persist_negotiated_audio` called right after `play()` above, and
-    // `apply_audio_reopen`). Only library_roots needs updating here: it tracks mid-session
+    // `apply_audio_reopen`); a buffer size is written only when something requested one, by
+    // `AppHost::persist_settings`. Only library_roots needs updating here: it tracks mid-session
     // changes (add/remove via panel) that `persist_negotiated_audio` does not touch.
     if let Some(dir) = &config_dir {
         let settings_path = settings::settings_path(dir);
