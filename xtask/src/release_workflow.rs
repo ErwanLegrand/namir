@@ -361,13 +361,12 @@ fn parse_seq(lines: &[Line], cursor: &mut usize, indent: usize) -> Result<Yaml, 
     Ok(Yaml::Seq(items))
 }
 
-/// `|` or `>` (with optional chomping/indentation indicators like `|-`, `>+`, `|2`).
-/// Returns `Some(true)` for folded (`>`), `Some(false)` for literal (`|`), or `None`.
+/// `|` or `>`, with optional chomping indicators (`|-`, `>+`). Returns `Some(true)` for folded
+/// (`>`), `Some(false)` for literal (`|`), or `None` for anything else.
 fn block_scalar_indicator(rest: &str) -> Option<bool> {
-    let rest = rest.trim();
-    match rest.chars().next() {
-        Some('>') => Some(true),
-        Some('|') => Some(false),
+    match rest.trim() {
+        "|" | "|-" | "|+" => Some(false),
+        ">" | ">-" | ">+" => Some(true),
         _ => None,
     }
 }
