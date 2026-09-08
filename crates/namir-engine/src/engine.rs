@@ -40,6 +40,7 @@
 //! Collecting between the two events keeps "at most one thing is parked at any instant" true, which
 //! is a far easier invariant to state, comment and test than any capacity above one. Each pass
 //! costs six `Option::is_none()` checks.
+
 use namir_params::ParamId;
 
 use crate::chain::Chain;
