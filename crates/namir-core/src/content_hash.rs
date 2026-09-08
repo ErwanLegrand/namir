@@ -55,34 +55,16 @@ impl ContentHash {
     /// The non-panicking counterpart to `FromStr::from_str`, named so a caller reading the code
     /// doesn't have to know `FromStr` is implemented to find it.
     pub fn from_hex(s: &str) -> Result<Self, ContentHashParseError> {
-        let s = s.as_bytes();
         if s.len() != 64 {
             return Err(ContentHashParseError::WrongLength);
         }
-        let mut out = [0u8; 32];
-        // `as_chunks` rather than `chunks_exact`: the length is already known to be 64, so the
-        // remainder is provably empty and each pair arrives as a `[u8; 2]` that indexes without a
-        // bounds check.
-        for (i, &[hi, lo]) in s.as_chunks::<2>().0.iter().enumerate() {
-            let hi = hex_nibble(hi).ok_or(ContentHashParseError::NotHex)?;
-            let lo = hex_nibble(lo).ok_or(ContentHashParseError::NotHex)?;
-            out[i] = (hi << 4) | lo;
-        }
-        Ok(Self(out))
+        let hash = blake3::Hash::from_hex(s).map_err(|_| ContentHashParseError::NotHex)?;
+        Ok(Self(*hash.as_bytes()))
     }
 
     /// The raw 32-byte BLAKE3 digest, for callers that need it outside the hex `Display` form.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
     }
 }
 
@@ -96,10 +78,7 @@ impl std::str::FromStr for ContentHash {
 
 impl std::fmt::Display for ContentHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for byte in &self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        write!(f, "{}", blake3::Hash::from(self.0))
     }
 }
 
