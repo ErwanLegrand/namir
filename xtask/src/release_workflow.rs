@@ -361,14 +361,26 @@ fn parse_seq(lines: &[Line], cursor: &mut usize, indent: usize) -> Result<Yaml, 
     Ok(Yaml::Seq(items))
 }
 
-/// `|` or `>`, with optional chomping indicators (`|-`, `>+`). Returns `Some(true)` for folded
-/// (`>`), `Some(false)` for literal (`|`), or `None` for anything else.
+/// `|` or `>`, with optional chomping or indentation indicators (`|-`, `>+`, `|1`..`|9`, `>1`..`>9`).
+/// Returns `Some(true)` for folded (`>`), `Some(false)` for literal (`|`), or `None` for anything else.
 fn block_scalar_indicator(rest: &str) -> Option<bool> {
-    match rest.trim() {
-        "|" | "|-" | "|+" => Some(false),
-        ">" | ">-" | ">+" => Some(true),
-        _ => None,
+    let rest = rest.trim();
+    let fold = match rest.chars().next()? {
+        '>' => true,
+        '|' => false,
+        _ => return None,
+    };
+    let suffix = &rest[1..];
+    let mut seen_chomp = false;
+    let mut seen_indent = false;
+    for b in suffix.bytes() {
+        match b {
+            b'-' | b'+' if !seen_chomp => seen_chomp = true,
+            b'1'..=b'9' if !seen_indent => seen_indent = true,
+            _ => return None,
+        }
     }
+    Some(fold)
 }
 
 fn parse_block_scalar(lines: &[Line], cursor: &mut usize, indent: usize, fold: bool) -> Yaml {
@@ -1180,6 +1192,17 @@ mod tests {
     fn a_folded_block_scalar_joins_its_lines() {
         let doc = parse("run: >\n  cargo run\n  -p xtask\n").unwrap();
         assert_eq!(doc.str_at("run"), Some("cargo run -p xtask"));
+    }
+
+    #[test]
+    fn block_scalars_accept_indentation_and_chomping_indicators() {
+        for indicator in [
+            "|", "|-", "|+", "|2", "|2-", "|-2", ">", ">-", ">+", ">2", ">2-", ">-2",
+        ] {
+            let yaml = format!("run: {indicator}\n  cargo run\n  -p xtask\n");
+            let doc = parse(&yaml).unwrap_or_else(|e| panic!("failed for {indicator}: {e}"));
+            assert!(doc.str_at("run").is_some(), "missing run for {indicator}");
+        }
     }
 
     #[test]
