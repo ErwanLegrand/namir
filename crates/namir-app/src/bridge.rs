@@ -10,7 +10,7 @@
 //! primitive `namir-engine`'s own command/return rings use — see that crate's `ring.rs` for the
 //! full adoption argument, reused rather than re-litigated here) carrying raw captured `f32`
 //! samples, plus the underrun accounting that *is* one of FR-IO-060's two xrun sources (the other
-//! being `cpal`'s own `ErrorKind::Xrun`, handled in [`crate::audio_io`]).
+//! being `cpal`'s own `CallbackInfo::xrun()`, handled in [`crate::audio_io`]).
 //!
 //! **Not RT-unsafe by construction, but written to be RT-cheap in practice:** `rtrb` in this
 //! workspace's pinned version (0.3.4) has no bulk chunk-transfer API, so [`BridgeProducer`]/

@@ -169,9 +169,10 @@ fn main() {
                 for intent in intents {
                     self.host.dispatch(intent);
                 }
+                // After `render` returned, never before it: a frame that panicked half-way through
+                // painting is not a frame this example may count.
                 let drawn = self.frames.fetch_add(1, Ordering::Relaxed) + 1;
                 ui.ctx().request_repaint();
-
                 if drawn >= FRAMES_BEFORE_CLOSE {
                     println!("rendered {drawn} frames; closing");
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -182,7 +183,9 @@ fn main() {
         let app = SmokeApp { frames, host, view };
 
         let window = EguiWindow::create(settings, app).expect("could not create smoke window");
-        let _ = window.run_until_closed();
+        window
+            .run_until_closed()
+            .expect("smoke window run_until_closed failed");
     });
 
     let drawn = rendered.load(Ordering::Relaxed);

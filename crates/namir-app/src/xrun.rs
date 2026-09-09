@@ -1,9 +1,9 @@
 //! FR-IO-060: "The application shall detect and report audio dropouts (xruns), showing a running
 //! count for the session, resettable by the user."
 //!
-//! Two independent sources feed one counter: `cpal`'s own `ErrorKind::Xrun` (not every backend
-//! reports it — WASAPI notably does not surface a dedicated xrun signal through `cpal`'s error
-//! callback the way JACK does) and this crate's own [`crate::bridge`] ring underrun, detected
+//! Two independent sources feed one counter: `cpal`'s own `CallbackInfo::xrun()` (not every backend
+//! reports it — WASAPI notably does not surface a dedicated xrun signal through `cpal`'s callback
+//! the way JACK does) and this crate's own [`crate::bridge`] ring underrun, detected
 //! whenever the output callback needs more frames than the input side has produced. The two are
 //! not double-counted against each other in the sense of correcting one from the other — they are
 //! genuinely different events (a backend-reported glitch vs. this crate's own buffer running dry)

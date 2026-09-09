@@ -13,9 +13,9 @@
 //! - Counts **both** of FR-IO-060's bridge dropouts directly: the output callback's underrun, via
 //!   [`crate::bridge::BridgeConsumer::pull_into`]'s own return value, and — since issue #85 — the
 //!   input callback's overrun, via [`crate::bridge::BridgeProducer::push_captured`]'s. `cpal`'s own
-//!   `StreamFailure::Xrun` reports arrive through the same `on_failure` callback every other
-//!   stream error does; classifying it into the same [`crate::xrun::XrunCounter`] (rather than
-//!   surfacing it as a one-off notice the way `StreamFailure::DeviceLost`/`Other` are) is
+//!   `StreamFailure::Xrun` reports arrive through the data callbacks' `info.xrun()` checks and the
+//!   same failure callback every other stream error does; classifying it into the same
+//!   [`crate::xrun::XrunCounter`] (rather than surfacing it as a one-off notice the way
 //!   [`crate::app`]'s job, since that is also where the counter this module increments for
 //!   bridge under- and overruns lives.
 //!

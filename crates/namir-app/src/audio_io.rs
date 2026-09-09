@@ -919,6 +919,9 @@ mod cpal_impl {
         .ok()?;
         let device = resolve_device(devices, name).ok()?;
         let options = wasapi_options(ShareMode::Exclusive);
+        // The fork's queries answer for the share mode they are handed, and refuse exclusive mode
+        // outright where there is no WASAPI endpoint -- which is the whole reason this is a query
+        // and not an open-and-see (see `AudioBackend::supports_exclusive`'s own doc comment).
         let configured = match device.with_options(options) {
             Ok(c) => c,
             Err(e) => return Some(Err(AudioIoError::ExclusiveModeUnavailable(e.to_string()))),
@@ -1293,6 +1296,10 @@ mod cpal_impl {
                 if let Some(codes) = data.as_slice::<T>() {
                     converter.drain(codes);
                 }
+                // `cpal`'s own typed builder `expect()`s on the `None` here. A host handing back a
+                // different format than it was asked for is a bug, but an audio callback is the
+                // worst place in the process to panic from, so this drops the block instead: the
+                // stream stays alive, the bridge underruns, and FR-IO-060's xrun counter says so.
             },
             move |err| on_error(to_stream_failure(err)),
             Some(activation_timeout),
@@ -1318,6 +1325,10 @@ mod cpal_impl {
             T::FORMAT,
             move |data: &mut cpal::Data, _info| match data.as_slice_mut::<T>() {
                 Some(codes) => converter.fill(codes),
+                // As `build_converting_input`, except that an output callback must leave *something*
+                // in the buffer: an all-zero byte pattern is silence in every signed integer and
+                // IEEE float format `cpal` can hand back here, so this is silence rather than
+                // whatever the device buffer happened to hold.
                 None => data.bytes_mut().fill(0),
             },
             move |err| on_error(to_stream_failure(err)),
@@ -1428,13 +1439,17 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                to_stream_failure(error),
+                to_stream_failure(error.clone()),
                 StreamFailure::DeviceLost,
-                "StreamInvalidated must classify as DeviceLost regardless of message content"
+                "{error}"
             );
         }
     }
 
+    /// The arms that were already right, kept beside the new one: `DeviceNotAvailable` is a
+    /// device loss, and an error that names no device and is classified as nothing in particular
+    /// stays [`StreamFailure::Other`] rather than being promoted. (Note: `cpal` 0.19 moved Xrun
+    /// delivery to `CallbackInfo::xrun()`, so `ErrorKind::Xrun` was removed upstream).
     #[test]
     fn the_other_stream_failure_classifications_are_unchanged() {
         assert_eq!(

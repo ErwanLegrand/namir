@@ -1213,7 +1213,6 @@ name = "namir-clap"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
- "baseview",
  "clack-extensions",
  "clack-host",
  "clack-plugin",
@@ -1356,7 +1355,6 @@ dependencies = [
 name = "namir-ui"
 version = "0.1.0"
 dependencies = [
- "baseview",
  "egui",
  "egui-baseview",
  "namir-core",
