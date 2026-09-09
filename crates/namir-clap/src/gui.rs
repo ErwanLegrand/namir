@@ -32,6 +32,11 @@
 //!    portable way for a plugin on either side of that ABI to verify a foreign window handle's
 //!    liveness independently, which is why the CLAP specification states the contract as a
 //!    documented caller obligation rather than as something the callee can check.
+//! 3. Cloned parent handles inside `EguiWindowSettings`: `namir_ui::open_parented` bundles the
+//!    `ParentWindowHandle` into settings passed to `open_with_srgb_fallback`. If sRGB negotiation
+//!    fails on the first attempt, the settings closure clones the parent handle for the fallback
+//!    attempt. Because the parent native handle is borrowed and valid for the plugin instance's
+//!    lifetime (contract 2), reusing the same handle on retry does not alter its validity.
 //!
 //! **Why this is sound to accept rather than a real gap.** Every CLAP host implementation (a C/
 //! C++ program linking this plugin as a shared library) necessarily makes the identical trust
@@ -183,7 +188,8 @@ impl<'a> PluginGuiImpl for NamirMainThread<'a> {
 
         // A prior embedded window, still present because a (spec-violating) host called
         // `set_parent` twice without an intervening `destroy()`: close it explicitly first.
-        // Closing it explicitly ensures the window and its handler are torn down immediately.
+        // In baseview 0.3.3 `Window` now closes on drop, so this is explicitness rather than
+        // the leak fix it used to be.
         if let Some(previous) = self.window.take() {
             previous.close();
         }

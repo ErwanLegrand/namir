@@ -20,6 +20,9 @@ use crate::library_view::{self, LibraryViewState};
 use crate::notices;
 use crate::{UiIntent, meter};
 
+/// Re-exported `baseview::Window` type from `egui-baseview` for embedding shells (such as `namir-clap`).
+pub type Window = egui_baseview::baseview::Window;
+
 /// Per-window state carried across frames -- everything that is *this crate's own* UI state
 /// (never sent to a host, never part of a [`UiSnapshot`]), as opposed to engine/library/preset
 /// state, which only ever arrives through a snapshot. Kept separate from [`NamirUi`] itself so
@@ -480,11 +483,13 @@ impl<H: UiHost + 'static> egui_baseview::App for NamirUi<H> {
     }
 }
 
-fn default_window_size() -> baseview::dpi::Size {
+fn default_window_size() -> egui_baseview::baseview::dpi::Size {
     // FR-UI-080 (Should): usable on a window as small as 800x600 logical pixels. This is the
     // *default* opening size, comfortably above that floor, not the floor itself -- the window
     // remains user-resizable (baseview's default `WindowOpenOptions` behaviour).
-    baseview::dpi::Size::Logical(baseview::dpi::LogicalSize::new(960.0, 640.0))
+    egui_baseview::baseview::dpi::Size::Logical(egui_baseview::baseview::dpi::LogicalSize::new(
+        960.0, 640.0,
+    ))
 }
 
 /// Opens a window through `open`, and if that attempt fails, opens it once more with sRGB
@@ -624,7 +629,11 @@ where
 ///
 /// Goes through [`open_with_srgb_fallback`] for the same reason [`open_blocking`] does, and shares
 /// `host` with the retry the same way.
-pub fn open_parented<H, P>(parent: &P, title: impl Into<String>, host: H) -> baseview::Window
+pub fn open_parented<H, P>(
+    parent: &P,
+    title: impl Into<String>,
+    host: H,
+) -> egui_baseview::baseview::Window
 where
     H: UiHost + 'static,
     P: raw_window_handle::HasWindowHandle,
@@ -632,7 +641,9 @@ where
     let settings = egui_baseview::EguiWindowSettings {
         title: title.into(),
         size: default_window_size(),
-        parent: Some(baseview::ParentWindowHandle::from_window(parent)),
+        parent: Some(egui_baseview::baseview::ParentWindowHandle::from_window(
+            parent,
+        )),
         ..Default::default()
     };
     let host = Arc::new(Mutex::new(host));

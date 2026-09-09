@@ -1127,7 +1127,7 @@ and level, and a global bypass.
 *Verify:* M.
 
 **FR-UI-030 (Must)** — Every control shall be operable by mouse and by keyboard, and every control
-shall have an accessible name.
+shall have an accessible name on supported platforms (Windows and macOS; Linux/X11 is a compiled no-op, Decision D-15.4).
 *Verify:* M against a written accessibility script.
 
 *Consequence (added M14, 2026-08-12) — recorded as still open; this is not a decision.* **This

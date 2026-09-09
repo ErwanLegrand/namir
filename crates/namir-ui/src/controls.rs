@@ -34,12 +34,9 @@
 //! `response.labelled_by(label_id)` sets the value control's accesskit label to the name label's
 //! text, which is the mechanism `egui` itself uses for FR-UI-030-style association; `DragValue` is
 //! natively keyboard-operable once focused (arrow keys step the value, typing enters edit mode).
-//! **Honest gap:** `egui-baseview` 0.6 (the version this crate is pinned to, matching
-//! `spikes/s3-egui-baseview`'s own `Cargo.lock`) does not itself wire `egui`'s accesskit tree to a
-//! platform screen reader -- the accessible name is real at the `egui`/accesskit level (a future
-//! platform adapter would see it correctly) but not yet forwarded to Windows' actual accessibility
-//! API through this dependency stack. Recorded in `docs/manual-tests/fr-ui-030-accessibility-script.md`
-//! rather than glossed over.
+//! **Platform adapters (issue #35, Decision D-15.4):** forks of `baseview` and `egui-baseview` wire
+//! `egui`'s AccessKit tree to platform screen readers on Windows (`accesskit_windows`) and macOS
+//! (`accesskit_macos`). On Linux (X11), accessibility is a compiled no-op.
 
 use egui::{DragValue, Label, Response, Sense, Ui};
 use namir_params::{ParamDescriptor, ParamKind};
@@ -69,7 +66,7 @@ pub fn param_control(
 
         // FR-UI-040's "Escape cancels an in-progress edit" needs three lines together, and each
         // one is load-bearing — removing any of them fails `ui_interaction_scripts`. The defect
-        // they fix is a two-frame window inside `egui` 0.35:
+        // they fix is a two-frame window inside `egui` 0.35/0.36:
         //
         // 1. `update_while_editing` defaults to **true**, so every keystroke inside the inline
         //    editor reports `changed()` and would dispatch a `SetParam` before the user commits.
@@ -79,10 +76,11 @@ pub fn param_control(
         //    `id_previous_frame || id_two_frames_ago`. On the frame *after* the Escape,
         //    `key_pressed(Escape)` is already false while `lost_focus` is still true, so
         //    `DragValue`'s focus-loss path parses the staged text and commits the very edit that
-        //    was cancelled. Dropping the staged `String` on the Escape frame is what closes that
-        //    window; it is scoped to `lost_focus()` because that is precisely the signal the
-        //    window is about — `has_focus()` is already false here, so scoping on it silently
-        //    reintroduces the bug.
+        //    was cancelled. In egui 0.36, `DragValue`'s staged text lives in a private `EditState`
+        //    inside `data`, which cannot be selectively cleared by widget id without wiping
+        //    the entire temp memory store. Instead, when this control loses focus due to Escape,
+        //    we flag its `Id` in `data` as cancelled for the following frame so the late commit
+        //    is suppressed, leaving all other widgets' temporary state intact.
         // 3. `value as f32 != current` is **not** a defensive extra: (1) makes `DragValue` report
         //    `changed()` once with the value unmoved, and without this guard three unrelated
         //    numeric-entry tests see a spurious leading `SetParam` carrying the pre-edit value.
@@ -100,14 +98,16 @@ pub fn param_control(
             )
             .labelled_by(label.id);
 
+        let cancelled_id = response.id.with("__namir_cancelled_escape");
+        let was_cancelled = ui
+            .data_mut(|d| d.remove_temp::<bool>(cancelled_id))
+            .unwrap_or(false);
+
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            let keys: Vec<_> = ui.data(|data| data.temp_keys().collect());
-            for key in keys {
-                let _ = ui.data_mut(|data| data.remove_temp_raw(key));
-            }
+            ui.data_mut(|d| d.insert_temp(cancelled_id, true));
         }
 
-        if response.changed() && value as f32 != current {
+        if response.changed() && value as f32 != current && !was_cancelled {
             intents.push(UiIntent::SetParam {
                 key: descriptor.key,
                 value: value as f32,

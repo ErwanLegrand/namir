@@ -26,14 +26,10 @@ namir-state = { path = "../namir-state", version = "0.1.0" }
 #    window.
 #
 # D-15.1 (egui), D-15.2 (baseview) and D-15.4 (AccessKit accessibility on Windows and macOS).
-# Upgraded to egui 0.36 and Namir-maintained forks of egui-baseview and baseview pinned by commit hash.
+# Upgraded to egui 0.36 and Namir-maintained fork of egui-baseview pinned by commit hash.
 egui = "0.36"
 egui-baseview = { git = "https://github.com/ErwanLegrand/egui-baseview", rev = "675273126d2cac39905a2733a7e0e123c2ff4b09" }
-# `EguiWindow::open_parented`'s `parent: &P` bound is `P: raw_window_handle::HasWindowHandle`
-# (egui-baseview re-exports neither the trait nor the crate), so `open_parented`'s own signature
-# in this crate needs to name it directly.
-baseview = { git = "https://github.com/ErwanLegrand/baseview.git", branch = "accesskit-design" }
-# Cargo.lock resolved to.
+# Pinned to the same 0.6 line egui-baseview's baseview dependency resolved to.
 raw-window-handle = "0.6"
 
 [dev-dependencies]

@@ -41,10 +41,9 @@
 //!   (the library browser lives in a simultaneously visible side panel, not a separate tab).
 //! - FR-UI-030 -- every [`controls::param_control`] pairs its value control with an
 //!   `egui`-accessible name via `Response::labelled_by`, and is keyboard-operable via `egui`'s own
-//!   `DragValue` focus/arrow-key handling. **Honest gap, recorded rather than glossed over:**
-//!   `egui-baseview` 0.6 does not itself forward `egui`'s accesskit tree to a platform screen
-//!   reader -- see `controls.rs`'s module doc comment and
-//!   `docs/manual-tests/fr-ui-030-accessibility-script.md`.
+//!   `DragValue` focus/arrow-key handling. **Platform adapters (issue #35, Decision D-15.4):**
+//!   wired for Windows (`accesskit_windows`) and macOS (`accesskit_macos`); Linux/X11 is a no-op.
+//!   See `controls.rs`'s module doc comment and `docs/manual-tests/fr-ui-030-accessibility-script.md`.
 //! - FR-UI-040 -- [`format::parse_value`] (typed entry) plus `ParamDescriptor::format_value`
 //!   (already in `namir-params`, reused rather than duplicated) for numeric display.
 //! - FR-UI-050 -- documented in `controls.rs`'s module doc comment and in-app via each control's
@@ -79,7 +78,9 @@ mod library_view;
 mod meter;
 mod notices;
 
-pub use app::{NamirUi, ViewState, open_blocking, open_parented, open_with_srgb_fallback, render};
+pub use app::{
+    NamirUi, ViewState, Window, open_blocking, open_parented, open_with_srgb_fallback, render,
+};
 pub use host::{
     AudioDevicePanelSnapshot, AudioModeStatus, AudioShareMode, LibrarySnapshot, MeterReading,
     PresetSummary, UiHost, UiIntent, UiNotice, UiSnapshot,
