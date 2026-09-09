@@ -2,6 +2,7 @@
 //! Re-exports [`namir_params::ParamId`] as the RT boundary identifier.
 
 pub use namir_params::ParamId;
+
 /// A single parameter update, as delivered to `Stage::apply` (D-6.1). Carries no smoothing
 /// information: D-10.3 assigns smoothing to a parameter *descriptor*, which doesn't exist at
 /// this layer yet — a stage that needs to avoid a zipper on this value ramps internally.
