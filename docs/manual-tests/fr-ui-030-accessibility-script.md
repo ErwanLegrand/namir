@@ -28,6 +28,11 @@ announce it. This is a gap in the M6 dependency stack, not a gap in how `namir-u
 closing it is future work (wiring an `accesskit` platform adapter into `namir-app`/`namir-clap`'s
 window, or a `baseview` version that does this itself), out of scope for this crate alone.
 
+*Update (2026-09-09, issue #35):* `egui-baseview` and `baseview` have been upgraded to forks with
+AccessKit platform adapter integration (`accesskit_windows` and `accesskit_macos`). On Windows and
+macOS, when an assistive technology connects, `egui`'s accessibility tree is now forwarded to the OS
+accessibility API. Accessibility scope is reduced to Windows and macOS; on Linux/X11, accessibility
+events remain a compiled no-op.
 ## Script
 
 Run this against a real, visible `namir-ui` window (see
@@ -67,8 +72,8 @@ anything screen-reader-observable.
 
 **Result: NOT EXECUTED this session — script above is ready to run by a person with a display,
 keyboard, and mouse against a real `namir-ui` window.** The one substantive finding worth acting on
-before this is run for real: **wiring a real `accesskit` platform adapter is still open work**,
-tracked here rather than silently assumed done because `Response::labelled_by` is called correctly.
+before this is run for real: **wiring a real `accesskit` platform adapter was previously open work;
+it is now wired on Windows and macOS**, and executing this script with a screen reader is now actionable.
 
 ### Supplementary headless driver coverage (2026-09-06, issue #143)
 
@@ -77,5 +82,3 @@ the widget keyboard interaction layer end-to-end:
 - `keyboard_arrow_keys_on_focused_control_adjust_value`: exercises focusing a control and stepping
   its value via arrow keys in a headless `RawInput` event loop.
 
-Full Tab-key focus traversal across the complete screen layout and screen-reader observations remain
-manual checks (steps 2 and 3 above).

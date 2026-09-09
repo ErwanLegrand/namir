@@ -310,7 +310,7 @@ mod tests {
         );
 
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(frame(EDITOR, click_at(rects[0].center())), |ui| {
+        let _ = crate::run_ui(&ctx, frame(EDITOR, click_at(rects[0].center())), |ui| {
             render(ui, &notices, &mut intents);
         });
         assert_eq!(intents, vec![UiIntent::DismissNotice { id: 7 }]);
@@ -380,7 +380,7 @@ mod tests {
         assert!(EDITOR.contains_rect(lowest), "{lowest:?}");
 
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(frame(EDITOR, click_at(lowest.center())), |ui| {
+        let _ = crate::run_ui(&ctx, frame(EDITOR, click_at(lowest.center())), |ui| {
             render(ui, &notices, &mut intents);
         });
         assert_eq!(
@@ -409,7 +409,7 @@ mod tests {
             .expect("two buttons");
 
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(frame(WINDOW, click_at(second.center())), |ui| {
+        let _ = crate::run_ui(&ctx, frame(WINDOW, click_at(second.center())), |ui| {
             render(ui, &notices, &mut intents);
         });
 
@@ -420,7 +420,7 @@ mod tests {
     fn rendering_no_notices_emits_no_intents() {
         let ctx = egui::Context::default();
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let _ = crate::run_ui(&ctx, egui::RawInput::default(), |ui| {
             render(ui, &[], &mut intents);
         });
         assert!(intents.is_empty());
@@ -462,14 +462,14 @@ mod tests {
         events: Vec<egui::Event>,
     ) -> Vec<egui::Rect> {
         let mut discard = Vec::new();
-        let _ = ctx.run_ui(frame(window, Vec::new()), |ui| {
+        let _ = crate::run_ui(ctx, frame(window, Vec::new()), |ui| {
             render(ui, notices, &mut discard);
         });
-        let mut output = ctx.run_ui(frame(window, events), |ui| {
+        let mut output = crate::run_ui(ctx, frame(window, events), |ui| {
             render(ui, notices, &mut discard);
         });
         for _ in 0..16 {
-            output = ctx.run_ui(frame(window, Vec::new()), |ui| {
+            output = crate::run_ui(ctx, frame(window, Vec::new()), |ui| {
                 render(ui, notices, &mut discard);
             });
         }

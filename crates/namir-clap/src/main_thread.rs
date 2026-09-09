@@ -21,7 +21,7 @@ pub struct NamirMainThread<'a> {
     host_params: Option<HostParams>,
     /// The embedded editor window, present only while the host has the GUI open. See
     /// `crate::gui`'s written safety argument for `set_parent`, which is what populates this.
-    pub(crate) window: Option<baseview::WindowHandle>,
+    pub(crate) window: Option<namir_ui::Window>,
 }
 
 impl<'a> NamirMainThread<'a> {

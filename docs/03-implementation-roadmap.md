@@ -6140,6 +6140,9 @@ NFR-LIC-030, NFR-BUILD-020). Add bundle-and-inspect lanes on all three platforms
 - **FR-UI-030 cannot be closed by running its script** — `egui-baseview` wires no `accesskit`
   platform adapter, so a screen reader announces nothing and the script would fail. Decide it in
   Phase 0; issue #35.
+  *Update (2026-09-09, issue #35):* `baseview` and `egui-baseview` forks now integrate `accesskit_windows`
+  and `accesskit_macos`, wiring the adapter for Windows and macOS and scoping accessibility to those two
+  platforms (Linux/X11 is a compiled no-op). The script is now runnable on those platforms.
 - **R-18 / issue #22 — NFR-PERF-040's margin is not Namir's.** Instantiation is 187.5 ms against a
   200 ms Must at 10 000 entries, of which chain construction is 147 µs; the rest is one JSON parse
   of `library-index.json`, per plugin instance, with no cross-instance sharing. **Asserting on `max`
