@@ -40,7 +40,7 @@ use namir_nam::PreparedNam;
 
 use crate::chain::Chain;
 use crate::command::Command;
-use crate::param::{ParamChange, ParamId};
+use crate::param::ParamChange;
 use crate::prepare::PrepareContext;
 use crate::rt_harness::audio_section;
 use crate::stage_io::StageIo;
@@ -142,11 +142,10 @@ pub fn load_ir(chain: &mut Chain, ir: Arc<PreparedIr>, ctx: &PrepareContext) {
     );
 }
 
-/// Applies one parameter change by its `namir-params` descriptor id, converting to this crate's
-/// RT-facing [`ParamId`] the same way [`Chain`] itself does (D-10.4).
+/// Applies one parameter change by its `namir-params` descriptor id.
 pub fn set_param(chain: &mut Chain, descriptor: namir_params::ParamId, value: f32) {
     chain.apply(ParamChange {
-        id: ParamId(descriptor.0),
+        id: descriptor,
         value,
     });
 }

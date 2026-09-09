@@ -151,14 +151,9 @@ fn resample_chunk_frames(engine_hz: usize, model_hz: usize) -> usize {
     MIN_RESAMPLE_FFT_FRAMES.div_ceil(fft_unit_low) * fft_unit_engine
 }
 
-/// This stage's RT-facing `namir_engine::ParamId`, converted once from `namir_params`'s own id
-/// for the same key — see `trim.rs`'s identical convention and its doc comment for why the two
-/// crates carry distinct `ParamId` types on purpose.
-const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const NORMALIZE_ENABLED_ID: ParamId = ParamId(NORMALIZE_ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const NORMALIZE_OFFSET_DB_ID: ParamId = ParamId(NORMALIZE_OFFSET_DB.id.0);
+const ENABLED_ID: ParamId = ENABLED.id;
+const NORMALIZE_ENABLED_ID: ParamId = NORMALIZE_ENABLED.id;
+const NORMALIZE_OFFSET_DB_ID: ParamId = NORMALIZE_OFFSET_DB.id;
 
 /// FR-NAM-090's normalisation-gain smoothing time constant. Same figure and same rationale as
 /// `trim.rs`/`out.rs`'s identical constant — `gain_ramp.rs`'s own doc comment derives 20 ms as

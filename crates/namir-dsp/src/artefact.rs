@@ -174,7 +174,7 @@ fn fft(x: &[f32]) -> (Vec<f64>, Vec<f64>) {
         let angle = -2.0 * PI / len as f64;
         for start in (0..n).step_by(len) {
             for k in 0..len / 2 {
-                let (wr, wi) = (angle * k as f64).cos_sin();
+                let (wi, wr) = (angle * k as f64).sin_cos();
                 let (i, j) = (start + k, start + k + len / 2);
                 let tr = wr * re[j] - wi * im[j];
                 let ti = wr * im[j] + wi * re[j];
@@ -187,17 +187,6 @@ fn fft(x: &[f32]) -> (Vec<f64>, Vec<f64>) {
         len *= 2;
     }
     (re, im)
-}
-
-/// `(cos, sin)` in one call, purely so the butterfly above reads as one line.
-trait CosSin {
-    fn cos_sin(self) -> (f64, f64);
-}
-
-impl CosSin for f64 {
-    fn cos_sin(self) -> (f64, f64) {
-        (self.cos(), self.sin())
-    }
 }
 
 #[cfg(test)]

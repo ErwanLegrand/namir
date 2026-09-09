@@ -20,8 +20,5 @@ pub(crate) use namir_platform::presets::{preset_dir, preset_path};
 ///
 /// **Blocking:** reads a directory, so it runs on the worker pool, never inside a GUI frame.
 pub(crate) fn list_presets(dir: &Path) -> Vec<PresetSummary> {
-    namir_platform::presets::list_preset_files(dir)
-        .into_iter()
-        .map(|(name, path)| PresetSummary { name, path })
-        .collect()
+    PresetSummary::from_pairs(namir_platform::presets::list_preset_files(dir))
 }

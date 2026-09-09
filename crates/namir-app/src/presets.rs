@@ -16,12 +16,9 @@ pub use namir_platform::presets::{preset_dir_under, preset_path};
 
 /// Every `.namirpreset` in `dir` as the interface's own summary, named by stem and sorted.
 ///
-/// **Blocking:** reads a directory, so it runs on [`crate::worker`]'s thread, never inside
-/// [`namir_ui::UiHost::snapshot`].
+/// **Blocking:** reads a directory, so it runs on the worker pool/thread, never inside a GUI
+/// frame / [`UiHost::snapshot`].
 #[must_use]
 pub fn list_presets(dir: &Path) -> Vec<PresetSummary> {
-    namir_platform::presets::list_preset_files(dir)
-        .into_iter()
-        .map(|(name, path)| PresetSummary { name, path })
-        .collect()
+    PresetSummary::from_pairs(namir_platform::presets::list_preset_files(dir))
 }
