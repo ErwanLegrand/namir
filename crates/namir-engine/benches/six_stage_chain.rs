@@ -202,7 +202,7 @@ use namir_engine::stages::ir::{IrPrep, IrStage};
 use namir_engine::stages::nam::{NamPrep, NamStage};
 use namir_engine::stages::out::OutPrep;
 use namir_engine::stages::trim::TrimPrep;
-use namir_engine::{Chain, ParamChange, ParamId, PrepareContext, Stage, StageIo, StagePrep};
+use namir_engine::{Chain, ParamChange, PrepareContext, Stage, StageIo, StagePrep};
 use namir_fixtures::ir::decaying_noise;
 use namir_fixtures::nam::{WaveNetShape, generate};
 use namir_params::stages::{eq, gate};
@@ -526,12 +526,11 @@ fn main() {
     // ENABLED=on (already the descriptor default for both, per `gate.rs`/`eq.rs`'s own `prepare`,
     // but set here anyway so this doesn't silently depend on that default never changing) plus
     // one real non-default value each, so real per-sample DSP work happens rather than a
-    // bypassed/identity passthrough. Same `ParamId`-wrapping pattern `stages/gate.rs`/`eq.rs`
-    // themselves use: `namir_params`'s stable id, reinterpreted as this crate's own `ParamId`.
-    let gate_enabled_id = ParamId(gate::ENABLED.id.0);
-    let gate_threshold_id = ParamId(gate::THRESHOLD_DB.id.0);
-    let eq_enabled_id = ParamId(eq::ENABLED.id.0);
-    let eq_low_shelf_gain_id = ParamId(eq::LOW_SHELF_GAIN_DB.id.0);
+    // bypassed/identity passthrough.
+    let gate_enabled_id = gate::ENABLED.id;
+    let gate_threshold_id = gate::THRESHOLD_DB.id;
+    let eq_enabled_id = eq::ENABLED.id;
+    let eq_low_shelf_gain_id = eq::LOW_SHELF_GAIN_DB.id;
 
     gate_stage.apply(ParamChange {
         id: gate_enabled_id,
@@ -588,7 +587,7 @@ fn main() {
     let independent = std::env::var(INDEPENDENT_ENV).is_ok();
     if independent {
         chain.apply(ParamChange {
-            id: ParamId(namir_params::global::INDEPENDENT_CHANNELS.id.0),
+            id: namir_params::global::INDEPENDENT_CHANNELS.id,
             value: 1.0, // Stepped index 1 == "Independent".
         });
     }

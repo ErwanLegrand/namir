@@ -21,19 +21,7 @@
 /// a hostile or corrupted file exhaust memory on a modest machine outright.
 pub const MAX_FILE_BYTES: usize = 256 * 1024 * 1024;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn is_larger_than_the_nfr_perf_050_performance_target() {
-        // NFR-PERF-050's own figure, restated here as a literal rather than imported, so this
-        // test fails loudly if the two ever drift instead of silently passing either way.
-        // black_box hides the comparison's constant-ness from clippy's assertions-on-constants
-        // lint -- both operands really are `const` today, and that's the point of the test.
-        const NFR_PERF_050_TARGET_BYTES: usize = 50 * 1024 * 1024;
-        assert!(
-            std::hint::black_box(MAX_FILE_BYTES) > std::hint::black_box(NFR_PERF_050_TARGET_BYTES)
-        );
-    }
-}
+const _: () = assert!(
+    MAX_FILE_BYTES > 50 * 1024 * 1024,
+    "MAX_FILE_BYTES must exceed NFR-PERF-050's 50 MB performance target"
+);

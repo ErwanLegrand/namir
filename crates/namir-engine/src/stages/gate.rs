@@ -44,22 +44,12 @@ use crate::telemetry::{TelemetryEntry, TelemetrySink};
 /// `mix_coeff` for where it's actually applied.
 const BYPASS_CROSSFADE_TIME_CONSTANT_MS: f64 = 15.0;
 
-/// This stage's RT-facing `namir_engine::ParamId`s, converted once from `namir_params`'s own ids
-/// for the same keys (see `trim.rs`'s identical convention and its doc comment for why the two
-/// crates carry distinct `ParamId` types on purpose).
-const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const THRESHOLD_DB_ID: ParamId = ParamId(THRESHOLD_DB.id.0);
-/// See [`ENABLED_ID`].
-const ATTACK_MS_ID: ParamId = ParamId(ATTACK_MS.id.0);
-/// See [`ENABLED_ID`].
-const HOLD_MS_ID: ParamId = ParamId(HOLD_MS.id.0);
-/// See [`ENABLED_ID`].
-const RELEASE_MS_ID: ParamId = ParamId(RELEASE_MS.id.0);
-/// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
-/// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
-/// stage is one of the four (with `trim.rs`/`nam.rs`/`ir.rs`) that owns this id.
-const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
+const ENABLED_ID: ParamId = ENABLED.id;
+const THRESHOLD_DB_ID: ParamId = THRESHOLD_DB.id;
+const ATTACK_MS_ID: ParamId = ATTACK_MS.id;
+const HOLD_MS_ID: ParamId = HOLD_MS.id;
+const RELEASE_MS_ID: ParamId = RELEASE_MS.id;
+const INDEPENDENT_CHANNELS_ID: ParamId = INDEPENDENT_CHANNELS.id;
 
 /// Telemetry signal id (FR-GATE-040), derived from a namespaced string the same way
 /// `namir-params`'s real parameter ids are (this crate's shared telemetry-id convention) — this
