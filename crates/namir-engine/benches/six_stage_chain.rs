@@ -147,6 +147,25 @@
 //! statistic by a hundredth of a point. That is what "background load cannot inflate it" means, and
 //! it was checked rather than assumed.
 //!
+//! # Measured at M15 on the §2 reference machine, both modes, quiet
+//!
+//! [`INDEPENDENT_ENV`]'s figures, with the shipped mode's own run taken immediately before them
+//! for comparison. 5 repetitions per mode, **all ten passing D-2.4's validity check** — gaps of
+//! 1.58-2.36 points Linked and 2.03-2.24 Independent, so both parts speak and neither figure is a
+//! discarded one:
+//!
+//! | | Linked (shipped, asserted) | Independent (reported) |
+//! |---|---|---|
+//! | part 1, the estimator | **14.40%** of one core | **29.07%** |
+//! | part 2, raw `p99.9`, worst quotable | **16.76%** | **31.39%** |
+//! | `p50` | 7.40% | 15.07% |
+//!
+//! Independent mode is **over the 25% budget on both statistics**, which is why `verdict` reports
+//! rather than asserts there: see [`INDEPENDENT_ENV`], `docs/02-architecture.md` **D-9.14** and
+//! §22 **R-19**. The Linked column is also the tightest set this binary has recorded — every
+//! repetition quotable, `p50` pinned at 7.40% across all five — which is what a genuinely quiet
+//! run of it looks like, against the M9b sets above where 6 of 15 and later 2 of 5 were discarded.
+//!
 //! # The one machine class that cannot run this gate
 //!
 //! NFR-PERF-010's budget is 25% of one core **of the reference machine** (`docs/02-architecture.md`
