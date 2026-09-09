@@ -484,7 +484,7 @@ fn main() {
     // ENABLED=on (already the descriptor default for both, per `gate.rs`/`eq.rs`'s own `prepare`,
     // but set here anyway so this doesn't silently depend on that default never changing) plus
     // one real non-default value each, so real per-sample DSP work happens rather than a
-    // bypassed/identity passthrough: `namir_params`'s stable id.
+    // bypassed/identity passthrough.
     let gate_enabled_id = gate::ENABLED.id;
     let gate_threshold_id = gate::THRESHOLD_DB.id;
     let eq_enabled_id = eq::ENABLED.id;
