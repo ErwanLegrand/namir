@@ -25,9 +25,8 @@
 //! Out of scope, deliberately, for this crate:
 //! - FR-PARAM-030 (accepting changes from UI/CLAP automation/preset loading) and FR-PARAM-040
 //!   (actually smoothing a value stream) — both are `namir-engine`'s job once real stages exist
-//!   at M2. `namir-engine`'s existing `ParamId`/`ParamChange` (`crates/namir-engine/src/
-//!   param.rs`) are a separate, deliberately bare RT-path type; wiring them to
-//!   [`ParamDescriptor`]/[`ParamKind::Stepped`] is explicitly M2's work, not this crate's.
+//!   at M2. `namir-engine` re-exports `namir_params::ParamId` as the RT-boundary identifier and
+//!   only `ParamChange` is engine-local.
 //! - FR-PARAM-060 (a modulation/automation-appropriateness flag) — not yet designed; left for
 //!   whichever milestone first needs to distinguish per-sample-automatable parameters from
 //!   configuration-like ones.

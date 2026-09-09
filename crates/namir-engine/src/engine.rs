@@ -41,7 +41,7 @@
 //! is a far easier invariant to state, comment and test than any capacity above one. Each pass
 //! costs six `Option::is_none()` checks.
 
-use namir_params::ParamId as ParamsId;
+use namir_params::ParamId;
 
 use crate::chain::Chain;
 use crate::command::{Command, CommandKind, RetireSink};
@@ -74,17 +74,17 @@ const TELEMETRY_SCRATCH_ENTRIES: usize = 64;
 
 /// Telemetry: blocks in which the command drain stopped early. A persistently rising value is the
 /// first thing to look at if a user reports a control that stopped responding.
-const TELEMETRY_DEFERRED_BLOCKS: u32 = ParamsId::from_key("telemetry.engine.deferred_blocks").0;
+const TELEMETRY_DEFERRED_BLOCKS: u32 = ParamId::from_key("telemetry.engine.deferred_blocks").0;
 
 /// Telemetry: whether a retirement is currently stuck because the return ring is full — i.e. the
 /// worker is not draining (D-8.1's degradation case, made observable rather than silent).
-const TELEMETRY_RETIRE_BACKLOG: u32 = ParamsId::from_key("telemetry.engine.retire_backlog").0;
+const TELEMETRY_RETIRE_BACKLOG: u32 = ParamId::from_key("telemetry.engine.retire_backlog").0;
 
 /// Telemetry: blocks refused because the [`StageIo`] did not match the [`PrepareContext`] the
 /// chain was prepared with (issue #60). Any nonzero value is a driver bug — the host handed a
 /// block bigger than the maximum it declared, or a channel count the chain was never prepared
 /// for — and the alternative to refusing was a panic inside a stage, on the audio thread.
-const TELEMETRY_REJECTED_BLOCKS: u32 = ParamsId::from_key("telemetry.engine.rejected_blocks").0;
+const TELEMETRY_REJECTED_BLOCKS: u32 = ParamId::from_key("telemetry.engine.rejected_blocks").0;
 
 /// Ring capacities, fixed at preparation (D-7.2: "pre-allocated at preparation").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -962,7 +962,7 @@ mod tests {
         submit(
             &mut worker,
             Command::Param(ParamChange {
-                id: ParamId(namir_params::global::OUTPUT_CEILING_DB.id.0),
+                id: namir_params::global::OUTPUT_CEILING_DB.id,
                 value: -20.0,
             }),
         );
@@ -1209,7 +1209,7 @@ mod tests {
         let (mut ring_engine, mut ring_worker) = build_default_engine(&c).unwrap();
 
         let change = ParamChange {
-            id: ParamId(namir_params::global::OUTPUT_CEILING_DB.id.0),
+            id: namir_params::global::OUTPUT_CEILING_DB.id,
             value: -6.0,
         };
 
@@ -1240,8 +1240,8 @@ mod tests {
     fn command_param_toggles_global_bypass_end_to_end() {
         let c = ctx();
         let (mut engine, mut worker) = build_default_engine(&c).unwrap();
-        let gain_id = ParamId(namir_params::stages::trim::GAIN_DB.id.0);
-        let bypass_id = ParamId(namir_params::global::GLOBAL_BYPASS.id.0);
+        let gain_id = namir_params::stages::trim::GAIN_DB.id;
+        let bypass_id = namir_params::global::GLOBAL_BYPASS.id;
 
         submit(
             &mut worker,
@@ -1283,7 +1283,7 @@ mod tests {
     fn command_param_sets_output_ceiling_end_to_end() {
         let c = ctx();
         let (mut engine, mut worker) = build_default_engine(&c).unwrap();
-        let ceiling_id = ParamId(namir_params::global::OUTPUT_CEILING_DB.id.0);
+        let ceiling_id = namir_params::global::OUTPUT_CEILING_DB.id;
 
         submit(
             &mut worker,

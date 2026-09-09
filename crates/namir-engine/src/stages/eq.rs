@@ -65,32 +65,18 @@ const SHELF_Q_UNUSED: f64 = 0.707;
 /// cookbook's own standard second-order default rather than an arbitrary pick.
 const HIGH_PASS_LOW_PASS_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
-/// This stage's RT-facing `namir_engine::ParamId`s, converted once from `namir_params`'s own ids
-/// for the same keys (see `trim.rs`'s identical convention and its doc comment for why the two
-/// crates carry distinct `ParamId` types on purpose).
-const ENABLED_ID: ParamId = ParamId(ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const LOW_SHELF_FREQ_HZ_ID: ParamId = ParamId(LOW_SHELF_FREQ_HZ.id.0);
-/// See [`ENABLED_ID`].
-const LOW_SHELF_GAIN_DB_ID: ParamId = ParamId(LOW_SHELF_GAIN_DB.id.0);
-/// See [`ENABLED_ID`].
-const MID_FREQ_HZ_ID: ParamId = ParamId(MID_FREQ_HZ.id.0);
-/// See [`ENABLED_ID`].
-const MID_GAIN_DB_ID: ParamId = ParamId(MID_GAIN_DB.id.0);
-/// See [`ENABLED_ID`].
-const MID_Q_ID: ParamId = ParamId(MID_Q.id.0);
-/// See [`ENABLED_ID`].
-const HIGH_SHELF_FREQ_HZ_ID: ParamId = ParamId(HIGH_SHELF_FREQ_HZ.id.0);
-/// See [`ENABLED_ID`].
-const HIGH_SHELF_GAIN_DB_ID: ParamId = ParamId(HIGH_SHELF_GAIN_DB.id.0);
-/// See [`ENABLED_ID`].
-const HIGH_PASS_ENABLED_ID: ParamId = ParamId(HIGH_PASS_ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const HIGH_PASS_FREQ_HZ_ID: ParamId = ParamId(HIGH_PASS_FREQ_HZ.id.0);
-/// See [`ENABLED_ID`].
-const LOW_PASS_ENABLED_ID: ParamId = ParamId(LOW_PASS_ENABLED.id.0);
-/// See [`ENABLED_ID`].
-const LOW_PASS_FREQ_HZ_ID: ParamId = ParamId(LOW_PASS_FREQ_HZ.id.0);
+const ENABLED_ID: ParamId = ENABLED.id;
+const LOW_SHELF_FREQ_HZ_ID: ParamId = LOW_SHELF_FREQ_HZ.id;
+const LOW_SHELF_GAIN_DB_ID: ParamId = LOW_SHELF_GAIN_DB.id;
+const MID_FREQ_HZ_ID: ParamId = MID_FREQ_HZ.id;
+const MID_GAIN_DB_ID: ParamId = MID_GAIN_DB.id;
+const MID_Q_ID: ParamId = MID_Q.id;
+const HIGH_SHELF_FREQ_HZ_ID: ParamId = HIGH_SHELF_FREQ_HZ.id;
+const HIGH_SHELF_GAIN_DB_ID: ParamId = HIGH_SHELF_GAIN_DB.id;
+const HIGH_PASS_ENABLED_ID: ParamId = HIGH_PASS_ENABLED.id;
+const HIGH_PASS_FREQ_HZ_ID: ParamId = HIGH_PASS_FREQ_HZ.id;
+const LOW_PASS_ENABLED_ID: ParamId = LOW_PASS_ENABLED.id;
+const LOW_PASS_FREQ_HZ_ID: ParamId = LOW_PASS_FREQ_HZ.id;
 
 /// Reads a `Continuous` descriptor's default, panicking (defensively; unreachable from any input
 /// `prepare` is passed) if a future edit to `namir-params` changes the descriptor's `kind` out

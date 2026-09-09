@@ -39,10 +39,8 @@
 //! - [`settings`] — FR-IO-080's persistence.
 //! - [`xrun`] — FR-IO-060's dropout counter.
 //! - [`latency`] — FR-IO-050's round-trip figure.
-//! - [`presets`] — FR-STATE-030's named-preset locations, naming rule and listing. **Its
-//!   `preset_dir_under` belongs in `namir-platform`** beside `config_dir`, shared with
-//!   `namir-clap`'s identical `crates/namir-clap/src/presets.rs`; see that module's own doc
-//!   comment for why it is duplicated today and what hoisting it costs.
+//! - [`presets`] — FR-STATE-030's named-preset listing and UI adapters.
+//!   `namir_platform::presets` owns preset location and naming rules.
 //! - [`bridge`] — the input->output ring buffer and its own xrun detection.
 //! - [`instance`] — [`instance::SharedInstance`], the `Mutex`-guarded `namir_worker::Instance`
 //!   shared between [`host`] and [`worker`] (see that module's doc comment).

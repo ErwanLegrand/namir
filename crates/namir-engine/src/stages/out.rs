@@ -39,10 +39,7 @@ const GAIN_RAMP_TIME_CONSTANT_MS: f32 = 25.0;
 /// literal zero.
 const SILENCE_SETTLE_MARGIN_DB: f32 = 1.0;
 
-/// This stage's RT-facing `namir_engine::ParamId`, converted once from `namir_params`'s own id for
-/// the same key (see `trim.rs`'s identical convention and its doc comment for why the two crates
-/// carry distinct `ParamId` types on purpose).
-const GAIN_DB_ID: ParamId = ParamId(GAIN_DB.id.0);
+const GAIN_DB_ID: ParamId = GAIN_DB.id;
 
 /// One channel's telemetry signal ids, precomputed in `prepare` (D-6.1: hashing a `format!`-built
 /// key allocates, so it happens once off the audio thread, not per `telemetry` call) rather than

@@ -1372,6 +1372,10 @@ the string.
 index. The scheme is designed with that field present and set to zero in 1.0, so growing the chain
 does not renumber existing parameters and does not invalidate saved projects.
 
+*Consequence (added M15, 2026-09-09)* — `namir_engine` dropped its duplicate `ParamId` newtype
+and re-exports `namir_params::ParamId` (PR #187), so the RD-2 stage-instance index above now
+lands on the shared `namir_params::ParamId`.
+
 **Decision D-10.3** — Smoothing is a property of the parameter, declared in its descriptor, not
 open-coded in each stage: gain-like parameters get a one-pole ramp; frequency-like parameters get
 per-block coefficient interpolation; stepped parameters get a crossfade or a click-free switch
