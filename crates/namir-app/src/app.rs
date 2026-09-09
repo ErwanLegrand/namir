@@ -471,10 +471,9 @@ pub fn run() {
         supported_buffer_sizes,
         buffer_frames.unwrap_or(256),
     );
-    // FR-STATE-030: `<config_dir>/Presets`, the one directory `namir-clap` must also resolve --
-    // see `crate::presets`' module doc comment for why that rule is written twice today and where
-    // it belongs. `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly, so a
-    // NFR-PERF-030 measurement run stays inside the directory its harness owns.
+    // FR-STATE-030: `<config_dir>/Presets` (`namir_platform::presets` owns preset location and
+    // naming rules). `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly,
+    // so a NFR-PERF-030 measurement run stays inside the directory its harness owns.
     if let Some(dir) = &config_dir {
         host.watch_presets(crate::presets::preset_dir_under(dir));
         host.watch_config_dir(dir.clone());

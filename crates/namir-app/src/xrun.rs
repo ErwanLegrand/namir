@@ -14,10 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// UI thread share one counter without a lock — incrementing must be usable from an audio
 /// callback (NFR-RT-010/020: no blocking, no allocation), and `AtomicU64::fetch_add` is exactly
 /// that.
-#[derive(Default)]
-pub struct XrunCounter {
-    count: AtomicU64,
-}
+#[derive(Default, Debug)]
+pub struct XrunCounter(AtomicU64);
 
 impl XrunCounter {
     /// A fresh counter at zero.
@@ -25,20 +23,22 @@ impl XrunCounter {
         Self::default()
     }
 
-    /// Records one xrun. RT-safe: a single relaxed atomic increment, callable from an audio
-    /// callback.
+    /// Records one xrun. RT-safe: a single relaxed atomic increment, callable from an audio callback.
+    #[inline]
     pub fn record(&self) {
-        self.count.fetch_add(1, Ordering::Relaxed);
+        self.0.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The running total for this session.
+    #[inline]
     pub fn count(&self) -> u64 {
-        self.count.load(Ordering::Relaxed)
+        self.0.load(Ordering::Relaxed)
     }
 
-    /// FR-IO-060's "resettable by the user".
+    /// Resets the counter to zero.
+    #[inline]
     pub fn reset(&self) {
-        self.count.store(0, Ordering::Relaxed);
+        self.0.store(0, Ordering::Relaxed);
     }
 }
 

@@ -1,13 +1,7 @@
-//! D-10.2: "a stable u32 derived from a namespaced string ... hosts see the u32". This is only
-//! the id type the RT path needs to carry. The string-to-u32 derivation, the checked-in manifest
-//! (`params.lock`, D-10.1) and the stage-instance index D-10.2 reserves for RD-2's dynamic chain
-//! are all out of scope here — none of them are needed to define what `Stage::apply` receives.
+//! D-10.2: "a stable u32 derived from a namespaced string ... hosts see the u32".
+//! Re-exports [`namir_params::ParamId`] as the RT boundary identifier.
 
-/// D-10.2's stable `u32` parameter identifier, as carried across the RT boundary. The
-/// string-namespace-to-`u32` derivation itself lives outside this crate (see this module's doc
-/// comment); this is just the id type `Stage::apply` receives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ParamId(pub u32);
+pub use namir_params::ParamId;
 
 /// A single parameter update, as delivered to `Stage::apply` (D-6.1). Carries no smoothing
 /// information: D-10.3 assigns smoothing to a parameter *descriptor*, which doesn't exist at
