@@ -12,12 +12,15 @@
 //! - Runs [`namir_engine::AudioEngine::process`] itself.
 //! - Counts **both** of FR-IO-060's bridge dropouts directly: the output callback's underrun, via
 //!   [`crate::bridge::BridgeConsumer::pull_into`]'s own return value, and — since issue #85 — the
-//!   input callback's overrun, via [`crate::bridge::BridgeProducer::push_captured`]'s. `cpal`'s own
-//!   `StreamFailure::Xrun` reports arrive through the data callbacks' `info.xrun()` checks and the
-//!   same failure callback every other stream error does; classifying it into the same
-//!   [`crate::xrun::XrunCounter`] (rather than surfacing it as a one-off notice the way
-//!   [`crate::app`]'s job, since that is also where the counter this module increments for
-//!   bridge under- and overruns lives.
+//!   input callback's overrun, via [`crate::bridge::BridgeProducer::push_captured`]'s. While `cpal`
+//!   0.19 moved xrun reporting to `CallbackInfo::xrun()`, Namir's [`crate::audio_io::AudioBackend`]
+//!   stream callback signature does not yet propagate per-callback xrun info across the trait
+//!   boundary, so the bridge under/overrun detector is currently FR-IO-060's only live source.
+//!   [`crate::audio_io::StreamFailure::Xrun`] is retained for when that backend seam is widened;
+//!   when that happens, classifying it into the same [`crate::xrun::XrunCounter`] (rather than
+//!   surfacing it as a one-off notice the way [`crate::audio_io::StreamFailure::DeviceLost`] and
+//!   `Other` are) will be [`crate::app`]'s job, since that is also where the counter this module
+//!   increments for bridge under- and overruns lives.
 //!
 //! # Why the engine runs in the *output* callback, not the input one
 //!

@@ -119,15 +119,18 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # D-13.4, D-15.3, D-15.4: Namir-maintained forks of `cpal` (WASAPI exclusive mode, FR-IO-020),
-# `baseview` and `egui-baseview` (accessibility via AccessKit on Windows/macOS, FR-UI-030).
-# Each consumed by its respective crates and pinned by exact commit hash in `Cargo.toml`.
+# `egui-baseview` and `baseview` (accessibility via AccessKit on Windows/macOS, FR-UI-030).
+# `cpal` and `egui-baseview` are direct dependencies pinned by exact commit hash in manifests;
+# `baseview` is a transitive dependency arriving through `egui-baseview` and pinned by `Cargo.lock`.
 # `unknown-git = "deny"` above is doing its job; this list allows the repository, not a revision,
-# which is why pinning by commit hash in manifests is the load-bearing mitigation.
+# which is why pinning by commit hash in manifests is the load-bearing mitigation for direct dependencies.
+# `baseview` is pinned only transitively through `Cargo.lock` (the commit pin is not expressible
+# in this repository's manifests without a direct dependency or patch).
 # This is a narrow named allowance for exactly these three repositories rather than blanket `allow-git = []`.
 #
 # Risk R-10 is what this costs: maintaining forks across upstreams. The exit condition is upstream acceptance
-# or replacing with an official release; until then, the mitigations are the commit pins in manifests and
-# vendoring into tree if git-source availability ever fails.
+# or replacing with an official release; until then, the mitigations are the commit pins in manifests
+# (and lockfile for transitive forks) and vendoring into tree if git-source availability ever fails.
 allow-git = [
     "https://github.com/ErwanLegrand/cpal",
     "https://github.com/ErwanLegrand/baseview",

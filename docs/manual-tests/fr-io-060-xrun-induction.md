@@ -20,9 +20,10 @@ counted," just not against real `cpal` callbacks on real hardware.
 
 ## What real-hardware execution would add, and why it was not attempted
 
-Making a *real* WASAPI/ALSA/CoreAudio stream actually xrun (as opposed to this crate's own
-bridge-ring underrun, which is a genuine but different dropout mechanism — see
-`crates/namir-app/src/xrun.rs`'s own module doc comment on why both sources feed one counter)
+Making a *real* WASAPI/ALSA/CoreAudio stream actually xrun (a backend-level dropout, as opposed
+to this crate's own bridge-ring underrun — see `crates/namir-app/src/xrun.rs`'s module doc comment
+noting that cpal 0.19 delivers backend xruns via `CallbackInfo::xrun()`, which Namir does not yet
+read, leaving bridge under/overruns as the counter's only live source)
 needs either: an artificially tiny buffer size pushed below what the CPU can service in real time
 under load, or deliberately blocking the callback thread past its deadline (e.g. a `sleep` injected
 into the output callback for one call). Both are real, standard techniques for this kind of test,
