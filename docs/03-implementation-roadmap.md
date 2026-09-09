@@ -3169,8 +3169,8 @@ that happens to depend on them first.
     `ChannelConfig::Stereo`, and recorded as an amendment to FR-CHAIN-050 (`*Consequence (added
     M15, 2026-09-09)*`, `02-architecture.md` **D-9.14**). What is decided: the mode exists, it is
     opt-in, and it is inert in the standalone. What is **not** decided is the thing the number
-    forces: it costs **~2x** the shipped chain and lands at **29.07%** of one core on the
-    contamination-immune estimator and **31.39%** on raw `p99.9` — certified figures, §2's machine,
+    forces: it costs **~2x** the shipped chain and lands at **28.35-29.07%** of one core on the
+    contamination-immune estimator and **31.39-31.82%** on raw `p99.9` — certified figures, §2's machine,
     quiet, all ten repetitions quotable — against NFR-PERF-010's **25%** budget. A user who turns
     it on leaves the only performance Must this product has, on both of the statistics that Must is
     gated by, and nothing tells them. Three answers, none of them

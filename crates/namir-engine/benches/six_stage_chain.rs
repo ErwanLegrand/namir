@@ -150,21 +150,32 @@
 //! # Measured at M15 on the §2 reference machine, both modes, quiet
 //!
 //! [`INDEPENDENT_ENV`]'s figures, with the shipped mode's own run taken immediately before them
-//! for comparison. 5 repetitions per mode, **all ten passing D-2.4's validity check** — gaps of
-//! 1.58-2.36 points Linked and 2.03-2.24 Independent, so both parts speak and neither figure is a
-//! discarded one:
+//! for comparison, and the Independent column repeated in a second quiet run (hence the ranges).
+//! 5 repetitions per mode per run, **every one of the fifteen passing D-2.4's validity check** —
+//! gaps of 1.58-2.36 points Linked and 2.03-3.45 Independent, so both parts speak and no figure
+//! here is a discarded one:
 //!
 //! | | Linked (shipped, asserted) | Independent (reported) |
 //! |---|---|---|
-//! | part 1, the estimator | **14.40%** of one core | **29.07%** |
-//! | part 2, raw `p99.9`, worst quotable | **16.76%** | **31.39%** |
-//! | `p50` | 7.40% | 15.07% |
+//! | part 1, the estimator | **14.40%** of one core | **28.35-29.07%** |
+//! | part 2, raw `p99.9`, worst quotable | **16.76%** | **31.39-31.82%** |
+//! | `p50` | 7.40% | 14.80-15.08% |
 //!
 //! Independent mode is **over the 25% budget on both statistics**, which is why `verdict` reports
 //! rather than asserts there: see [`INDEPENDENT_ENV`], `docs/02-architecture.md` **D-9.14** and
 //! §22 **R-19**. The Linked column is also the tightest set this binary has recorded — every
 //! repetition quotable, `p50` pinned at 7.40% across all five — which is what a genuinely quiet
 //! run of it looks like, against the M9b sets above where 6 of 15 and later 2 of 5 were discarded.
+//!
+//! One property of the validity check the second Independent run exposed, worth knowing before
+//! reading a `max` column here: two of its five repetitions reported `max` of **222.32%** and
+//! **185.06%** — single blocks that overran the period outright — and both were still `quotable`,
+//! because the gap test is `p99.9 - estimator` and one block in 100 000 does not move `p99.9`.
+//! That is the intended behaviour, not a hole: NFR-PERF-010 is stated on `p99.9`, and a lone
+//! 2.2x block is an OS scheduling preemption of the measuring thread rather than chain work (the
+//! estimator across those same two repetitions read 28.37% and 28.35%, i.e. it did not move at
+//! all). It does mean `max` is the one column in this output that says more about Windows than
+//! about Namir, and it is reported for exactly that reason rather than gated on.
 //!
 //! # The one machine class that cannot run this gate
 //!
