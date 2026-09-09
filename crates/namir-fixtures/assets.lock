@@ -11,7 +11,7 @@
 # third-party asset redistributable under that licence), or `unrecorded` (which fails the gate).
 format_version 1
 crates/namir-clap/tests/golden/fr-cfg-020/input.f32 98304 19a47dfe6055d67ce3ad78e5e9bc292c522b8c0d02eca74271653b7cd4e2bce3 generated
-crates/namir-clap/tests/golden/fr-cfg-020/preset.namirpreset 13184 a2f8e9ccff2e725cca3e5964a2bba69d9b08e8e1d65423fe2921e54e68e3e519 generated
+crates/namir-clap/tests/golden/fr-cfg-020/preset.namirpreset 13224 87230da69c8d1e161c04c720e3963cf0e8801a64f01e5ddc3659c976fb056768 generated
 crates/namir-ir/fuzz/corpus/load_ir/mutated_0.bin 174 22ccc18c29c083ed10fe687e875996c06c7512ee256296891b3e5228f14203c9 generated
 crates/namir-ir/fuzz/corpus/load_ir/mutated_1.bin 24 722947876ebc3a8699963eaf8491b77e14e1a2921f33682fd1a8ef0823386a08 generated
 crates/namir-ir/fuzz/corpus/load_ir/mutated_2.bin 174 21a330d6dc6b4d45f31f14a7baf5b3e07bf28ad6ed8c4881041a58e7c96249bc generated
@@ -45,7 +45,7 @@ crates/namir-state/fuzz/corpus/read_state/mutated_1.bin 169 28cac7cfbb0046e3a08e
 crates/namir-state/fuzz/corpus/read_state/mutated_2.bin 994 e3f7ab3880d8dffd8af0c4e9dff125ed193d7e9b9ae415cd2e66041b79967c39 generated
 crates/namir-state/fuzz/corpus/read_state/mutated_3.bin 1032 01969bd50afcd3cd6a2882f25b06fd63b385da518aabad6d3d16f2d9f99a6f39 generated
 crates/namir-state/fuzz/corpus/read_state/valid_state.namirpreset 1296 bcf2a43fea9a6e4ac3103080c6c9333404e60e26b52ffdacda35cde371900040 generated
-crates/namir-state/tests/corpus/unreleased-v1/full.namirpreset 1056 49531bc2b9bc6f78859fd5a2467b496aacef5710c6ad9fe2a339f7d384580142 generated
+crates/namir-state/tests/corpus/unreleased-v1/full.namirpreset 1097 1eec126b998da7b8748396d94cb2ca173d4a92b84b2cf0d0d57b63981f0929c2 generated
 crates/namir-state/tests/corpus/unreleased-v1/future-version.namirpreset 73 48376504b9a314e8800d0673681475c80b52423911b25efaf1c992b55e778828 generated
 crates/namir-state/tests/corpus/unreleased-v1/legacy-global-section.namirpreset 132 aaca262ed95e0e9a4b26fba334ea40146b6ef68d2c0f623b5e41f38275f653d9 generated
 crates/namir-state/tests/corpus/unreleased-v1/minimal.namirpreset 26 f83070701468b0a74d5a036d9641fb9cce6e178f63873d6d0245ad5f06675c5b generated

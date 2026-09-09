@@ -88,7 +88,10 @@ impl Command {
     /// *checked* by the receiving stage rather than trusted, and degrades to a retirement plus a
     /// fault reading rather than a wrongly-sized buffer.
     pub fn load_nam(model: Arc<PreparedNam>, ctx: &PrepareContext) -> Self {
-        let channel_count = ctx.channel_config().output_channels() as usize;
+        // `input_channels()`: one inference state per independently *captured* channel, matching
+        // `NamStage::load_model`'s identical derivation -- see `NamSlot::states`' own doc comment
+        // for why `MonoToStereo` gets one and not two.
+        let channel_count = ctx.channel_config().input_channels() as usize;
         let slot = NamSlot::new(
             model,
             ctx.sample_rate(),
@@ -101,7 +104,7 @@ impl Command {
     /// **Not RT-safe — D-8.1 step 1, worker-side.** The Ir analogue of [`Self::load_nam`]; builds
     /// this instance's `IrState` (its convolution ring buffers and accumulators).
     pub fn load_ir(ir: Arc<PreparedIr>, ctx: &PrepareContext) -> Self {
-        let channel_count = ctx.channel_config().output_channels() as usize;
+        let channel_count = ctx.channel_config().input_channels() as usize;
         let slot = IrSlot::new(ir, channel_count, ctx.sample_rate());
         Self::Load(Resource::ir(Box::new(slot), *ctx))
     }

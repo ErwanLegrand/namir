@@ -19,6 +19,7 @@
     "gate.release_ms": 4.0,
     "gate.threshold_db": -55.0,
     "global.bypass": 0.0,
+    "global.independent_channels": 0.0,
     "global.output_ceiling_db": -1.0,
     "ir.enabled": 1.0,
     "ir.high_cut_enabled": 1.0,

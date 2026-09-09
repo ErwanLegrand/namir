@@ -25,9 +25,19 @@ property of the source rather than of any runtime condition. Two headless tests 
   through `egui::Context::run_ui` at 960x640 and asserts it builds without panicking.
 - `every_registry_key_is_covered_by_a_section_prefix_or_a_named_single_control` asserts every
   `namir_params::REGISTRY` key reaches the screen through one of the six section prefixes
-  (`trim.`, `gate.`, `nam.`, `ir.`, `eq.`, `out.`) or one of the two named singles
-  (`global.bypass`, `global.output_ceiling_db`), so a parameter cannot be added to the registry and
-  silently never appear.
+  (`trim.`, `gate.`, `nam.`, `ir.`, `eq.`, `out.`) or one of the three named singles
+  (`global.bypass`, `global.output_ceiling_db`, `global.independent_channels`), so a parameter
+  cannot be added to the registry and silently never appear.
+
+**One of those three is drawn conditionally, and the exception is deliberate (M15, D-9.14).**
+`global.independent_channels` renders only when `UiSnapshot::independent_channels_relevant` is set,
+which `namir-clap` sets and `namir-app` does not: the standalone captures one channel
+(`Mono`/`MonoToStereo`), the engine builds no per-channel state for those configurations, and the
+setting is therefore inert there rather than merely hidden (D-9.14's own note on preset
+portability). So the assertion above proves *reachability in principle* for this key and not that
+the standalone ever draws it — a weaker claim than for the other twenty-seven, and the reason
+step 11 should record which product the run was made against. In `namir-app` the control's absence
+is correct; in `namir-clap` its absence would be a defect.
 
 What neither reaches, and what this script exists for: whether the elements are *presented* — laid
 out legibly, labelled with the text the requirement's words map onto, and all reachable without a

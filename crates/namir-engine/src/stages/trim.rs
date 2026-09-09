@@ -63,7 +63,7 @@ const GAIN_DB_ID: ParamId = ParamId(GAIN_DB.id.0);
 const DC_BLOCKER_ENABLED_ID: ParamId = ParamId(DC_BLOCKER_ENABLED.id.0);
 /// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
 /// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
-/// stage just happens to be one of the three (with `gate.rs`/`nam.rs`) that owns this id.
+/// stage is one of the four (with `gate.rs`/`nam.rs`/`ir.rs`) that owns this id.
 const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
 
 /// Telemetry signal ids, derived from a namespaced string the same way `namir-params`'s real
@@ -108,13 +108,15 @@ impl StagePrep for TrimPrep {
             }
         };
 
-        let channel_count = ctx.channel_config().output_channels() as usize;
-        // One independent ramp/blocker/meter per channel, always -- not only when `independent`
-        // is on (prototype: `INDEPENDENT_CHANNELS`'s own doc comment). Preallocating every
-        // channel's here, in `prepare` (non-RT), rather than only the one `process` currently
+        // One independent ramp/blocker/meter per *independently captured* channel, always -- not
+        // only when `independent` is on (prototype: `INDEPENDENT_CHANNELS`'s own doc comment).
+        // Preallocating them here, in `prepare` (non-RT), rather than only the one `process`
         // uses in Linked mode, is what lets a live toggle stay RT-safe: `process`/`apply` only
         // ever pick which already-built set to read/write, never build one. Mirrors `gate.rs`'s
-        // identical `detectors: Vec<NoiseGate>` shape.
+        // identical `detectors: Vec<NoiseGate>` shape, including its use of `input_channels()`
+        // rather than `output_channels()` -- see that file's fuller comment for why
+        // `MonoToStereo` gets one set and not two.
+        let channel_count = ctx.channel_config().input_channels() as usize;
         let gain_ramps: Vec<GainRamp> = (0..channel_count)
             .map(|_| gain_ramp_at_default(sample_rate, gain_default_db))
             .collect();
@@ -124,15 +126,22 @@ impl StagePrep for TrimPrep {
         let meters: Vec<Meter> = (0..channel_count)
             .map(|_| Meter::new(sample_rate))
             .collect();
+        let independent_default = match INDEPENDENT_CHANNELS.kind {
+            ParamKind::Stepped { default_index, .. } => default_index.0 == 1,
+            ParamKind::Continuous { .. } => {
+                unreachable!("global.independent_channels is declared Stepped")
+            }
+        };
 
         Ok(TrimStage {
             gain_ramps,
             dc_blockers,
             dc_blocker_enabled: dc_blocker_default_on,
             meters,
-            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
-            // default -- FR-CHAIN-060's downmix, unchanged, until a caller actively turns this on.
-            independent: false,
+            // Prototype: seeded from `INDEPENDENT_CHANNELS`'s own descriptor default ("Linked"),
+            // not a second hardcoded copy of it -- FR-CHAIN-060's downmix, unchanged, until a
+            // caller actively turns this on.
+            independent: independent_default,
             downmix_gain: db_to_linear(DOWNMIX_EACH_TERM_DB),
             scratch: vec![0.0; ctx.max_block_size()],
         })
@@ -143,11 +152,14 @@ impl StagePrep for TrimPrep {
 /// stages) the chain's stereo-to-mono-core downmix. See this module's doc comment for the
 /// channel-handling rationale.
 pub struct TrimStage {
-    /// FR-IN-010's gain control, smoothed per [`GAIN_RAMP_TIME_CONSTANT_MS`] — one per physical
-    /// channel, always (see `prepare`'s own comment). In `Linked` mode (`independent == false`,
-    /// the shipped default) only `gain_ramps[0]` is ever read; every ramp still tracks the same
-    /// target, so switching to `Independent` mid-session starts already-settled rather than
-    /// jumping.
+    /// FR-IN-010's gain control, smoothed per [`GAIN_RAMP_TIME_CONSTANT_MS`] — one per
+    /// *independently captured* channel, always (see `prepare`'s own comment). In `Linked` mode
+    /// (`independent == false`, the shipped default) only `gain_ramps[0]` is ever read, and
+    /// `gain_ramps.len() > 1` is what makes the Independent path reachable at all. Every ramp
+    /// tracks the same target, so this one piece of state really does switch over already
+    /// settled — unlike the `dc_blockers`/`meters` beside it and unlike `gate.rs`'s detectors,
+    /// whose filter/envelope state a never-run channel does not have (`INDEPENDENT_CHANNELS`'s
+    /// own doc comment: the toggle is a routing change and is not click-free).
     gain_ramps: Vec<GainRamp>,
     /// FR-IN-040's optional DC-blocking high-pass, one per channel (same shape as `gain_ramps`
     /// above).
@@ -179,7 +191,10 @@ impl Stage for TrimStage {
     fn process(&mut self, io: &mut StageIo<'_>) {
         let channel_count = io.channel_count();
 
-        if self.independent && channel_count > 1 {
+        // `gain_ramps.len() > 1` rather than `self.independent` alone: a stage prepared for a
+        // config with one captured channel (`Mono`/`MonoToStereo`) holds one set and stays on
+        // the downmix path however the parameter is set (`prepare`'s own comment).
+        if self.independent && self.gain_ramps.len() > 1 && channel_count > 1 {
             // Prototype: every channel keeps its own signal -- no downmix, no cross-channel
             // copying at all, the same shape `eq.rs` already uses for the identical reason.
             for ch in 0..channel_count {

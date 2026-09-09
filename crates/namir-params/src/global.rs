@@ -58,16 +58,30 @@ pub const OUTPUT_CEILING_DB: ParamDescriptor = ParamDescriptor::new(
 ///
 /// **Off by default, and this default is load-bearing, not cosmetic.** With this at "Linked" every
 /// existing FR-CHAIN-050 guarantee holds unchanged (Gate/Nam mono-core, Trim's downmix establishes
-/// the identical-channel invariant) — this descriptor changes nothing about the shipped product
-/// until a caller actively turns it on. "Independent" is a genuine, deliberate departure from
-/// FR-CHAIN-050's text ("the engine core shall process a single channel"): Gate and Nam each run a
-/// full, separate instance per physical channel instead of mono-core-then-duplicate, and Trim skips
-/// its downmix in favour of per-channel gain/DC-block/metering (the same shape `eq.rs` already
-/// uses). Only meaningful when the chain has more than one channel; a `Mono` chain ignores it.
+/// the identical-channel invariant, Ir's one shared convolution fanned out across every channel) —
+/// this descriptor changes nothing about the shipped product until a caller actively turns it on.
+/// "Independent" is a genuine, deliberate departure from FR-CHAIN-050's text ("the engine core
+/// shall process a single channel"), amended for this opt-in mode by that requirement's
+/// *Consequence (added M15)* note: Gate, Nam and Ir each run a full, separate instance per
+/// captured channel instead of one-then-duplicate, and Trim skips its downmix in favour of
+/// per-channel gain/DC-block/metering (the same shape `eq.rs` already uses).
 ///
-/// Not yet reconciled with FR-CHAIN-050's own text or priority — this is this branch's working
-/// prototype of the idea, not a ratified decision. See `stages::gate`/`stages::nam`/`stages::trim`
-/// in `namir-engine` for where it is actually read.
+/// **Only `ChannelConfig::Stereo` can use it, and the engine enforces that rather than trusting a
+/// caller.** `Mono` and `MonoToStereo` capture one channel — `MonoToStereo`'s second output is the
+/// first duplicated — so per-channel state is not built for them at all and every stage stays on
+/// its Linked path whatever this parameter says. A preset saved in the plugin with "Independent"
+/// on is therefore inert when opened in the standalone: FR-STATE-030 portability is preserved (the
+/// document round-trips unchanged) and FR-CFG-020 still holds, because identical input through the
+/// two shells still takes the same code path.
+///
+/// **Switching it live is a routing change, not a knob, and is not click-free.** Trim stops summing
+/// at −6 dB per term and passes each channel whole (a step of up to +6 dB), and a channel whose
+/// gate envelope, model history and convolution tail have never run starts from its reset or
+/// silence-prewarmed state. Toggle it with the transport stopped. It is declared `live` because the
+/// audio thread applies it without allocating, not because the transition is smooth.
+///
+/// See `stages::gate`/`stages::trim`/`stages::nam`/`stages::ir` in `namir-engine` for where it is
+/// actually read, and `docs/02-architecture.md` D-9.14 for the decision and its measured cost.
 pub const INDEPENDENT_CHANNELS: ParamDescriptor = ParamDescriptor::new(
     "global.independent_channels",
     "Stereo Channels",

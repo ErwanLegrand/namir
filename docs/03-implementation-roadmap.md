@@ -3163,6 +3163,27 @@ that happens to depend on them first.
     it is a filename match and structurally cannot be anything else. The parser change is §21 Phase
     3 work (issue #27) and is not done by this Phase 0 pass, which writes no code.
 
+22. **Whether the independent-channel mode is promoted from prototype to a shipped feature, and if
+    so what performance requirement it answers to.** Raised 2026-09-09 at M15 (PR #162), with the
+    measurement in hand rather than owed. The mode is built, off by default, engine-gated to
+    `ChannelConfig::Stereo`, and recorded as an amendment to FR-CHAIN-050 (`*Consequence (added
+    M15, 2026-09-09)*`, `02-architecture.md` **D-9.14**). What is decided: the mode exists, it is
+    opt-in, and it is inert in the standalone. What is **not** decided is the thing the number
+    forces: it costs **2.00–2.10x** the shipped chain and lands at **30.08–30.86%** of one core on
+    §2's reference machine against NFR-PERF-010's **25%** budget, so a user who turns it on leaves
+    the only performance Must this product has, and nothing tells them. Three answers, none of them
+    free. **(a) Leave it as a documented prototype**: cheapest, and the failure mode is R-19's —
+    a prototype shipping by inertia, with a control on the plugin's screen that no requirement
+    governs. **(b) Give the mode its own budget in the FRS** — a second NFR-PERF row, stated for a
+    named configuration, which is honest bookkeeping and admits that 1.0 ships a mode outside its
+    headline budget. **(c) Refuse to ship it in 1.0**: delete the control from the UI and keep the
+    engine capability behind the parameter, which is the smallest 1.0 surface and the largest waste
+    of built work. **Not due before M8** on its own terms — the default is Linked, so no Must
+    changes disposition either way and M8's exit checklist is unaffected — but **the UI control is
+    a 1.0 surface**, so (c) is only available before release. Whoever takes this should read R-19's
+    mitigation column first: the one thing no answer here provides is a runtime headroom readout,
+    and without it (a) and (b) differ only in paperwork.
+
 ---
 
 ## Milestones added 2026-08-08 — M9 through M13

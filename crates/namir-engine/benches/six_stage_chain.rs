@@ -198,6 +198,18 @@ const REPS_ENV: &str = "NAMIR_CHAIN_REPS";
 /// file's "The one machine class that cannot run this gate".
 const INFORMATIONAL_ENV: &str = "NAMIR_PERF_010_INFORMATIONAL";
 
+/// Set (to anything) to measure the chain with `global.independent_channels` at "Independent"
+/// (D-9.14's opt-in per-channel mode) instead of the shipped "Linked" default: a second NAM
+/// inference and a second convolution per block, on the same two-channel condition.
+///
+/// Like [`INFORMATIONAL_ENV`] this turns both parts of the gate into a printed report rather than
+/// an assertion, and for a reason of the same kind: NFR-PERF-010's 25% budget is stated for the
+/// configuration Namir ships, and FR-CHAIN-050's *Consequence (added M15)* records that a
+/// user-selected independent mode spends headroom the default does not. Asserting the default's
+/// budget against a non-default mode would gate a number the requirement does not state — so this
+/// reports, and the figure it reports is what that Consequence quotes.
+const INDEPENDENT_ENV: &str = "NAMIR_CHAIN_INDEPENDENT";
+
 /// D-2.4 condition 4, as a number: how far a repetition's raw `p99.9` may exceed its own
 /// contamination-immune estimator before that repetition counts as contaminated and its figure is
 /// discarded rather than asserted against.
@@ -540,6 +552,17 @@ fn main() {
          estimator this binary asserts on would be computed modulo the wrong period"
     );
 
+    // --- Optional: D-9.14's opt-in independent-channel mode, off unless asked for. Applied
+    // through `Chain::apply`'s broadcast rather than to each stage before boxing, because that is
+    // how a host's parameter change actually reaches all four stages that own this id.
+    let independent = std::env::var(INDEPENDENT_ENV).is_ok();
+    if independent {
+        chain.apply(ParamChange {
+            id: ParamId(namir_params::global::INDEPENDENT_CHANNELS.id.0),
+            value: 1.0, // Stepped index 1 == "Independent".
+        });
+    }
+
     let reps = std::env::var(REPS_ENV)
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -551,6 +574,14 @@ fn main() {
     println!(
         "48 kHz, {BLOCK_SIZE}-sample blocks, standard WaveNet, 2 s stereo IR, gate + EQ active"
     );
+    if independent {
+        println!(
+            "MODE: global.independent_channels = Independent ({INDEPENDENT_ENV} is set) -- a \
+             second NAM inference and a second convolution per block (D-9.14). Both channels are \
+             driven with the same signal, which measures the same cost: every stage's per-block \
+             work here is fixed-schedule arithmetic, not content-dependent."
+        );
+    }
     println!(
         "{reps} repetitions (D-2.4) x {MEASURED_BLOCKS} measured blocks (D-2.2), warmup \
          {WARMUP_BLOCKS} discarded"
@@ -622,13 +653,13 @@ fn main() {
         measured.push(r);
     }
 
-    verdict(&measured);
+    verdict(&measured, independent);
 }
 
 /// The whole gate, in one place: both assertions, the discard rule between them, and the one
 /// opt-out. Separated from `main` so the measurement above reads as measurement and this reads as
 /// adjudication — and so there is exactly one place to look for what this binary actually enforces.
-fn verdict(reps: &[Rep]) {
+fn verdict(reps: &[Rep], independent: bool) {
     // The estimator can only be pushed *up* by interference, never down, so the smallest of the
     // repetitions' estimates is the least-contaminated view of the schedule's own worst block.
     let best_estimator = reps
@@ -673,6 +704,18 @@ fn verdict(reps: &[Rep]) {
              budget is {NFR_PERF_010_BUDGET_PCT:.0}% of one core of a specific machine \
              (02-architecture.md section 2); on any other hardware the requirement states nothing, \
              so the figures above are a report and not a verdict."
+        );
+        return;
+    }
+
+    if independent {
+        println!(
+            "\nINFORMATIONAL ({INDEPENDENT_ENV} is set) -- NOTHING ASSERTED. NFR-PERF-010's \
+             {NFR_PERF_010_BUDGET_PCT:.0}% budget is stated for the configuration Namir ships, \
+             which is global.independent_channels = Linked. FR-CHAIN-050's Consequence (added M15) \
+             records that this opt-in mode spends headroom the default does not; the figures above \
+             are that record's evidence, and are compared against the default's own run rather \
+             than gated."
         );
         return;
     }

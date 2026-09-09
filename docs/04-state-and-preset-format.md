@@ -79,15 +79,26 @@ An unsigned integer, required.
 | Greater than this build's version | Loaded **tolerantly**, with a warning. A newer-format document is expected to carry fields an older reader doesn't recognise; §8's unknown-field preservation is what makes this safe rather than merely permissive. |
 | Less than this build's version | Passed through a migration chain keyed on the version number, then loaded. No migrations exist yet — version `1` is the floor — but the seam exists in the reader for when one is needed. |
 
-## 5. `global.bypass` / `global.output_ceiling_db` (D-10.4)
+## 5. The `global.*` parameters (D-10.4)
 
-**Current shape (M6 onward):** these are two ordinary entries under `parameters` (§6) — a
+**Current shape (M6 onward):** these are ordinary entries under `parameters` (§6) — a
 `namir_params::REGISTRY` descriptor exists for each — not a section of their own:
 
 | Key | `parameters` value | Meaning |
 |---|---|---|
 | `global.bypass` | `0.0` (Off, default) or `1.0` (On) — a `Stepped` parameter's selected index, per §6's own convention | The chain-wide bypass (FR-CHAIN-030). |
 | `global.output_ceiling_db` | number, default `0.0` | The output ceiling in dB (FR-CHAIN-090). |
+| `global.independent_channels` | `0.0` (Linked, default) or `1.0` (Independent) — a `Stepped` index, as above | Opt-in per-channel processing (FR-CHAIN-050's *Consequence (added M15)*, D-9.14). Added M15; see the portability note below. |
+
+**`global.independent_channels` is portable but not universally effectual, and that is by design.**
+The value round-trips through both products unchanged (FR-STATE-030), and a reader older than M15
+treats it the way it treats any unknown `parameters` key. What it *does* on recall depends on the
+session's channel configuration: the engine builds per-channel state only for
+`ChannelConfig::Stereo`, so a preset written by the plugin with `1.0` is inert in the standalone
+application, which captures one channel (`Mono`/`MonoToStereo`). Nothing is rewritten or dropped on
+load — the document keeps the setting, and a later recall of the same document in the plugin honours
+it again. This is the one `global.*` key whose audible effect is configuration-dependent; the other
+two apply identically everywhere.
 
 Before D-10.4 (M5), both values had no `ParamDescriptor` and instead lived in a separate top-level
 `global` section:

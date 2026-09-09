@@ -162,7 +162,7 @@ const NORMALIZE_ENABLED_ID: ParamId = ParamId(NORMALIZE_ENABLED.id.0);
 const NORMALIZE_OFFSET_DB_ID: ParamId = ParamId(NORMALIZE_OFFSET_DB.id.0);
 /// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
 /// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
-/// stage just happens to be one of the three (with `gate.rs`/`trim.rs`) that owns this id.
+/// stage is one of the four (with `gate.rs`/`trim.rs`/`ir.rs`) that owns this id.
 const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
 
 /// FR-NAM-090's normalisation-gain smoothing time constant. Same figure and same rationale as
@@ -226,6 +226,18 @@ impl StagePrep for NamPrep {
                 unreachable!("nam.normalize_offset_db is declared Continuous")
             }
         };
+        let independent_default = match INDEPENDENT_CHANNELS.kind {
+            ParamKind::Stepped { default_index, .. } => default_index.0 == 1,
+            ParamKind::Continuous { .. } => {
+                unreachable!("global.independent_channels is declared Stepped")
+            }
+        };
+        // How many channels this chain can process independently: `input_channels()`, not
+        // `output_channels()` — `MonoToStereo`'s two outputs are one captured signal duplicated,
+        // so a second inference there would cost a second model evaluation per block to produce a
+        // bit-identical result. See `gate.rs`'s fuller comment; this is the same predicate, and
+        // it is what makes a plugin-saved preset with Independent on a no-op in the standalone.
+        let independent_channels = ctx.channel_config().input_channels() as usize;
 
         let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * sample_rate.hz_f64();
         let mix_coeff = (1.0 - (-1.0_f64 / tau_samples).exp()) as f32;
@@ -243,10 +255,10 @@ impl StagePrep for NamPrep {
             enabled: enabled_default_on,
             normalize_enabled: normalize_enabled_default_on,
             normalize_offset_db: normalize_offset_default_db,
-            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
-            // default -- FR-CHAIN-050's mono-core-then-duplicate shape, unchanged, until a caller
-            // actively turns this on.
-            independent: false,
+            // Prototype: seeded from `INDEPENDENT_CHANNELS`'s own descriptor default ("Linked"),
+            // not a second hardcoded copy of it -- FR-CHAIN-050's mono-core-then-duplicate shape,
+            // unchanged, until a caller actively turns this on.
+            independent: independent_default,
             // FR-CHAIN-040: nothing loaded behaves as bypassed, regardless of `enabled` — no
             // prior audio exists yet at stage creation either, so `mix` starts already settled at
             // its target rather than needing to ramp there.
@@ -255,12 +267,12 @@ impl StagePrep for NamPrep {
             mix_coeff,
             dry: vec![vec![0.0; max_block]; channel_count],
             scratch: vec![0.0; max_block],
-            // One handover-fade scratch pair per channel, always -- not only when `independent` is
-            // on (same reason `NamSlot::states` is per-channel: preallocating here, in `prepare`
-            // (non-RT), is what lets a live toggle stay RT-safe). In `Linked` mode only index 0 is
-            // ever touched.
-            crossfade_outgoing: vec![vec![0.0; max_block]; channel_count],
-            crossfade_incoming: vec![vec![0.0; max_block]; channel_count],
+            // One handover-fade scratch pair per independently-processable channel, always -- not
+            // only when `independent` is on (same reason `NamSlot::states` is per-channel:
+            // preallocating here, in `prepare` (non-RT), is what lets a live toggle stay
+            // RT-safe). In `Linked` mode only index 0 is ever touched.
+            crossfade_outgoing: vec![vec![0.0; max_block]; independent_channels],
+            crossfade_incoming: vec![vec![0.0; max_block]; independent_channels],
             retired: None,
         })
     }
@@ -274,11 +286,18 @@ pub(crate) struct NamSlot {
     /// Immutable weights/config (D-9.1); cheap to clone (`Arc`) into a future cache or a
     /// crossfaded-out slot's replacement.
     model: Arc<PreparedNam>,
-    /// This instance's own causal-conv history and reusable inference scratch, one per physical
-    /// channel — not only for the prototype `INDEPENDENT_CHANNELS` mode (`states[1..]` simply sit
-    /// idle in `Linked` mode, matching FR-CHAIN-050's own "channel 0 only" cost exactly). Sized
-    /// (via `PreparedNam::new_state`) to `resample`'s fixed model-rate block when resampling is
-    /// active, or to the stage's own `max_block_size` when it isn't.
+    /// This instance's own causal-conv history and reusable inference scratch, one per
+    /// *independently captured* channel — not only for the prototype `INDEPENDENT_CHANNELS` mode
+    /// (`states[1..]` sit idle in `Linked` mode). Sized (via `PreparedNam::new_state`) to
+    /// `resample`'s fixed model-rate block when resampling is active, or to the stage's own
+    /// `max_block_size` when it isn't.
+    ///
+    /// **The per-block cost of an idle state is zero; its load-time cost is not.** Every entry is
+    /// built by `new_state_prewarmed`, which runs the model over its own prewarm length of
+    /// silence (D-9.13), so a `ChannelConfig::Stereo` chain pays that inference twice per model
+    /// load whether or not the mode is ever switched on, and holds two states' scratch resident.
+    /// That is why the count follows `input_channels()` — `Mono`/`MonoToStereo` pay nothing —
+    /// and the Stereo figure is measured rather than assumed: see D-9.14.
     states: Vec<NamState>,
     /// `None` exactly when `model.sample_rate() == engine sample rate` (D-9.2: "bypassed
     /// entirely... zero cost and zero added latency"); `Some` otherwise. One per channel, all
@@ -807,7 +826,7 @@ impl NamStage {
     /// `active` (and therefore which slot is fading *out*) is unaffected, since `active` only
     /// ever changes when a handover completes.
     pub fn load_model(&mut self, model: Arc<PreparedNam>) {
-        let channel_count = self.prepared_for.channel_config().output_channels() as usize;
+        let channel_count = self.prepared_for.channel_config().input_channels() as usize;
         let slot = NamSlot::new(model, self.sample_rate, self.max_block_size, channel_count);
         let ctx = self.prepared_for;
         self.install(Box::new(slot), ctx);
@@ -1165,7 +1184,11 @@ impl Stage for NamStage {
             self.dry[ch][..n].copy_from_slice(io.channel(ch));
         }
 
-        if self.independent && channel_count > 1 {
+        // `crossfade_outgoing.len() > 1` rather than `self.independent` alone: a stage prepared
+        // for a config with one captured channel (`Mono`/`MonoToStereo`) has one channel's worth
+        // of per-channel state and stays on the mono-core path however the parameter is set
+        // (`prepare`'s own comment on `independent_channels`).
+        if self.independent && self.crossfade_outgoing.len() > 1 && channel_count > 1 {
             // Prototype: every channel through its own `NamSlot` state, no duplication -- the
             // same shape `gate.rs`/`trim.rs` use for the identical reason. `commit` (see
             // `render_channel`'s own doc comment) is true only for the last channel, so the
@@ -1845,6 +1868,48 @@ mod tests {
                 discarded > 0.05,
                 "{channel_config:?}: channel 1's output is within {discarded} of its own input, so \
                  nothing shows it was replaced by the mono core's result"
+            );
+        }
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`): the mode is inert in every configuration that captures
+    /// one channel, and the engine enforces that rather than relying on the UI to hide the
+    /// control — which is what makes a plugin-saved preset with "Independent" on harmless when it
+    /// is opened in the standalone (`namir-app` runs `Mono`/`MonoToStereo`).
+    ///
+    /// Asserted on the state count rather than on the audio, deliberately: `MonoToStereo`'s two
+    /// output channels carry the *same* signal, so two independent cores would produce the same
+    /// samples as one duplicated core and no output comparison could tell the two apart. The
+    /// thing that differs is exactly the thing FR-CHAIN-050's rationale is about — a second model
+    /// evaluation per block, and a second `new_state_prewarmed` per load — so that is what this
+    /// measures.
+    #[test]
+    fn independent_mode_builds_no_second_core_for_a_single_captured_channel() {
+        let sample_rate = 48_000;
+        for (channel_config, expected_states) in [
+            (ChannelConfig::Mono, 1),
+            (ChannelConfig::MonoToStereo, 1),
+            (ChannelConfig::Stereo, 2),
+        ] {
+            let mut stage = stage(sample_rate, channel_config);
+            stage.apply(ParamChange {
+                id: INDEPENDENT_CHANNELS_ID,
+                value: 1.0, // "Independent", set before the load: the worst case for this claim.
+            });
+            stage.load_model(tiny_model(sample_rate));
+            let slot = stage.slots[1 - stage.active].as_ref().expect(
+                "install puts a freshly loaded model in the inactive slot until the fade completes",
+            );
+            assert_eq!(
+                slot.states.len(),
+                expected_states,
+                "{channel_config:?}: {} inference states built, expected {expected_states}",
+                slot.states.len()
+            );
+            assert_eq!(
+                stage.crossfade_outgoing.len(),
+                expected_states,
+                "{channel_config:?}: per-channel handover scratch does not match the state count"
             );
         }
     }

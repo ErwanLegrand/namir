@@ -184,6 +184,12 @@ impl StagePrep for IrPrep {
         let low_cut_freq_hz_default = continuous_default(LOW_CUT_FREQ_HZ);
         let high_cut_enabled_default = stepped_default_on(HIGH_CUT_ENABLED);
         let high_cut_freq_hz_default = continuous_default(HIGH_CUT_FREQ_HZ);
+        let independent_default = stepped_default_on(INDEPENDENT_CHANNELS);
+        // How many channels this chain can convolve independently: `input_channels()`, not
+        // `output_channels()` — see `gate.rs`'s fuller comment. `MonoToStereo`'s two outputs are
+        // one captured signal duplicated, so a second convolution there would cost a second FFT
+        // schedule per block for a bit-identical result.
+        let independent_channels = ctx.channel_config().input_channels() as usize;
 
         let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * sample_rate.hz_f64();
         let mix_coeff = (1.0 - (-1.0_f64 / tau_samples).exp()) as f32;
@@ -209,15 +215,15 @@ impl StagePrep for IrPrep {
             mix: 0.0,
             mix_target: 0.0,
             mix_coeff,
-            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
-            // default -- this stage's existing shared-convolution behaviour, unchanged, until a
-            // caller actively turns this on.
-            independent: false,
+            // Prototype: seeded from `INDEPENDENT_CHANNELS`'s own descriptor default ("Linked") --
+            // this stage's existing shared-convolution behaviour, unchanged, until a caller
+            // actively turns this on.
+            independent: independent_default,
             dry: vec![vec![0.0; max_block]; channel_count],
-            crossfade_outgoing: (0..channel_count)
+            crossfade_outgoing: (0..independent_channels)
                 .map(|_| [vec![0.0; max_block], vec![0.0; max_block]])
                 .collect(),
-            crossfade_incoming: (0..channel_count)
+            crossfade_incoming: (0..independent_channels)
                 .map(|_| [vec![0.0; max_block], vec![0.0; max_block]])
                 .collect(),
             prepared_for: *ctx,
@@ -269,11 +275,18 @@ pub(crate) struct IrSlot {
     /// on the loaded taps and never on a live parameter — `nam.rs`'s `base_normalize_gain_db`
     /// exactly, and for the same reason.
     base_normalize_gain_db: f32,
-    /// FR-IR-090's applied gain, one `GainRamp` per *IR* channel (not per physical output
-    /// channel: this runs on the slot's own convolution output, upstream of the stage's
-    /// mono-to-stereo fan-out). Its target is recomputed every block from
-    /// `base_normalize_gain_db` and the stage's live `normalize_enabled`, so toggling the switch
-    /// ramps rather than steps.
+    /// FR-IR-090's applied gain: `normalize[ch]` holds one `GainRamp` per *IR* channel for
+    /// physical channel `ch`. Its target is recomputed every block from `base_normalize_gain_db`
+    /// and the stage's live `normalize_enabled`, so toggling the switch ramps rather than steps.
+    ///
+    /// **The outer dimension is what makes `Independent` mode correct**, and it is not cosmetic:
+    /// `GainRamp::process` advances the ramp one step per sample it is handed, so one shared ramp
+    /// processed once per physical channel per block would advance `n * channel_count` steps per
+    /// block of real time — channel 0 receiving the first `n` steps of the glide and channel 1 the
+    /// next `n`, i.e. two different gains on two channels for the whole duration of any
+    /// `normalize_enabled` toggle. `Linked` mode only ever touches `normalize[0]`, so its
+    /// behaviour is unchanged; `nam.rs`'s `normalize_gains` is per-channel for exactly this
+    /// reason and says so.
     ///
     /// Built **already settled** at its first block's target, unlike `nam.rs`'s equivalent, which
     /// starts at unity and ramps in. A brand-new slot has no prior output to click against — the
@@ -286,12 +299,17 @@ pub(crate) struct IrSlot {
     /// change: during a handover the two slots are convolved separately and blended, so a single
     /// post-blend gain would apply the incoming IR's correction to the outgoing IR as well —
     /// exactly the level jump FR-IR-090 exists to remove, reintroduced in the crossfade window.
-    normalize: Vec<GainRamp>,
-    /// Clear until the first [`Self::process_wet`] has seated `normalize` at the target the stage
-    /// actually asks for. Which target that is depends on the stage's live `normalize_enabled`,
-    /// which `IrSlot::new` — running worker-side, off the stage — cannot see; re-seating a
-    /// `GainRamp` is a plain struct assignment, so the fixup is RT-safe and the `Vec` itself is
-    /// still allocated in `new`.
+    normalize: Vec<Vec<GainRamp>>,
+    /// Clear until the first [`Self::process_wet`] has seated **every** channel's `normalize`
+    /// ramps at the target the stage actually asks for. Which target that is depends on the
+    /// stage's live `normalize_enabled`, which `IrSlot::new` — running worker-side, off the stage
+    /// — cannot see; re-seating a `GainRamp` is a plain struct assignment, so the fixup is
+    /// RT-safe and the `Vec`s themselves are still allocated in `new`.
+    ///
+    /// Every channel is seated on that one first call, not each on its own first call: in
+    /// `Independent` mode channel 1's first block is the same block as channel 0's, and seating
+    /// only the calling channel would leave channel 1 gliding in from unity while channel 0
+    /// started at the target.
     settled: bool,
     /// Kept only to re-seat `normalize` on that first block.
     sample_rate: SampleRate,
@@ -300,13 +318,18 @@ pub(crate) struct IrSlot {
 impl IrSlot {
     /// **Not RT-safe. This is D-8.1 step 1, and from M4 on it runs on a worker thread** —
     /// `PreparedIr::new_state` allocates every per-channel ring buffer/accumulator the convolution
-    /// needs, once per physical channel. `pub(crate)` so [`crate::Command::load_ir`] can do this
-    /// work off the audio thread, mirroring `NamSlot::new`'s identical contract and rationale.
+    /// needs, once per independently-captured channel. `pub(crate)` so [`crate::Command::load_ir`]
+    /// can do this work off the audio thread, mirroring `NamSlot::new`'s identical contract and
+    /// rationale.
     pub(crate) fn new(ir: Arc<PreparedIr>, channel_count: usize, sample_rate: SampleRate) -> Self {
         let states = (0..channel_count).map(|_| ir.new_state()).collect();
         let base_normalize_gain_db = ir.normalize_gain_db();
-        let normalize = (0..ir.channel_count())
-            .map(|_| GainRamp::new(sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS))
+        let normalize = (0..channel_count)
+            .map(|_| {
+                (0..ir.channel_count())
+                    .map(|_| GainRamp::new(sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS))
+                    .collect()
+            })
             .collect();
         Self {
             ir,
@@ -373,19 +396,26 @@ impl IrSlot {
         } else {
             0.0
         };
-        for (ramp, out) in self
-            .normalize
+        if !self.settled {
+            // Every channel's ramps, not just this call's -- see `settled`'s own doc comment.
+            for ramps in &mut self.normalize {
+                for ramp in ramps.iter_mut() {
+                    *ramp = GainRamp::new_at_db(
+                        self.sample_rate,
+                        LEVEL_RAMP_TIME_CONSTANT_MS,
+                        target_db,
+                    );
+                }
+            }
+            self.settled = true;
+        }
+        for (ramp, out) in self.normalize[ch]
             .iter_mut()
             .zip(outs[..ir_channels].iter_mut())
         {
-            if !self.settled {
-                *ramp =
-                    GainRamp::new_at_db(self.sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS, target_db);
-            }
             ramp.set_target_db(target_db);
             ramp.process(out);
         }
-        self.settled = true;
     }
 }
 
@@ -518,7 +548,7 @@ impl IrStage {
     /// `active` is unaffected, matching `nam.rs`'s `load_model`'s identical rule.
     pub fn load_ir(&mut self, ir: Arc<PreparedIr>) {
         let ctx = self.prepared_for;
-        let channel_count = ctx.channel_config().output_channels() as usize;
+        let channel_count = ctx.channel_config().input_channels() as usize;
         self.install(
             Box::new(IrSlot::new(ir, channel_count, self.sample_rate)),
             ctx,
@@ -985,7 +1015,11 @@ impl Stage for IrStage {
             self.dry[ch][..n].copy_from_slice(io.channel(ch));
         }
 
-        if self.independent && channel_count > 1 {
+        // `crossfade_outgoing.len() > 1` rather than `self.independent` alone: a stage prepared
+        // for a config with one captured channel (`Mono`/`MonoToStereo`) has one channel's worth
+        // of per-channel state and stays on the shared-convolution path however the parameter is
+        // set (`prepare`'s own comment on `independent_channels`).
+        if self.independent && self.crossfade_outgoing.len() > 1 && channel_count > 1 {
             // Prototype: every channel through its own `IrSlot` state, no shared-convolution
             // fan-out -- the same shape `gate.rs`/`trim.rs`/`nam.rs` use for the identical reason.
             let last = channel_count - 1;
@@ -1748,7 +1782,9 @@ mod tests {
     /// two genuinely different input signals must each be convolved against that same mono IR
     /// independently — dual mono applied to two different sources, not `mono_ir_into_stereo_chain
     /// _is_dual_mono`'s "one shared input, duplicated". Verified against
-    /// `namir_ir::direct_convolve`, the same independent reference the loaded-IR tests above use.
+    /// `namir_ir::direct_convolve`, the same independent reference the loaded-IR tests above use —
+    /// with FR-IR-090 normalisation switched off, as every other `direct_convolve` comparison in
+    /// this module does, so the reference is the raw convolution and nothing else.
     #[test]
     fn independent_mode_with_a_mono_ir_convolves_each_channels_own_signal() {
         let sample_rate = 48_000;
@@ -1756,6 +1792,10 @@ mod tests {
         stage.apply(ParamChange {
             id: INDEPENDENT_CHANNELS_ID,
             value: 1.0, // "Independent"
+        });
+        stage.apply(ParamChange {
+            id: NORMALIZE_ENABLED_ID,
+            value: 0.0,
         });
         let h = vec![0.5f32, 0.0, 0.25, -0.1];
         let ir = mono_ir(sample_rate, &h, 64);
@@ -1811,6 +1851,76 @@ mod tests {
                 .zip(right_in.iter())
                 .any(|(l, r)| (l - r).abs() > 0.05),
             "the two probe signals are too similar for this comparison to mean anything"
+        );
+    }
+
+    /// Prototype (`INDEPENDENT_CHANNELS`) regression, FR-IR-090: two channels fed the *same*
+    /// signal must leave this stage identical, including *while* the normalisation gain is
+    /// gliding. `GainRamp::process` advances one step per sample handed to it, so a single ramp
+    /// shared across the per-channel calls advances `n * channel_count` steps per block of real
+    /// time and gives channel 1 the *next* `n` steps of the glide rather than the same `n` —
+    /// an audible L/R level split for the whole 25 ms of any `ir.normalize_enabled` toggle. The
+    /// non-vacuous half is that the toggle really is mid-glide here: the first block after it is
+    /// asserted to differ from the settled level.
+    #[test]
+    fn independent_mode_applies_the_same_normalisation_ramp_to_every_channel() {
+        let sample_rate = 48_000;
+        let mut stage = stage(sample_rate, ChannelConfig::Stereo);
+        stage.apply(ParamChange {
+            id: INDEPENDENT_CHANNELS_ID,
+            value: 1.0, // "Independent"
+        });
+        let h = vec![0.5f32, 0.0, 0.25, -0.1];
+        stage.load_ir(mono_ir(sample_rate, &h, 64));
+
+        let block = |stage: &mut IrStage, phase: usize| {
+            let mut left = [0.0f32; 64];
+            let mut right = [0.0f32; 64];
+            for i in 0..64 {
+                let s = 0.2 * (((phase * 64 + i) as f32) * 0.03).sin();
+                left[i] = s;
+                right[i] = s;
+            }
+            let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+            let mut io = StageIo::new(&mut channels, 64);
+            audio_section(|| stage.process(&mut io));
+            (io.channel(0).to_vec(), io.channel(1).to_vec())
+        };
+
+        // Settle well past the handover fade and the bypass blend (400 ms).
+        let mut settled_peak = 0.0f32;
+        for phase in 0..300 {
+            let (l, _) = block(&mut stage, phase);
+            settled_peak = l.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        }
+
+        // Defeat FR-IR-090's correction: the ramp now glides from the IR's own measured gain to
+        // 0 dB over ~25 ms, which is ~19 blocks of 64 samples at 48 kHz.
+        stage.apply(ParamChange {
+            id: NORMALIZE_ENABLED_ID,
+            value: 0.0,
+        });
+        let mut mid_glide_peak = 0.0f32;
+        for phase in 300..340 {
+            let (l, r) = block(&mut stage, phase);
+            if phase == 302 {
+                mid_glide_peak = l.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            }
+            for (i, (l, r)) in l.iter().zip(r.iter()).enumerate() {
+                assert!(
+                    (l - r).abs() < 1e-9,
+                    "block {phase} sample {i}: left {l} vs right {r} from the same input -- the \
+                     two channels are on different points of the normalisation glide"
+                );
+            }
+        }
+
+        // Non-vacuous: the toggle really did move the level, so the blocks above were measured
+        // mid-glide rather than on a ramp that had nothing to do.
+        assert!(
+            (mid_glide_peak - settled_peak).abs() > 1e-3,
+            "the normalisation toggle changed nothing ({settled_peak} -> {mid_glide_peak}), so \
+             this test would pass with the ramp shared across channels"
         );
     }
 

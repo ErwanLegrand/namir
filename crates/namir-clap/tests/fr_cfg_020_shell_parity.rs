@@ -265,6 +265,18 @@ mod host_ext {
     /// here, not the stronger one, which is why "non-default" is not automatically the right answer
     /// for a Stepped switch. [`the_golden_vector_is_intact`]'s "is at its default" assertion is
     /// scoped to `ParamKind::Continuous` for exactly this class of case.
+    ///
+    /// `global.independent_channels` is at its default for a third reason, and it is the one this
+    /// table is the right place to settle. The two shells do not run the same channel
+    /// configuration: `namir-app` captures one channel (`Mono`/`MonoToStereo`) and `namir-clap`
+    /// negotiates `Stereo`. "Independent" only ever engages for `Stereo` (the engine builds no
+    /// per-channel state otherwise — `namir_params::global::INDEPENDENT_CHANNELS`'s own doc
+    /// comment), so setting it here would drive the plugin down the per-channel path and the
+    /// standalone down the mono-core path in the same comparison. That does not weaken the
+    /// comparison this file makes: FR-CFG-020 is about identical *input* producing identical
+    /// output, and this vector's input is one mono signal, whose two-channel rendering is
+    /// identical under either mode by construction. Pinned at "Linked" with the reason written
+    /// down, exactly as `global.bypass` above is.
     const PARAM_OVERRIDES: &[(&str, f32, &str)] = &[
         ("eq.enabled", 1.0, "at default: the tone stack must run"),
         ("eq.high_pass_enabled", 1.0, "non-default"),
@@ -291,6 +303,11 @@ mod host_ext {
             "global.bypass",
             0.0,
             "at default: bypass would void the comparison",
+        ),
+        (
+            "global.independent_channels",
+            0.0,
+            "at default: see this table's own note on the two shells' channel configurations",
         ),
         ("global.output_ceiling_db", -1.0, "non-default"),
         ("ir.enabled", 1.0, "at default: the cabinet must run"),

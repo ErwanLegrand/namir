@@ -58,7 +58,7 @@ const HOLD_MS_ID: ParamId = ParamId(HOLD_MS.id.0);
 const RELEASE_MS_ID: ParamId = ParamId(RELEASE_MS.id.0);
 /// Prototype: see `namir_params::global::INDEPENDENT_CHANNELS`'s own doc comment. Broadcast to
 /// every stage the same way every other `ParamChange` is (`Chain::apply`'s doc comment) — this
-/// stage just happens to be one of the three (with `trim.rs`/`nam.rs`) that owns this id.
+/// stage is one of the four (with `trim.rs`/`nam.rs`/`ir.rs`) that owns this id.
 const INDEPENDENT_CHANNELS_ID: ParamId = ParamId(INDEPENDENT_CHANNELS.id.0);
 
 /// Telemetry signal id (FR-GATE-040), derived from a namespaced string the same way
@@ -112,18 +112,35 @@ impl StagePrep for GatePrep {
             ..GateParams::default()
         };
 
-        // One independent detector per channel, always -- not only when `independent` is on
-        // (prototype: `INDEPENDENT_CHANNELS`'s own doc comment). Preallocating every channel's
-        // detector here, in `prepare` (non-RT), rather than only the one `process` currently uses,
-        // is what lets a live toggle between Linked and Independent stay RT-safe: `process` and
-        // `apply` only ever pick which already-built detector(s) to read/write, never build one.
-        let detectors: Vec<NoiseGate> = (0..channel_count)
+        // One independent detector per *independently captured* channel, always -- not only when
+        // `independent` is on (prototype: `INDEPENDENT_CHANNELS`'s own doc comment).
+        // Preallocating them here, in `prepare` (non-RT), rather than only the one `process`
+        // currently uses, is what lets a live toggle between Linked and Independent stay RT-safe:
+        // `process` and `apply` only ever pick which already-built detector(s) to read/write,
+        // never build one.
+        //
+        // `input_channels()`, not `output_channels()`: `MonoToStereo`'s two output channels are
+        // one captured signal duplicated, so a second detector there would cost a second envelope
+        // computation to produce a bit-identical result -- FR-CHAIN-050's own "double the cost for
+        // no benefit" rationale, which this prototype departs from only where the two channels
+        // really are two signals (`ChannelConfig::Stereo`). A stage prepared for a config that
+        // cannot use the mode therefore holds exactly one detector and `process` stays on the
+        // Linked path whatever the parameter says -- which is also the answer to what the
+        // standalone app does with a plugin-saved preset that has this switched on: nothing.
+        let detector_count = ctx.channel_config().input_channels() as usize;
+        let detectors: Vec<NoiseGate> = (0..detector_count)
             .map(|_| {
                 let mut d = NoiseGate::new(sample_rate);
                 d.set_params(params);
                 d
             })
             .collect();
+        let independent_default = match INDEPENDENT_CHANNELS.kind {
+            ParamKind::Stepped { default_index, .. } => default_index.0 == 1,
+            ParamKind::Continuous { .. } => {
+                unreachable!("global.independent_channels is declared Stepped")
+            }
+        };
 
         let tau_samples = (BYPASS_CROSSFADE_TIME_CONSTANT_MS / 1000.0) * sample_rate.hz_f64();
         let mix_coeff = (1.0 - (-1.0_f64 / tau_samples).exp()) as f32;
@@ -132,10 +149,10 @@ impl StagePrep for GatePrep {
         Ok(GateStage {
             detectors,
             params,
-            // Prototype default: "Linked", matching `INDEPENDENT_CHANNELS`'s own descriptor
-            // default -- FR-CHAIN-050's mono-core-then-duplicate shape, unchanged, until a caller
-            // actively turns this on.
-            independent: false,
+            // Prototype: seeded from `INDEPENDENT_CHANNELS`'s own descriptor default ("Linked"),
+            // not a second hardcoded copy of it -- FR-CHAIN-050's mono-core-then-duplicate shape,
+            // unchanged, until a caller actively turns this on.
+            independent: independent_default,
             enabled: enabled_default_on,
             mix: mix_target, // no prior audio exists yet at stage creation; start settled.
             mix_target,
@@ -149,11 +166,17 @@ impl StagePrep for GatePrep {
 /// RT-safe noise gate: `namir_dsp::NoiseGate` run mono-core on channel 0 and duplicated
 /// (FR-CHAIN-050), behind the shared click-free per-stage bypass crossfade (FR-CHAIN-020).
 pub struct GateStage {
-    /// FR-GATE-010..040's hysteresis/attack/hold/release state machine — one per physical
-    /// channel, always (see `prepare`'s own comment on why). In `Linked` mode (`independent ==
-    /// false`, the shipped default) only `detectors[0]` is ever read; every detector still tracks
-    /// the same params, so switching to `Independent` mid-session starts from an already-correct,
-    /// already-settled state rather than a fresh gate slamming open or shut.
+    /// FR-GATE-010..040's hysteresis/attack/hold/release state machine — one per
+    /// *independently captured* channel (see `prepare`'s own comment on why that is
+    /// `input_channels()` and not `output_channels()`), always. In `Linked` mode (`independent ==
+    /// false`, the shipped default) only `detectors[0]` is ever read, and `detectors.len() > 1`
+    /// is what makes the Independent path reachable at all.
+    ///
+    /// Every detector tracks the same *params*, so a live switch to `Independent` finds the right
+    /// threshold/attack/hold/release already loaded — but **not** the same envelope: a detector
+    /// `Linked` mode never ran sits at its post-`reset` closed state, so channel 1 mutes and
+    /// re-attacks over one attack time when the switch flips. See `INDEPENDENT_CHANNELS`'s own
+    /// doc comment: the toggle is a routing change and is not click-free.
     detectors: Vec<NoiseGate>,
     /// This stage's own copy of every detector's current params. `NoiseGate` exposes no getter for
     /// them (`namir_dsp::gate`'s own scope), so `apply` mutates the relevant field here, then
@@ -202,7 +225,10 @@ impl Stage for GateStage {
             self.dry[ch][..n].copy_from_slice(io.channel(ch));
         }
 
-        if self.independent && channel_count > 1 {
+        // `detectors.len() > 1` rather than `self.independent` alone: a stage prepared for a
+        // config with one captured channel (`Mono`/`MonoToStereo`) holds one detector and stays
+        // on the Linked path however the parameter is set (`prepare`'s own comment).
+        if self.independent && self.detectors.len() > 1 && channel_count > 1 {
             // Prototype: every channel's own detector against its own signal, no duplication —
             // the whole point being that two genuinely different signals (e.g. a REAPER parent
             // bus summing two panned double-tracked takes) each get gated on their own content,

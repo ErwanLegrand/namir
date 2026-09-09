@@ -58,6 +58,16 @@ directly from the doc text without ambiguity.
 
 **Result: PASS.**
 
+*Note (added M15, 2026-09-09; PR #162).* The transcript above is kept exactly as it was executed
+and is **not** edited to match today's registry. `namir_params::REGISTRY` has since gained
+`global.independent_channels` (FR-CHAIN-050's *Consequence (added M15)*, `02-architecture.md`
+D-9.14), so a re-run of this script prints `parameters: 28 entries` and one extra
+`global.independent_channels = 0.0` line, and the paragraph above should be read as "27 at the time
+of the run". Nothing else moves: the key is an ordinary `parameters` entry of the shape §5 and §6
+already document, which is exactly what this test measures — a reader written from the
+documentation alone handled it without a documentation change, and the count is the only
+observable difference. The verdict stands; re-run before quoting the number.
+
 ## `read_preset.py`, in full
 
 ```python

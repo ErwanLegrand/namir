@@ -206,12 +206,14 @@ const SECTION_5_CONTINUOUS: &[Section5Continuous] = &[
 ];
 
 /// Every discrete choice FRS §5 identifies, and the requirement stating it. FR-PARAM-050's
-/// parenthetical names three categories — "enabled/disabled, filter type, channel mode" — and only
-/// the first has any shipped control: the EQ's band shapes are fixed by FR-EQ-010's table rather
-/// than user-selected, and channel mode is not a user control in 1.0 (FR-CHAIN-060 makes it a
-/// property of the host's port layout, and FR-CHAIN-070's Should — the only requirement that would
-/// have given the user a chooser — was dropped for 1.0 at M14's Phase 0). So the two remaining
-/// categories are vacuous rather than unspanned, and the check that keeps them honest is
+/// parenthetical names three categories — "enabled/disabled, filter type, channel mode" — and the
+/// EQ's band shapes are still fixed by FR-EQ-010's table rather than user-selected, so "filter
+/// type" remains vacuous. "Channel mode" is no longer: FR-CHAIN-050's *Consequence (added M15)*
+/// amends the single-channel core for an opt-in independent-channel mode and names
+/// `global.independent_channels` as its control, which is what that row cites. FR-CHAIN-060 still
+/// makes the *configuration* a property of the host's port layout, and FR-CHAIN-070's Should — a
+/// chooser between that row's two mono-core inputs — is still dropped for 1.0 (M14 Phase 0). The
+/// check that keeps the remaining vacuous category honest is
 /// `no_discrete_looking_parameter_is_modelled_as_a_continuous_range` below.
 const SECTION_5_DISCRETE: &[(&str, &str)] = &[
     ("trim.dc_blocker_enabled", "FR-IN-040"),
@@ -226,14 +228,8 @@ const SECTION_5_DISCRETE: &[(&str, &str)] = &[
     ("eq.high_pass_enabled", "FR-EQ-010"),
     ("eq.low_pass_enabled", "FR-EQ-010"),
     ("global.bypass", "FR-CHAIN-030"),
+    ("global.independent_channels", "FR-CHAIN-050"),
 ];
-
-/// Stepped `REGISTRY` entries with **no** FRS §5 citation, by design: each is a working prototype
-/// of an idea not yet ratified as a requirement (see the descriptor's own doc comment in
-/// `global.rs` for the full context) — listed here, by name, rather than silently loosening the
-/// count check below, so a real regression (a shipped discrete choice FRS §5 forgot to mention)
-/// still fails loudly.
-const PROTOTYPE_DISCRETE_NOT_YET_IN_FRS: &[&str] = &["global.independent_channels"];
 
 fn find(key: &str) -> &'static ParamDescriptor {
     REGISTRY
@@ -415,12 +411,11 @@ fn every_shipped_continuous_descriptor_carries_all_seven_required_properties() {
 #[test]
 fn every_section_5_discrete_choice_is_a_stepped_parameter_with_named_values() {
     let registry_stepped = REGISTRY.iter().filter(|d| continuous(d).is_none()).count();
-    let prototype_stepped = PROTOTYPE_DISCRETE_NOT_YET_IN_FRS.len();
     assert_eq!(
-        registry_stepped - prototype_stepped,
+        registry_stepped,
         SECTION_5_DISCRETE.len(),
-        "REGISTRY holds {registry_stepped} stepped parameters ({prototype_stepped} of them \
-         explicitly not-yet-in-the-FRS prototypes) but FRS §5 identifies {} discrete choices",
+        "REGISTRY holds {registry_stepped} stepped parameters but FRS §5 identifies {} discrete \
+         choices",
         SECTION_5_DISCRETE.len()
     );
 
