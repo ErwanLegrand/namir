@@ -901,7 +901,9 @@ mod tests {
     // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
     // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
     // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
-    // uncovered: anywhere in the window; closes M8
+    // uncovered: anywhere in the window; and cpal-detected dropouts are not counted at all:
+    // uncovered: `cpal` 0.19 delivers them via `CallbackInfo::xrun()`, which `AudioBackend`'s
+    // uncovered: callback signature does not carry; closes M8
     #[test]
     fn an_output_pull_with_no_input_yet_counts_an_xrun() {
         let backend = FakeBackend::new();
@@ -1037,7 +1039,9 @@ mod tests {
     // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
     // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
     // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
-    // uncovered: anywhere in the window; closes M8
+    // uncovered: anywhere in the window; and cpal-detected dropouts are not counted at all:
+    // uncovered: `cpal` 0.19 delivers them via `CallbackInfo::xrun()`, which `AudioBackend`'s
+    // uncovered: callback signature does not carry; closes M8
     #[test]
     fn input_capture_that_outruns_the_output_callback_counts_an_xrun() {
         const MAX_BLOCK: usize = 64;
