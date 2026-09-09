@@ -635,7 +635,7 @@ pub trait AudioBackend: Send + Sync {
     ) -> Result<Box<dyn AudioStream>, AudioIoError>;
 }
 
-/// The real backend, over D-13.4's `cpal` fork (0.18.1 plus WASAPI share-mode support), pinned by
+/// The real backend, over D-13.4's `cpal` fork (0.19.0 plus WASAPI share-mode support), pinned by
 /// commit hash in this crate's `Cargo.toml`.
 pub struct CpalBackend;
 
@@ -1285,7 +1285,7 @@ mod cpal_impl {
         let options = wasapi_options(params.share_mode);
         let configured = device
             .with_options(options)
-            .map_err(|e| cpal::Error::new(e.kind()))?;
+            .map_err(|e| cpal::Error::with_message(e.kind(), e.to_string()))?;
         configured.build_input_stream_raw(
             stream_config(params),
             T::FORMAT,
@@ -1312,7 +1312,7 @@ mod cpal_impl {
         let options = wasapi_options(params.share_mode);
         let configured = device
             .with_options(options)
-            .map_err(|e| cpal::Error::new(e.kind()))?;
+            .map_err(|e| cpal::Error::with_message(e.kind(), e.to_string()))?;
         configured.build_output_stream_raw(
             stream_config(params),
             T::FORMAT,
@@ -1428,20 +1428,19 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                to_stream_failure(error.clone()),
+                to_stream_failure(error),
                 StreamFailure::DeviceLost,
-                "{error}"
+                "StreamInvalidated must classify as DeviceLost regardless of message content"
             );
         }
     }
 
-    /// The two arms that were already right, kept beside the new one so a future edit to the
-    /// `match` has to keep all three: an xrun is an xrun, and an error that names no device and is
-    /// classified as nothing in particular stays [`StreamFailure::Other`] rather than being
-    /// promoted.
     #[test]
     fn the_other_stream_failure_classifications_are_unchanged() {
-        // Note: cpal 0.19 moved Xrun delivery to CallbackInfo::xrun(), so ErrorKind::Xrun was removed upstream.
+        assert_eq!(
+            to_stream_failure(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable)),
+            StreamFailure::DeviceLost
+        );
         assert!(matches!(
             to_stream_failure(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig)),
             StreamFailure::Other(_)
