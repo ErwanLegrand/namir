@@ -394,9 +394,11 @@ impl From<&str> for InlineDetail {
 }
 
 /// A Namir-owned classification of a stream failure, replacing `cpal::ErrorKind` at this crate's
-/// boundary (D-13.1). `Xrun` is `cpal`'s own detected dropout (not every backend reports it — see
-/// [`crate::xrun`] for the ring-underrun-based detector this crate also runs, which does not
-/// depend on backend support). `DeviceLost` is FR-IO-070's device-removal case.
+/// boundary (D-13.1). Under `cpal` 0.19, xrun delivery moved from error callbacks to
+/// `CallbackInfo::xrun()`, which Namir's current [`AudioBackend`] stream callback signature does
+/// not yet read or propagate (see [`crate::xrun`]; bridge under- and overruns are currently
+/// FR-IO-060's only live source). `Xrun` is retained here for when that backend seam is extended.
+/// `DeviceLost` is FR-IO-070's device-removal case.
 ///
 /// **`Copy`, and every byte of it inline (issue #88).** This value is constructed on `cpal`'s
 /// error-callback thread and travels to the UI thread through a pre-allocated ring; both ends of
@@ -407,7 +409,8 @@ pub enum StreamFailure {
     /// The device was disconnected or otherwise stopped being reachable (`cpal`'s
     /// `ErrorKind::DeviceNotAvailable`/`HostUnavailable`).
     DeviceLost,
-    /// `cpal` itself detected a buffer underrun/overrun (`ErrorKind::Xrun`).
+    /// `cpal` detected a buffer underrun/overrun (in `cpal` 0.19 delivered via `CallbackInfo::xrun()`,
+    /// retained here for when the backend callback seam is extended to carry it).
     Xrun,
     /// Anything else, carrying `cpal`'s own message for diagnostics (FR-ERR-050).
     Other(InlineDetail),

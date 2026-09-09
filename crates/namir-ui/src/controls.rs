@@ -80,7 +80,9 @@ pub fn param_control(
         //    inside `data`, which cannot be selectively cleared by widget id without wiping
         //    the entire temp memory store. Instead, when this control loses focus due to Escape,
         //    we flag its `Id` in `data` as cancelled for the following frame so the late commit
-        //    is suppressed, leaving all other widgets' temporary state intact.
+        //    is suppressed, leaving all other widgets' temporary state intact. This suppression
+        //    flag is scoped by consumption rather than time, surviving until the control's next
+        //    render (which in the current always-rendered layout is the next frame).
         // 3. `value as f32 != current` is **not** a defensive extra: (1) makes `DragValue` report
         //    `changed()` once with the value unmoved, and without this guard three unrelated
         //    numeric-entry tests see a spurious leading `SetParam` carrying the pre-edit value.
