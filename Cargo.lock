@@ -160,7 +160,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 [[package]]
 name = "baseview"
 version = "0.3.3"
-source = "git+https://github.com/ErwanLegrand/baseview?branch=accesskit-design#c0870cb5b5279e4fff174ea8b407f19671e4fd5e"
+source = "git+https://github.com/ErwanLegrand/baseview.git?branch=accesskit-design#c0870cb5b5279e4fff174ea8b407f19671e4fd5e"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -520,7 +520,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.19.0"
-source = "git+https://github.com/ErwanLegrand/cpal?branch=wasapi-exclusive#381cf1d32e5593fef2fadbbaaf439c05f6055877"
+source = "git+https://github.com/ErwanLegrand/cpal?rev=381cf1d32e5593fef2fadbbaaf439c05f6055877#381cf1d32e5593fef2fadbbaaf439c05f6055877"
 dependencies = [
  "alsa",
  "block2 0.6.2",
@@ -648,7 +648,7 @@ dependencies = [
 [[package]]
 name = "egui-baseview"
 version = "0.7.0"
-source = "git+https://github.com/ErwanLegrand/egui-baseview?branch=feat%2Faccessibility-accesskit#675273126d2cac39905a2733a7e0e123c2ff4b09"
+source = "git+https://github.com/ErwanLegrand/egui-baseview?rev=675273126d2cac39905a2733a7e0e123c2ff4b09#675273126d2cac39905a2733a7e0e123c2ff4b09"
 dependencies = [
  "baseview",
  "copypasta",

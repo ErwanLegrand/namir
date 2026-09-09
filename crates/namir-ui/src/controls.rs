@@ -101,7 +101,10 @@ pub fn param_control(
             .labelled_by(label.id);
 
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ui.data_mut(|data| data.remove_temp::<String>(response.id));
+            let keys: Vec<_> = ui.data(|data| data.temp_keys().collect());
+            for key in keys {
+                let _ = ui.data_mut(|data| data.remove_temp_raw(key));
+            }
         }
 
         if response.changed() && value as f32 != current {

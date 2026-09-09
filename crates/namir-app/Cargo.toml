@@ -61,7 +61,7 @@ namir-ui = { path = "../namir-ui", version = "0.1.0" }
 # one as the other is a factor of 2^8 -- output ~48 dB too quiet, and capture 256x too large, which
 # pinned the input meter on anything above near-silence. Both directions confirmed by ear and by
 # meter before the fix; both are corrected in the fork, where the container layout is actually known.
-cpal = { git = "https://github.com/ErwanLegrand/cpal", branch = "wasapi-exclusive" }
+cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "381cf1d32e5593fef2fadbbaaf439c05f6055877" }
 # The input-callback -> output-callback bridge (`bridge.rs`): the two cpal callbacks run on two
 # different OS-owned threads with no ordering relationship, so getting a captured block from the
 # input thread to the output thread needs its own wait-free SPSC ring, distinct from

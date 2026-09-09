@@ -17,12 +17,22 @@ widget type every control in this crate is built from — see `controls.rs`'s mo
 why) is natively keyboard-operable once focused: Tab cycles focus, Enter/click enters edit mode,
 arrow keys step the value, typing replaces it.
 
-**Accessibility platform adapters (updated 2026-09-09, issue #35 closed):**
-`egui-baseview` and `baseview` have been upgraded to forks with AccessKit platform adapter integration
-(`accesskit_windows` and `accesskit_macos`). On Windows and macOS, when an assistive technology connects,
-`egui`'s accessibility tree is now forwarded to the OS accessibility API (UI Automation on Windows,
-NSAccessibility on macOS). Accessibility scope is explicitly reduced to Windows and macOS; on Linux/X11,
-accessibility events remain a compiled no-op.
+**What is not yet true, and is worth stating plainly rather than leaving implicit:**
+`egui-baseview` 0.6.0 (the version this crate is pinned to, matching `spikes/s3-egui-baseview`'s
+own `Cargo.lock`) does not itself forward `egui`'s `accesskit` tree to a platform screen reader —
+there is no `accesskit`-to-Windows-UI-Automation adapter wired into the `baseview` window this
+crate opens. So the accessible name is real at the `egui`/`accesskit` *data* level (a future
+platform adapter, or a different windowing backend with one wired in, would see it correctly) but a
+real screen reader (NVDA, Narrator) running against a `namir-ui` window today would not currently
+announce it. This is a gap in the M6 dependency stack, not a gap in how `namir-ui` uses it —
+closing it is future work (wiring an `accesskit` platform adapter into `namir-app`/`namir-clap`'s
+window, or a `baseview` version that does this itself), out of scope for this crate alone.
+
+*Update (2026-09-09, issue #35):* `egui-baseview` and `baseview` have been upgraded to forks with
+AccessKit platform adapter integration (`accesskit_windows` and `accesskit_macos`). On Windows and
+macOS, when an assistive technology connects, `egui`'s accessibility tree is now forwarded to the OS
+accessibility API. Accessibility scope is reduced to Windows and macOS; on Linux/X11, accessibility
+events remain a compiled no-op.
 ## Script
 
 Run this against a real, visible `namir-ui` window (see
@@ -62,9 +72,8 @@ anything screen-reader-observable.
 
 **Result: NOT EXECUTED this session — script above is ready to run by a person with a display,
 keyboard, and mouse against a real `namir-ui` window.** The one substantive finding worth acting on
-before this is run for real: AccessKit platform adapters are now wired on Windows and macOS, and
-executing this script with a real screen reader (Narrator/NVDA on Windows, VoiceOver on macOS) is now
-actionable.
+before this is run for real: **wiring a real `accesskit` platform adapter was previously open work;
+it is now wired on Windows and macOS**, and executing this script with a screen reader is now actionable.
 
 ### Supplementary headless driver coverage (2026-09-06, issue #143)
 
@@ -73,5 +82,3 @@ the widget keyboard interaction layer end-to-end:
 - `keyboard_arrow_keys_on_focused_control_adjust_value`: exercises focusing a control and stepping
   its value via arrow keys in a headless `RawInput` event loop.
 
-Full Tab-key focus traversal across the complete screen layout and screen-reader observations remain
-manual checks (steps 2 and 3 above).

@@ -89,6 +89,9 @@ pub use library_view::{LibraryViewState, entry_label};
 // `notices`' own module doc comment for the duplicate-notice and unbounded-list defects it closes.
 pub use notices::{MAX_NOTICES, push_deduplicated};
 
+/// Test helper that runs a UI frame and clears `textures_delta` before returning.
+/// In `egui` 0.36, `TexturesDelta` has a `Drop` implementation with a `debug_assert!` that
+/// requires unapplied deltas to be handled or cleared before the `FullOutput` is dropped.
 #[cfg(test)]
 pub(crate) fn run_ui(
     ctx: &egui::Context,
