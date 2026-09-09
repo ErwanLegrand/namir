@@ -175,10 +175,12 @@ fn render_one_frame(
         ..Default::default()
     };
     let mut intents: Vec<UiIntent> = Vec::new();
-    let _ = ctx.run_ui(raw_input, |ui| {
+    let mut output = ctx.run_ui(raw_input, |ui| {
         namir_ui::render(ui, view, &snapshot, &mut intents);
     });
-    start.elapsed()
+    let elapsed = start.elapsed();
+    output.textures_delta.clear();
+    elapsed
 }
 
 // trace: FR-UI-060

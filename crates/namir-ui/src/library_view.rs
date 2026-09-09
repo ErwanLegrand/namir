@@ -314,7 +314,7 @@ mod tests {
 
         // Frame 0: find the search box by the hint text `render` really painted into it.
         let mut intents = Vec::new();
-        let output = ctx.run_ui(frame(Vec::new()), |ui| {
+        let output = crate::run_ui(&ctx, frame(Vec::new()), |ui| {
             render(ui, &mut state, &snapshot, &mut intents);
         });
         let hint = text_rect(&output, "Search name, author, gear...")
@@ -323,7 +323,8 @@ mod tests {
         // Frame 1: click into it. A click alone changes no text, so nothing may be emitted yet.
         let pos = hint.center();
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(
+        let _ = crate::run_ui(
+            &ctx,
             frame(vec![
                 egui::Event::PointerMoved(pos),
                 egui::Event::PointerButton {
@@ -345,9 +346,11 @@ mod tests {
 
         // Frame 2: type. This is the frame the box's own `changed()` fires on.
         let mut intents = Vec::new();
-        let _ = ctx.run_ui(frame(vec![egui::Event::Text("Alpha".to_string())]), |ui| {
-            render(ui, &mut state, &snapshot, &mut intents)
-        });
+        let _ = crate::run_ui(
+            &ctx,
+            frame(vec![egui::Event::Text("Alpha".to_string())]),
+            |ui| render(ui, &mut state, &snapshot, &mut intents),
+        );
         assert_eq!(
             state.query_text, "Alpha",
             "the keystrokes must still reach the view's own query"
@@ -489,7 +492,7 @@ mod tests {
             )),
             ..Default::default()
         };
-        let _ = ctx.run_ui(raw_input, |ui| {
+        let _ = crate::run_ui(ctx, raw_input, |ui| {
             let mut intents = Vec::new();
             render(ui, state, snapshot, &mut intents);
         });

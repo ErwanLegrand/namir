@@ -25,17 +25,11 @@ namir-state = { path = "../namir-state", version = "0.1.0" }
 #    directly -- spikes/s3-egui-baseview already proved egui-baseview needs none of that to open a
 #    window.
 #
-# spikes/s3-egui-baseview validated D-15.1 (egui) and D-15.2 (baseview) render a window on this
-# platform; spikes/s4-clack-clap validated the same stack embeds via `open_parented`. Versions
-# below are pinned to exactly what those spikes' own Cargo.lock files resolved to, not to whatever
-# is newest on crates.io today.
-egui = "0.35"
-egui-baseview = "0.6"
-baseview = "0.2"
-# `EguiWindow::open_parented`'s `parent: &P` bound is `P: raw_window_handle::HasWindowHandle`
-# (egui-baseview re-exports neither the trait nor the crate), so `open_parented`'s own signature
-# in this crate needs to name it directly. Pinned to the same 0.6 line spikes/s4-clack-clap's own
-# Cargo.lock resolved to.
+# D-15.1 (egui), D-15.2 (baseview) and D-15.4 (AccessKit accessibility on Windows and macOS).
+# Upgraded to egui 0.36 and Namir-maintained fork of egui-baseview pinned by commit hash.
+egui = "0.36"
+egui-baseview = { git = "https://github.com/ErwanLegrand/egui-baseview", rev = "675273126d2cac39905a2733a7e0e123c2ff4b09" }
+# Pinned to the same 0.6 line egui-baseview's baseview dependency resolved to.
 raw-window-handle = "0.6"
 
 [dev-dependencies]

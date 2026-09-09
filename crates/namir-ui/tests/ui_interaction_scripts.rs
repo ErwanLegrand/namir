@@ -93,20 +93,22 @@ impl HeadlessUiDriver {
         self.frame_with_modifiers(events, Modifiers::NONE)
     }
 
-    fn frame_with_modifiers(&mut self, events: Vec<Event>, modifiers: Modifiers) -> FullOutput {
+    fn frame_with_modifiers(&mut self, mut events: Vec<Event>, modifiers: Modifiers) -> FullOutput {
         self.time += 0.1;
         let time = self.time;
         let ui = &mut self.ui;
-        self.ctx.run_ui(
+        events.insert(0, Event::ModifiersChanged(modifiers));
+        let mut output = self.ctx.run_ui(
             RawInput {
                 time: Some(time),
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(960.0, 640.0))),
                 events,
-                modifiers,
                 ..Default::default()
             },
             |u| ui.frame(u),
-        )
+        );
+        output.textures_delta.clear();
+        output
     }
 
     fn painted_texts(output: &FullOutput) -> Vec<(String, Rect)> {
@@ -528,6 +530,61 @@ fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
     assert!(
         intents.is_empty(),
         "no SetParam intent with aborted value must be dispatched, got: {intents:?}"
+    );
+}
+
+#[test]
+fn escape_cancellation_in_one_control_preserves_staged_edit_in_another() {
+    let mut params = ParamValues::defaults();
+    params.set(trim::GAIN_DB.key, 6.0).unwrap();
+    params
+        .set(namir_params::stages::gate::THRESHOLD_DB.key, -70.0)
+        .unwrap();
+    let mut driver = HeadlessUiDriver::new(UiSnapshot {
+        params,
+        ..Default::default()
+    });
+
+    // Begin edit in Control A ("Input Level"): focus and type staged value without Enter
+    let (_, rect_a) = driver.locate_value_for_control("Input Level");
+    driver.click_at(rect_a.center());
+    driver.frame(vec![
+        Event::Key {
+            key: Key::A,
+            pressed: true,
+            modifiers: Modifiers::COMMAND,
+            repeat: false,
+            physical_key: None,
+        },
+        Event::Text("12.0".to_string()),
+    ]);
+
+    // Click into Control B ("Gate Threshold"), type and cancel with Escape
+    driver.type_and_escape_control_value("Gate Threshold", "-50.0");
+
+    // Gate Threshold was escaped: its value must remain -70.0, not -50.0
+    assert_eq!(
+        driver.current_param(namir_params::stages::gate::THRESHOLD_DB.key),
+        -70.0,
+        "escaped control must remain at its initial value"
+    );
+
+    // Control A was not cancelled: clicking back into it and pressing Enter should commit its 12.0 edit
+    let (_, rect_a_again) = driver.locate_value_for_control("Input Level");
+    driver.click_at(rect_a_again.center());
+    driver.frame(vec![Event::Key {
+        key: Key::Enter,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+        physical_key: None,
+    }]);
+    driver.frame(vec![]);
+
+    assert_eq!(
+        driver.current_param(trim::GAIN_DB.key),
+        12.0,
+        "control A edit must not have been wiped by escape in control B"
     );
 }
 

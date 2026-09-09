@@ -9,9 +9,12 @@ they are never linked into a release binary.
 | Crate | Version | Licence |
 |---|---|---|
 | accesskit | 0.24.1 | MIT OR Apache-2.0 |
+| accesskit_consumer | 0.38.0 | MIT OR Apache-2.0 |
+| accesskit_macos | 0.26.3 | MIT OR Apache-2.0 |
+| accesskit_windows | 0.34.0 | MIT OR Apache-2.0 |
 | ahash | 0.8.12 | MIT OR Apache-2.0 |
-| alsa | 0.11.0 | Apache-2.0/MIT |
-| alsa-sys | 0.4.0 | MIT |
+| alsa | 0.12.1 | Apache-2.0/MIT |
+| alsa-sys | 0.6.1 | MIT |
 | android-activity | 0.6.1 | MIT OR Apache-2.0 |
 | android-properties | 0.2.2 | MIT |
 | arrayref | 0.3.9 | BSD-2-Clause |
@@ -19,7 +22,7 @@ they are never linked into a release binary.
 | as-raw-xcb-connection | 1.0.1 | MIT OR Apache-2.0 |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
-| baseview | 0.2.2 | MIT OR Apache-2.0 |
+| baseview | 0.3.3 | MIT OR Apache-2.0 |
 | bitflags | 1.3.2 | MIT/Apache-2.0 |
 | bitflags | 2.13.1 | MIT OR Apache-2.0 |
 | blake3 | 1.8.5 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
@@ -30,6 +33,7 @@ they are never linked into a release binary.
 | bytemuck_derive | 1.12.0 | Zlib OR Apache-2.0 OR MIT |
 | bytes | 1.12.1 | MIT |
 | calloop | 0.13.0 | MIT |
+| calloop | 0.14.4 | MIT |
 | cfg-if | 1.0.4 | MIT OR Apache-2.0 |
 | clack-common | 0.1.1 | MIT OR Apache-2.0 |
 | clack-extensions | 0.1.1 | MIT OR Apache-2.0 |
@@ -46,7 +50,7 @@ they are never linked into a release binary.
 | core-graphics | 0.23.2 | MIT OR Apache-2.0 |
 | core-graphics-types | 0.1.3 | MIT OR Apache-2.0 |
 | coreaudio-rs | 0.14.2 | MIT/Apache-2.0 |
-| cpal | 0.18.1 | Apache-2.0 |
+| cpal | 0.19.0 | Apache-2.0 |
 | cpufeatures | 0.3.0 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.22 | MIT OR Apache-2.0 |
 | cursor-icon | 1.2.0 | MIT OR Apache-2.0 OR Zlib |
@@ -55,21 +59,21 @@ they are never linked into a release binary.
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT |
 | dlib | 0.5.3 | MIT |
 | dpi | 0.1.2 | Apache-2.0 AND MIT |
-| ecolor | 0.35.0 | MIT OR Apache-2.0 |
-| egui | 0.35.0 | MIT OR Apache-2.0 |
-| egui-baseview | 0.6.0 | MIT OR Apache-2.0 |
-| egui_glow | 0.35.0 | MIT OR Apache-2.0 |
+| ecolor | 0.36.2 | MIT OR Apache-2.0 |
+| egui | 0.36.2 | MIT OR Apache-2.0 |
+| egui-baseview | 0.7.0 | MIT OR Apache-2.0 |
+| egui_glow | 0.36.2 | MIT OR Apache-2.0 |
 | either | 1.17.0 | MIT OR Apache-2.0 |
-| emath | 0.35.0 | MIT OR Apache-2.0 |
-| epaint | 0.35.0 | MIT OR Apache-2.0 |
-| epaint_default_fonts | 0.35.0 | (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 |
+| emath | 0.36.2 | MIT OR Apache-2.0 |
+| epaint | 0.36.2 | MIT OR Apache-2.0 |
+| epaint_default_fonts | 0.36.2 | (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 |
 | equivalent | 1.0.2 | Apache-2.0 OR MIT |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
 | error-code | 3.3.2 | BSL-1.0 |
 | euclid | 0.22.14 | MIT OR Apache-2.0 |
 | fearless_simd | 0.4.1 | Apache-2.0 OR MIT |
 | foldhash | 0.2.0 | Zlib |
-| font-types | 0.11.3 | MIT OR Apache-2.0 |
+| font-types | 0.12.5 | MIT OR Apache-2.0 |
 | foreign-types | 0.5.0 | MIT/Apache-2.0 |
 | foreign-types-macros | 0.2.4 | MIT/Apache-2.0 |
 | foreign-types-shared | 0.3.1 | MIT/Apache-2.0 |
@@ -77,17 +81,18 @@ they are never linked into a release binary.
 | futures-task | 0.3.33 | MIT OR Apache-2.0 |
 | futures-util | 0.3.33 | MIT OR Apache-2.0 |
 | gethostname | 1.1.0 | Apache-2.0 |
-| glifo | 0.1.1 | Apache-2.0 OR MIT |
+| glifo | 0.2.0 | Apache-2.0 OR MIT |
 | glow | 0.17.0 | MIT OR Apache-2.0 OR Zlib |
 | guillotiere | 0.7.0 | MIT/Apache-2.0 |
-| harfrust | 0.7.0 | MIT |
+| harfrust | 0.12.0 | MIT |
+| hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
 | hermit-abi | 0.5.2 | MIT OR Apache-2.0 |
 | hound | 3.5.1 | Apache-2.0 |
 | indexmap | 2.14.0 | Apache-2.0 OR MIT |
 | is-docker | 0.2.0 | MIT |
 | is-wsl | 0.4.0 | MIT |
-| itertools | 0.14.0 | MIT OR Apache-2.0 |
+| itertools | 0.15.0 | MIT OR Apache-2.0 |
 | itoa | 1.0.18 | MIT OR Apache-2.0 |
 | jni | 0.22.4 | MIT OR Apache-2.0 |
 | jni-macros | 0.22.4 | MIT OR Apache-2.0 |
@@ -107,7 +112,6 @@ they are never linked into a release binary.
 | log | 0.4.33 | MIT OR Apache-2.0 |
 | mach2 | 0.6.0 | BSD-2-Clause OR MIT OR Apache-2.0 |
 | memchr | 2.8.3 | Unlicense OR MIT |
-| memoffset | 0.9.1 | MIT |
 | ndk | 0.9.0 | MIT OR Apache-2.0 |
 | ndk-context | 0.1.1 | MIT OR Apache-2.0 |
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 |
@@ -163,7 +167,7 @@ they are never linked into a release binary.
 | profiling | 1.0.18 | MIT OR Apache-2.0 |
 | quote | 1.0.47 | MIT OR Apache-2.0 |
 | raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib |
-| read-fonts | 0.39.2 | MIT OR Apache-2.0 |
+| read-fonts | 0.41.0 | MIT OR Apache-2.0 |
 | realfft | 3.5.0 | MIT |
 | redox_syscall | 0.4.1 | MIT |
 | redox_syscall | 0.5.18 | MIT |
@@ -183,11 +187,12 @@ they are never linked into a release binary.
 | serde_json | 1.0.151 | MIT OR Apache-2.0 |
 | simd_cesu8 | 1.2.0 | Apache-2.0 OR MIT |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 |
-| skrifa | 0.42.1 | MIT OR Apache-2.0 |
+| skrifa | 0.44.0 | MIT OR Apache-2.0 |
 | slab | 0.4.12 | MIT |
 | slotmap | 1.1.1 | Zlib |
 | smallvec | 1.15.2 | MIT OR Apache-2.0 |
 | smol_str | 0.2.2 | MIT OR Apache-2.0 |
+| static_assertions | 1.1.0 | MIT OR Apache-2.0 |
 | strength_reduce | 0.2.4 | MIT OR Apache-2.0 |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.3 | MIT OR Apache-2.0 |
@@ -206,8 +211,8 @@ they are never linked into a release binary.
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | uuid | 1.24.0 | Apache-2.0 OR MIT |
-| vello_common | 0.0.9 | Apache-2.0 OR MIT |
-| vello_cpu | 0.0.9 | Apache-2.0 OR MIT |
+| vello_common | 0.1.0 | Apache-2.0 OR MIT |
+| vello_cpu | 0.1.0 | Apache-2.0 OR MIT |
 | wasm-bindgen | 0.2.126 | MIT OR Apache-2.0 |
 | wasm-bindgen-futures | 0.4.76 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro | 0.2.126 | MIT OR Apache-2.0 |
