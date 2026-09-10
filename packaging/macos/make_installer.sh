@@ -96,19 +96,19 @@ set -euo pipefail
 # `xtask/src/bundle.rs`'s BUNDLE_NAME, and `crates/namir-app/Cargo.toml`'s [[bin]] name capitalised.
 readonly PRODUCT_NAME="Namir"
 # `xtask/src/bundle.rs`'s BUNDLE_IDENTIFIER == `crates/namir-clap/src/lib.rs`'s PLUGIN_ID.
-readonly PLUGIN_BUNDLE_ID="org.legrand.namir"
+readonly PLUGIN_BUNDLE_ID="io.namir.clap"
 # The standalone's own bundle identifier. NOT the same string as PLUGIN_BUNDLE_ID: CFBundleIdentifier
 # must be unique per bundle, and this one is what TCC keys the microphone grant on. See
 # `xtask/src/bundle.rs`'s APP_BUNDLE_IDENTIFIER, which is where the decision now lives and is
 # argued -- this script had to answer it to function at all, and M13 moved the answer to the tool
 # that generates the plist rather than leaving it in a packaging script.
-readonly APP_BUNDLE_ID="org.legrand.namir.standalone"
+readonly APP_BUNDLE_ID="io.namir.standalone"
 
 # Component package identifiers. Distinct per component, or `installer` treats an upgrade of one as
 # a replacement of another. These are package ids, not bundle ids -- unrelated namespaces.
-readonly PKG_ID_PLUGIN="org.legrand.namir.clap.pkg"
-readonly PKG_ID_APP="org.legrand.namir.app.pkg"
-readonly PKG_ID_DOCS="org.legrand.namir.docs.pkg"
+readonly PKG_ID_PLUGIN="io.namir.clap.pkg"
+readonly PKG_ID_APP="io.namir.standalone.pkg"
+readonly PKG_ID_DOCS="io.namir.docs.pkg"
 
 # D-13.3's macOS row, system-wide cells. The per-user cells are NOT separate paths here: the
 # distribution's `<domains enable_currentUserHome="true">` makes `installer` re-root these under the
@@ -407,7 +407,7 @@ codesign_payloads() {
 #      relocate. Probing for that key therefore conflates "there is no bundle" with "there is a
 #      bundle which cannot relocate" -- two very different things, and the second is what a `.clap`
 #      is. The built `PackageInfo` settles it: `relocatable="false"`, an empty `<relocate/>`, and
-#      `<bundle id="org.legrand.namir" path="./Namir.clap"/>` present.
+#      `<bundle id="io.namir.clap" path="./Namir.clap"/>` present.
 #
 # So both roots are handled identically and neither is special-cased: count entries by a key every
 # entry has, then force `BundleIsRelocatable` false on each with `Add`-then-`Set`, since `Add` fails
