@@ -51,3 +51,29 @@ counter against itself.
 **Result: PARTIAL.** The counting mechanism is real, tested, and proven against a real (if
 synthetic, hardware-free) overload. A real-hardware xrun induction was not attempted this session;
 recorded as the honestly-unexecuted remainder rather than assumed to work by extension.
+
+## Note added 2026-09-11 (issue #189)
+
+Two things above are now out of date, recorded here rather than rewritten.
+
+1. **The test named twice above was renamed.** `stream::tests::an_output_pull_with_no_input_yet_counts_an_xrun`
+   is now `stream::tests::output_pads_during_the_activation_transient_are_not_counted`, because
+   what it asserts changed: output pads before this `open`'s pair has settled — the capture
+   side's first callback, plus a bounded window of pulls for the ring to fill — are the
+   activation transient and are **not** counted. `bridge.rs`'s own
+   `an_output_pull_with_no_input_yet_counts_an_xrun` is untouched — the ring still reports the
+   underrun; `stream.rs` decides whether it is a dropout.
+2. **A healthy session's baseline is 0, and step 3 now has a precondition.** Before this change
+   every session — and every buffer-size or device change, which re-enters `crate::stream::open`
+   — opened at `xrun count is now 2`: the output callback fired once, the device took ~524 ms to
+   start running, and the two blocks pulled across that gap padded. Add a step **0** to the script
+   above: *open a stream, play nothing, and confirm the count stays at 0*, and repeat it after a
+   buffer-size change in the settings panel. That is the floor step 3's "increases" reading needs
+   in order to mean anything. Step 0 was executed for this change: three idle 12–15 s sessions on
+   §2's machine (AudioBox 22VSL, 48 kHz, 256-frame block, WASAPI shared) printed no `xrun count`
+   line at all, where the same build before the change printed `2`. A buffer-size change was
+   *not* re-tested by hand; the suppression is per-open by construction, which is an argument
+   rather than an observation.
+
+Still **PARTIAL**, and for the same reason: no real-hardware xrun has been induced. This note
+changes the baseline, not the verdict.
