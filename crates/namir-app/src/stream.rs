@@ -528,6 +528,9 @@ pub(crate) struct FakeBackend {
     /// the observable that distinguishes "the session settled on exclusive" from "the session
     /// settled on exclusive and then opened shared anyway".
     asked_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
+    /// What this backend reports when asked for **exclusive** configs. `None` means "the same
+    /// ranges as shared", which is what a backend with no WASAPI endpoint behind it does.
+    exclusive_configs: Option<Vec<SupportedConfigRange>>,
     input_devices: Vec<DeviceInfo>,
     output_devices: Vec<DeviceInfo>,
 }
@@ -542,6 +545,7 @@ impl FakeBackend {
             input_error: std::sync::Mutex::new(None),
             output_error: std::sync::Mutex::new(None),
             input_stream: Arc::new(FakeStreamLog::default()),
+            exclusive_configs: None,
             output_stream: Arc::new(FakeStreamLog::default()),
             open_failures: Vec::new(),
             exclusive_devices: Vec::new(),
@@ -551,12 +555,23 @@ impl FakeBackend {
         }
     }
 
+    /// Makes the exclusive-mode config query answer with `configs` instead of the shared ranges —
+    /// the WASAPI shape, where the two modes describe different devices (issue #190).
+    pub(crate) fn reporting_exclusive_configs(
+        mut self,
+        configs: Vec<SupportedConfigRange>,
+    ) -> Self {
+        self.exclusive_configs = Some(configs);
+        self
+    }
+
     /// Makes `device_name` answer `Engaged` to `supports_exclusive`. Per device, not per backend,
     /// so a test can grant exclusive mode to one direction and refuse it on the other.
     pub(crate) fn granting_exclusive_to(mut self, device_name: &str) -> Self {
         self.exclusive_devices.push(device_name.to_string());
         self
     }
+
     /// Configures the input and output devices reported by this backend.
     pub(crate) fn with_devices(
         mut self,
@@ -691,7 +706,11 @@ impl AudioBackend for FakeBackend {
         &self,
         _h: &HostInfo,
         _d: &DeviceInfo,
+        share_mode: ShareMode,
     ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
+        if let (ShareMode::Exclusive, Some(configs)) = (share_mode, &self.exclusive_configs) {
+            return Ok(configs.clone());
+        }
         Ok(vec![SupportedConfigRange {
             channels: 1,
             min_sample_rate_hz: 48_000,
@@ -703,7 +722,11 @@ impl AudioBackend for FakeBackend {
         &self,
         _h: &HostInfo,
         _d: &DeviceInfo,
+        share_mode: ShareMode,
     ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
+        if let (ShareMode::Exclusive, Some(configs)) = (share_mode, &self.exclusive_configs) {
+            return Ok(configs.clone());
+        }
         Ok(vec![SupportedConfigRange {
             channels: 2,
             min_sample_rate_hz: 48_000,

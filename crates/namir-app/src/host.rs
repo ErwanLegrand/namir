@@ -45,7 +45,7 @@ use namir_ui::{
 use namir_worker::Target;
 use namir_worker::library::LibraryService;
 
-use crate::audio_io::{AudioBackend, HostInfo, ShareMode, StreamFailure, StreamParams};
+use crate::audio_io::{AudioBackend, HostInfo, StreamFailure, StreamParams};
 use crate::instance::SharedInstance;
 use crate::settings::AppSettings;
 use crate::stream::{Direction, RunningStreams, StreamSetup, ThreadPriorityReport};
@@ -544,25 +544,27 @@ impl AppHost {
         let input_devices = backend.input_devices(&host_info);
         let output_devices = backend.output_devices(&host_info);
 
-        let input = crate::app::setup_direction(
+        // Same enumerate-then-negotiate sequence as start-up, through the same function, so the
+        // reopen path cannot drift from it (issue #190) -- including re-enumerating in shared mode
+        // when an exclusive request is refused.
+        let negotiated = crate::app::negotiate_audio(
             backend.as_ref(),
             &host_info,
             input_devices,
-            self.current_input_device.as_deref(),
-            |h, d| backend.input_configs(h, d),
-        );
-        let output = crate::app::setup_direction(
-            backend.as_ref(),
-            &host_info,
             output_devices,
-            self.current_output_device.as_deref(),
-            |h, d| backend.output_configs(h, d),
+            &crate::app::AudioPreferences {
+                input_device: self.current_input_device.as_deref(),
+                output_device: self.current_output_device.as_deref(),
+                sample_rate_hz: self.settings.sample_rate_hz,
+                buffer_size_frames: self.settings.buffer_size_frames,
+                exclusive_mode: self.settings.exclusive_mode,
+            },
         );
 
         // Early return before replacing `pending_reopen` or dropping `streams` keeps the
         // previous pending rebuild or running stream intact, so audio continues running while
         // posting a notice for the failed configuration attempt.
-        let (Some(input), Some(output)) = (input, output) else {
+        let Some(negotiated) = negotiated else {
             self.audio_mode = None;
             self.push_notice(
                 crate::error_codes::NO_AUDIO_DEVICE,
@@ -570,48 +572,28 @@ impl AppHost {
             );
             return;
         };
-
-        let sample_rate_hz = crate::device_state::negotiate_shared_sample_rate(
-            &input.configs,
-            &output.configs,
-            self.settings.sample_rate_hz,
-        )
-        .unwrap_or(48_000);
-        let buffer_frames = crate::device_state::negotiate_shared_buffer_size(
-            &input.configs,
-            &output.configs,
+        let crate::app::AudioNegotiation {
+            input,
+            output,
             sample_rate_hz,
-            self.settings.buffer_size_frames,
-        );
-        let input_channels =
-            crate::device_state::negotiate_channels(&input.configs, sample_rate_hz, 1).unwrap_or(1);
-        let output_channels =
-            crate::device_state::negotiate_channels(&output.configs, sample_rate_hz, 2)
-                .unwrap_or(1);
+            buffer_frames,
+            input_channels,
+            output_channels,
+            share_mode,
+        } = negotiated;
 
-        let mut input_params = StreamParams {
+        let input_params = StreamParams {
             sample_rate_hz,
             buffer_frames,
             channels: input_channels,
-            share_mode: ShareMode::Shared,
+            share_mode: share_mode.mode,
         };
         let mut output_params = StreamParams {
             sample_rate_hz,
             buffer_frames,
             channels: output_channels,
-            share_mode: ShareMode::Shared,
+            share_mode: share_mode.mode,
         };
-        let share_mode = crate::app::negotiate_share_mode(
-            backend.as_ref(),
-            &host_info,
-            &input.device,
-            input_params,
-            &output.device,
-            output_params,
-            self.settings.exclusive_mode,
-        );
-        input_params.share_mode = share_mode.mode;
-        output_params.share_mode = share_mode.mode;
         // Issue #166: the output stream asks the device for its own buffer in shared mode, so the
         // render path keeps a reserve instead of being drained every callback. The engine's block
         // size still comes from `buffer_frames` below -- see `audio_io::output_buffer_request`.

@@ -573,19 +573,29 @@ pub trait AudioBackend: Send + Sync {
     fn input_devices(&self, host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError>;
     /// Every output-capable device under `host`.
     fn output_devices(&self, host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError>;
-    /// `device`'s supported input configurations, restricted to the formats a **shared-mode**
-    /// stream can be opened in — 32-bit float and nothing else (see [`SupportedConfigRange`]).
+    /// `device`'s supported input configurations **in `share_mode`**, restricted to the formats a
+    /// stream in that mode can be opened in (see [`SupportedConfigRange`], [`acceptable_formats`]).
+    ///
+    /// # Why the share mode is a parameter (issue #190)
+    ///
+    /// The two modes describe different devices. WASAPI shared reports the *mixer* format — one
+    /// buffer size (the engine period), F32 whatever the hardware does, and, on a render endpoint,
+    /// every sample rate the engine will resample to. Exclusive reports the hardware: the real
+    /// formats, the real rates, and a buffer range from the minimum period up. Enumerating in one
+    /// mode and opening in the other is how FR-IO-040's buffer list came to offer a single size
+    /// the user never chose.
     fn input_configs(
         &self,
         host: &HostInfo,
         device: &DeviceInfo,
+        share_mode: ShareMode,
     ) -> Result<Vec<SupportedConfigRange>, AudioIoError>;
-    /// `device`'s supported output configurations, shared-mode formats only — as
-    /// [`Self::input_configs`].
+    /// `device`'s supported output configurations in `share_mode` — as [`Self::input_configs`].
     fn output_configs(
         &self,
         host: &HostInfo,
         device: &DeviceInfo,
+        share_mode: ShareMode,
     ) -> Result<Vec<SupportedConfigRange>, AudioIoError>;
 
     /// FR-IO-020: would `device` open in [`ShareMode::Exclusive`] at `params`? Answered **before**
@@ -940,6 +950,30 @@ mod cpal_impl {
         Some(configs.map_err(|e| AudioIoError::ExclusiveModeUnavailable(e.to_string())))
     }
 
+    /// [`exclusive_configs`]'s answer when `share_mode` is exclusive and the device gave a usable
+    /// one; `None` means "enumerate shared instead", which is both the shared-mode path and the
+    /// fallback for a device that cannot answer the exclusive query.
+    ///
+    /// Falling back rather than failing is deliberate. An exclusive request this device cannot
+    /// honour is settled a few lines later by [`crate::app::negotiate_share_mode`], which degrades
+    /// the session to shared; returning an error here would abort a startup that is about to
+    /// succeed in shared mode. An **empty** answer is treated the same way: a device reporting no
+    /// exclusive configuration at all cannot be opened exclusive either.
+    fn exclusive_configs_when_asked(
+        cpal_host: &cpal::Host,
+        name: &str,
+        direction: Direction,
+        share_mode: ShareMode,
+    ) -> Option<Vec<SupportedConfigRange>> {
+        if share_mode != ShareMode::Exclusive {
+            return None;
+        }
+        match exclusive_configs(cpal_host, name, direction) {
+            Some(Ok(configs)) if !configs.is_empty() => Some(configs),
+            _ => None,
+        }
+    }
+
     /// The sample format `direction`'s stream on `device` should be opened in for `params`.
     ///
     /// Shared mode answers `F32` immediately, **without asking the device anything**: the Windows
@@ -1072,8 +1106,14 @@ mod cpal_impl {
             &self,
             host: &HostInfo,
             device: &DeviceInfo,
+            share_mode: ShareMode,
         ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
             let cpal_host = resolve_host(host)?;
+            if let Some(configs) =
+                exclusive_configs_when_asked(&cpal_host, &device.name, Direction::Input, share_mode)
+            {
+                return Ok(configs);
+            }
             let devices = cpal_host
                 .input_devices()
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
@@ -1088,8 +1128,17 @@ mod cpal_impl {
             &self,
             host: &HostInfo,
             device: &DeviceInfo,
+            share_mode: ShareMode,
         ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
             let cpal_host = resolve_host(host)?;
+            if let Some(configs) = exclusive_configs_when_asked(
+                &cpal_host,
+                &device.name,
+                Direction::Output,
+                share_mode,
+            ) {
+                return Ok(configs);
+            }
             let devices = cpal_host
                 .output_devices()
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
