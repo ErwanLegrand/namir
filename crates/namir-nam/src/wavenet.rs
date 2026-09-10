@@ -1185,19 +1185,18 @@ fn reject_unsupported_layer_features(
 /// exactly that (a 23-entry `["none", ...]` array per layer array), which is why this mattered.
 ///
 /// Two accepted shapes, matching what the reference parser reads: the scalar `"none"`, and an
-/// array whose every entry is `"none"`. One deliberate divergence: the reference's fast-path
-/// detector also requires the array's length to equal the layer count (`a2_fast.cpp`'s
-/// `all_none_strings(*gm_it) || gm_it->size() != kNumLayers`), and this does not. A wrong-length
-/// all-`"none"` array is accepted here and would be refused there. That is a *malformed*-file
-/// question rather than an unsupported-feature one — it belongs with the weight-count and
-/// dimension checks under `INCONSISTENT_CONFIGURATION`, not in this function — and no observed
-/// export writes one, so it is left unenforced rather than half-answered here. The same applies
-/// to [`named_secondary_activation`] below. Anything else — a different mode, a non-string entry, a
-/// value that is neither string nor array — is reported, and reported *by value* so the message
-/// names what was actually found. Note the deliberate asymmetry with the sibling checks: this and
-/// [`named_secondary_activation`] are the only places a JSON value is inspected rather than a typed
-/// field, because both fields are held as opaque [`serde_json::Value`]s precisely so that nothing
-/// beyond "is it inert" is ever read from them.
+/// array whose every entry is `"none"`. This function reads inertness only, never length: the
+/// reference's detector also requires the array's length to equal the layer count
+/// (`a2_fast.cpp`'s `all_none_strings(*gm_it) || gm_it->size() != kNumLayers`), and that check
+/// lives in [`resolve_layer_array`] under `INCONSISTENT_CONFIGURATION`, because a wrong-length
+/// per-layer array is a config disagreeing with its own dimensions rather than an unsupported
+/// feature (issue #171; it was unenforced until then, and the reasoning for the split is at the
+/// check itself). The same applies to [`named_secondary_activation`] below. Anything else here —
+/// a different mode, a non-string entry, a value that is neither string nor array — is reported,
+/// and reported *by value* so the message names what was actually found. Note the deliberate
+/// asymmetry with the sibling checks: this and [`named_secondary_activation`] are the only places
+/// a JSON value is inspected rather than a typed field, because both fields are held as opaque
+/// [`serde_json::Value`]s precisely so that nothing beyond "is it inert" is ever read from them.
 fn active_gating_mode(mode: &serde_json::Value) -> Option<String> {
     const INERT: &str = "none";
     match mode {
@@ -1245,10 +1244,10 @@ fn named_secondary_activation(secondary: &serde_json::Value) -> Option<String> {
 /// and resolves its `Option`/alternative-shaped A1-or-A2 fields to the concrete, per-layer values
 /// `PreparedWaveNet::from_file`'s weight walk needs. Both-or-neither-present and
 /// length-disagreement cases (`kernel_size`/`kernel_sizes`, `head_size`+`head_bias`/`head`, a
-/// per-layer `kernel_sizes`/`activation` array whose length disagrees with `dilations`) are
-/// self-contradictory files — well-formed JSON, every feature it names supported, but internally
-/// inconsistent about which shape it is — hence `INCONSISTENT_CONFIGURATION` rather than
-/// `UNSUPPORTED_CONFIGURATION`.
+/// per-layer `kernel_sizes`/`activation`/`gating_mode`/`secondary_activation` array whose length
+/// disagrees with `dilations`) are self-contradictory files — well-formed JSON, every feature it
+/// names supported, but internally inconsistent about which shape it is — hence
+/// `INCONSISTENT_CONFIGURATION` rather than `UNSUPPORTED_CONFIGURATION`.
 fn resolve_layer_array(
     cfg: &LayerArrayConfig,
     index: usize,
@@ -1260,6 +1259,29 @@ fn resolve_layer_array(
             code: error_codes::INCONSISTENT_CONFIGURATION,
             detail: format!("layer array {index}: {detail}"),
         }
+    }
+
+    /// One per-layer array's length against the layer count, for a field held as raw JSON.
+    /// A no-op unless the field is present *and* an array — the scalar and absent spellings are
+    /// length-less; see the issue #171 block below for why each caller checks what it does.
+    fn check_layer_array_len(
+        key: &str,
+        value: &Option<serde_json::Value>,
+        num_layers: usize,
+        index: usize,
+    ) -> Result<(), NamLoadError> {
+        if let Some(serde_json::Value::Array(entries)) = value
+            && entries.len() != num_layers
+        {
+            return Err(inconsistent(
+                index,
+                format!(
+                    "{key}.len() ({}) does not match dilations.len() ({num_layers})",
+                    entries.len()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     // NFR-SEC-020 ordering, checked here rather than only in `validate_layer_array_dims`: this
@@ -1373,6 +1395,68 @@ fn resolve_layer_array(
                 .collect::<Result<Vec<_>, _>>()?
         }
     };
+
+    // Issue #171: `gating_mode` and `secondary_activation` are per-layer arrays, and the
+    // reference requires each one's length to equal the layer count it is declared against.
+    // Both halves are checked by the *general loader*, not only by the strict shape detector:
+    // `model.cpp:1043-1048` for `gating_mode` and `:1049-1062` for `secondary_activation`,
+    // both inside the `gating_mode.is_array()` branch and *outside* the gating-active guard, so
+    // each length is checked even when every entry is inert. The detector refuses the same two
+    // shapes one step earlier (`a2_fast.cpp:837-843` and `:853-859`). Nothing here read the
+    // length at all before this, so a `["none"]` against 23 layers loaded and was refused there.
+    //
+    // Why this lives here and not in `reject_unsupported_layer_features`, where the inertness
+    // checks are: a wrong-length per-layer array names no unsupported *feature*. It is a config
+    // whose own dimensions disagree — the same fault as the `kernel_sizes` and `activation`
+    // length checks above, and reported with the same code and the same phrasing. Reporting it
+    // as `UNSUPPORTED_CONFIGURATION` would attach a false statement ("this build does not
+    // implement that") to a file that is simply self-contradictory, and the distinct code is
+    // FR-NAM-140's own requirement text rather than a nicety. Feature checks still run first
+    // (this function calls them at the top), so an *active* wrong-length array is reported as
+    // gating, which is the more actionable message.
+    //
+    // Why it runs *after* the `kernel_sizes`/`head`/`activation` resolutions rather than before
+    // them: the gating fields are inert here — nothing below reads them — while those three are
+    // what the weight walk depends on, so a file that is also missing `kernel_size` should be
+    // told about `kernel_size`. This check allocates nothing, so the NFR-SEC-020 ordering
+    // argument that pins the two `check_max` calls above ahead of their allocations does not
+    // pin this one anywhere.
+    //
+    // Array form only. The scalar spellings are length-less and legitimate: `gating_mode: "none"`
+    // reaches the reference's own scalar path (`model.cpp:1068-1082`), and a bare `null`
+    // `secondary_activation` never gets here (`serde` turns it into `None`). Both stay accepted.
+    //
+    // The empty array is a wrong-length array, not an absent field, and that is a deliberate
+    // reversal: `[]` used to load here (asserted, until this change, by
+    // `an_inert_gating_mode_is_accepted_however_it_is_spelled`). The reference compares
+    // `size() != num_layers` with no empty-array exemption, and a file that writes the key with
+    // no entries has described the gating of none of its layers — treating that as "the field is
+    // absent" is an inference this crate has no basis for. `[]` escapes this check only for a
+    // zero-layer array, which `validate_layer_array_dims` refuses by its own lower bound
+    // immediately afterwards.
+    //
+    // `num_layers` is *this* layer array's own layer count, which is the reference's denominator
+    // too (`model.cpp:920` derives it from that array's `dilations`). Every A2 export observed
+    // carries a single layer array of 23 dilations (63 files, 126 submodels — see
+    // `docs/manual-tests/fr-nam-030-real-a2-models.md`) with 23-entry gating arrays (issue
+    // #171's own survey), so per-array and model-total coincide there and a multi-layer-array
+    // file is judged the same way on both sides.
+    check_layer_array_len("gating_mode", &cfg.gating_mode, num_layers, index)?;
+    // **`secondary_activation`'s length is checked only when `gating_mode` is an array**, which
+    // is the reference's own condition (the guard sits inside that branch, `model.cpp:1049-1062`)
+    // and not a simplification of it: a file carrying a short `secondary_activation` and no
+    // `gating_mode` loads there — the strict detector declines it (`a2_fast.cpp:853-859`) and the
+    // general loader, which never reaches that `if`, accepts it. Checking it unconditionally
+    // would refuse a file the reference loads and this crate loaded before, which is the same
+    // divergence this issue exists to close, pointing the other way.
+    if matches!(&cfg.gating_mode, Some(serde_json::Value::Array(_))) {
+        check_layer_array_len(
+            "secondary_activation",
+            &cfg.secondary_activation,
+            num_layers,
+            index,
+        )?;
+    }
 
     Ok(ResolvedLayerArrayShape {
         kernel_sizes,
@@ -2956,24 +3040,48 @@ mod tests {
         }
     }
 
+    /// `a2_minimal_layer_array` widened to `num_layers` layers, so a test can present the
+    /// per-layer arrays at the length a real export writes them (issue #171's length check reads
+    /// `dilations.len()`, and the minimal array has two).
+    fn a2_layer_array_with_layers(num_layers: usize) -> LayerArrayConfig {
+        let mut cfg = a2_minimal_layer_array();
+        cfg.dilations = (0..num_layers).map(|i| 1 << (i % 10)).collect();
+        cfg.kernel_sizes = Some(vec![3; num_layers]);
+        cfg.activation = file::ActivationSpec::One(file::ActivationEntry::Name("Tanh".to_string()));
+        cfg
+    }
+
     /// The two inert spellings a real export actually writes. Before this, the check fired on the
     /// key's presence, so a 23-entry `["none", ...]` array — what every A2 export from the current
     /// trainer carries — was refused with "gating_mode is not supported" despite enabling no
     /// gating at all. The scalar form is here too because `error_codes.rs`'s catalogue entry
     /// phrases the rule as `gating_mode` "other than `"none"`", singular, and both spellings reach
     /// the same conclusion.
+    ///
+    /// Asserted through `resolve_layer_array` rather than `reject_unsupported_layer_features`
+    /// alone since issue #171: the array form now has to satisfy a length check too, and a test
+    /// that only exercised the feature check would keep passing for an array length the loader
+    /// refuses. The empty array used to be a third accepted case here and is now refused — see
+    /// `a_wrong_length_gating_array_is_inconsistent_not_unsupported` for it and why.
     #[test]
     fn an_inert_gating_mode_is_accepted_however_it_is_spelled() {
-        for value in [
-            serde_json::json!("none"),
-            serde_json::Value::Array(vec![serde_json::json!("none"); 23]),
-            serde_json::json!([]),
+        for (num_layers, value) in [
+            (2, serde_json::json!("none")),
+            (
+                2,
+                serde_json::Value::Array(vec![serde_json::json!("none"); 2]),
+            ),
+            // The real-export shape: one entry per layer, 23 of them.
+            (
+                23,
+                serde_json::Value::Array(vec![serde_json::json!("none"); 23]),
+            ),
         ] {
-            let mut cfg = a2_minimal_layer_array();
+            let mut cfg = a2_layer_array_with_layers(num_layers);
             cfg.gating_mode = Some(value.clone());
             assert!(
-                reject_unsupported_layer_features(&cfg, 0).is_ok(),
-                "inert gating_mode {value} should load"
+                resolve_layer_array(&cfg, 0).is_ok(),
+                "inert gating_mode {value} over {num_layers} layers should load"
             );
         }
     }
@@ -3006,21 +3114,151 @@ mod tests {
 
     /// The inert spellings a real export writes: a per-layer array of JSON `null`, one per layer,
     /// meaning "no secondary activation here". Rejected on the key's presence before this, which
-    /// refused every current A2 export for a field that names nothing.
+    /// refused every current A2 export for a field that names nothing. Through
+    /// `resolve_layer_array`, and without the empty array, for the reasons given on
+    /// `an_inert_gating_mode_is_accepted_however_it_is_spelled`.
     #[test]
     fn an_empty_secondary_activation_is_accepted_however_it_is_spelled() {
-        for value in [
-            serde_json::Value::Null,
-            serde_json::Value::Array(vec![serde_json::Value::Null; 23]),
-            serde_json::json!([]),
+        for (num_layers, value) in [
+            (2, serde_json::Value::Null),
+            (
+                2,
+                serde_json::Value::Array(vec![serde_json::Value::Null; 2]),
+            ),
+            (
+                23,
+                serde_json::Value::Array(vec![serde_json::Value::Null; 23]),
+            ),
         ] {
-            let mut cfg = a2_minimal_layer_array();
+            let mut cfg = a2_layer_array_with_layers(num_layers);
             cfg.secondary_activation = Some(value.clone());
             assert!(
-                reject_unsupported_layer_features(&cfg, 0).is_ok(),
-                "empty secondary_activation {value} should load"
+                resolve_layer_array(&cfg, 0).is_ok(),
+                "empty secondary_activation {value} over {num_layers} layers should load"
             );
         }
+    }
+
+    /// Issue #171. Both gating fields are per-layer arrays and the reference requires one entry
+    /// per layer; a file that writes a different number of entries disagrees with its own
+    /// `dilations`, so it is `INCONSISTENT_CONFIGURATION` — the code for a self-contradictory
+    /// file — and not `UNSUPPORTED_CONFIGURATION`, which would claim this build declines a
+    /// feature the file does not actually ask for. The detail carries both lengths because
+    /// "wrong length" is not actionable without them.
+    ///
+    /// The empty array is in here deliberately, and it is a reversal: it loaded before this
+    /// change. `[]` is not an absent field, and the reference's `size() != kNumLayers` has no
+    /// empty-array exemption either.
+    ///
+    /// Each `secondary_activation` case carries a correct-length `gating_mode` array, because
+    /// that is the reference's condition for reading its length at all — see
+    /// `a_wrong_length_secondary_activation_alone_is_accepted_as_the_reference_accepts_it`.
+    #[test]
+    fn a_wrong_length_gating_array_is_inconsistent_not_unsupported() {
+        let short = serde_json::json!(["none"]);
+        let long = serde_json::Value::Array(vec![serde_json::json!("none"); 23]);
+        let empty = serde_json::json!([]);
+        let short_secondary = serde_json::json!([null]);
+        let long_secondary = serde_json::Value::Array(vec![serde_json::Value::Null; 23]);
+
+        // The field under test is the `bool`, and the name is derived from it — a table keyed by
+        // the *string* would silently take the `secondary_activation` branch on a typo, and pass.
+        for (secondary, value, actual) in [
+            (false, &short, 1),
+            (false, &long, 23),
+            (false, &empty, 0),
+            (true, &short_secondary, 1),
+            (true, &long_secondary, 23),
+            (true, &empty, 0),
+        ] {
+            let key = if secondary {
+                "secondary_activation"
+            } else {
+                "gating_mode"
+            };
+            // Two layers, so every length above is wrong.
+            let mut cfg = a2_layer_array_with_layers(2);
+            if secondary {
+                cfg.gating_mode =
+                    Some(serde_json::Value::Array(vec![serde_json::json!("none"); 2]));
+                cfg.secondary_activation = Some(value.clone());
+            } else {
+                cfg.gating_mode = Some(value.clone());
+            }
+            // `.err()` rather than `expect_err`: the `Ok` type is an internal shape struct with
+            // no `Debug`, and this assertion does not need one.
+            let Some(err) = resolve_layer_array(&cfg, 0).err() else {
+                panic!("{key} {value} over 2 layers should be refused")
+            };
+            assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+            // The whole message, not its pieces: a detail that named the two lengths the wrong
+            // way round would pass a `contains`-per-number assertion and tell a user the
+            // opposite of what is wrong with their file.
+            assert_eq!(
+                err.detail,
+                format!("layer array 0: {key}.len() ({actual}) does not match dilations.len() (2)")
+            );
+        }
+    }
+
+    /// The gating length check runs *after* the shape resolutions, so a file that contradicts
+    /// itself about both is told about the field the weight walk actually needs. `gating_mode` is
+    /// inert and read by nothing below; `kernel_size` decides how the weights are walked, so
+    /// naming the gating array first would bury the fault the user has to fix. Pins the ordering,
+    /// which is otherwise invisible: both details are `INCONSISTENT_CONFIGURATION`.
+    #[test]
+    fn a_missing_kernel_size_is_reported_ahead_of_a_wrong_length_gating_array() {
+        let mut cfg = a2_layer_array_with_layers(2);
+        cfg.kernel_sizes = None;
+        cfg.kernel_size = None;
+        cfg.gating_mode = Some(serde_json::json!(["none"]));
+
+        let Some(err) = resolve_layer_array(&cfg, 0).err() else {
+            panic!("a layer array with neither kernel_size nor kernel_sizes should be refused")
+        };
+        assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+        assert_eq!(
+            err.detail,
+            "layer array 0: neither kernel_size nor kernel_sizes is present"
+        );
+    }
+
+    /// The reference reads `secondary_activation`'s length only when `gating_mode` is an array
+    /// (`model.cpp:1049-1062`), so a file with a short `secondary_activation` and no
+    /// `gating_mode` loads there — the strict A2 detector declines it and the general loader,
+    /// which never reaches that guard, accepts it. This crate accepted it before issue #171 too,
+    /// so checking it unconditionally would have refused a file the reference loads: the same
+    /// divergence #171 exists to close, pointing the other way.
+    #[test]
+    fn a_wrong_length_secondary_activation_alone_is_accepted_as_the_reference_accepts_it() {
+        for gating_mode in [None, Some(serde_json::json!("none"))] {
+            let mut cfg = a2_layer_array_with_layers(2);
+            cfg.gating_mode = gating_mode.clone();
+            cfg.secondary_activation = Some(serde_json::json!([null]));
+            assert!(
+                resolve_layer_array(&cfg, 0).is_ok(),
+                "a short secondary_activation with gating_mode {gating_mode:?} should load"
+            );
+        }
+    }
+
+    /// Precedence, which is the whole reason the length check sits in `resolve_layer_array` and
+    /// the feature check runs first: a wrong-length array that *also* enables gating is reported
+    /// as the unsupported feature, since naming the feature is the actionable message and "your
+    /// array is the wrong length" would bury it.
+    #[test]
+    fn an_active_gating_mode_of_the_wrong_length_still_reports_the_feature() {
+        let mut cfg = a2_layer_array_with_layers(2);
+        cfg.gating_mode = Some(serde_json::json!(["gated"]));
+        let err = resolve_layer_array(&cfg, 0)
+            .err()
+            .expect("active gating should be refused");
+        assert_eq!(err.code.id, error_codes::UNSUPPORTED_CONFIGURATION.id);
+        assert!(
+            err.detail.contains("gated"),
+            "detail should name the gating mode, got {:?}",
+            err.detail
+        );
     }
 
     /// A named gate activation is still refused, and refused by name. Note the third case: one
