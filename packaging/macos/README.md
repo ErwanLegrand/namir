@@ -158,23 +158,91 @@ xcrun stapler validate Namir-<version>.pkg
 pkgutil --check-signature Namir-<version>.pkg
 ```
 
-### Exporting the `.p12` from Keychain Access
+### Obtaining the `.p12` — use **one** CSR for **both** certificates
 
-The two certificates live in **Keychain Access → My Certificates** after you approve the Developer
-ID certificate downloads (certificates are shared on the keychain: exporting one `.p12` covers both
-identities, application *and* installer).
+Apple issues Developer ID Application and Developer ID Installer as two separate requests, so the
+obvious move is a certificate signing request for each. Don't: two CSRs mean two private keys, and
+`NAMIR_APPLE_CERTIFICATE_P12_BASE64` is one file that has to carry *both* identities. Submitting
+the **same** CSR to both requests yields two certificates over one keypair, which a single `.p12`
+holds without trouble.
 
-1. Right-click the certificate, choose **Export "…"…**, pick a password (`NAMIR_APPLE_CERTIFICATE_PASSWORD`)
-   and save as `Certificates.p12`.
-2. Encode it for the secret, one line:
+The failure this avoids is quiet rather than loud, which is why it earns a rule. A `.p12` missing
+the installer's key imports with no complaint; `codesign_payloads` signs the `.clap` and the
+`.app`, `build_product_pkg` logs "the `.pkg` will be unsigned", the macOS job reports
+`signed=false`, and the release notes truthfully say the artifacts are unsigned. Nothing errors
+anywhere. You find out at a tagged release.
+
+#### On a Mac (Keychain Access)
+
+**Certificate Assistant → Request a Certificate From a Certificate Authority…**, *Saved to disk*,
+2048-bit RSA. Upload that one `.certSigningRequest` to both certificate requests, then download
+and double-click both `.cer` files to install them.
+
+Both certificates then sit under **My Certificates** sharing one key, so right-clicking either and
+choosing **Export "…"** produces a `.p12` covering both identities. Pick a password
+(`NAMIR_APPLE_CERTIFICATE_PASSWORD`) and save as `Certificates.p12`.
+
+#### Without a Mac (openssl)
+
+No macOS is needed to *obtain* the credentials: Developer ID certificates are ordinary X.509 and
+the runner does the signing. What a Mac is still needed for is the verification after a signed run
+— `spctl --assess`, `xcrun stapler validate`, and loading the plugin in a real DAW, which is the
+check R-11 actually turns on.
+
+```bash
+# 1. One key, one CSR. Submit this same file to BOTH certificate requests.
+#    The CN here only labels your key: Apple sets the issued certificate's own subject.
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout devid.key -out devid.csr \
+  -subj "/emailAddress=you@example.com/CN=Namir Developer ID"
+
+# 2. Apple returns DER `.cer` files. Convert both to PEM.
+openssl x509 -inform DER -in developerID_application.cer -out devid_application.pem
+openssl x509 -inform DER -in developerID_installer.cer   -out devid_installer.pem
+
+# 3. The two identity secrets are the certificates' own common names -- no Mac required to read
+#    them, and no guessing at the "Name (TEAMID)" spelling.
+openssl x509 -in devid_application.pem -noout -subject   # -> NAMIR_CODESIGN_IDENTITY
+openssl x509 -in devid_installer.pem   -noout -subject   # -> NAMIR_INSTALLER_IDENTITY
+
+# 4. One key, both certificates, one file.
+openssl pkcs12 -export -inkey devid.key \
+  -in devid_application.pem -certfile devid_installer.pem \
+  -name "Developer ID" -out Certificates.p12
+```
+
+**`openssl pkcs12 -export` carries exactly one private key and discards any others in silence.**
+Checked 2026-09-10 rather than assumed: handed a PEM holding two keypairs and two certificates, it
+writes a `.p12` containing two certificates and **one** key, with no warning and exit status 0.
+That is the mechanical reason the one-CSR rule above is a rule — with two keypairs there is no
+single-file `.p12` for this pipeline to consume, and the tool that builds it will not say so.
+
+If a signing run ever reports an untrusted chain, append Apple's **Developer ID Certification
+Authority** intermediate to the `-certfile` argument (`cat devid_installer.pem DeveloperIDCA.pem >
+extra.pem`). Recent macOS and GitHub's runners already carry it, so this is a fallback, not a step.
+
+#### Then, either way
+
+1. Encode it for the secret, as **one line**:
 
    ```bash
-   base64 -i Certificates.p12 | tr -d '\n'
+   openssl base64 -A -in Certificates.p12
    ```
 
-   Paste the whole single line into the `NAMIR_APPLE_CERTIFICATE_P12_BASE64` secret. GitHub's paste
-   box preserves newlines from multi-line output, which would corrupt the base64 — `tr -d '\n'`
-   exists for that reason.
+   `-A` is the whole point of that command: without it `openssl base64` wraps at 64 columns, and a
+   2 KB `.p12` comes out as 74 lines. GitHub's secret box preserves pasted newlines, and a
+   multi-line value corrupts the base64 — `import_cert`'s `base64 --decode` then fails, or worse
+   succeeds into a truncated file that `security import` rejects with an unhelpful error. Checked
+   2026-09-10: with `-A` the output is a single line and byte-identical to the coreutils form
+   below, and round-trips back to the original `.p12`.
+
+   `openssl` is the portable choice — it is already in hand on the no-Mac route, and behaves the
+   same on macOS, Linux and Windows. The coreutils equivalent, if you prefer it, is
+   `base64 Certificates.p12 | tr -d '\n'` (GNU accepts `base64 -i FILE` too, where `-i` is inert
+   during encoding rather than meaning "input file" as it does on macOS — a difference worth not
+   relying on).
+
+   Paste the whole single line into the `NAMIR_APPLE_CERTIFICATE_P12_BASE64` secret.
 
 ## The honest caveat — macOS is developer-only until signing is real
 
