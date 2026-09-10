@@ -76,7 +76,7 @@
 ; Permanent identity of this product on Windows, and the registry key its uninstall entry lives
 ; under. It must never change: changing it makes an upgrade install a second copy alongside the
 ; first instead of replacing it. This is the Windows counterpart of the macOS bundle's
-; CFBundleIdentifier (`org.legrand.namir`, xtask/src/bundle.rs's BUNDLE_IDENTIFIER); Inno's own
+; CFBundleIdentifier (`io.namir.clap`, xtask/src/bundle.rs's BUNDLE_IDENTIFIER); Inno's own
 ; convention is a GUID rather than a reverse-DNS string, so the two spellings differ by platform
 ; convention while naming the same product.
 AppId={{AFF2C7FF-3B97-4551-8F4F-617B73E9D436}
