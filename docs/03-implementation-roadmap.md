@@ -5484,8 +5484,8 @@ arm, and its own stopgap wrapper (the one payload `bundle --check` never asserte
 code that lane can delete.
 
 Two decisions, both recorded at the constant in `xtask/src/bundle.rs` rather than only here.
-**`APP_BUNDLE_IDENTIFIER` is `org.legrand.namir.standalone`**, deliberately not the plugin's
-`org.legrand.namir`: identifiers must be unique per bundle, and macOS TCC keys the microphone
+**`APP_BUNDLE_IDENTIFIER` is `io.namir.standalone`**, deliberately not the plugin's
+`io.namir.clap`: identifiers must be unique per bundle, and macOS TCC keys the microphone
 grant on this one, so sharing it would put the standalone's permission and the plugin's under one
 subject. **`LSMinimumSystemVersion` is `11.0`**, and it is derived rather than guessed — nothing in
 this repository states a macOS floor and neither `baseview` 0.2.2, `egui-baseview` 0.6.0 nor the
@@ -5791,7 +5791,7 @@ is the useful part.**
   `RootRelativeBundlePath = Namir.clap`. What it omits is `BundleIsRelocatable`, which it writes
   only for bundle types that *can* relocate — and the loop probed for that key, so it read "a bundle
   that cannot relocate" as "no bundle". The built `PackageInfo` settles it:
-  `<bundle id="org.legrand.namir" path="./Namir.clap"/>` present, `relocatable="false"`, empty
+  `<bundle id="io.namir.clap" path="./Namir.clap"/>` present, `relocatable="false"`, empty
   `<relocate/>`. Detection is now by `RootRelativeBundlePath`, both roots are handled identically,
   and the special case is gone. **The artifact never changed** — `pkgbuild` defaults a `.clap` to
   non-relocatable on its own — so what the fix bought is that the script *asserts* the property

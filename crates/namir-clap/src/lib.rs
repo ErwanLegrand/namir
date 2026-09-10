@@ -192,7 +192,7 @@ pub mod __test_support {
 /// The reverse-DNS plugin identifier FR-CLAP-010 requires — distinct from
 /// `spikes/s4-clack-clap`'s own `org.legrand.namir.spike.s4`, which is a throwaway spike id
 /// (§19: spikes are "not carried forward").
-const PLUGIN_ID: &str = "org.legrand.namir";
+const PLUGIN_ID: &str = "io.namir.clap";
 
 /// The marker type tying [`audio::NamirAudioProcessor`], [`shared::NamirShared`] and
 /// [`main_thread::NamirMainThread`] together into one CLAP plugin (`clack_plugin::plugin::
