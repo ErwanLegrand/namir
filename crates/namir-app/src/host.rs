@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use namir_core::{ChannelConfig, ErrorCode, SampleRate};
+use namir_core::ErrorCode;
 use namir_engine::{
     AudioEngine, ParamChange, ParamId as EngineParamId, TelemetryEntry, TelemetryReader,
 };
@@ -45,7 +45,7 @@ use namir_ui::{
 use namir_worker::Target;
 use namir_worker::library::LibraryService;
 
-use crate::audio_io::{AudioBackend, HostInfo, StreamFailure, StreamParams};
+use crate::audio_io::{AudioBackend, HostInfo, StreamFailure};
 use crate::instance::SharedInstance;
 use crate::settings::AppSettings;
 use crate::stream::{Direction, RunningStreams, StreamSetup, ThreadPriorityReport};
@@ -579,49 +579,35 @@ impl AppHost {
             );
             return;
         };
+        // Assembled by `crate::app::assemble_stream_config`, the same function start-up uses, so
+        // the two paths cannot drift (issue #192). Only the failure handling below is this call
+        // site's own: the running stream stays up and a notice is posted.
+        let crate::app::AssembledAudioConfig {
+            input_params,
+            output_params,
+            max_block_size,
+            channel_config,
+            sample_rate,
+            supported_sample_rates,
+            supported_buffer_sizes,
+        } = crate::app::assemble_stream_config(&negotiated);
         let crate::app::AudioNegotiation {
             input,
             output,
             sample_rate_hz,
             buffer_frames,
-            input_channels,
-            output_channels,
             share_mode,
+            ..
         } = negotiated;
 
-        let input_params = StreamParams {
-            sample_rate_hz,
-            buffer_frames,
-            channels: input_channels,
-            share_mode: share_mode.mode,
-        };
-        let mut output_params = StreamParams {
-            sample_rate_hz,
-            buffer_frames,
-            channels: output_channels,
-            share_mode: share_mode.mode,
-        };
-        // Issue #166: the output stream asks the device for its own buffer, so the render path
-        // keeps a reserve instead of being drained every callback. The engine's block size still
-        // comes from `buffer_frames` below -- see `audio_io::output_buffer_request`, whose rule is
-        // mode-independent.
-        output_params.buffer_frames = crate::audio_io::output_buffer_request();
-
-        let max_block_size = crate::audio_io::block_frames(buffer_frames);
-        let channel_config = if output_channels >= 2 {
-            ChannelConfig::MonoToStereo
-        } else {
-            ChannelConfig::Mono
-        };
-
-        let Some(_) = SampleRate::new(sample_rate_hz) else {
+        if sample_rate.is_none() {
             self.audio_mode = None;
             self.push_notice(
                 crate::error_codes::NO_SUPPORTED_CONFIG,
                 format!("negotiated an invalid sample rate ({sample_rate_hz} Hz)"),
             );
             return;
-        };
+        }
 
         // FR-IO-020: the same explanation `app::run` gives at start-up. Without it a selector
         // change on a device that refuses exclusive mode flips the mode indicator to shared and
@@ -633,15 +619,6 @@ impl AppHost {
                 detail.clone(),
             );
         }
-
-        // Pre-compute supported sets from the negotiated device configs.
-        let supported_sample_rates =
-            crate::device_state::supported_sample_rates(&input.configs, &output.configs);
-        let supported_buffer_sizes = crate::device_state::supported_buffer_sizes(
-            &input.configs,
-            &output.configs,
-            sample_rate_hz,
-        );
 
         // Drop old streams before the engine is rebuilt — the old audio callback must stop
         // before the instance is replaced on the worker thread (D-15.3, D-8.1).

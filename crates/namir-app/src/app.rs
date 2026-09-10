@@ -219,6 +219,86 @@ pub(crate) fn negotiate_audio(
     })
 }
 
+/// Everything both call sites need between [`negotiate_audio`] and [`crate::stream::open`]: the
+/// input for a [`StreamSetup`], plus the two lists FR-IO-040's selectors show.
+pub(crate) struct AssembledAudioConfig {
+    pub input_params: StreamParams,
+    pub output_params: StreamParams,
+    pub max_block_size: usize,
+    pub channel_config: ChannelConfig,
+    /// `None` when the negotiated rate is zero. Each caller decides what to do about it: start-up
+    /// opens a windowless-audio session, the reopen path keeps the running stream and posts a
+    /// notice — deliberately different, so this function does not choose.
+    pub sample_rate: Option<SampleRate>,
+    pub supported_sample_rates: Vec<u32>,
+    pub supported_buffer_sizes: Vec<u32>,
+}
+
+/// Assembles one settled [`AudioNegotiation`] into the values a stream opens with — in one place
+/// because [`run`] and [`crate::host::AppHost::initiate_audio_reopen`] both need all of them
+/// (issue #192).
+///
+/// # Why this is shared rather than written twice
+///
+/// A fix applied to one copy and not the other is **silent**: the reopen path only runs when a
+/// user changes a device or a rate in the settings panel, so a start-up-only fix looks correct in
+/// every test and every launch. That has already happened twice — D-13.3's
+/// [`crate::audio_io::output_buffer_request`] line (issue #166) was added to [`run`] first and to
+/// [`crate::host`] separately, and issue #190's re-enumeration likewise.
+///
+/// The callers' *failure handling* stays theirs (see `sample_rate`): those differences are
+/// intended, and are the reason this is not simply folded into [`negotiate_audio`].
+pub(crate) fn assemble_stream_config(negotiated: &AudioNegotiation) -> AssembledAudioConfig {
+    let AudioNegotiation {
+        input,
+        output,
+        sample_rate_hz,
+        buffer_frames,
+        input_channels,
+        output_channels,
+        share_mode,
+    } = negotiated;
+    let (sample_rate_hz, buffer_frames) = (*sample_rate_hz, *buffer_frames);
+
+    let input_params = StreamParams {
+        sample_rate_hz,
+        buffer_frames,
+        channels: *input_channels,
+        share_mode: share_mode.mode,
+    };
+    // Issue #166 (D-13.3): the output stream asks the device for its own buffer, so the render
+    // path keeps a reserve instead of being drained every callback. The engine's block size still
+    // comes from `buffer_frames` -- see `audio_io::output_buffer_request`, whose rule is
+    // mode-independent.
+    let output_params = StreamParams {
+        sample_rate_hz,
+        buffer_frames: crate::audio_io::output_buffer_request(),
+        channels: *output_channels,
+        share_mode: share_mode.mode,
+    };
+
+    AssembledAudioConfig {
+        input_params,
+        output_params,
+        max_block_size: crate::audio_io::block_frames(buffer_frames),
+        channel_config: if *output_channels >= 2 {
+            ChannelConfig::MonoToStereo
+        } else {
+            ChannelConfig::Mono
+        },
+        sample_rate: SampleRate::new(sample_rate_hz),
+        supported_sample_rates: crate::device_state::supported_sample_rates(
+            &input.configs,
+            &output.configs,
+        ),
+        supported_buffer_sizes: crate::device_state::supported_buffer_sizes(
+            &input.configs,
+            &output.configs,
+            sample_rate_hz,
+        ),
+    }
+}
+
 /// `(sample_rate_hz, buffer_frames, input_channels, output_channels)` for one pair of enumerated
 /// directions. Both sides' ranges, never one side's alone (issue #86).
 fn settle(
@@ -444,45 +524,28 @@ pub fn run() {
         open_window_without_audio(config_dir);
         return;
     };
+    // Every value between the negotiation and the open comes from one shared function, so this
+    // path and the reopen path in `crate::host` cannot drift (issue #192). Only the failure
+    // handling below is this call site's own.
+    let AssembledAudioConfig {
+        input_params,
+        output_params,
+        max_block_size,
+        channel_config,
+        sample_rate,
+        supported_sample_rates,
+        supported_buffer_sizes,
+    } = assemble_stream_config(&negotiated);
     let AudioNegotiation {
         input,
         output,
         sample_rate_hz,
         buffer_frames,
-        input_channels,
-        output_channels,
         share_mode,
+        ..
     } = negotiated;
 
-    // The share mode was settled inside `negotiate_audio` (FR-IO-020), once, before anything is
-    // opened: both stream literals here and the mode indicator handed to `AppHost` take their
-    // value from that one decision.
-    let input_params = StreamParams {
-        sample_rate_hz,
-        buffer_frames,
-        channels: input_channels,
-        share_mode: share_mode.mode,
-    };
-    let mut output_params = StreamParams {
-        sample_rate_hz,
-        buffer_frames,
-        channels: output_channels,
-        share_mode: share_mode.mode,
-    };
-    // Issue #166: the output stream asks the device for its own buffer, so the render path keeps a
-    // reserve instead of being drained every callback. The engine's block size still comes from
-    // `buffer_frames` below -- see `audio_io::output_buffer_request`, whose rule is
-    // mode-independent.
-    output_params.buffer_frames = crate::audio_io::output_buffer_request();
-
-    let max_block_size = crate::audio_io::block_frames(buffer_frames);
-    let channel_config = if output_channels >= 2 {
-        ChannelConfig::MonoToStereo
-    } else {
-        ChannelConfig::Mono
-    };
-
-    let Some(sample_rate) = SampleRate::new(sample_rate_hz) else {
+    let Some(sample_rate) = sample_rate else {
         eprintln!(
             "namir: negotiated an invalid sample rate ({sample_rate_hz} Hz); refusing to open a stream."
         );
@@ -589,13 +652,6 @@ pub fn run() {
         .into_iter()
         .map(|d| d.name)
         .collect();
-    let supported_sample_rates =
-        crate::device_state::supported_sample_rates(&input.configs, &output.configs);
-    let supported_buffer_sizes = crate::device_state::supported_buffer_sizes(
-        &input.configs,
-        &output.configs,
-        sample_rate_hz,
-    );
     host.configure_audio_devices(
         config_dir.clone(),
         settings.clone(),
@@ -1282,5 +1338,80 @@ mod tests {
         let detail = negotiate(&backend, true).refusal_detail.unwrap();
         assert!(detail.contains("exclusive mode is unavailable"), "{detail}");
         assert!(detail.contains("shared mode"), "{detail}");
+    }
+
+    /// **Issue #192.** Start-up ([`run`]) and reopen
+    /// ([`crate::host::AppHost::initiate_audio_reopen`]) assemble the same configuration from the
+    /// same negotiated inputs, and used to do it with two hand-written copies that had already
+    /// drifted twice. Both paths go through [`assemble_stream_config`], so this drives it the way
+    /// each caller does — start-up from `AppSettings`, reopen from the host's `current_*` fields —
+    /// and asserts every assembled value matches.
+    ///
+    /// The `output_buffer_request` assertions are the D-13.3 line the issue names: the output
+    /// stream must *not* inherit the negotiated 256-frame request, while the engine's block size
+    /// still comes from it.
+    #[test]
+    fn start_up_and_reopen_assemble_the_same_configuration() {
+        let backend = backend_with_two_faces()
+            .granting_exclusive_to(IN)
+            .granting_exclusive_to(OUT);
+
+        // What `run` passes: the persisted settings.
+        let settings = AppSettings {
+            input_device_name: Some(IN.to_string()),
+            output_device_name: Some(OUT.to_string()),
+            exclusive_mode: true,
+            ..AppSettings::default()
+        };
+        let start_up = assemble_stream_config(
+            &negotiate_audio(
+                &backend,
+                &host(),
+                backend.input_devices(&host()),
+                backend.output_devices(&host()),
+                &AudioPreferences {
+                    input_device: settings.input_device_name.as_deref(),
+                    output_device: settings.output_device_name.as_deref(),
+                    sample_rate_hz: settings.sample_rate_hz,
+                    buffer_size_frames: settings.buffer_size_frames,
+                    exclusive_mode: settings.exclusive_mode,
+                },
+            )
+            .expect("both directions have a device"),
+        );
+
+        // What the reopen path passes: the host's live selection, same values.
+        let reopen = assemble_stream_config(&negotiated(&backend, true));
+
+        assert_eq!(start_up.input_params, reopen.input_params);
+        assert_eq!(start_up.output_params, reopen.output_params);
+        assert_eq!(start_up.max_block_size, reopen.max_block_size);
+        assert_eq!(start_up.channel_config, reopen.channel_config);
+        assert_eq!(start_up.sample_rate, reopen.sample_rate);
+        assert_eq!(
+            start_up.supported_sample_rates,
+            reopen.supported_sample_rates
+        );
+        assert_eq!(
+            start_up.supported_buffer_sizes,
+            reopen.supported_buffer_sizes
+        );
+
+        assert_eq!(
+            start_up.input_params.buffer_frames,
+            Some(256),
+            "the input stream opens at the negotiated buffer size"
+        );
+        assert_eq!(
+            start_up.output_params.buffer_frames,
+            crate::audio_io::output_buffer_request(),
+            "D-13.3: the output stream asks the device for its own buffer"
+        );
+        assert_eq!(
+            start_up.max_block_size, 256,
+            "the engine's block size still comes from the negotiated buffer"
+        );
+        assert_eq!(start_up.channel_config, ChannelConfig::MonoToStereo);
+        assert_eq!(start_up.sample_rate, SampleRate::new(48_000));
     }
 }
