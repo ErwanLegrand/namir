@@ -130,12 +130,14 @@ fn report(
         // Enumerated for every device now, not only under `--verbose`: the concise line's probe
         // needs a channel count, and the only honest one is the count `namir_app::app::run` would
         // negotiate for this endpoint (below).
+        // Enumerated in shared mode here; `print_exclusive_sweep` below reports the exclusive
+        // ranges separately, and issue #190 is precisely that the two differ.
         let configs = match direction {
-            "input" => backend.input_configs(host, device),
-            _ => backend.output_configs(host, device),
+            "input" => backend.input_configs(host, device, ShareMode::Shared),
+            _ => backend.output_configs(host, device, ShareMode::Shared),
         };
         let configs = match configs {
-            Ok(configs) => configs,
+            Ok(enumerated) => enumerated.ranges,
             Err(e) => {
                 // Exactly what `app::run` does with this failure -- it calls
                 // `configs_of(..).unwrap_or_default()` -- so the negotiation below falls through to

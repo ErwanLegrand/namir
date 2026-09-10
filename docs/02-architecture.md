@@ -2030,6 +2030,72 @@ further note on the base: the fork is taken from upstream **trunk** at `e0893c3`
 crates.io 0.18.1 release, because forking the release would have started **eight** WASAPI fixes
 behind, one of them a device-lost panic fix (`bc101ac`).
 
+**Decision D-13.5 (2026-09-10, from issue #190)** — **Device configurations are enumerated in the
+share mode the session is going to open in**, and when an exclusive request is refused the
+enumeration *and* the negotiation that followed it are run again against the shared ranges. The
+share mode is a parameter of `AudioBackend::input_configs`/`output_configs`, not a constant inside
+them.
+
+*Rationale:* The two modes describe different devices, and D-13.4's M11 note already said so about
+formats — "`f32` looks universal on Windows only because shared mode's `GetMixFormat` reports the
+*engine's* mix format" — without the same reasoning being carried to rates and buffer sizes, which
+is exactly where it was needed. Measured on §2's reference interface (AudioBox 22VSL, Universal
+Control at 48 kHz / 256 frames), the same two endpoints answer:
+
+| query | rates | formats | buffer @48 kHz |
+|---|---|---|---|
+| input, shared | `[48000]` | F32, I16, I24, I32, U8 | `{min: 480, max: 480}` |
+| input, exclusive | `[48000]` | I16, I24 | `{min: 144, max: 240000}` |
+| output, shared | 16 rates, `8000 … 384000` | F32, I16, I24, I32, U8 | `{min: 480, max: 480}` |
+| output, exclusive | `[48000]` | I16, I24 | `{min: 144, max: 240000}` |
+
+Shared is not a subset of exclusive or a superset of it; it is a different answer in both
+directions. Shared *understates* the buffer choice, because a shared client does not pick its
+period at all — WASAPI reports the engine period as a degenerate `min == max` range — and it
+*overstates* the sample-rate choice on a render endpoint, because those sixteen rates are the
+engine's resampler, not the hardware. Enumerating shared and opening exclusive took the worst of
+both: `STANDARD_BUFFER_SIZES` intersected with `{480,480}` matches nothing, so FR-IO-040's list
+fell through to its "offer the negotiated value" fallback and presented a single size the user
+never chose, while `PREFERRED_BUFFER_FRAMES` (256) had been clamped into `[480,480]` and then
+persisted by `persist_negotiated_audio`, so it read back as a remembered preference. Against the
+exclusive ranges the same device offers 256/512/1024/2048 — including the 256 its control panel is
+set to.
+
+*Consequence — the negotiation may run twice, and that ordering is forced.* Configs are enumerated
+for the mode being *asked* for, but whether exclusive mode is granted is only known after
+`negotiate_share_mode` has asked both devices, which needs a rate and a channel count, which come
+from the configs. A refused request therefore leaves a negotiation made against ranges that do not
+apply to the session about to run, and the whole sequence is repeated. The refused *decision* is
+kept rather than re-taken: it was settled by the devices, not by the ranges. Both call sites —
+start-up and `AppHost::initiate_audio_reopen` — go through one function (`app::negotiate_audio`)
+because they previously held two copies of this sequence, and a two-pass version maintained twice
+would drift.
+
+*Consequence — a device that cannot answer the exclusive query is enumerated shared, and is not
+enumerated twice.* The query failing, erroring, or returning an empty set all mean the same thing:
+this device will not open exclusive. Returning an error instead would abort a start-up that is about
+to succeed in shared mode, since `negotiate_share_mode` degrades a few lines later. Because that
+fallback answer *is* the shared answer, the second pass above would re-run a query whose result is
+already in hand — on every non-WASAPI host with `exclusive_mode: true` in its settings file, and on
+Windows that repeat is COM device enumeration on the start-up path NFR-PERF-030 measures. So the
+enumeration reports the mode it actually answered in (`audio_io::EnumeratedConfigs`), and the second
+pass is gated on that rather than on the request: a refusal only re-enumerates when exclusive ranges
+were really obtained.
+
+*Consequence — the reopen path reports a refusal, as start-up does.* `initiate_audio_reopen` posts
+`app.audio_io.exclusive_mode_unavailable` on the same `ShareModeDecision::refusal_detail` `app::run`
+uses. It previously computed the detail and dropped it, which was survivable while the mode was
+settled once per session; per issue #189's triage every device, rate or buffer-size selector
+re-enters this sequence, so without it the mode indicator flips to shared mid-session with nothing
+said about why.
+
+*What is not claimed.* This does not make FR-IO-040's buffer selection reach the output *device* —
+D-13.3's consequence still stands, the output stream still asks for `BufferSize::Default`, and the
+selection keeps its meaning through the engine block and the input stream. What changes is that the
+list the user chooses from is now the list the device actually reports for the mode the session
+runs in. One interface, one platform: ALSA and CoreAudio report a single share mode and are
+unaffected by construction, but they are unmeasured here.
+
 ---
 
 ## 14. CLAP adapter — OQ-10
@@ -4365,5 +4431,6 @@ drift was findable.
 | 0.50 | 2026-09-08 | **The audio-device panel is built (PR #159, issue #26 closed); roadmap §15 item 16 is answered by construction.** `UiSnapshot` carries `audio_panel_open: bool` and `audio_panel: Option<AudioDevicePanelSnapshot>` (`crates/namir-ui/src/host.rs`), and four new intents (`SelectInputDevice`, `SelectOutputDevice`, `SelectSampleRate`, `SelectBufferSize`) call `initiate_audio_reopen()` in `crates/namir-app/src/host.rs:1422-1444`, enabling dynamic in-session stream reopening. Decision D-15.3 already records the overlay panel consequence (added M15, 2026-09-06); no architecture decision claimed in-session selection was impossible. The panel carries no latency or xrun field, so FR-IO-050 and FR-IO-060 remain unclosed. |
 | 0.51 | 2026-09-08 | **Issue #34's second half: worst-verdict-wins now holds across a requirement's manual documents, not only within one.** D-18.6 gains a `*Consequence (added M14, 2026-09-08)*` note. `build_report`'s `'M'` arm resolved its document with `manual_test_docs.iter().find(..)`, so a requirement matched by two documents took whichever came first — and PR #159 shipped the audio-device panel with two scripts for the surface it had just built, `fr-io-010-device-selection.md` and `fr-io-040-sample-rate-and-buffer-size.md`, both `NOT EXECUTED` and both invisible behind `fr-io-010-device-enumeration.md`'s pre-panel `PASS`. Every matching document is now read and the least favourable verdict decides; one non-pass blocks the requirement and is the one the plan names. Uncovered Musts go 4 → 6 (FR-IO-010 and FR-IO-040 join FR-IN-020, FR-IO-030, FR-IO-050, FR-UI-030); §14 moves no cell, its `5.11 IO` bullet having counted both Partial since M9a. `docs/manual-tests/README.md` gains the authors' form of the rule: a new script takes its requirement uncovered until it is run. |
 | 0.52 | 2026-09-09 | **Accessibility and WASAPI exclusive mode forks integrated (PR #188, issue #35).** `cpal` upgraded to `wasapi-exclusive` fork (`381cf1d`), `baseview` to `accesskit-design` fork (`c0870cb`), and `egui-baseview` to `feat/accessibility-accesskit` fork (`6752731`). `egui` bumped to 0.36.2. New Decision **D-15.4** scopes accessibility support to Windows and macOS only (Linux/X11 is a compiled no-op). Dependency register updated for `egui` 0.36.2 and the three Namir-maintained forks. |
-| 0.53 | 2026-09-10 | **The reverse-DNS identifiers move from `org.legrand` to `io.namir`, on acquisition of the `namir.io` domain.** The plugin's CLAP id and `CFBundleIdentifier` become `io.namir.clap` (one string in two places, `crates/namir-clap/src/lib.rs`'s `PLUGIN_ID` and `xtask/src/bundle.rs`'s `PLUGIN_BUNDLE_IDENTIFIER`, still required to match); the standalone's becomes `io.namir.standalone`; the three `installer` component ids follow, with `PKG_ID_APP` renamed `io.namir.standalone.pkg` so the package tracks its bundle's spelling. **Timing is the substance of this entry, not the strings.** `PLUGIN_ID` is what a CLAP host keys a saved session to, so changing it after a release silently orphans every project that had loaded the plugin; `git tag -l` was empty when this was made, so the change costs a commit rather than the users' projects, and it cannot be made this cheaply again. The justification is that a reverse-DNS identifier should name a domain the project controls, which `org.legrand` never did. M13's decision at `APP_BUNDLE_IDENTIFIER` is **not** rewritten: it gains a `*Consequence (added M15, 2026-09-10)*` note separating what survives (unique-per-bundle, TCC keys the microphone grant on the app's id, `.app` still rejected as reading like the bundle extension — hence `.standalone`) from the one clause the domain supersedes (the plugin no longer has to *be* the product root, since `io.namir` carries the product name, so `clap` and `standalone` are siblings and a later `io.namir.vst3` is a peer of the first format rather than a child of it). Windows' Inno `AppId` GUID is deliberately untouched — its own comment says it must never change, and only its cross-reference to the macOS spelling moved. |
+| 0.53 | 2026-09-10 | **Issue #190: device configurations are enumerated in the share mode the session will open in (new Decision D-13.5).** Reported as "480 frames is the only buffer size the settings offer, and 48 kHz the only rate, on an interface whose control panel is set to 48 kHz / 256". `CpalBackend::input_configs`/`output_configs` called cpal's plain queries — the **shared-mode** ones — and hardcoded the `ShareMode::Shared` tag, so a session running WASAPI exclusive negotiated, and offered the user, ranges belonging to a mode it was not in. The exclusive-aware query (`exclusive_configs`) already existed and was wired only into `supports_exclusive`'s yes/no probe. Measured on §2's interface, the same endpoints report `{min: 480, max: 480}` shared against `{min: 144, max: 240000}` exclusive, and 16 resampled rates shared against the hardware's single 48 kHz exclusive: shared is neither a subset nor a superset, it is a different answer in each direction. `STANDARD_BUFFER_SIZES` intersected with the degenerate shared range matches nothing, so FR-IO-040's list fell through to its "offer the negotiated value" fallback — and that value was `PREFERRED_BUFFER_FRAMES` (256) clamped into `[480,480]`, then persisted, so it read back as a remembered preference the user had never expressed. The share mode becomes a parameter of both enumeration methods; `app::negotiate_audio` holds the enumerate-then-negotiate sequence once for both the start-up and reopen paths, and re-runs it against the shared ranges when an exclusive request is refused, since the grant is only known after a negotiation that the configs themselves fed. Verified on the real interface: the panel's buffer list goes from `[480]` to `[256, 512, 1024, 2048]`. FR-IO-040's buffer selection still does not reach the output *device* — D-13.3 stands — but the list is now the device's own. |
 | 0.54 | 2026-09-10 | **`import_cert` accepts a second, optional `.p12`, so two Developer ID certificates issued against separate CSRs can both reach the runner's keychain (issue #23 follow-up).** `NAMIR_APPLE_INSTALLER_P12_BASE64` and `NAMIR_APPLE_INSTALLER_PASSWORD` (the latter defaulting to the application `.p12`'s password) are imported into the *same* temporary keychain when set and skipped when not, so the existing one-file path is untouched; `set-key-partition-list` is per-keychain and covers both without repetition, and the `EXIT` trap is armed before the second decode so an abort between the two still scrubs the first. **The reason this is a workflow change rather than a documentation one**: `openssl pkcs12 -export` carries exactly one private key and discards any others in silence — verified, two keypairs and two certificates in, two certificates and one key out, no warning, exit 0 — so a contributor without Keychain Access cannot express two keypairs as one file, and the previous single-secret design silently forced one CSR to be submitted to both requests. Shaping the certificate setup around a limitation of the packaging tool was the wrong way round. `packaging/macos/README.md` drops its one-CSR rule for "one CSR or two, but know which you did", documents both `openssl` shapes, and now leads its encode step with `openssl base64 -A` (one command, one line) instead of `base64 | tr -d '\n'` — without `-A` a 2 KB `.p12` wraps to 74 lines, which is exactly the corruption the surrounding paragraph warns about. |
+| 0.55 | 2026-09-10 | **The reverse-DNS identifiers move from `org.legrand` to `io.namir`, on acquisition of the `namir.io` domain.** The plugin's CLAP id and `CFBundleIdentifier` become `io.namir.clap` (one string in two places, `crates/namir-clap/src/lib.rs`'s `PLUGIN_ID` and `xtask/src/bundle.rs`'s `PLUGIN_BUNDLE_IDENTIFIER`, still required to match); the standalone's becomes `io.namir.standalone`; the three `installer` component ids follow, with `PKG_ID_APP` renamed `io.namir.standalone.pkg` so the package tracks its bundle's spelling. **Timing is the substance of this entry, not the strings.** `PLUGIN_ID` is what a CLAP host keys a saved session to, so changing it after a release silently orphans every project that had loaded the plugin; `git tag -l` was empty when this was made, so the change costs a commit rather than the users' projects, and it cannot be made this cheaply again. The justification is that a reverse-DNS identifier should name a domain the project controls, which `org.legrand` never did. M13's decision at `APP_BUNDLE_IDENTIFIER` is **not** rewritten: it gains a `*Consequence (added M15, 2026-09-10)*` note separating what survives (unique-per-bundle, TCC keys the microphone grant on the app's id, `.app` still rejected as reading like the bundle extension — hence `.standalone`) from the one clause the domain supersedes (the plugin no longer has to *be* the product root, since `io.namir` carries the product name, so `clap` and `standalone` are siblings and a later `io.namir.vst3` is a peer of the first format rather than a child of it). Windows' Inno `AppId` GUID is deliberately untouched — its own comment says it must never change, and only its cross-reference to the macOS spelling moved. |

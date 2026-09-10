@@ -99,10 +99,10 @@ plugin isn't appearing:
 ### Standalone app
 
 The standalone app negotiates audio devices, sample rate, and buffer size **automatically** on
-startup — there is no in-app device-selection screen yet. On each launch it picks, in order: the
-device/rate/buffer remembered from your last session, else your system's default input/output
-devices, else the first device the audio backend enumerates. Whatever it picks is logged to the
-console, e.g.:
+startup, and the "Audio Settings" panel lets you change any of them in-session. On each launch it
+picks, in order: the device/rate/buffer remembered from your last session, else your system's
+default input/output devices, else the first device the audio backend enumerates. Whatever it picks
+is logged to the console, e.g.:
 
 ```
 namir: audio stream started
@@ -113,6 +113,14 @@ namir: 48000 Hz, 480-frame block, at least ~20.0 ms estimated round-trip latency
 picked (issue #166), and `cpal` gives no portable way to read back what the device chose — so the
 figure covers the two buffers Namir itself sizes and nothing for the device. The buffer size you
 select still sets the engine's block size and the input stream.
+
+**The rates and buffer sizes on offer depend on the share mode** (issue #190). In shared mode
+Windows reports the audio engine's own values — typically a single buffer size, and, on an output
+device, every sample rate the engine will resample to. In exclusive mode the device reports its own
+hardware limits, which is usually a much wider choice of buffer sizes and only the rates the
+interface is actually set to. So turning `exclusive_mode` on will normally *change* what the two
+lists contain; that is the device answering for itself rather than through the mixer. If a device
+refuses exclusive mode, the session runs shared and the lists show shared's answer.
 
 Your negotiated choice (device names, sample rate, buffer size, and channel mapping) is saved when
 you close the app, and reloaded next time. If a remembered device is no longer available, the app

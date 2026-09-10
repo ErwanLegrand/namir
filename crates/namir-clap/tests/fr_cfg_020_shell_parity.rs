@@ -100,8 +100,9 @@ mod host_ext {
     use clack_extensions::state::PluginState;
 
     use namir_app::audio_io::{
-        AudioBackend, AudioIoError, AudioStream, BufferSizeRange, DeviceInfo, ExclusiveModeOutcome,
-        HostInfo, ShareMode, StreamFailure, StreamParams, SupportedConfigRange,
+        AudioBackend, AudioIoError, AudioStream, BufferSizeRange, DeviceInfo, EnumeratedConfigs,
+        ExclusiveModeOutcome, HostInfo, ShareMode, StreamFailure, StreamParams,
+        SupportedConfigRange,
     };
     use namir_app::instance::SharedInstance;
     use namir_app::stream::{self, StreamSetup};
@@ -655,25 +656,33 @@ mod host_ext {
             &self,
             _host: &HostInfo,
             _device: &DeviceInfo,
-        ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-            Ok(vec![SupportedConfigRange {
-                channels: 1,
-                min_sample_rate_hz: SAMPLE_RATE_HZ,
-                max_sample_rate_hz: SAMPLE_RATE_HZ,
-                buffer_size: BufferSizeRange::Unknown,
-            }])
+            _share_mode: ShareMode,
+        ) -> Result<EnumeratedConfigs, AudioIoError> {
+            Ok(EnumeratedConfigs {
+                share_mode: ShareMode::Shared,
+                ranges: vec![SupportedConfigRange {
+                    channels: 1,
+                    min_sample_rate_hz: SAMPLE_RATE_HZ,
+                    max_sample_rate_hz: SAMPLE_RATE_HZ,
+                    buffer_size: BufferSizeRange::Unknown,
+                }],
+            })
         }
         fn output_configs(
             &self,
             _host: &HostInfo,
             _device: &DeviceInfo,
-        ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-            Ok(vec![SupportedConfigRange {
-                channels: 2,
-                min_sample_rate_hz: SAMPLE_RATE_HZ,
-                max_sample_rate_hz: SAMPLE_RATE_HZ,
-                buffer_size: BufferSizeRange::Unknown,
-            }])
+            _share_mode: ShareMode,
+        ) -> Result<EnumeratedConfigs, AudioIoError> {
+            Ok(EnumeratedConfigs {
+                share_mode: ShareMode::Shared,
+                ranges: vec![SupportedConfigRange {
+                    channels: 2,
+                    min_sample_rate_hz: SAMPLE_RATE_HZ,
+                    max_sample_rate_hz: SAMPLE_RATE_HZ,
+                    buffer_size: BufferSizeRange::Unknown,
+                }],
+            })
         }
         fn supports_exclusive(
             &self,

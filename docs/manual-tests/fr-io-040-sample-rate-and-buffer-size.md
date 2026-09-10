@@ -20,6 +20,7 @@ always be displayed."
    - Launch the application: confirm audio plays using a supported fallback buffer size (or device default).
    - Confirm that a `Warning` notice `app.audio_io.buffer_size_declined` is displayed non-modally in the top bar (`"The requested buffer size is not supported by the audio device (requested 960 frames, using <actual> frames)"` or `"using the device default"`).
    - Verify that `audio-settings.json` still retains `"buffer_size_frames": 960` rather than overwriting it with the fallback value.
+9. **Share-mode-correct lists (issue #190):** with `"exclusive_mode": true` in `audio-settings.json` and an interface that grants exclusive mode, confirm the "Buffer Size" list offers the sizes the *device* reports for exclusive mode rather than a single value — on the reference interface (AudioBox 22VSL, Universal Control at 48 kHz / 256) it offers 256/512/1024/2048, where shared mode offers only the negotiated 480. Set `"exclusive_mode": false` and confirm the list reverts to the shared answer. A device that refuses exclusive mode must show the shared list, not the exclusive one, and still open and play.
 
 ## Executed run (this session)
 

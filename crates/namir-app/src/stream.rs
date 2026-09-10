@@ -528,6 +528,18 @@ pub(crate) struct FakeBackend {
     /// the observable that distinguishes "the session settled on exclusive" from "the session
     /// settled on exclusive and then opened shared anyway".
     asked_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
+    /// What this backend reports when asked for **exclusive** configs, per direction. `None`
+    /// means "the same ranges as shared", which is what a backend with no WASAPI endpoint behind
+    /// it does. Per direction rather than per backend for the same reason
+    /// [`FakeBackend::granting_exclusive_to`] is per device: a single shared answer cannot catch
+    /// a direction mix-up in the code it exercises, and picking the wrong direction is precisely
+    /// the class of bug issue #190 was.
+    exclusive_input_configs: Option<Vec<SupportedConfigRange>>,
+    exclusive_output_configs: Option<Vec<SupportedConfigRange>>,
+    /// Every `(direction, share_mode)` a config query was made with, in call order — the
+    /// observable for *which mode was enumerated*, and the only way to see issue #190's two-pass
+    /// sequence. [`FakeBackend::asked_share_modes`] is its counterpart for the stream open.
+    enumerated_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
     input_devices: Vec<DeviceInfo>,
     output_devices: Vec<DeviceInfo>,
 }
@@ -542,6 +554,9 @@ impl FakeBackend {
             input_error: std::sync::Mutex::new(None),
             output_error: std::sync::Mutex::new(None),
             input_stream: Arc::new(FakeStreamLog::default()),
+            exclusive_input_configs: None,
+            exclusive_output_configs: None,
+            enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream: Arc::new(FakeStreamLog::default()),
             open_failures: Vec::new(),
             exclusive_devices: Vec::new(),
@@ -551,12 +566,36 @@ impl FakeBackend {
         }
     }
 
+    /// Makes the exclusive-mode config query answer with these ranges instead of the shared ones —
+    /// the WASAPI shape, where the two modes describe different devices (issue #190).
+    ///
+    /// Per direction, and `Option` per direction, for two reasons. A single answer for both
+    /// directions cannot catch a `Direction` mix-up in the code it exercises, which is the class of
+    /// bug issue #190 itself was. And `None` on one side only is a real hardware shape — a capture
+    /// endpoint with a reachable WASAPI exclusive endpoint beside a render device without one — so
+    /// it is what makes `negotiate_audio`'s "either direction answered exclusive" gate testable.
+    ///
+    /// An **empty** `Some` answers shared, exactly as [`crate::audio_io::CpalBackend`] does: its
+    /// `exclusive_configs_when_asked` maps an empty exclusive answer to the shared query, so a fake
+    /// that reported `share_mode: Exclusive` with no ranges would claim a state the real backend
+    /// never produces.
+    pub(crate) fn reporting_exclusive_configs(
+        mut self,
+        input: Option<Vec<SupportedConfigRange>>,
+        output: Option<Vec<SupportedConfigRange>>,
+    ) -> Self {
+        self.exclusive_input_configs = input.filter(|ranges| !ranges.is_empty());
+        self.exclusive_output_configs = output.filter(|ranges| !ranges.is_empty());
+        self
+    }
+
     /// Makes `device_name` answer `Engaged` to `supports_exclusive`. Per device, not per backend,
     /// so a test can grant exclusive mode to one direction and refuse it on the other.
     pub(crate) fn granting_exclusive_to(mut self, device_name: &str) -> Self {
         self.exclusive_devices.push(device_name.to_string());
         self
     }
+
     /// Configures the input and output devices reported by this backend.
     pub(crate) fn with_devices(
         mut self,
@@ -608,6 +647,12 @@ impl FakeBackend {
             .iter()
             .find(|(d, _)| *d == direction)
             .map(|(_, mode)| *mode)
+    }
+
+    /// Every config query this backend answered, in call order — issue #190's two-pass
+    /// re-enumeration is a sequence, not a final state, so a test needs the whole list.
+    pub(crate) fn enumerations(&self) -> Vec<(Direction, ShareMode)> {
+        self.enumerated_share_modes.lock().unwrap().clone()
     }
 }
 
@@ -691,25 +736,53 @@ impl AudioBackend for FakeBackend {
         &self,
         _h: &HostInfo,
         _d: &DeviceInfo,
-    ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-        Ok(vec![SupportedConfigRange {
-            channels: 1,
-            min_sample_rate_hz: 48_000,
-            max_sample_rate_hz: 48_000,
-            buffer_size: BufferSizeRange::Unknown,
-        }])
+        share_mode: ShareMode,
+    ) -> Result<crate::audio_io::EnumeratedConfigs, AudioIoError> {
+        self.enumerated_share_modes
+            .lock()
+            .unwrap()
+            .push((Direction::Input, share_mode));
+        if let (ShareMode::Exclusive, Some(ranges)) = (share_mode, &self.exclusive_input_configs) {
+            return Ok(crate::audio_io::EnumeratedConfigs {
+                share_mode: ShareMode::Exclusive,
+                ranges: ranges.clone(),
+            });
+        }
+        Ok(crate::audio_io::EnumeratedConfigs {
+            share_mode: ShareMode::Shared,
+            ranges: vec![SupportedConfigRange {
+                channels: 1,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: BufferSizeRange::Unknown,
+            }],
+        })
     }
     fn output_configs(
         &self,
         _h: &HostInfo,
         _d: &DeviceInfo,
-    ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-        Ok(vec![SupportedConfigRange {
-            channels: 2,
-            min_sample_rate_hz: 48_000,
-            max_sample_rate_hz: 48_000,
-            buffer_size: BufferSizeRange::Unknown,
-        }])
+        share_mode: ShareMode,
+    ) -> Result<crate::audio_io::EnumeratedConfigs, AudioIoError> {
+        self.enumerated_share_modes
+            .lock()
+            .unwrap()
+            .push((Direction::Output, share_mode));
+        if let (ShareMode::Exclusive, Some(ranges)) = (share_mode, &self.exclusive_output_configs) {
+            return Ok(crate::audio_io::EnumeratedConfigs {
+                share_mode: ShareMode::Exclusive,
+                ranges: ranges.clone(),
+            });
+        }
+        Ok(crate::audio_io::EnumeratedConfigs {
+            share_mode: ShareMode::Shared,
+            ranges: vec![SupportedConfigRange {
+                channels: 2,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: BufferSizeRange::Unknown,
+            }],
+        })
     }
     fn supports_exclusive(
         &self,
