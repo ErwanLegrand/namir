@@ -129,12 +129,15 @@ list, both paths. `productbuild` is called from exactly one place.
 `release.yml` imports the certificates into a temporary keychain before the `Package` step and
 reads the signing variables in it, but only when the repository secrets are set. An absent secret
 is the unsigned path — identical run, no failure — so enabling signing is *adding secrets*, not
-restructuring anything. Seven secrets make a signed, notarized, stapled release:
+restructuring anything. Seven secrets make a signed, notarized, stapled release, plus one more if
+your two certificates hold separate private keys (see the `.p12` section below — it decides which):
 
 | Secret | What it holds |
 |---|---|
-| `NAMIR_APPLE_CERTIFICATE_P12_BASE64` | base64-encoded `.p12` holding the **Developer ID Application** certificate *and* the **Developer ID Installer** certificate (both are created with one Developer ID). This is the master switch: the workflow's `import_cert` step runs only when it is non-empty. |
+| `NAMIR_APPLE_CERTIFICATE_P12_BASE64` | base64-encoded `.p12` carrying the **Developer ID Application** certificate, and the **Developer ID Installer** certificate too when one CSR produced both. This is the master switch: the workflow's `import_cert` step runs only when it is non-empty. |
 | `NAMIR_APPLE_CERTIFICATE_PASSWORD` | the password protecting that `.p12`. |
+| `NAMIR_APPLE_INSTALLER_P12_BASE64` | **Optional.** A second `.p12` holding the **Developer ID Installer** certificate and its own private key, for when the two certificates were issued against separate CSRs. `import_cert` imports it into the same keychain when set, and skips it when not. |
+| `NAMIR_APPLE_INSTALLER_PASSWORD` | **Optional.** The second `.p12`'s password; defaults to `NAMIR_APPLE_CERTIFICATE_PASSWORD`, so set it only if the two files differ. |
 | `NAMIR_CODESIGN_IDENTITY` | the identity `codesign` signs with, e.g. `Developer ID Application: Your Name (TEAMID1234)`. |
 | `NAMIR_INSTALLER_IDENTITY` | the identity `productbuild --sign` signs the `.pkg` with, e.g. `Developer ID Installer: Your Name (TEAMID1234)`. |
 | `NAMIR_NOTARY_APPLE_ID` | the Apple ID (email) the notarization submission is made from. |
@@ -158,15 +161,20 @@ xcrun stapler validate Namir-<version>.pkg
 pkgutil --check-signature Namir-<version>.pkg
 ```
 
-### Obtaining the `.p12` — use **one** CSR for **both** certificates
+### Obtaining the `.p12` — one CSR or two, but know which you did
 
-Apple issues Developer ID Application and Developer ID Installer as two separate requests, so the
-obvious move is a certificate signing request for each. Don't: two CSRs mean two private keys, and
-`NAMIR_APPLE_CERTIFICATE_P12_BASE64` is one file that has to carry *both* identities. Submitting
-the **same** CSR to both requests yields two certificates over one keypair, which a single `.p12`
-holds without trouble.
+Apple issues Developer ID Application and Developer ID Installer as two separate requests. You may
+submit **one** CSR to both — two certificates over one keypair, which a single `.p12` holds — or a
+CSR **each**, which gives two keypairs and needs two `.p12` files. Both work; they differ only in
+how many secrets you set.
 
-The failure this avoids is quiet rather than loud, which is why it earns a rule. A `.p12` missing
+What does not work is two keypairs in one file. `openssl pkcs12 -export` carries exactly one
+private key and discards any others in silence — checked 2026-09-10 rather than assumed: handed a
+PEM holding two keypairs and two certificates it writes a `.p12` with two certificates and **one**
+key, no warning, exit status 0. Keychain Access can produce a genuine two-key `.p12` by exporting
+both certificates together; `openssl` cannot, which is why the second secret exists.
+
+Getting this wrong fails quietly, which is the reason it is spelled out at all. A `.p12` missing
 the installer's key imports with no complaint; `codesign_payloads` signs the `.clap` and the
 `.app`, `build_product_pkg` logs "the `.pkg` will be unsigned", the macOS job reports
 `signed=false`, and the release notes truthfully say the artifacts are unsigned. Nothing errors
@@ -182,6 +190,10 @@ Both certificates then sit under **My Certificates** sharing one key, so right-c
 choosing **Export "…"** produces a `.p12` covering both identities. Pick a password
 (`NAMIR_APPLE_CERTIFICATE_PASSWORD`) and save as `Certificates.p12`.
 
+With two CSRs instead, ⌘-click **both** certificates and **Export 2 items…** — Keychain Access
+writes both keys into the one file, so a single secret still suffices. Exporting only one, and
+assuming it covered the pair, is the quiet failure above.
+
 #### Without a Mac (openssl)
 
 No macOS is needed to *obtain* the credentials: Developer ID certificates are ordinary X.509 and
@@ -189,12 +201,17 @@ the runner does the signing. What a Mac is still needed for is the verification 
 — `spctl --assess`, `xcrun stapler validate`, and loading the plugin in a real DAW, which is the
 check R-11 actually turns on.
 
+A CSR **each** is the straightforward route here, and the one the portal leads you to. The CN only
+labels your key — Apple sets the issued certificate's own subject — so it need not be exact.
+
 ```bash
-# 1. One key, one CSR. Submit this same file to BOTH certificate requests.
-#    The CN here only labels your key: Apple sets the issued certificate's own subject.
+# 1. A keypair and a CSR per certificate. Submit each to its own request.
 openssl req -new -newkey rsa:2048 -nodes \
-  -keyout devid.key -out devid.csr \
-  -subj "/emailAddress=you@example.com/CN=Namir Developer ID"
+  -keyout devid_app.key -out devid_app.csr \
+  -subj "/emailAddress=you@example.com/CN=Namir Developer ID Application"
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout devid_inst.key -out devid_inst.csr \
+  -subj "/emailAddress=you@example.com/CN=Namir Developer ID Installer"
 
 # 2. Apple returns DER `.cer` files. Convert both to PEM.
 openssl x509 -inform DER -in developerID_application.cer -out devid_application.pem
@@ -205,17 +222,21 @@ openssl x509 -inform DER -in developerID_installer.cer   -out devid_installer.pe
 openssl x509 -in devid_application.pem -noout -subject   # -> NAMIR_CODESIGN_IDENTITY
 openssl x509 -in devid_installer.pem   -noout -subject   # -> NAMIR_INSTALLER_IDENTITY
 
-# 4. One key, both certificates, one file.
-openssl pkcs12 -export -inkey devid.key \
-  -in devid_application.pem -certfile devid_installer.pem \
-  -name "Developer ID" -out Certificates.p12
+# 4. One `.p12` per keypair -- two files, because one cannot hold two keys (above).
+openssl pkcs12 -export -inkey devid_app.key  -in devid_application.pem \
+  -name "Developer ID Application" -out Certificates.p12
+openssl pkcs12 -export -inkey devid_inst.key -in devid_installer.pem \
+  -name "Developer ID Installer"   -out Installer.p12
 ```
 
-**`openssl pkcs12 -export` carries exactly one private key and discards any others in silence.**
-Checked 2026-09-10 rather than assumed: handed a PEM holding two keypairs and two certificates, it
-writes a `.p12` containing two certificates and **one** key, with no warning and exit status 0.
-That is the mechanical reason the one-CSR rule above is a rule — with two keypairs there is no
-single-file `.p12` for this pipeline to consume, and the tool that builds it will not say so.
+`Certificates.p12` becomes `NAMIR_APPLE_CERTIFICATE_P12_BASE64` and `Installer.p12` becomes
+`NAMIR_APPLE_INSTALLER_P12_BASE64`; `import_cert` imports both into the one temporary keychain, and
+`set-key-partition-list` is per-keychain so it covers both without being repeated.
+
+Had you instead submitted **one** CSR to both requests, step 1 collapses to a single keypair and
+step 4 to a single file carrying both certificates — `openssl pkcs12 -export -inkey devid.key -in
+devid_application.pem -certfile devid_installer.pem -out Certificates.p12` — and the second secret
+stays unset. Either shape is fine; what is not fine is two keypairs and one file.
 
 If a signing run ever reports an untrusted chain, append Apple's **Developer ID Certification
 Authority** intermediate to the `-certfile` argument (`cat devid_installer.pem DeveloperIDCA.pem >
@@ -344,7 +365,7 @@ Everything, but not equally. In descending order of how likely it is to be wrong
    ready for credentials**: `release.yml` now imports the `.p12` into a keychain (`import_cert`
    step), passes the documented secrets through to this script, and picks signed or unsigned
    release notes from the macOS job's reported outputs. What remains untested is the *signed* run
-   itself, which cannot happen until a Developer ID is obtained and the seven secrets above are
+   itself, which cannot happen until a Developer ID is obtained and the secrets above are
    configured; until then, the **unsigned** path is the one every run exercises, which is exactly
    D-18.3's point.
 5. **`pkgbuild --analyze` on the app root.** The `PlistBuddy` loop assumes the component list is an
