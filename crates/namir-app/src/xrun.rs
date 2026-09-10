@@ -35,7 +35,7 @@ impl XrunCounter {
         self.0.load(Ordering::Relaxed)
     }
 
-    /// Resets the counter to zero.
+    /// FR-IO-060's "resettable by the user" clause.
     #[inline]
     pub fn reset(&self) {
         self.0.store(0, Ordering::Relaxed);

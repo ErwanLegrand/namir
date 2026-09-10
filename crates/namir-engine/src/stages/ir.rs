@@ -92,6 +92,8 @@ const LEVEL_RAMP_TIME_CONSTANT_MS: f32 = 25.0;
 /// `HIGH_PASS_LOW_PASS_Q` constant for its own HP/LP pair.
 const LOW_CUT_HIGH_CUT_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
+// Short local names for this stage's descriptor ids, for `apply`'s comparison chain.
+// Aliases only: every use site is an `==`, not a `match` arm.
 const ENABLED_ID: ParamId = ENABLED.id;
 const LEVEL_DB_ID: ParamId = LEVEL_DB.id;
 const NORMALIZE_ENABLED_ID: ParamId = NORMALIZE_ENABLED.id;

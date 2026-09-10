@@ -151,6 +151,8 @@ fn resample_chunk_frames(engine_hz: usize, model_hz: usize) -> usize {
     MIN_RESAMPLE_FFT_FRAMES.div_ceil(fft_unit_low) * fft_unit_engine
 }
 
+// Short local names for this stage's descriptor ids, for `apply`'s comparison chain.
+// Aliases only: every use site is an `==`, not a `match` arm.
 const ENABLED_ID: ParamId = ENABLED.id;
 const NORMALIZE_ENABLED_ID: ParamId = NORMALIZE_ENABLED.id;
 const NORMALIZE_OFFSET_DB_ID: ParamId = NORMALIZE_OFFSET_DB.id;
