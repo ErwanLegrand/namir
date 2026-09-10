@@ -235,8 +235,12 @@ impl Drop for RunningStreams {
     /// minimum `STANDARD_BUFFER_SIZES` offers. An overrun there is not silent either —
     /// `build_input` records one xrun per losing chunk — so at the small end this trades an
     /// output-side pad for an input-side overrun on a stop that takes more than a few
-    /// milliseconds, rather than eliminating the possibility. Strictly better than the old order
-    /// at every block size, which is the claim being made.
+    /// milliseconds, rather than eliminating the possibility. Better than the old order by seven
+    /// blocks of slack rather than one, at every block size — the old order's only slack against
+    /// an output pull was that same one-block prefill. It is worse only if closing the *output*
+    /// side takes some seven blocks longer than closing the input side (4.7 ms at the 32-frame
+    /// minimum), which no observed teardown does; that precondition, not block size, is what the
+    /// claim rests on.
     ///
     /// Written out here rather than obtained by declaring the two fields the other way round,
     /// so a later field reorder cannot silently reintroduce the counted teardown pad.
@@ -246,6 +250,9 @@ impl Drop for RunningStreams {
     }
 }
 
+/// Both stream sides are `Some` until `Drop` takes them; see [`RunningStreams::play`].
+const BOTH_SIDES_UNTIL_DROP: &str = "both stream sides are Some until Drop takes them";
+
 impl RunningStreams {
     /// Starts both streams. Built paused by `cpal`'s own contract; this is the one call that
     /// actually makes audio flow.
@@ -254,29 +261,33 @@ impl RunningStreams {
     /// point where the capture side has to lead: the bridge must already be filling when the
     /// output callback starts pulling it, or the first pulls pad — the same reason [`open`]
     /// prefills a block.
+    ///
+    /// Both fields are `Some` for the whole observable life of a `RunningStreams` — they are
+    /// private and [`open`] is the only constructor, `Drop` being the only thing that takes them
+    /// — so a `None` here is a bug in a later refactor, not a state to tolerate. `expect` rather
+    /// than a silent no-op because the symptom of tolerating it is "reports success, no audio
+    /// flows", which this crate's callback plumbing gives no other signal for.
     pub fn play(&self) -> Result<(), crate::audio_io::AudioIoError> {
-        if let Some(input) = &self.input {
-            input.play()?;
-        }
-        if let Some(output) = &self.output {
-            output.play()?;
-        }
-        Ok(())
+        self.input.as_ref().expect(BOTH_SIDES_UNTIL_DROP).play()?;
+        self.output.as_ref().expect(BOTH_SIDES_UNTIL_DROP).play()
     }
 
     /// Pauses both streams without closing them.
     ///
-    /// Output side first, matching the stop order and for the same reason: a paused input side
-    /// under a still-running output side is exactly the unfed-bridge window [`Drop`] avoids, and
-    /// would charge FR-IO-060's counter for a pause.
+    /// No production caller today — the app stops by dropping, never by pausing — so this is the
+    /// order for whenever one appears rather than a cost anything currently pays. It matches the
+    /// stop order for the same reason: an input side paused under a still-running output side
+    /// would be exactly the unfed-bridge window [`Drop`] avoids, and would charge FR-IO-060's
+    /// counter for a pause.
+    ///
+    /// The one path the ordering fix does not cover: `?` on the output side leaves the input side
+    /// running, which is the mirror of the bug being fixed — the capture side then pushes into a
+    /// bridge nobody drains. [`play`](Self::play)'s `?` has the same one-sided-failure shape.
+    /// Both are unreachable while nothing calls `pause`, and a caller that appears has to decide
+    /// what a half-paused pair means before this is worth building out.
     pub fn pause(&self) -> Result<(), crate::audio_io::AudioIoError> {
-        if let Some(output) = &self.output {
-            output.pause()?;
-        }
-        if let Some(input) = &self.input {
-            input.pause()?;
-        }
-        Ok(())
+        self.output.as_ref().expect(BOTH_SIDES_UNTIL_DROP).pause()?;
+        self.input.as_ref().expect(BOTH_SIDES_UNTIL_DROP).pause()
     }
 
     /// D-13.2's elevation outcome, for a non-audio thread to report (issue #76). Handed to
@@ -1409,13 +1420,17 @@ mod tests {
 
         drop(streams);
 
-        assert_eq!(
-            (
-                backend.stream_log(Direction::Output).stop_tick(),
-                backend.stream_log(Direction::Input).stop_tick(),
-            ),
-            (Some(1), Some(2)),
-            "the output side stops first, the input side second"
+        // Relative, not absolute: the clock lives on the `FakeBackend` and spans everything it
+        // does, so pinning `(Some(1), Some(2))` would fail spuriously the moment this test paused
+        // first or opened a second pair. `o < i` still fails under the old order (`o > i`) and
+        // still fails if either side never stops.
+        let (output, input) = (
+            backend.stream_log(Direction::Output).stop_tick(),
+            backend.stream_log(Direction::Input).stop_tick(),
+        );
+        assert!(
+            matches!((output, input), (Some(o), Some(i)) if o < i),
+            "the output side stops first, the input side second; got {output:?} then {input:?}"
         );
     }
 
@@ -1436,13 +1451,14 @@ mod tests {
 
         streams.pause().unwrap();
 
-        assert_eq!(
-            (
-                backend.stream_log(Direction::Output).pause_tick(),
-                backend.stream_log(Direction::Input).pause_tick(),
-            ),
-            (Some(1), Some(2)),
-            "the output side pauses first, the input side second"
+        // Relative for the same reason as the stop test above.
+        let (output, input) = (
+            backend.stream_log(Direction::Output).pause_tick(),
+            backend.stream_log(Direction::Input).pause_tick(),
+        );
+        assert!(
+            matches!((output, input), (Some(o), Some(i)) if o < i),
+            "the output side pauses first, the input side second; got {output:?} then {input:?}"
         );
     }
 
