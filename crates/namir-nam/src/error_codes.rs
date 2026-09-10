@@ -198,6 +198,18 @@ pub const NON_FINITE_VALUE: ErrorCode = ErrorCode::new(
 /// `UNSUPPORTED_CONFIGURATION` above. So this is a file disagreeing with itself about how wide
 /// its own input is, not a multi-input model Namir is declining to play: a real one declares
 /// `in_channels` as well, and is rejected above, by name, as the unsupported feature it is.
+///
+/// Issue #171 adds the last two: a `gating_mode` or `secondary_activation` **array** whose length
+/// disagrees with that layer array's `dilations`. Both are per-layer arrays, and the reference
+/// requires one entry per layer — in the general loader (`model.cpp:1043-1048` for `gating_mode`,
+/// `:1049-1062` for `secondary_activation`), not only in the strict shape detector
+/// (`a2_fast.cpp:837-843`, `:853-859`) — so a
+/// short or over-long one describes the gating of a different number of layers than the file has
+/// — self-contradiction, not a feature request. Two limits, both the reference's own:
+/// `secondary_activation`'s length is read only when `gating_mode` is an array, and the scalar
+/// spellings carry no length at all. An *active* gating mode of any length is still
+/// `UNSUPPORTED_CONFIGURATION` above, since naming the unimplemented feature is the more
+/// actionable message.
 pub const INCONSISTENT_CONFIGURATION: ErrorCode = ErrorCode::new(
     "nam.load.inconsistent_configuration",
     Severity::Error,
