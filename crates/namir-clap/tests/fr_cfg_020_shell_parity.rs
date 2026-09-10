@@ -655,6 +655,7 @@ mod host_ext {
             &self,
             _host: &HostInfo,
             _device: &DeviceInfo,
+            _share_mode: ShareMode,
         ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
             Ok(vec![SupportedConfigRange {
                 channels: 1,
@@ -667,6 +668,7 @@ mod host_ext {
             &self,
             _host: &HostInfo,
             _device: &DeviceInfo,
+            _share_mode: ShareMode,
         ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
             Ok(vec![SupportedConfigRange {
                 channels: 2,
