@@ -594,9 +594,10 @@ impl AppHost {
             channels: output_channels,
             share_mode: share_mode.mode,
         };
-        // Issue #166: the output stream asks the device for its own buffer in shared mode, so the
-        // render path keeps a reserve instead of being drained every callback. The engine's block
-        // size still comes from `buffer_frames` below -- see `audio_io::output_buffer_request`.
+        // Issue #166: the output stream asks the device for its own buffer, so the render path
+        // keeps a reserve instead of being drained every callback. The engine's block size still
+        // comes from `buffer_frames` below -- see `audio_io::output_buffer_request`, whose rule is
+        // mode-independent.
         output_params.buffer_frames = crate::audio_io::output_buffer_request();
 
         let max_block_size = crate::audio_io::block_frames(buffer_frames);
@@ -614,6 +615,17 @@ impl AppHost {
             );
             return;
         };
+
+        // FR-IO-020: the same explanation `app::run` gives at start-up. Without it a selector
+        // change on a device that refuses exclusive mode flips the mode indicator to shared and
+        // says nothing about why -- and per issue #189's triage, every buffer-size or device
+        // change re-runs this refusal.
+        if let Some(detail) = &share_mode.refusal_detail {
+            self.push_notice(
+                crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE,
+                detail.clone(),
+            );
+        }
 
         // Pre-compute supported sets from the negotiated device configs.
         let supported_sample_rates =
@@ -2873,6 +2885,89 @@ mod tests {
         assert_eq!(
             snapshot.audio_mode.as_ref().map(|m| m.device_name.as_str()),
             Some("Out 2")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Issue #190 on the reopen path.** Every existing reopen test runs with `exclusive_mode`
+    /// at its default `false`, so none of them observes the share mode the enumeration asks for.
+    /// Per issue #189's triage a buffer-size change re-enters this whole sequence, so the reopen
+    /// has to reproduce start-up's behaviour in both halves: enumerate in the requested mode
+    /// (re-enumerating shared when the request is refused), and say *why* the session is not in
+    /// the mode the settings ask for.
+    #[test]
+    fn a_reopen_enumerates_in_the_requested_share_mode_and_explains_a_refusal() {
+        let dir = temp_dir("reopen_share_mode");
+        let (mut host, _engine) = build_host(&dir);
+        let exclusive = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
+        // Answers the exclusive query for real, and refuses the mode: the case that genuinely
+        // needs a second pass, because pass 1's ranges belong to a session that will not run.
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(
+                    vec![crate::audio_io::DeviceInfo {
+                        name: "Mic".to_string(),
+                        is_default: true,
+                    }],
+                    vec![crate::audio_io::DeviceInfo {
+                        name: "Speakers".to_string(),
+                        is_default: true,
+                    }],
+                )
+                .reporting_exclusive_configs(exclusive(1), exclusive(2)),
+        );
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+            host_info: HostInfo {
+                name: "fake".to_string(),
+            },
+            xruns: Arc::new(XrunCounter::new()),
+        });
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings {
+                exclusive_mode: true,
+                ..AppSettings::default()
+            },
+            vec!["Mic".to_string()],
+            vec!["Speakers".to_string()],
+            Some("Mic".to_string()),
+            Some("Speakers".to_string()),
+            vec![48_000],
+            48_000,
+            vec![256],
+            256,
+        );
+
+        host.dispatch(UiIntent::SelectBufferSize { buffer_size: 512 });
+
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, crate::audio_io::ShareMode::Exclusive),
+                (Direction::Output, crate::audio_io::ShareMode::Exclusive),
+                (Direction::Input, crate::audio_io::ShareMode::Shared),
+                (Direction::Output, crate::audio_io::ShareMode::Shared),
+            ],
+            "the reopen asks in the requested mode, then re-asks shared once it is refused"
+        );
+        let notices = host.snapshot().notices;
+        assert!(
+            notices
+                .iter()
+                .any(|n| n.code.id == crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE.id),
+            "the refusal is explained on the reopen path too: {notices:?}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

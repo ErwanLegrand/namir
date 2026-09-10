@@ -60,6 +60,10 @@ pub(crate) struct DirectionSetup {
     pub(crate) device: DeviceInfo,
     pub(crate) fell_back_from: Option<String>,
     pub(crate) configs: Vec<crate::audio_io::SupportedConfigRange>,
+    /// The mode `configs` actually describe, which is not necessarily the one that was asked for
+    /// — see [`crate::audio_io::EnumeratedConfigs`]. `negotiate_audio` reads it to decide whether
+    /// a refused exclusive request has anything to re-enumerate.
+    pub(crate) enumerated_share_mode: crate::audio_io::ShareMode,
 }
 
 pub(crate) fn setup_direction(
@@ -70,19 +74,25 @@ pub(crate) fn setup_direction(
     configs_of: impl Fn(
         &HostInfo,
         &DeviceInfo,
-    ) -> Result<
-        Vec<crate::audio_io::SupportedConfigRange>,
-        crate::audio_io::AudioIoError,
-    >,
+    )
+        -> Result<crate::audio_io::EnumeratedConfigs, crate::audio_io::AudioIoError>,
 ) -> Option<DirectionSetup> {
     let devices = devices.ok()?;
     let selection = crate::device_state::select_device(&devices, remembered_device)?;
-    let configs = configs_of(host, &selection.device).unwrap_or_default();
+    // A direction that could not be enumerated at all has no ranges and describes no mode: shared
+    // is the conservative answer, and the one that makes `negotiate_audio` skip a second pass it
+    // has no new information for.
+    let enumerated =
+        configs_of(host, &selection.device).unwrap_or(crate::audio_io::EnumeratedConfigs {
+            share_mode: crate::audio_io::ShareMode::Shared,
+            ranges: Vec::new(),
+        });
     let _ = backend; // reserved for a future multi-host UI; kept as a parameter for that seam.
     Some(DirectionSetup {
         device: selection.device,
         fell_back_from: selection.fell_back_from,
-        configs,
+        configs: enumerated.ranges,
+        enumerated_share_mode: enumerated.share_mode,
     })
 }
 
@@ -124,6 +134,13 @@ pub(crate) struct AudioNegotiation {
 /// run — and the whole sequence is repeated against the shared ranges. The refused decision itself
 /// is kept: it was settled by the devices, not by the ranges, and re-asking would give the same
 /// answer.
+///
+/// **The second pass is skipped when the first one never got exclusive ranges.** A device with no
+/// reachable exclusive endpoint answers an exclusive request with its *shared* ranges
+/// ([`crate::audio_io::EnumeratedConfigs`] records which it gave), and then refuses the mode — so
+/// the gate would otherwise fire on every non-WASAPI host with `exclusive_mode: true` in its
+/// settings file and repeat a query whose answer is already in hand. On Windows that repeat is COM
+/// device enumeration on the start-up path NFR-PERF-030 measures.
 pub(crate) fn negotiate_audio(
     backend: &dyn AudioBackend,
     host_info: &HostInfo,
@@ -167,26 +184,29 @@ pub(crate) fn negotiate_audio(
             sample_rate_hz: settled.0,
             buffer_frames: settled.1,
             channels: settled.2,
-            share_mode: ShareMode::Shared,
+            share_mode: requested,
         },
         &output.device,
         StreamParams {
             sample_rate_hz: settled.0,
             buffer_frames: settled.1,
             channels: settled.3,
-            share_mode: ShareMode::Shared,
+            share_mode: requested,
         },
         prefs.exclusive_mode,
     );
 
-    let (input, output, settled) =
-        if requested == ShareMode::Exclusive && share_mode.mode == ShareMode::Shared {
-            let (input, output) = enumerate(ShareMode::Shared)?;
-            let settled = settle(&input, &output, prefs);
-            (input, output, settled)
-        } else {
-            (input, output, settled)
-        };
+    // Either direction having answered in exclusive mode is enough: `settle` reads both sides'
+    // ranges, so one exclusive list is enough to have skewed the result.
+    let enumerated_exclusive = input.enumerated_share_mode == ShareMode::Exclusive
+        || output.enumerated_share_mode == ShareMode::Exclusive;
+    let (input, output, settled) = if enumerated_exclusive && share_mode.mode == ShareMode::Shared {
+        let (input, output) = enumerate(ShareMode::Shared)?;
+        let settled = settle(&input, &output, prefs);
+        (input, output, settled)
+    } else {
+        (input, output, settled)
+    };
 
     Some(AudioNegotiation {
         input,
@@ -449,9 +469,10 @@ pub fn run() {
         channels: output_channels,
         share_mode: share_mode.mode,
     };
-    // Issue #166: the output stream asks the device for its own buffer in shared mode, so the
-    // render path keeps a reserve instead of being drained every callback. The engine's block
-    // size still comes from `buffer_frames` below -- see `audio_io::output_buffer_request`.
+    // Issue #166: the output stream asks the device for its own buffer, so the render path keeps a
+    // reserve instead of being drained every callback. The engine's block size still comes from
+    // `buffer_frames` below -- see `audio_io::output_buffer_request`, whose rule is
+    // mode-independent.
     output_params.buffer_frames = crate::audio_io::output_buffer_request();
 
     let max_block_size = crate::audio_io::block_frames(buffer_frames);
@@ -897,7 +918,7 @@ fn spawn_xrun_logger(counter: Arc<XrunCounter>) -> XrunLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::FakeBackend;
+    use crate::stream::{Direction, FakeBackend};
 
     const IN: &str = "fake in";
     const OUT: &str = "fake out";
@@ -939,19 +960,25 @@ mod tests {
     /// A backend whose exclusive-mode ranges differ from its shared ones — the WASAPI shape
     /// (issue #190). Shared reports `BufferSizeRange::Unknown`, so no buffer size can be picked;
     /// exclusive reports a real range, out of which `PREFERRED_BUFFER_FRAMES` (256) is chosen.
+    ///
+    /// The two directions get **different** exclusive ranges — the input keeps its one channel,
+    /// the output its two, as the shared answers already do — so a test can tell a direction
+    /// mix-up in the enumeration from correct wiring. A single shared answer could not.
     fn backend_with_two_faces() -> FakeBackend {
-        let exclusive = vec![crate::audio_io::SupportedConfigRange {
-            channels: 2,
-            min_sample_rate_hz: 48_000,
-            max_sample_rate_hz: 48_000,
-            buffer_size: crate::audio_io::BufferSizeRange::Range {
-                min: 144,
-                max: 240_000,
-            },
-        }];
+        let exclusive = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
         FakeBackend::new()
             .with_devices(vec![device(IN)], vec![device(OUT)])
-            .reporting_exclusive_configs(exclusive)
+            .reporting_exclusive_configs(exclusive(1), exclusive(2))
     }
 
     fn negotiated(backend: &FakeBackend, exclusive_mode: bool) -> AudioNegotiation {
@@ -1019,6 +1046,74 @@ mod tests {
 
         assert_eq!(negotiated.share_mode.mode, ShareMode::Shared);
         assert_eq!(negotiated.buffer_frames, None);
+    }
+
+    /// The exclusive query is made **per direction**, and each direction gets its own answer. A
+    /// swap — input enumerated as output, or both enumerated as one — is the same class of bug
+    /// issue #190 fixed one level up, so it is asserted rather than assumed.
+    #[test]
+    fn each_direction_is_enumerated_in_its_own_right() {
+        let backend = backend_with_two_faces()
+            .granting_exclusive_to(IN)
+            .granting_exclusive_to(OUT);
+        let negotiated = negotiated(&backend, true);
+
+        assert_eq!(
+            negotiated.input_channels, 1,
+            "the input's channel count comes from the input's own exclusive ranges"
+        );
+        assert_eq!(
+            negotiated.output_channels, 2,
+            "and the output's from the output's"
+        );
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, ShareMode::Exclusive),
+                (Direction::Output, ShareMode::Exclusive),
+            ],
+            "one exclusive query per direction, and no second pass when the mode is granted"
+        );
+    }
+
+    /// **The second pass runs only when there is something to re-enumerate.** Here the device
+    /// answered the exclusive query for real and *then* refused the mode, so the first pass'
+    /// ranges do not apply to the shared session that will run.
+    #[test]
+    fn a_refusal_after_a_real_exclusive_answer_enumerates_a_second_time() {
+        let backend = backend_with_two_faces();
+        let _ = negotiated(&backend, true);
+
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, ShareMode::Exclusive),
+                (Direction::Output, ShareMode::Exclusive),
+                (Direction::Input, ShareMode::Shared),
+                (Direction::Output, ShareMode::Shared),
+            ]
+        );
+    }
+
+    /// The other way to reach a refused exclusive request: the device could not answer the
+    /// exclusive query at all, so the first pass already returned the shared ranges. Re-running it
+    /// would repeat a query whose answer is in hand — on Windows, COM device enumeration on the
+    /// start-up path NFR-PERF-030 measures — so it is skipped. This is every non-WASAPI host with
+    /// `exclusive_mode: true` in its settings file.
+    #[test]
+    fn a_device_that_cannot_answer_the_exclusive_query_is_not_enumerated_twice() {
+        let backend = FakeBackend::new().with_devices(vec![device(IN)], vec![device(OUT)]);
+        let negotiated = negotiated(&backend, true);
+
+        assert_eq!(negotiated.share_mode.mode, ShareMode::Shared);
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, ShareMode::Exclusive),
+                (Direction::Output, ShareMode::Exclusive),
+            ],
+            "the exclusive request is made once; its shared-range answer is kept"
+        );
     }
 
     /// **Issue #88: the `cpal` error callback allocates nothing.** This is the closure a real

@@ -2071,10 +2071,23 @@ start-up and `AppHost::initiate_audio_reopen` — go through one function (`app:
 because they previously held two copies of this sequence, and a two-pass version maintained twice
 would drift.
 
-*Consequence — a device that cannot answer the exclusive query is enumerated shared.* The query
-failing, erroring, or returning an empty set all mean the same thing: this device will not open
-exclusive. Returning an error instead would abort a start-up that is about to succeed in shared
-mode, since `negotiate_share_mode` degrades a few lines later.
+*Consequence — a device that cannot answer the exclusive query is enumerated shared, and is not
+enumerated twice.* The query failing, erroring, or returning an empty set all mean the same thing:
+this device will not open exclusive. Returning an error instead would abort a start-up that is about
+to succeed in shared mode, since `negotiate_share_mode` degrades a few lines later. Because that
+fallback answer *is* the shared answer, the second pass above would re-run a query whose result is
+already in hand — on every non-WASAPI host with `exclusive_mode: true` in its settings file, and on
+Windows that repeat is COM device enumeration on the start-up path NFR-PERF-030 measures. So the
+enumeration reports the mode it actually answered in (`audio_io::EnumeratedConfigs`), and the second
+pass is gated on that rather than on the request: a refusal only re-enumerates when exclusive ranges
+were really obtained.
+
+*Consequence — the reopen path reports a refusal, as start-up does.* `initiate_audio_reopen` posts
+`app.audio_io.exclusive_mode_unavailable` on the same `ShareModeDecision::refusal_detail` `app::run`
+uses. It previously computed the detail and dropped it, which was survivable while the mode was
+settled once per session; per issue #189's triage every device, rate or buffer-size selector
+re-enters this sequence, so without it the mode indicator flips to shared mid-session with nothing
+said about why.
 
 *What is not claimed.* This does not make FR-IO-040's buffer selection reach the output *device* —
 D-13.3's consequence still stands, the output stream still asks for `BufferSize::Default`, and the

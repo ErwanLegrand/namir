@@ -137,7 +137,7 @@ fn report(
             _ => backend.output_configs(host, device, ShareMode::Shared),
         };
         let configs = match configs {
-            Ok(configs) => configs,
+            Ok(enumerated) => enumerated.ranges,
             Err(e) => {
                 // Exactly what `app::run` does with this failure -- it calls
                 // `configs_of(..).unwrap_or_default()` -- so the negotiation below falls through to

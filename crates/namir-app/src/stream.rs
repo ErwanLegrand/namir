@@ -528,9 +528,18 @@ pub(crate) struct FakeBackend {
     /// the observable that distinguishes "the session settled on exclusive" from "the session
     /// settled on exclusive and then opened shared anyway".
     asked_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
-    /// What this backend reports when asked for **exclusive** configs. `None` means "the same
-    /// ranges as shared", which is what a backend with no WASAPI endpoint behind it does.
-    exclusive_configs: Option<Vec<SupportedConfigRange>>,
+    /// What this backend reports when asked for **exclusive** configs, per direction. `None`
+    /// means "the same ranges as shared", which is what a backend with no WASAPI endpoint behind
+    /// it does. Per direction rather than per backend for the same reason
+    /// [`FakeBackend::granting_exclusive_to`] is per device: a single shared answer cannot catch
+    /// a direction mix-up in the code it exercises, and picking the wrong direction is precisely
+    /// the class of bug issue #190 was.
+    exclusive_input_configs: Option<Vec<SupportedConfigRange>>,
+    exclusive_output_configs: Option<Vec<SupportedConfigRange>>,
+    /// Every `(direction, share_mode)` a config query was made with, in call order — the
+    /// observable for *which mode was enumerated*, and the only way to see issue #190's two-pass
+    /// sequence. [`FakeBackend::asked_share_modes`] is its counterpart for the stream open.
+    enumerated_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
     input_devices: Vec<DeviceInfo>,
     output_devices: Vec<DeviceInfo>,
 }
@@ -545,7 +554,9 @@ impl FakeBackend {
             input_error: std::sync::Mutex::new(None),
             output_error: std::sync::Mutex::new(None),
             input_stream: Arc::new(FakeStreamLog::default()),
-            exclusive_configs: None,
+            exclusive_input_configs: None,
+            exclusive_output_configs: None,
+            enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream: Arc::new(FakeStreamLog::default()),
             open_failures: Vec::new(),
             exclusive_devices: Vec::new(),
@@ -555,13 +566,16 @@ impl FakeBackend {
         }
     }
 
-    /// Makes the exclusive-mode config query answer with `configs` instead of the shared ranges —
-    /// the WASAPI shape, where the two modes describe different devices (issue #190).
+    /// Makes the exclusive-mode config query answer with these ranges instead of the shared ones —
+    /// the WASAPI shape, where the two modes describe different devices (issue #190). Per
+    /// direction, so a test can tell an input/output mix-up from correct wiring.
     pub(crate) fn reporting_exclusive_configs(
         mut self,
-        configs: Vec<SupportedConfigRange>,
+        input: Vec<SupportedConfigRange>,
+        output: Vec<SupportedConfigRange>,
     ) -> Self {
-        self.exclusive_configs = Some(configs);
+        self.exclusive_input_configs = Some(input);
+        self.exclusive_output_configs = Some(output);
         self
     }
 
@@ -623,6 +637,12 @@ impl FakeBackend {
             .iter()
             .find(|(d, _)| *d == direction)
             .map(|(_, mode)| *mode)
+    }
+
+    /// Every config query this backend answered, in call order — issue #190's two-pass
+    /// re-enumeration is a sequence, not a final state, so a test needs the whole list.
+    pub(crate) fn enumerations(&self) -> Vec<(Direction, ShareMode)> {
+        self.enumerated_share_modes.lock().unwrap().clone()
     }
 }
 
@@ -707,32 +727,52 @@ impl AudioBackend for FakeBackend {
         _h: &HostInfo,
         _d: &DeviceInfo,
         share_mode: ShareMode,
-    ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-        if let (ShareMode::Exclusive, Some(configs)) = (share_mode, &self.exclusive_configs) {
-            return Ok(configs.clone());
+    ) -> Result<crate::audio_io::EnumeratedConfigs, AudioIoError> {
+        self.enumerated_share_modes
+            .lock()
+            .unwrap()
+            .push((Direction::Input, share_mode));
+        if let (ShareMode::Exclusive, Some(ranges)) = (share_mode, &self.exclusive_input_configs) {
+            return Ok(crate::audio_io::EnumeratedConfigs {
+                share_mode: ShareMode::Exclusive,
+                ranges: ranges.clone(),
+            });
         }
-        Ok(vec![SupportedConfigRange {
-            channels: 1,
-            min_sample_rate_hz: 48_000,
-            max_sample_rate_hz: 48_000,
-            buffer_size: BufferSizeRange::Unknown,
-        }])
+        Ok(crate::audio_io::EnumeratedConfigs {
+            share_mode: ShareMode::Shared,
+            ranges: vec![SupportedConfigRange {
+                channels: 1,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: BufferSizeRange::Unknown,
+            }],
+        })
     }
     fn output_configs(
         &self,
         _h: &HostInfo,
         _d: &DeviceInfo,
         share_mode: ShareMode,
-    ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
-        if let (ShareMode::Exclusive, Some(configs)) = (share_mode, &self.exclusive_configs) {
-            return Ok(configs.clone());
+    ) -> Result<crate::audio_io::EnumeratedConfigs, AudioIoError> {
+        self.enumerated_share_modes
+            .lock()
+            .unwrap()
+            .push((Direction::Output, share_mode));
+        if let (ShareMode::Exclusive, Some(ranges)) = (share_mode, &self.exclusive_output_configs) {
+            return Ok(crate::audio_io::EnumeratedConfigs {
+                share_mode: ShareMode::Exclusive,
+                ranges: ranges.clone(),
+            });
         }
-        Ok(vec![SupportedConfigRange {
-            channels: 2,
-            min_sample_rate_hz: 48_000,
-            max_sample_rate_hz: 48_000,
-            buffer_size: BufferSizeRange::Unknown,
-        }])
+        Ok(crate::audio_io::EnumeratedConfigs {
+            share_mode: ShareMode::Shared,
+            ranges: vec![SupportedConfigRange {
+                channels: 2,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: BufferSizeRange::Unknown,
+            }],
+        })
     }
     fn supports_exclusive(
         &self,

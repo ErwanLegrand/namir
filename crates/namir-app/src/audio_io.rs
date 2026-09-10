@@ -203,6 +203,24 @@ impl SupportedConfigRange {
     }
 }
 
+/// One direction's enumeration answer: the ranges, and **the share mode they actually describe**.
+///
+/// The second half is not the mode that was asked for. A device with no reachable exclusive
+/// endpoint answers an exclusive request with its shared ranges (see `exclusive_configs_when_asked`),
+/// and [`crate::app::negotiate_audio`] has to tell that apart from a device that answered the
+/// exclusive query for real: only the latter needs re-enumerating when the mode is then refused.
+/// Without this field the two are indistinguishable, and the re-enumeration runs on every
+/// non-WASAPI host with `exclusive_mode: true` in its settings, repeating a query whose answer is
+/// already in hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumeratedConfigs {
+    /// The mode `ranges` describe — [`ShareMode::Exclusive`] only when the device answered the
+    /// exclusive query itself.
+    pub share_mode: ShareMode,
+    /// The ranges, as [`SupportedConfigRange`] describes them.
+    pub ranges: Vec<SupportedConfigRange>,
+}
+
 /// What to open a stream with, already negotiated by [`crate::device_state`] against a device's
 /// [`SupportedConfigRange`]s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,14 +607,14 @@ pub trait AudioBackend: Send + Sync {
         host: &HostInfo,
         device: &DeviceInfo,
         share_mode: ShareMode,
-    ) -> Result<Vec<SupportedConfigRange>, AudioIoError>;
+    ) -> Result<EnumeratedConfigs, AudioIoError>;
     /// `device`'s supported output configurations in `share_mode` — as [`Self::input_configs`].
     fn output_configs(
         &self,
         host: &HostInfo,
         device: &DeviceInfo,
         share_mode: ShareMode,
-    ) -> Result<Vec<SupportedConfigRange>, AudioIoError>;
+    ) -> Result<EnumeratedConfigs, AudioIoError>;
 
     /// FR-IO-020: would `device` open in [`ShareMode::Exclusive`] at `params`? Answered **before**
     /// any stream is built, and this ordering is load-bearing rather than stylistic.
@@ -675,8 +693,8 @@ mod cpal_impl {
     use super::convert;
     use super::{
         AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CpalBackend, DeviceInfo,
-        ExclusiveModeOutcome, HostInfo, InlineDetail, ShareMode, StreamFailure, StreamParams,
-        SupportedConfigRange,
+        EnumeratedConfigs, ExclusiveModeOutcome, HostInfo, InlineDetail, ShareMode, StreamFailure,
+        StreamParams, SupportedConfigRange,
     };
 
     /// Resolves `host`'s name to a live `cpal::Host`. `cpal::available_hosts`/`host_from_id`
@@ -1107,12 +1125,15 @@ mod cpal_impl {
             host: &HostInfo,
             device: &DeviceInfo,
             share_mode: ShareMode,
-        ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
+        ) -> Result<EnumeratedConfigs, AudioIoError> {
             let cpal_host = resolve_host(host)?;
-            if let Some(configs) =
+            if let Some(ranges) =
                 exclusive_configs_when_asked(&cpal_host, &device.name, Direction::Input, share_mode)
             {
-                return Ok(configs);
+                return Ok(EnumeratedConfigs {
+                    share_mode: ShareMode::Exclusive,
+                    ranges,
+                });
             }
             let devices = cpal_host
                 .input_devices()
@@ -1121,7 +1142,10 @@ mod cpal_impl {
             let configs = cpal_device
                 .supported_input_configs()
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
-            Ok(to_supported_configs(configs, ShareMode::Shared))
+            Ok(EnumeratedConfigs {
+                share_mode: ShareMode::Shared,
+                ranges: to_supported_configs(configs, ShareMode::Shared),
+            })
         }
 
         fn output_configs(
@@ -1129,15 +1153,18 @@ mod cpal_impl {
             host: &HostInfo,
             device: &DeviceInfo,
             share_mode: ShareMode,
-        ) -> Result<Vec<SupportedConfigRange>, AudioIoError> {
+        ) -> Result<EnumeratedConfigs, AudioIoError> {
             let cpal_host = resolve_host(host)?;
-            if let Some(configs) = exclusive_configs_when_asked(
+            if let Some(ranges) = exclusive_configs_when_asked(
                 &cpal_host,
                 &device.name,
                 Direction::Output,
                 share_mode,
             ) {
-                return Ok(configs);
+                return Ok(EnumeratedConfigs {
+                    share_mode: ShareMode::Exclusive,
+                    ranges,
+                });
             }
             let devices = cpal_host
                 .output_devices()
@@ -1146,7 +1173,10 @@ mod cpal_impl {
             let configs = cpal_device
                 .supported_output_configs()
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
-            Ok(to_supported_configs(configs, ShareMode::Shared))
+            Ok(EnumeratedConfigs {
+                share_mode: ShareMode::Shared,
+                ranges: to_supported_configs(configs, ShareMode::Shared),
+            })
         }
 
         /// Asks the device, through D-13.4's fork, whether it reports an exclusive-mode
