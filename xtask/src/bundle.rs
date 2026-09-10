@@ -69,7 +69,7 @@ use std::path::{Path, PathBuf};
 /// artifact is. It is a second copy of the literal rather than an import because `xtask` is in
 /// neither shipped product's dependency graph — the same reason `identity.rs` re-states
 /// `MARK_FILL`.
-pub const PLUGIN_BUNDLE_IDENTIFIER: &str = "org.legrand.namir";
+pub const PLUGIN_BUNDLE_IDENTIFIER: &str = "io.namir.clap";
 
 /// The **application** bundle's `CFBundleIdentifier`, and *not* the same string as
 /// [`PLUGIN_BUNDLE_IDENTIFIER`].
@@ -85,7 +85,24 @@ pub const PLUGIN_BUNDLE_IDENTIFIER: &str = "org.legrand.namir";
 /// breaks the prefix relationship a reverse-DNS tree is for): it names what the artifact **is**,
 /// and it keeps the plugin's identifier as the product's root so a future third artifact extends
 /// the same tree.
-pub const APP_BUNDLE_IDENTIFIER: &str = "org.legrand.namir.standalone";
+///
+/// *Consequence (added M15, 2026-09-10).* The reverse-DNS prefix moved from `org.legrand` to
+/// `io.namir`, on acquisition of the `namir.io` domain. A reverse-DNS identifier is meant to be a
+/// domain the project controls and `org.legrand` never was one, so the strings the paragraph above
+/// names are historical; its reasoning is not, and is why this is a rename and not a redesign.
+/// **What survives verbatim**: the two bundles must not share an identifier, TCC keys the
+/// microphone grant on this one, and `.app` is still rejected as reading like the bundle extension
+/// — so the suffix is still `.standalone`. **What is superseded**: "keeps the plugin's identifier
+/// as the product's root". Under `org.legrand.namir` the plugin *had* to be the root, because that
+/// is where the product name lived; under `io.namir` the domain carries the product name, so the
+/// plugin becomes `io.namir.clap` and the two artifacts are siblings under a root no bundle claims.
+/// A third artifact still extends the same tree, and a second plugin format reads as
+/// `io.namir.vst3` — a peer of the first rather than a child of it, which is the more honest shape.
+///
+/// Done before 1.0 and before any tag exists, deliberately: [`PLUGIN_BUNDLE_IDENTIFIER`] is also
+/// the CLAP id a host keys a saved session to, so changing it after a release silently orphans
+/// every project that had loaded the plugin. `git tag -l` was empty when this was made.
+pub const APP_BUNDLE_IDENTIFIER: &str = "io.namir.standalone";
 
 /// `CFBundleName`, and the stem of the artifact every platform's loader looks for.
 pub const BUNDLE_NAME: &str = "Namir";
@@ -1155,10 +1172,7 @@ mod tests {
         // One artifact, one reverse-DNS identity: this literal and `namir-clap`'s own `PLUGIN_ID`
         // are the same string, and this test is the reminder of that when either is edited.
         let plist = plugin_info_plist("libnamir_clap.dylib");
-        assert!(
-            plist.contains("<string>org.legrand.namir</string>"),
-            "{plist}"
-        );
+        assert!(plist.contains("<string>io.namir.clap</string>"), "{plist}");
         assert!(plist.contains("<string>BNDL</string>"), "{plist}");
         assert!(plist.contains("<string>Namir</string>"), "{plist}");
         assert!(
@@ -1187,11 +1201,11 @@ mod tests {
         // The identifier must differ from the plugin's: TCC keys the microphone grant on it.
         assert_ne!(APP_BUNDLE_IDENTIFIER, PLUGIN_BUNDLE_IDENTIFIER);
         assert!(
-            plist.contains("<string>org.legrand.namir.standalone</string>"),
+            plist.contains("<string>io.namir.standalone</string>"),
             "{plist}"
         );
         assert!(
-            !plist.contains("<string>org.legrand.namir</string>"),
+            !plist.contains("<string>io.namir.clap</string>"),
             "the app must not carry the plugin's identifier:\n{plist}"
         );
 

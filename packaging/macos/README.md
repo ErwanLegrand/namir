@@ -310,15 +310,15 @@ unasserted bundle from a stale staging tree, which is worse than a loud failure;
 now refuses such a tree by name and tells the reader to re-run `xtask bundle --target macos`.
 
 Two values that lived here now live at their constants in `xtask/src/bundle.rs`, where they are
-argued: the standalone's `CFBundleIdentifier` (`org.legrand.namir.standalone`, distinct from the
+argued: the standalone's `CFBundleIdentifier` (`io.namir.standalone`, distinct from the
 plugin's because TCC keys the microphone grant on it) and `LSMinimumSystemVersion` (`11.0`,
 derived from `aarch64-apple-darwin`'s own floor since CI's macOS leg is Apple Silicon — an Intel
 or universal artifact reopens it).
 
 Two things the wrapper had to decide that properly belong in `docs/`:
 
-- **`CFBundleIdentifier` for the app is `org.legrand.namir.standalone`**, not the plugin's
-  `org.legrand.namir`. Bundle identifiers must be unique per bundle, and this one is what TCC keys
+- **`CFBundleIdentifier` for the app is `io.namir.standalone`**, not the plugin's
+  `io.namir.clap`. Bundle identifiers must be unique per bundle, and this one is what TCC keys
   the microphone grant on. `bundle.rs` argues that one product should have one reverse-DNS identity;
   that argument is about the plugin bundle matching `PLUGIN_ID`, and it cannot extend to a second
   bundle installed on the same machine. This wants ratifying in the architecture document.
