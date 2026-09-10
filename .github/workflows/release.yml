@@ -265,12 +265,25 @@ jobs:
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.NAMIR_APPLE_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.NAMIR_APPLE_CERTIFICATE_PASSWORD }}
+          # Optional second `.p12`, for the common case where Developer ID Application and
+          # Developer ID Installer were issued against *separate* CSRs and therefore hold separate
+          # private keys. `openssl pkcs12 -export` carries exactly one private key and drops any
+          # others in silence, so two keypairs cannot be expressed as one file on a machine
+          # without Keychain Access -- see `packaging/macos/README.md`. Absent, the first `.p12` is
+          # expected to carry both identities (one CSR submitted to both requests), which is what
+          # a Mac's multi-select export produces; that path is unchanged.
+          INSTALLER_P12_BASE64: ${{ secrets.NAMIR_APPLE_INSTALLER_P12_BASE64 }}
+          # Defaults to the application `.p12`'s password, since one export session usually picks
+          # one password; set it only if the two files differ.
+          INSTALLER_PASSWORD: ${{ secrets.NAMIR_APPLE_INSTALLER_PASSWORD || secrets.NAMIR_APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'build-temporary-keychain' }}
         run: |
           set -euo pipefail
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           echo "$CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
-          trap 'rm -f "$RUNNER_TEMP/certificate.p12"' EXIT
+          # Both files, on every exit path: the trap is armed before the second decode so an
+          # abort between the two still scrubs the first.
+          trap 'rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/installer.p12"' EXIT
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -280,6 +293,18 @@ jobs:
             -P "$CERTIFICATE_PASSWORD" \
             -T /usr/bin/codesign \
             -T /usr/bin/productbuild
+
+          # A second import into the *same* keychain; `security import` is happy to be called
+          # repeatedly, and `set-key-partition-list` below is per-keychain, so it covers whatever
+          # ended up here rather than needing to be repeated per file.
+          if [ -n "${INSTALLER_P12_BASE64:-}" ]; then
+            echo "$INSTALLER_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+            security import "$RUNNER_TEMP/installer.p12" \
+              -k "$KEYCHAIN_PATH" \
+              -P "$INSTALLER_PASSWORD" \
+              -T /usr/bin/codesign \
+              -T /usr/bin/productbuild
+          fi
 
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign:,productbuild: \
