@@ -2925,7 +2925,7 @@ mod tests {
                         is_default: true,
                     }],
                 )
-                .reporting_exclusive_configs(exclusive(1), exclusive(2)),
+                .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2))),
         );
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,

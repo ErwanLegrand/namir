@@ -978,7 +978,7 @@ mod tests {
         };
         FakeBackend::new()
             .with_devices(vec![device(IN)], vec![device(OUT)])
-            .reporting_exclusive_configs(exclusive(1), exclusive(2))
+            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
     }
 
     fn negotiated(backend: &FakeBackend, exclusive_mode: bool) -> AudioNegotiation {
@@ -1113,6 +1113,43 @@ mod tests {
                 (Direction::Output, ShareMode::Exclusive),
             ],
             "the exclusive request is made once; its shared-range answer is kept"
+        );
+    }
+
+    /// **One endpoint answers the exclusive query and the other does not** — a capture device with
+    /// a reachable WASAPI exclusive endpoint beside a render device without one. The first pass
+    /// still negotiated one direction's ranges from the exclusive answer, and `settle` reads both
+    /// sides, so the refusal has to re-enumerate: this is what the gate's `||` is for. Verified
+    /// discriminating — with `&&` the second pass never runs and this test fails.
+    #[test]
+    fn one_direction_answering_exclusive_is_enough_to_force_the_second_pass() {
+        let exclusive = vec![crate::audio_io::SupportedConfigRange {
+            channels: 1,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }];
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive), None);
+        let negotiated = negotiated(&backend, true);
+
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, ShareMode::Exclusive),
+                (Direction::Output, ShareMode::Exclusive),
+                (Direction::Input, ShareMode::Shared),
+                (Direction::Output, ShareMode::Shared),
+            ],
+            "one exclusive answer is enough to make the first pass unusable"
+        );
+        assert_eq!(
+            negotiated.buffer_frames, None,
+            "and the shared ranges, which offer no buffer size, are what the session runs on"
         );
     }
 

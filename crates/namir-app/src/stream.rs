@@ -567,15 +567,25 @@ impl FakeBackend {
     }
 
     /// Makes the exclusive-mode config query answer with these ranges instead of the shared ones —
-    /// the WASAPI shape, where the two modes describe different devices (issue #190). Per
-    /// direction, so a test can tell an input/output mix-up from correct wiring.
+    /// the WASAPI shape, where the two modes describe different devices (issue #190).
+    ///
+    /// Per direction, and `Option` per direction, for two reasons. A single answer for both
+    /// directions cannot catch a `Direction` mix-up in the code it exercises, which is the class of
+    /// bug issue #190 itself was. And `None` on one side only is a real hardware shape — a capture
+    /// endpoint with a reachable WASAPI exclusive endpoint beside a render device without one — so
+    /// it is what makes `negotiate_audio`'s "either direction answered exclusive" gate testable.
+    ///
+    /// An **empty** `Some` answers shared, exactly as [`crate::audio_io::CpalBackend`] does: its
+    /// `exclusive_configs_when_asked` maps an empty exclusive answer to the shared query, so a fake
+    /// that reported `share_mode: Exclusive` with no ranges would claim a state the real backend
+    /// never produces.
     pub(crate) fn reporting_exclusive_configs(
         mut self,
-        input: Vec<SupportedConfigRange>,
-        output: Vec<SupportedConfigRange>,
+        input: Option<Vec<SupportedConfigRange>>,
+        output: Option<Vec<SupportedConfigRange>>,
     ) -> Self {
-        self.exclusive_input_configs = Some(input);
-        self.exclusive_output_configs = Some(output);
+        self.exclusive_input_configs = input.filter(|ranges| !ranges.is_empty());
+        self.exclusive_output_configs = output.filter(|ranges| !ranges.is_empty());
         self
     }
 
