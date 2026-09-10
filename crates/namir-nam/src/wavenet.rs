@@ -1302,19 +1302,37 @@ fn resolve_layer_array(
     // `an_inert_gating_mode_is_accepted_however_it_is_spelled`). The reference compares
     // `size() != kNumLayers` with no empty-array exemption, and a file that writes the key with
     // no entries has described the gating of none of its layers — treating that as "the field is
-    // absent" is an inference this crate has no basis for. A layer array always has at least one
-    // dilation (`validate_layer_array_dims`' lower bound), so `[]` is always wrong-length.
+    // absent" is an inference this crate has no basis for. `[]` escapes this check only for a
+    // zero-layer array, which `validate_layer_array_dims` refuses by its own lower bound
+    // immediately afterwards.
     //
-    // `num_layers` is *this* layer array's own layer count. Every A2 export observed carries one
-    // layer array of 23 dilations with 23-entry gating arrays (63 files, 126 submodels — see
-    // `docs/manual-tests/fr-nam-030-real-a2-models.md`), so per-array and model-total coincide
-    // there; a multi-layer-array file whose gating arrays were sized to the model total rather
-    // than to their own array would be refused, which is the reading `a2_fast.cpp`'s per-array
-    // detector supports and no observed file contradicts.
-    for (key, value) in [
-        ("gating_mode", &cfg.gating_mode),
-        ("secondary_activation", &cfg.secondary_activation),
-    ] {
+    // `num_layers` is *this* layer array's own layer count, which is the reference's denominator
+    // too (`model.cpp:919-920` derives it from that array's `dilations`). Every A2 export
+    // observed carries a single layer array of 23 dilations (63 files, 126 submodels — see
+    // `docs/manual-tests/fr-nam-030-real-a2-models.md`) with 23-entry gating arrays (issue
+    // #171's own survey), so per-array and model-total coincide there and a multi-layer-array
+    // file is judged the same way on both sides.
+    //
+    // **`secondary_activation`'s length is checked only when `gating_mode` is an array**, which
+    // is the reference's own condition (`model.cpp:1049-1062`) and not a simplification of it: a
+    // file carrying a short `secondary_activation` and no `gating_mode` loads there — the strict
+    // detector declines it (`a2_fast.cpp:853-859`) and the general loader, which never reaches
+    // that `if`, accepts it. Checking it unconditionally would refuse a file the reference loads
+    // and this crate loaded before, which is the same divergence this issue exists to close,
+    // pointing the other way.
+    let gating_mode_is_array = matches!(&cfg.gating_mode, Some(serde_json::Value::Array(_)));
+    let length_checked = [
+        ("gating_mode", &cfg.gating_mode, true),
+        (
+            "secondary_activation",
+            &cfg.secondary_activation,
+            gating_mode_is_array,
+        ),
+    ];
+    for (key, value, checked) in length_checked {
+        if !checked {
+            continue;
+        }
         if let Some(serde_json::Value::Array(entries)) = value
             && entries.len() != num_layers
         {
@@ -3114,9 +3132,12 @@ mod tests {
     /// "wrong length" is not actionable without them.
     ///
     /// The empty array is in here deliberately, and it is a reversal: it loaded before this
-    /// change. `[]` is not an absent field — a layer array always has at least one dilation, so
-    /// `[]` never matches the layer count, and the reference's `size() != kNumLayers` has no
+    /// change. `[]` is not an absent field, and the reference's `size() != kNumLayers` has no
     /// empty-array exemption either.
+    ///
+    /// Each `secondary_activation` case carries a correct-length `gating_mode` array, because
+    /// that is the reference's condition for reading its length at all — see
+    /// `a_wrong_length_secondary_activation_alone_is_accepted_as_the_reference_accepts_it`.
     #[test]
     fn a_wrong_length_gating_array_is_inconsistent_not_unsupported() {
         let short = serde_json::json!(["none"]);
@@ -3137,7 +3158,11 @@ mod tests {
             let mut cfg = a2_layer_array_with_layers(2);
             match key {
                 "gating_mode" => cfg.gating_mode = Some(value.clone()),
-                _ => cfg.secondary_activation = Some(value.clone()),
+                _ => {
+                    cfg.gating_mode =
+                        Some(serde_json::Value::Array(vec![serde_json::json!("none"); 2]));
+                    cfg.secondary_activation = Some(value.clone());
+                }
             }
             // `.err()` rather than `expect_err`: the `Ok` type is an internal shape struct with
             // no `Debug`, and this assertion does not need one.
@@ -3145,12 +3170,31 @@ mod tests {
                 panic!("{key} {value} over 2 layers should be refused")
             };
             assert_eq!(err.code.id, error_codes::INCONSISTENT_CONFIGURATION.id);
+            // The whole message, not its pieces: a detail that named the two lengths the wrong
+            // way round would pass a `contains`-per-number assertion and tell a user the
+            // opposite of what is wrong with their file.
+            assert_eq!(
+                err.detail,
+                format!("layer array 0: {key}.len() ({actual}) does not match dilations.len() (2)")
+            );
+        }
+    }
+
+    /// The reference reads `secondary_activation`'s length only when `gating_mode` is an array
+    /// (`model.cpp:1049-1062`), so a file with a short `secondary_activation` and no
+    /// `gating_mode` loads there — the strict A2 detector declines it and the general loader,
+    /// which never reaches that guard, accepts it. This crate accepted it before issue #171 too,
+    /// so checking it unconditionally would have refused a file the reference loads: the same
+    /// divergence #171 exists to close, pointing the other way.
+    #[test]
+    fn a_wrong_length_secondary_activation_alone_is_accepted_as_the_reference_accepts_it() {
+        for gating_mode in [None, Some(serde_json::json!("none"))] {
+            let mut cfg = a2_layer_array_with_layers(2);
+            cfg.gating_mode = gating_mode.clone();
+            cfg.secondary_activation = Some(serde_json::json!([null]));
             assert!(
-                err.detail.contains(key)
-                    && err.detail.contains(&format!("({actual})"))
-                    && err.detail.contains("(2)"),
-                "detail should name the key and both lengths, got {:?}",
-                err.detail
+                resolve_layer_array(&cfg, 0).is_ok(),
+                "a short secondary_activation with gating_mode {gating_mode:?} should load"
             );
         }
     }

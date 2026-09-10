@@ -181,9 +181,10 @@ pub struct LayerArrayConfig {
     pub gating_mode: Option<serde_json::Value>,
     /// A2's blend/gate activation, one entry per layer. Kept opaque: the reference reads it only
     /// where that layer's gating is active, which Namir does not support, so the only things read
-    /// from it here are whether it names an activation at all and, for the array form, its length
-    /// against the layer count (issue #171). Real exports write it as an array of `null` — the
-    /// field present, selecting nothing, one entry per layer — and that loads.
+    /// from it here are whether it names an activation at all and — where it is an array and
+    /// `gating_mode` is one too, which is the reference's own condition — its length against the
+    /// layer count (issue #171). Real exports write it as an array of `null` — the field present,
+    /// selecting nothing, one entry per layer — and that loads.
     #[serde(default)]
     pub secondary_activation: Option<serde_json::Value>,
     /// A2's dilated-conv group count. Namir supports only `1` (no grouped convolution kernels

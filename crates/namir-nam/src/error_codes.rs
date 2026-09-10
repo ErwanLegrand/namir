@@ -203,9 +203,11 @@ pub const NON_FINITE_VALUE: ErrorCode = ErrorCode::new(
 /// disagrees with that layer array's `dilations`. Both are per-layer arrays, and the reference
 /// requires one entry per layer (`a2_fast.cpp:837-843`, `:853-859`, `model.cpp:1049-1062`), so a
 /// short or over-long one describes the gating of a different number of layers than the file has
-/// — self-contradiction, not a feature request. The scalar spellings carry no length and are not
-/// covered by this; an *active* gating mode of any length is still `UNSUPPORTED_CONFIGURATION`
-/// above, since naming the unimplemented feature is the more actionable message.
+/// — self-contradiction, not a feature request. Two limits, both the reference's own:
+/// `secondary_activation`'s length is read only when `gating_mode` is an array, and the scalar
+/// spellings carry no length at all. An *active* gating mode of any length is still
+/// `UNSUPPORTED_CONFIGURATION` above, since naming the unimplemented feature is the more
+/// actionable message.
 pub const INCONSISTENT_CONFIGURATION: ErrorCode = ErrorCode::new(
     "nam.load.inconsistent_configuration",
     Severity::Error,
