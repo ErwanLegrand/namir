@@ -209,25 +209,67 @@ impl ThreadPriorityReport {
 }
 
 /// The running duplex path. Dropping this stops both streams (`AudioStream`'s own drop-stops
-/// contract, per `crate::audio_io`'s doc comment).
+/// contract, per `crate::audio_io`'s doc comment) — **output side first**, see this type's
+/// [`Drop`] impl, where that order is the whole of issue #194's fix.
 pub struct RunningStreams {
-    _input: Box<dyn AudioStream>,
-    _output: Box<dyn AudioStream>,
+    /// `Option` only so [`Drop`] can stop the two sides in a deliberate order instead of the
+    /// order they happen to be declared in; `Some` for the whole observable life of the value.
+    input: Option<Box<dyn AudioStream>>,
+    output: Option<Box<dyn AudioStream>>,
     thread_priority: Arc<ThreadPriorityReport>,
+}
+
+impl Drop for RunningStreams {
+    /// **Output side first, input side second, and the order is load-bearing (issue #194).**
+    ///
+    /// Stopping a stream *is* dropping it here, and a stream not yet dropped is still being
+    /// serviced by the driver. Stop the input side first and every output callback in the
+    /// teardown window pulls a bridge nobody is feeding any more:
+    /// [`crate::bridge::BridgeConsumer::pull_into`] pads, `build_output` calls
+    /// `XrunCounter::record`, and FR-IO-060's session count — the number a user reads as "my
+    /// audio glitched" — gains a dropout the shutdown itself invented. In this order no such
+    /// pull happens at all; the input side then stops into a bridge nobody reads, and pushes
+    /// nothing drains count nothing until the ring fills, which a stop is far too short to do.
+    ///
+    /// Written out here rather than obtained by declaring the two fields the other way round,
+    /// so a later field reorder cannot silently reintroduce the counted teardown pad.
+    fn drop(&mut self) {
+        drop(self.output.take());
+        drop(self.input.take());
+    }
 }
 
 impl RunningStreams {
     /// Starts both streams. Built paused by `cpal`'s own contract; this is the one call that
     /// actually makes audio flow.
+    ///
+    /// **Input first, deliberately the mirror image of the stop order.** Starting is the one
+    /// point where the capture side has to lead: the bridge must already be filling when the
+    /// output callback starts pulling it, or the first pulls pad — the same reason [`open`]
+    /// prefills a block.
     pub fn play(&self) -> Result<(), crate::audio_io::AudioIoError> {
-        self._input.play()?;
-        self._output.play()
+        if let Some(input) = &self.input {
+            input.play()?;
+        }
+        if let Some(output) = &self.output {
+            output.play()?;
+        }
+        Ok(())
     }
 
     /// Pauses both streams without closing them.
+    ///
+    /// Output side first, matching the stop order and for the same reason: a paused input side
+    /// under a still-running output side is exactly the unfed-bridge window [`Drop`] avoids, and
+    /// would charge FR-IO-060's counter for a pause.
     pub fn pause(&self) -> Result<(), crate::audio_io::AudioIoError> {
-        self._input.pause()?;
-        self._output.pause()
+        if let Some(output) = &self.output {
+            output.pause()?;
+        }
+        if let Some(input) = &self.input {
+            input.pause()?;
+        }
+        Ok(())
     }
 
     /// D-13.2's elevation outcome, for a non-audio thread to report (issue #76). Handed to
@@ -303,8 +345,8 @@ pub fn open(
     };
 
     Ok(RunningStreams {
-        _input: input_stream,
-        _output: output_stream,
+        input: Some(input_stream),
+        output: Some(output_stream),
         thread_priority,
     })
 }
@@ -548,16 +590,17 @@ pub(crate) struct FakeBackend {
 impl FakeBackend {
     /// A backend that refuses exclusive mode on every device — the interim real-world answer.
     pub(crate) fn new() -> Self {
+        let (input_stream, output_stream) = FakeStreamLog::pair();
         Self {
             input_data: std::sync::Mutex::new(None),
             output_data: std::sync::Mutex::new(None),
             input_error: std::sync::Mutex::new(None),
             output_error: std::sync::Mutex::new(None),
-            input_stream: Arc::new(FakeStreamLog::default()),
+            input_stream,
             exclusive_input_configs: None,
             exclusive_output_configs: None,
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
-            output_stream: Arc::new(FakeStreamLog::default()),
+            output_stream,
             open_failures: Vec::new(),
             exclusive_devices: Vec::new(),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
@@ -656,7 +699,8 @@ impl FakeBackend {
     }
 }
 
-/// What one [`FakeStream`] was told to do, and whether it has been stopped.
+/// What one [`FakeStream`] was told to do, in what order relative to the other direction, and
+/// whether it has been stopped.
 ///
 /// `stops` counts **drops**, not `pause` calls, because dropping is what stopping a stream *is* in
 /// this crate: [`AudioStream`]'s own doc comment makes "dropping this stops the stream" the
@@ -664,16 +708,45 @@ impl FakeBackend {
 /// [`RunningStreams`]'s drop is the mechanism [`crate::host::AppHost`] uses to honour FR-IO-070's
 /// "stop the stream cleanly". Counting rather than flagging so a double stop is visible as a
 /// count of 2 rather than indistinguishable from a single one.
+///
+/// The two `*_tick` fields answer the question issue #194 turns on, which no per-direction count
+/// can: *which side went first*. Both directions' logs share one monotonic clock (see
+/// [`FakeStreamLog::pair`]), so their ticks are comparable.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct FakeStreamLog {
     plays: AtomicUsize,
     pauses: AtomicUsize,
     stops: AtomicUsize,
+    pause_tick: AtomicUsize,
+    stop_tick: AtomicUsize,
+    /// The clock shared with the other direction's log. Ticks are 1-based, so 0 in the two fields
+    /// above reads as "this never happened".
+    clock: Arc<AtomicUsize>,
 }
 
 #[cfg(test)]
 impl FakeStreamLog {
+    /// The input and output logs, sharing one clock — the only way they are built, since a tick
+    /// from a clock the other direction is not also using would compare against nothing.
+    fn pair() -> (Arc<Self>, Arc<Self>) {
+        let clock = Arc::new(AtomicUsize::new(0));
+        (
+            Arc::new(Self {
+                clock: Arc::clone(&clock),
+                ..Self::default()
+            }),
+            Arc::new(Self {
+                clock,
+                ..Self::default()
+            }),
+        )
+    }
+
+    fn tick(&self) -> usize {
+        self.clock.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     pub(crate) fn plays(&self) -> usize {
         self.plays.load(Ordering::Relaxed)
     }
@@ -682,6 +755,17 @@ impl FakeStreamLog {
     }
     pub(crate) fn stops(&self) -> usize {
         self.stops.load(Ordering::Relaxed)
+    }
+
+    /// When this direction was last paused, on the clock it shares with the other direction:
+    /// `Some(1)` for whichever side was paused first, `None` for a side never paused.
+    pub(crate) fn pause_tick(&self) -> Option<usize> {
+        Some(self.pause_tick.load(Ordering::Relaxed)).filter(|t| *t > 0)
+    }
+
+    /// As [`FakeStreamLog::pause_tick`], for the stop (i.e. the drop).
+    pub(crate) fn stop_tick(&self) -> Option<usize> {
+        Some(self.stop_tick.load(Ordering::Relaxed)).filter(|t| *t > 0)
     }
 }
 
@@ -698,6 +782,8 @@ impl AudioStream for FakeStream {
     }
     fn pause(&self) -> Result<(), AudioIoError> {
         self.log.pauses.fetch_add(1, Ordering::Relaxed);
+        let tick = self.log.tick();
+        self.log.pause_tick.store(tick, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -706,6 +792,8 @@ impl AudioStream for FakeStream {
 impl Drop for FakeStream {
     fn drop(&mut self) {
         self.log.stops.fetch_add(1, Ordering::Relaxed);
+        let tick = self.log.tick();
+        self.log.stop_tick.store(tick, Ordering::Relaxed);
     }
 }
 
@@ -1283,5 +1371,130 @@ mod tests {
             assert_eq!(backend.share_mode_asked_for(Direction::Input), Some(mode));
             assert_eq!(backend.share_mode_asked_for(Direction::Output), Some(mode));
         }
+    }
+
+    /// **Issue #194: the stop order is the fix, so the stop order is what gets pinned.** Stopping
+    /// the pair is dropping it, and the output side has to go first — while it is still live the
+    /// driver keeps calling its callback, and a callback with the capture side already gone pulls
+    /// a bridge nobody is feeding, pads, and charges FR-IO-060's counter for the shutdown.
+    ///
+    /// Asserted through the two logs' shared clock rather than through field order, because the
+    /// mechanism under test is `RunningStreams`' own `Drop`: a reorder of its fields must not be
+    /// able to change the answer without this failing.
+    #[test]
+    fn dropping_the_pair_stops_the_output_side_before_the_input_side() {
+        let backend = FakeBackend::new();
+        let streams = open(
+            setup(&backend, 64),
+            engine(64),
+            Arc::new(XrunCounter::new()),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            backend.stream_log(Direction::Output).stop_tick(),
+            None,
+            "nothing has been stopped yet"
+        );
+
+        drop(streams);
+
+        assert_eq!(
+            (
+                backend.stream_log(Direction::Output).stop_tick(),
+                backend.stream_log(Direction::Input).stop_tick(),
+            ),
+            (Some(1), Some(2)),
+            "the output side stops first, the input side second"
+        );
+    }
+
+    /// `pause` orders the two sides too, and orders them the same way the stop does and for the
+    /// same reason: an input side paused under a still-running output side is the unfed-bridge
+    /// window, one `pause` call wide. (`play` is the deliberate exception — see its doc comment.)
+    #[test]
+    fn pausing_the_pair_pauses_the_output_side_before_the_input_side() {
+        let backend = FakeBackend::new();
+        let streams = open(
+            setup(&backend, 64),
+            engine(64),
+            Arc::new(XrunCounter::new()),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+
+        streams.pause().unwrap();
+
+        assert_eq!(
+            (
+                backend.stream_log(Direction::Output).pause_tick(),
+                backend.stream_log(Direction::Input).pause_tick(),
+            ),
+            (Some(1), Some(2)),
+            "the output side pauses first, the input side second"
+        );
+    }
+
+    /// **Issue #194 at the counter it was read on.** A session that ran cleanly and was then
+    /// stopped must leave FR-IO-060's count exactly where the run left it: ending a session is
+    /// not a dropout, and a user who quits should not be handed a number that reads as glitching
+    /// audio.
+    ///
+    /// A stop is not instantaneous, and the driver keeps servicing whichever side is still live
+    /// for as long as the other side's close takes — several blocks at any real buffer size. That
+    /// is the window this test replays, on whichever side outlived the other. Under the old field
+    /// order that side was the output one, and its pulls padded (the bridge holds one block of
+    /// prefill slack, so the first pull absorbs and the rest count). With the output side stopped
+    /// first the survivor is the capture side, whose pushes go into a bridge nobody reads —
+    /// silent, and countable only by overrunning a ring eight blocks deep, which a stop this
+    /// short cannot do.
+    #[test]
+    fn stopping_a_clean_session_leaves_the_xrun_count_where_the_run_left_it() {
+        /// Callbacks the still-live side takes while the other side is closing.
+        const TEARDOWN_CALLBACKS: usize = 4;
+
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let streams = open(
+            setup(&backend, 64),
+            engine(64),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+
+        let mut out = [0.0f32; 128];
+        for _ in 0..8 {
+            input_cb(&[0.1f32; 64]);
+            output_cb(&mut out);
+        }
+        assert_eq!(
+            xruns.count(),
+            0,
+            "supply matched demand: the run itself has to be clean or this proves nothing"
+        );
+
+        drop(streams);
+
+        let input_outlived_output = backend.stream_log(Direction::Input).stop_tick()
+            > backend.stream_log(Direction::Output).stop_tick();
+        for _ in 0..TEARDOWN_CALLBACKS {
+            if input_outlived_output {
+                input_cb(&[0.1f32; 64]);
+            } else {
+                output_cb(&mut out);
+            }
+        }
+
+        assert_eq!(
+            xruns.count(),
+            0,
+            "the teardown counted a dropout of its own -- the session's own stop is not an xrun"
+        );
     }
 }

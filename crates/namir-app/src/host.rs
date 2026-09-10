@@ -516,6 +516,13 @@ impl AppHost {
     /// Called once, after `RunningStreams::play`, so the elevation watch and the first callback
     /// are already in place; a session with no audio device never calls it.
     pub fn hold_streams(&mut self, streams: RunningStreams) {
+        // **The old pair is dropped by this assignment, i.e. while the new pair is already
+        // playing (issue #194), and that overlap is deliberately left in place.** Since
+        // `RunningStreams`' own `Drop` stops the output side first, the old pair takes no further
+        // bridge pull once it goes, so the overlap costs no FR-IO-060 xrun -- the teardown pad is
+        // gone at its source rather than hidden. Dropping the old pair *before* opening the new
+        // one would also remove the overlap, but it would trade it for a silent window spanning a
+        // device open and a `play()`, which is the worse end of that trade for a settings change.
         self.streams = Some(streams);
     }
     /// Enables dynamic audio stream re-opening when device or format settings change.
@@ -1023,7 +1030,8 @@ impl AppHost {
     /// FR-IO-070's "stop the stream cleanly", on a device loss and on nothing else (issue #24).
     ///
     /// Dropping is the stop: [`crate::audio_io::AudioStream`]'s own contract is that dropping
-    /// stops the stream, [`RunningStreams`] is built on it, and unlike `pause()` it cannot fail —
+    /// stops the stream, [`RunningStreams`] is built on it — output side first, since issue #194,
+    /// so this stop counts no xrun of its own — and unlike `pause()` it cannot fail —
     /// which matters here, because the device this is stopping has just gone away, so a `pause`
     /// against it is as likely to error as to succeed and there would be nothing useful to do with
     /// that error. Taking the field also makes the stop idempotent: a second report from the other
