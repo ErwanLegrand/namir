@@ -28,7 +28,8 @@
 //!    the out-of-scope set (`condition_dsp`, `slimmable`, `gating_mode`, `secondary_activation`).
 //!    What `wavenet.rs` inspects is presence, JSON kind (object vs. non-object), and — for the two
 //!    gating fields, `gating_mode` and `secondary_activation` — whether the value is the inert one
-//!    (all `"none"`, all `null`). Rejecting those two on presence refused every real A2 export for
+//!    (all `"none"`, all `null`) and, where it is an array, how many entries it has against the
+//!    layer count (issue #171). Rejecting those two on presence refused every real A2 export for
 //!    naming a feature it had switched off (issue #37). Reading a value far enough to tell "off"
 //!    from "on" is not the same as implementing it, and it is what the reference's own shape
 //!    detector does with these same fields. Every field that
@@ -174,14 +175,15 @@ pub struct LayerArrayConfig {
     #[serde(default)]
     pub gated: Option<bool>,
     /// A2's gating mode (`"none"` / `"gated"` / `"blended"`, scalar or per-layer array). Kept
-    /// opaque — Namir supports only the all-`"none"` case, so nothing beyond that fact is ever
-    /// read from it.
+    /// opaque — Namir supports only the all-`"none"` case, so nothing beyond that fact and, for
+    /// the array form, its length against the layer count (issue #171) is ever read from it.
     #[serde(default)]
     pub gating_mode: Option<serde_json::Value>,
     /// A2's blend/gate activation, one entry per layer. Kept opaque: the reference reads it only
-    /// where that layer's gating is active, which Namir does not support, so the only thing read
-    /// from it here is whether it names an activation at all. Real exports write it as an array of
-    /// `null` — the field present, selecting nothing — and that loads.
+    /// where that layer's gating is active, which Namir does not support, so the only things read
+    /// from it here are whether it names an activation at all and, for the array form, its length
+    /// against the layer count (issue #171). Real exports write it as an array of `null` — the
+    /// field present, selecting nothing, one entry per layer — and that loads.
     #[serde(default)]
     pub secondary_activation: Option<serde_json::Value>,
     /// A2's dilated-conv group count. Namir supports only `1` (no grouped convolution kernels
