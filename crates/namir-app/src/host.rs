@@ -516,13 +516,13 @@ impl AppHost {
     /// Called once, after `RunningStreams::play`, so the elevation watch and the first callback
     /// are already in place; a session with no audio device never calls it.
     pub fn hold_streams(&mut self, streams: RunningStreams) {
-        // **The old pair is dropped by this assignment, i.e. while the new pair is already
-        // playing (issue #194), and that overlap is deliberately left in place.** Since
-        // `RunningStreams`' own `Drop` stops the output side first, the old pair takes no further
-        // bridge pull once it goes, so the overlap costs no FR-IO-060 xrun -- the teardown pad is
-        // gone at its source rather than hidden. Dropping the old pair *before* opening the new
-        // one would also remove the overlap, but it would trade it for a silent window spanning a
-        // device open and a `play()`, which is the worse end of that trade for a settings change.
+        // This assignment never drops a live pair, which is worth stating because issue #194's
+        // own cause section says it does: on the reopen path `initiate_audio_reopen` has already
+        // set `self.streams = None` before the engine rebuild is requested (D-15.3, D-8.1 — the
+        // old callback must stop before the instance is replaced), and at start-up the field is
+        // `None` too. So the reopen path does not overlap two live pairs, and the teardown it
+        // does perform is the one at that earlier drop, in `RunningStreams::drop`'s
+        // output-side-first order.
         self.streams = Some(streams);
     }
     /// Enables dynamic audio stream re-opening when device or format settings change.

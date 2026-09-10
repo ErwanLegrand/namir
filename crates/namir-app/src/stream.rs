@@ -229,7 +229,14 @@ impl Drop for RunningStreams {
     /// `XrunCounter::record`, and FR-IO-060's session count — the number a user reads as "my
     /// audio glitched" — gains a dropout the shutdown itself invented. In this order no such
     /// pull happens at all; the input side then stops into a bridge nobody reads, and pushes
-    /// nothing drains count nothing until the ring fills, which a stop is far too short to do.
+    /// nothing drains count nothing until the ring fills. That headroom is a margin, not a
+    /// proof, and it scales with the block: capacity is `(max_block * 8).next_power_of_two()`
+    /// less the one-block prefill, so ~75 ms at a 480-frame block but ~4.7 ms at the 32-frame
+    /// minimum `STANDARD_BUFFER_SIZES` offers. An overrun there is not silent either —
+    /// `build_input` records one xrun per losing chunk — so at the small end this trades an
+    /// output-side pad for an input-side overrun on a stop that takes more than a few
+    /// milliseconds, rather than eliminating the possibility. Strictly better than the old order
+    /// at every block size, which is the claim being made.
     ///
     /// Written out here rather than obtained by declaring the two fields the other way round,
     /// so a later field reorder cannot silently reintroduce the counted teardown pad.
@@ -713,7 +720,8 @@ impl FakeBackend {
 /// can: *which side went first*. Both directions' logs share one monotonic clock (see
 /// [`FakeStreamLog::pair`]), so their ticks are comparable.
 #[cfg(test)]
-#[derive(Default)]
+// Deliberately no `#[derive(Default)]`: `pair` is the only constructor, because two logs with
+// unshared clocks would produce ticks that look comparable and are not.
 pub(crate) struct FakeStreamLog {
     plays: AtomicUsize,
     pauses: AtomicUsize,
@@ -731,16 +739,17 @@ impl FakeStreamLog {
     /// from a clock the other direction is not also using would compare against nothing.
     fn pair() -> (Arc<Self>, Arc<Self>) {
         let clock = Arc::new(AtomicUsize::new(0));
-        (
+        let side = |clock| {
             Arc::new(Self {
-                clock: Arc::clone(&clock),
-                ..Self::default()
-            }),
-            Arc::new(Self {
+                plays: AtomicUsize::new(0),
+                pauses: AtomicUsize::new(0),
+                stops: AtomicUsize::new(0),
+                pause_tick: AtomicUsize::new(0),
+                stop_tick: AtomicUsize::new(0),
                 clock,
-                ..Self::default()
-            }),
-        )
+            })
+        };
+        (side(Arc::clone(&clock)), side(clock))
     }
 
     fn tick(&self) -> usize {
@@ -1448,8 +1457,11 @@ mod tests {
     /// order that side was the output one, and its pulls padded (the bridge holds one block of
     /// prefill slack, so the first pull absorbs and the rest count). With the output side stopped
     /// first the survivor is the capture side, whose pushes go into a bridge nobody reads —
-    /// silent, and countable only by overrunning a ring eight blocks deep, which a stop this
-    /// short cannot do.
+    /// silent, and countable only by overrunning the ring. `TEARDOWN_CALLBACKS` is 4 because that
+    /// is a teardown window a real close plausibly spans while staying inside the ~7 blocks of
+    /// headroom past the prefill; the headroom is a margin in time, not a guarantee (~75 ms at a
+    /// 480-frame block, ~4.7 ms at the 32-frame minimum), so a deliberately longer replay would
+    /// count — for a true reason, and it is not what this test is about.
     #[test]
     fn stopping_a_clean_session_leaves_the_xrun_count_where_the_run_left_it() {
         /// Callbacks the still-live side takes while the other side is closing.
