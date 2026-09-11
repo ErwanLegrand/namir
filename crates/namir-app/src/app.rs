@@ -248,6 +248,14 @@ pub(crate) struct AssembledAudioConfig {
 ///
 /// The callers' *failure handling* stays theirs (see `sample_rate`): those differences are
 /// intended, and are the reason this is not simply folded into [`negotiate_audio`].
+///
+/// # Where the line falls
+///
+/// This owns the values a *stream opens with*, not the negotiation result as a whole. Both
+/// callers still destructure the [`AudioNegotiation`] afterwards for `input`, `output`,
+/// `share_mode` and `buffer_frames`, because their remaining uses are genuinely call-site
+/// specific — notice text, device names, the FR-IO-020 mode indicator, `buffer_decline_detail`.
+/// A newly derived value belongs here if both open paths need it and out there if one does.
 pub(crate) fn assemble_stream_config(negotiated: &AudioNegotiation) -> AssembledAudioConfig {
     let AudioNegotiation {
         input,
