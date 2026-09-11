@@ -2123,7 +2123,7 @@ form, so the ledger and the source agree.
   `docs/manual-tests/fr-ui-070-*.md`, and "M against the error catalogue of FR-ERR-020" has been run
   against no catalogue entry.
 - **5.14 ERR — 1 / 4 / 1.** *Done:* FR-ERR-070 — the permanent network-free CI target the `S` method
-  names (`.github/workflows/ci.yml:183-198`, `deny.toml:90`); the "I per feature" half quantifies
+  names (the `xtask network-free` step in `.github/workflows/ci.yml`, `deny.toml:90`); the "I per feature" half quantifies
   over post-1.0 network features, a set that is empty. *Partial:* FR-ERR-020 — the catalogue is
   enumerable and unique (`crates/namir-core/src/error.rs:77-97`); "every error path maps to an entry"
   has no artifact, and `crates/namir-ui/examples/manual_window_smoke.rs:27` constructs an
@@ -2230,7 +2230,7 @@ form, so the ledger and the source agree.
   enumerates, the `.nam`/IR disk-load ceiling has no artifact: `crates/namir-worker/src/lib.rs:130`
   refuses an over-large file and no test drives that branch
   (`crates/namir-state/src/document.rs:222-227`). NFR-SEC-030 — the build-producibility clause is
-  fully covered (`deny.toml:90`, `.github/workflows/ci.yml:183-198`); the no-outbound-connection
+  fully covered (`deny.toml:90`, the `xtask network-free` step in `.github/workflows/ci.yml`); the no-outbound-connection
   clause is derivative of FR-ERR-060, which is itself Partial for a non-exhaustive deny list.
 - **6.7 BUILD — 0 / 2 / 0.** *Partial:* NFR-BUILD-010 — the property is true in fact (`Cargo.lock`
   committed, no `git`/`path` third-party dependency) but the tagged anchor is a manifest table that

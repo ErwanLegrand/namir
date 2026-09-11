@@ -3955,7 +3955,8 @@ coverage. D-23.1 below closes all three.
 
 *Consequence (added M9, 2026-08-08 — what the scanner actually reads)* — the scanned set this
 mechanism draws on is wider than "repository source", and it is **hard-coded**.
-`xtask/src/main.rs:185-255` walks every `.rs` file under `crates/` (component = the crate directory
+`traceability_outcome` (`xtask/src/main.rs`) walks every `.rs` file under `crates/` (component =
+the crate directory
 name) and under `xtask/`, then appends four fixed paths: `.github/workflows/ci.yml` and `fuzz.yml`
 as component `ci`, and the root `Cargo.toml` and `deny.toml` as component `workspace`.
 `traceability.rs:111`'s second marker spelling, `# trace:`, exists for exactly those four. Fifteen
