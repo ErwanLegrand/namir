@@ -135,10 +135,17 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 #   * a direct `rev`-pinned dependency edge on the same URL repins nothing: cargo adds a *second*
 #     `baseview v0.3.3` (`?rev=c0870cb5...`) to the graph while `egui-baseview` keeps resolving the
 #     `?branch=accesskit-design` copy.
-# A patch pointing at a *different* source is accepted (`baseview = { path = ... }` resolves and
-# substitutes for the branch source), so the accurate statement is: no route that keeps `baseview` a
-# git dependency pins it. Vendoring would, and R-10 already names vendoring as the fallback; the
-# cheaper fix is `rev =` in `ErwanLegrand/egui-baseview`'s own manifest, an open action on that fork.
+# A patch pointing at a *different* source is accepted, and that includes a git one: `{ path = ... }`
+# substitutes for the branch source, and so does `{ git = "<a different URL>", rev = "c0870cb5..." }`
+# -- tested against a mirror of the fork, which resolves, writes a lockfile, keeps `baseview` a git
+# dependency and pins it by rev (`source = "git+<mirror>?rev=c0870cb5..."`). So a rev pin *is*
+# reachable from this repository; it is costly rather than impossible. The cost is real: the mirror
+# needs a fourth exact URL in the `allow-git` list below (without it `cargo deny check sources`
+# exits 8 with "detected 'git' source not explicitly allowed", which is this policy working), and it
+# trades one fork-maintenance obligation for two -- a mirror that must be kept in step with the fork
+# it mirrors. Vendoring, R-10's own named fallback, has the same shape. The cheap fix remains `rev =`
+# in `ErwanLegrand/egui-baseview`'s own manifest, an open action on that fork; what is *not* available
+# is a pin at the same git URL.
 # This is a narrow named allowance for exactly these three repositories rather than blanket `allow-git = []`.
 #
 # Risk R-10 is what this costs: maintaining forks across upstreams. The exit condition is upstream acceptance
