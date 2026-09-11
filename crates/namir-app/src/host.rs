@@ -2724,6 +2724,107 @@ mod tests {
         assert_eq!(loaded.output_device_name.as_deref(), Some("Headphones"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// **Issue #192.** The reopen path must open with exactly the values
+    /// [`crate::app::assemble_stream_config`] derives, because a hand-written copy here is what
+    /// drifted from start-up twice — and silently, since a reopen only runs when a user changes a
+    /// selector. So this drives the real path (`dispatch` -> `initiate_audio_reopen`) and compares
+    /// the `pending_reopen` it produced against that function's output for the same negotiation.
+    /// Dropping D-13.3's `output_buffer_request` line from a re-inlined copy fails this.
+    ///
+    /// `pending_reopen` is read directly rather than through a snapshot because no event is pumped
+    /// here: `apply_audio_reopen` consumes it, and this test is about what Phase 1 assembled.
+    #[test]
+    fn a_reopen_assembles_its_stream_config_through_the_shared_function() {
+        let dir = temp_dir("reopen_assembled_config");
+        let (mut host, _engine) = build_host(&dir);
+        let device = |name: &str, is_default| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default,
+        };
+        // Exclusive ranges, granted, so the negotiated buffer is a real `Some(256)` — otherwise
+        // `output_buffer_request()`'s `None` would match the negotiated value by accident and the
+        // D-13.3 line could be dropped unnoticed.
+        let exclusive = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(
+                    vec![device("Mic", true)],
+                    vec![device("Speakers", true), device("Headphones", false)],
+                )
+                .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
+                .granting_exclusive_to("Mic")
+                .granting_exclusive_to("Headphones"),
+        );
+        let host_info = HostInfo {
+            name: "fake".to_string(),
+        };
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+            host_info: host_info.clone(),
+            xruns: Arc::new(XrunCounter::new()),
+        });
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings {
+                exclusive_mode: true,
+                ..AppSettings::default()
+            },
+            vec!["Mic".to_string()],
+            vec!["Speakers".to_string(), "Headphones".to_string()],
+            Some("Mic".to_string()),
+            Some("Speakers".to_string()),
+            vec![44_100, 48_000],
+            48_000,
+            vec![256],
+            256,
+        );
+
+        host.dispatch(UiIntent::SelectOutputDevice {
+            name: "Headphones".to_string(),
+        });
+
+        let expected = crate::app::assemble_stream_config(
+            &crate::app::negotiate_audio(
+                backend.as_ref(),
+                &host_info,
+                backend.input_devices(&host_info),
+                backend.output_devices(&host_info),
+                &crate::app::AudioPreferences {
+                    input_device: Some("Mic"),
+                    output_device: Some("Headphones"),
+                    sample_rate_hz: None,
+                    buffer_size_frames: None,
+                    exclusive_mode: true,
+                },
+            )
+            .expect("both directions have a device"),
+        );
+        let pending = host
+            .pending_reopen
+            .as_ref()
+            .expect("the reopen stored pending stream params");
+
+        assert_eq!(pending.input_params, expected.input_params);
+        assert_eq!(pending.output_params, expected.output_params);
+        assert_eq!(pending.max_block_size, expected.max_block_size);
+        assert_eq!(pending.channel_config, expected.channel_config);
+        assert_eq!(
+            expected.input_params.buffer_frames,
+            Some(256),
+            "the negotiated buffer must be a real value, or this test proves nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn select_output_device_does_not_falsely_synthesize_audio_mode_when_none() {

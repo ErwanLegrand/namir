@@ -256,6 +256,12 @@ pub(crate) struct AssembledAudioConfig {
 /// `share_mode` and `buffer_frames`, because their remaining uses are genuinely call-site
 /// specific — notice text, device names, the FR-IO-020 mode indicator, `buffer_decline_detail`.
 /// A newly derived value belongs here if both open paths need it and out there if one does.
+///
+/// # FR-IO-020: one share-mode decision
+///
+/// The share mode was settled inside [`negotiate_audio`], once, before anything is opened: both
+/// stream literals below and the mode indicator handed to [`crate::host::AppHost`] read their
+/// value from that single decision, never from a second query.
 pub(crate) fn assemble_stream_config(negotiated: &AudioNegotiation) -> AssembledAudioConfig {
     let AudioNegotiation {
         input,
@@ -1348,78 +1354,39 @@ mod tests {
         assert!(detail.contains("shared mode"), "{detail}");
     }
 
-    /// **Issue #192.** Start-up ([`run`]) and reopen
-    /// ([`crate::host::AppHost::initiate_audio_reopen`]) assemble the same configuration from the
-    /// same negotiated inputs, and used to do it with two hand-written copies that had already
-    /// drifted twice. Both paths go through [`assemble_stream_config`], so this drives it the way
-    /// each caller does — start-up from `AppSettings`, reopen from the host's `current_*` fields —
-    /// and asserts every assembled value matches.
+    /// **Issue #192.** [`run`] and [`crate::host::AppHost::initiate_audio_reopen`] both open with
+    /// whatever this function derives, so these are the values a stream actually opens with. The
+    /// cross-path claim — that the reopen path really routes through here rather than building
+    /// them by hand — is asserted in
+    /// `crate::host::tests::a_reopen_assembles_its_stream_config_through_the_shared_function`,
+    /// which drives the real reopen; it cannot be tested here, where there is one pure function.
     ///
-    /// The `output_buffer_request` assertions are the D-13.3 line the issue names: the output
+    /// The `output_buffer_request` assertion is the D-13.3 line the issue names: the output
     /// stream must *not* inherit the negotiated 256-frame request, while the engine's block size
     /// still comes from it.
     #[test]
-    fn start_up_and_reopen_assemble_the_same_configuration() {
+    fn assemble_stream_config_produces_the_values_a_stream_opens_with() {
         let backend = backend_with_two_faces()
             .granting_exclusive_to(IN)
             .granting_exclusive_to(OUT);
 
-        // What `run` passes: the persisted settings.
-        let settings = AppSettings {
-            input_device_name: Some(IN.to_string()),
-            output_device_name: Some(OUT.to_string()),
-            exclusive_mode: true,
-            ..AppSettings::default()
-        };
-        let start_up = assemble_stream_config(
-            &negotiate_audio(
-                &backend,
-                &host(),
-                backend.input_devices(&host()),
-                backend.output_devices(&host()),
-                &AudioPreferences {
-                    input_device: settings.input_device_name.as_deref(),
-                    output_device: settings.output_device_name.as_deref(),
-                    sample_rate_hz: settings.sample_rate_hz,
-                    buffer_size_frames: settings.buffer_size_frames,
-                    exclusive_mode: settings.exclusive_mode,
-                },
-            )
-            .expect("both directions have a device"),
-        );
-
-        // What the reopen path passes: the host's live selection, same values.
-        let reopen = assemble_stream_config(&negotiated(&backend, true));
-
-        assert_eq!(start_up.input_params, reopen.input_params);
-        assert_eq!(start_up.output_params, reopen.output_params);
-        assert_eq!(start_up.max_block_size, reopen.max_block_size);
-        assert_eq!(start_up.channel_config, reopen.channel_config);
-        assert_eq!(start_up.sample_rate, reopen.sample_rate);
-        assert_eq!(
-            start_up.supported_sample_rates,
-            reopen.supported_sample_rates
-        );
-        assert_eq!(
-            start_up.supported_buffer_sizes,
-            reopen.supported_buffer_sizes
-        );
+        let assembled = assemble_stream_config(&negotiated(&backend, true));
 
         assert_eq!(
-            start_up.input_params.buffer_frames,
+            assembled.input_params.buffer_frames,
             Some(256),
             "the input stream opens at the negotiated buffer size"
         );
         assert_eq!(
-            start_up.output_params.buffer_frames,
+            assembled.output_params.buffer_frames,
             crate::audio_io::output_buffer_request(),
             "D-13.3: the output stream asks the device for its own buffer"
         );
         assert_eq!(
-            start_up.max_block_size, 256,
+            assembled.max_block_size, 256,
             "the engine's block size still comes from the negotiated buffer"
         );
-        assert_eq!(start_up.channel_config, ChannelConfig::MonoToStereo);
-        assert_eq!(start_up.sample_rate, SampleRate::new(48_000));
+        assert_eq!(assembled.channel_config, ChannelConfig::MonoToStereo);
+        assert_eq!(assembled.sample_rate, SampleRate::new(48_000));
     }
 }
