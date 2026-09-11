@@ -147,6 +147,22 @@ not clippy or the test suite (see the hook's own comment: slow checks on the com
 `--no-verify` tempting, which is worse than clippy catching it one step later in CI). Don't bypass
 it with `--no-verify`; fix what it flags.
 
+**Retargeting a stacked PR to `trunk` starts no CI** (issue #175). `pull_request` in both
+workflows declares no `types:`, so it gets GitHub's defaults — `opened`, `synchronize`,
+`reopened` — and a base change fires `edited`. The PR then sits with *zero* check runs. Since
+issue #29 required status checks on `trunk`, that is not a mergeable PR but a stalled one: each
+required check reads "Expected — waiting for status to be reported" and blocks the merge button,
+so the failure mode is a stall with a non-obvious cause. With ruleset bypass, or in any period
+where those required checks are not configured, you get the worse version — a PR that looks clean
+because nothing ever ran. After retargeting, push any commit (or `--force-with-lease` after a
+rebase) to produce a `synchronize`, then confirm the PR has a *nonzero* number of check runs: at a
+terminal, `gh api repos/ErwanLegrand/namir/commits/<head-sha>/check-runs --jq .total_count` (any
+count > 0; it was 26 on 2026-09-07 and moves with the job list, so don't treat that as a target);
+with no `gh` CLI — an agent on the web has none — the PR's Checks tab
+or any GitHub MCP tool that reads check runs for the head SHA answers the same question.
+Adding `edited` to the trigger is *not* the fix as things stand — see ci.yml's comment above the
+trigger for why a skipped job satisfies a required check and would make this worse.
+
 ## Workspace layering (D-5.1) — a hard, mechanically-enforced dependency graph
 
 `cargo run -p xtask -- layering` checks every crate's dependency edges against this table and
@@ -359,3 +375,27 @@ isn't obvious from the diff, don't go into implementation detail the diff alread
 work has historically used a `M<n>: <summary>` subject line, and some feature work used a red/green
 TDD pairing (`M<n> (red): ...` immediately followed by `M<n> (green): ...`) — neither is mandatory,
 but match the surrounding history's granularity rather than one giant commit per milestone.
+
+## Issue and PR bodies
+
+Templates live in `.github/pull_request_template.md` and `.github/ISSUE_TEMPLATE/` (`bug.md`,
+`finding.md`; blank issues stay enabled for anything neither form fits). They are pre-filled
+suggestions, not forms — delete a section that does not apply rather than padding it.
+
+The commit-message guidance above extends to issues and PRs: lead with the conclusion, put the
+evidence below it, and don't restate what the diff already shows. Three conventions specific to
+this repository, all of which the PR template asks for explicitly:
+
+- **Name the gates you actually ran**, and only those. A ticked box for a command nobody typed is
+  worse than an untidy list; a benchmark figure measured off §2's reference machine is
+  informational, never the number that closes a requirement.
+- **Report the document half of a change as deliberately as the code half** — requirements
+  touched, `trace:`/`trace-partial:` tags added, moved or demoted, appended *Consequence* /
+  status / close-out subsections. "None" is the common answer and is worth writing.
+- **One finding per issue.** Review write-ups that stack several independent findings into one body
+  (#199, #200) are hard to close and hard to own; file them separately and cross-reference. Where
+  a stacked body is unavoidable, number its items and keep the numbers stable: in practice they
+  get cited from `// uncovered:` fields and from other PRs (#200's item 6 in
+  `crates/namir-app/src/stream.rs`, via #206) — and a renumbered item silently breaks those.
+
+No length limit and no CI check — the fix for long bodies is a skeleton, not a cap (#201).

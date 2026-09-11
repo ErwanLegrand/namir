@@ -22,13 +22,13 @@
 //! manual_window_smoke -p namir-ui` is the whole invocation.
 //!
 //! **Its exit status is an assertion about frames rendered, not about reaching the end of `main`**
-//! (M15 review, note b). `EguiWindow::open_blocking` runs the window on its own thread and joins it
-//! with `unwrap_or_else(eprintln!)`, and `open_with_srgb_fallback` catches only the *first*
-//! attempt's panic -- so a `namir_ui::render` that panicked on every frame would unwind that
-//! thread, return here as if the window had closed, and exit 0. Everything the CI job driving this
-//! example asserts would have held while the interface drew nothing at all. So the frames are
-//! counted outside the window, [`FRAMES_BEFORE_CLOSE`] of them are required, and the final line
-//! this prints names the count so a caller can assert on it too.
+//! (M15 review, note b). Returning from the event loop does not mean frames were drawn: on
+//! Windows a panic inside `namir_ui::render` cannot unwind through the platform's non-unwinding
+//! `extern "system"` window proc, so the loop can come back here as if the window had simply been
+//! closed and `main` would exit 0. Everything the CI job driving this example asserts would have
+//! held while the interface drew nothing at all. So the frames are counted outside the window,
+//! [`FRAMES_BEFORE_CLOSE`] of them are required, and the final line this prints names the count so
+//! a caller can assert on it too.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -146,8 +146,13 @@ fn main() {
     // which is the whole point of an unattended smoke test. Note what that costs: the closure may
     // run twice, so the host and view state are built *inside* it rather than moved in from
     // outside, since the first attempt's copies are dropped with `baseview`'s window thread.
-    namir_ui::open_with_srgb_fallback(settings, move |settings| {
-        // A retry counts from zero. The first attempt fails while opening the window, so it has
+    //
+    // Only *creation* runs inside it; the event loop is driven below, after it returns. Putting
+    // `run_until_closed` in here would place every frame of the session inside that
+    // `catch_unwind`, so a panic in `render` at frame 30 would be answered with a silent reopen
+    // that draws a clean 90 and prints success (issue #200, item 1).
+    let window = namir_ui::open_with_srgb_fallback(settings, move |settings| {
+        // A retry counts from zero. Only window creation runs in here, so a failed attempt has
         // drawn nothing -- but adding two partial attempts together would be the one arithmetic
         // that could satisfy the assertion below without a single complete run.
         counter.store(0, Ordering::Relaxed);
@@ -182,19 +187,20 @@ fn main() {
 
         let app = SmokeApp { frames, host, view };
 
-        let window = EguiWindow::create(settings, app).expect("could not create smoke window");
-        window
-            .run_until_closed()
-            .expect("smoke window run_until_closed failed");
+        EguiWindow::create(settings, app).expect("could not create smoke window")
     });
+    window
+        .run_until_closed()
+        .expect("smoke window run_until_closed failed");
 
     let drawn = rendered.load(Ordering::Relaxed);
     if drawn < FRAMES_BEFORE_CLOSE {
         eprintln!(
             "manual_window_smoke: rendered {drawn} of {FRAMES_BEFORE_CLOSE} frames -- the window \
-             closed before the interface had been drawn. A panic inside namir_ui::render unwinds \
-             baseview's window thread, which open_blocking joins and reports without failing, so \
-             this is what a broken render looks like from outside the window."
+             closed before the interface had been drawn. A panic inside namir_ui::render can \
+             return control here as an ordinary window close (on Windows it cannot unwind through \
+             the platform's window proc at all), so this is what a broken render looks like from \
+             outside the window."
         );
         std::process::exit(1);
     }

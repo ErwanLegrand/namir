@@ -522,12 +522,21 @@ fn default_window_size() -> egui_baseview::baseview::dpi::Size {
 ///
 /// # Why a caught panic is the failure signal
 ///
-/// `baseview` 0.2.2 has no fallible open: both `Window::open_blocking` and `Window::open_parented`
-/// end in `rx.recv().unwrap().unwrap()`, so a window thread that dies during setup reaches the
-/// calling thread as a panic and as nothing else. A retry therefore has to catch one. The catch is
-/// narrower than it looks: a panic raised by a *frame* runs on `baseview`'s own window thread,
-/// which `open_blocking` absorbs in its `thread.join().unwrap_or_else(..)`, so what arrives here is
-/// a window that failed to open.
+/// `baseview` has no *infallible* failure report from the path this works around:
+/// `find_best_visual_config_for_gl` ends in its own `.expect("Could not fetch framebuffer
+/// config")`, so a display that offers no sRGB-capable config reaches the calling thread as a
+/// panic and as nothing else. A retry therefore has to catch one, and `open`'s `Err` is folded
+/// into the same path deliberately: both mean "this attempt did not produce a window", and the
+/// caller's `expect` sits inside the closure for exactly that reason.
+///
+/// **What must stay outside it is the event loop.** `egui_baseview::EguiWindow::create` returns a
+/// window without driving frames; `baseview::Window::run_until_closed` drives them on the
+/// *calling* thread. Running it inside the closure would put every frame of an entire session
+/// inside this `catch_unwind`, so any later panic — a poisoned `Mutex`, an `egui` assertion, a
+/// slice index in `render` — would print the sRGB notice and silently reopen the window hours in,
+/// turning a crash into a reopen (issue #200, item 1). So `open` must return the window and its
+/// caller must run it; [`open_blocking`] does, and [`open_parented`]'s `show()` returns rather
+/// than driving frames.
 ///
 /// A real display is unaffected -- its first attempt succeeds and `open` is called exactly once.
 /// If the second attempt fails too, the failure was never about sRGB (no `DISPLAY` at all, say)
@@ -539,10 +548,13 @@ pub fn open_with_srgb_fallback<T>(
     settings: egui_baseview::EguiWindowSettings,
     mut open: impl FnMut(egui_baseview::EguiWindowSettings) -> T,
 ) -> T {
-    // `AssertUnwindSafe` because nothing observable survives a failed attempt: `open` moves its own
-    // window state into `baseview`'s window thread, which drops it while unwinding, and the only
-    // value this function itself carries across the two attempts is `settings`, which it clones
-    // rather than mutates.
+    // `AssertUnwindSafe` because nothing observable survives a *failed* attempt: `open` moves its
+    // own window state into `baseview`'s window thread, which drops it while unwinding, and the
+    // only value this function itself carries across the two attempts is `settings`, which it
+    // clones rather than mutates. The success path is the other case, and is deliberately not
+    // covered by that argument: since issue #200 item 1 the closure *returns* a live window that
+    // outlives it, and the caller drives its frames — but a closure that returns never unwinds,
+    // so no state crosses a `catch_unwind` boundary there.
     let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(settings.clone())));
     match first {
         Ok(opened) => opened,
@@ -593,12 +605,14 @@ impl<H: UiHost> UiHost for SharedHost<H> {
 
 /// Opens `host` in a standalone, blocking window -- `namir-app`'s use of FR-UI-010's one shared
 /// UI implementation. Blocks the calling thread until the window is closed (matching
-/// `egui_baseview::EguiWindow::open_blocking`'s own contract); `namir-app` is expected to call
-/// this from whatever thread it dedicates to the GUI.
+/// `baseview::Window::run_until_closed`'s own contract); `namir-app` is expected to call this
+/// from whatever thread it dedicates to the GUI.
 ///
 /// Goes through [`open_with_srgb_fallback`], so this opens a window under a headless X server too;
 /// `host` is shared with the retry through a [`SharedHost`] rather than consumed by the first
-/// attempt.
+/// attempt. Only *creation* runs inside that fallback: the event loop is driven here, after it
+/// returns, so a frame that panics mid-session is not read as a failed sRGB negotiation and
+/// answered with a fresh window (issue #200).
 pub fn open_blocking<H>(title: impl Into<String>, host: H)
 where
     H: UiHost + 'static,
@@ -610,15 +624,11 @@ where
     };
     let host = Arc::new(Mutex::new(host));
     open_with_srgb_fallback(settings, |settings| {
-        let window = egui_baseview::EguiWindow::create(
-            settings,
-            NamirUi::new(SharedHost(Arc::clone(&host))),
-        )
-        .expect("could not create egui-baseview window");
-        window
-            .run_until_closed()
-            .expect("egui-baseview event loop failed");
-    });
+        egui_baseview::EguiWindow::create(settings, NamirUi::new(SharedHost(Arc::clone(&host))))
+            .expect("could not create egui-baseview window")
+    })
+    .run_until_closed()
+    .expect("egui-baseview event loop failed");
 }
 
 /// Opens `host` embedded in `parent`'s window -- `namir-clap`'s use of FR-UI-010's one shared UI
