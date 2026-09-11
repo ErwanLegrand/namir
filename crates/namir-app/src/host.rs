@@ -2818,6 +2818,16 @@ mod tests {
         assert_eq!(pending.output_params, expected.output_params);
         assert_eq!(pending.max_block_size, expected.max_block_size);
         assert_eq!(pending.channel_config, expected.channel_config);
+        // #190's drift was in these two lines specifically, so compare them too: a re-inlined
+        // copy of just the supported lists would otherwise pass everything above.
+        assert_eq!(
+            pending.supported_sample_rates,
+            expected.supported_sample_rates
+        );
+        assert_eq!(
+            pending.supported_buffer_sizes,
+            expected.supported_buffer_sizes
+        );
         assert_eq!(
             expected.input_params.buffer_frames,
             Some(256),
