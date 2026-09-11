@@ -10,6 +10,7 @@ mod attribution;
 mod bundle;
 mod cargo_meta;
 mod ci_commands;
+mod comment_width;
 mod error_catalogue;
 mod feature_guard;
 mod identity;
@@ -188,6 +189,44 @@ fn run_rt_logging(root: &Path) -> bool {
         println!(
             "rt-logging: {} violation(s) found (FR-ERR-030):",
             violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
+}
+
+/// Issue #176's convention gate: no comment line under `crates/` or `xtask/` is wider than
+/// `comment_width::MAX_WIDTH`. See `comment_width.rs`'s module doc for why `cargo fmt` cannot
+/// cover this, and for the three automatic escape hatches — an unbreakable token (a URL, a hash,
+/// a path), a Markdown table row, and a fenced block — none of which needs an annotation.
+fn run_comment_width(root: &Path) -> bool {
+    let mut violations = Vec::new();
+
+    for dir in ["crates", "xtask"] {
+        for path in walk_rs_files(&root.join(dir)) {
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let rel = path.strip_prefix(root).unwrap_or(&path).display();
+            for (line, width) in comment_width::scan_over_width(&content) {
+                violations.push(format!("{rel}:{line}: {width} chars"));
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        println!(
+            "comment-width: clean (no comment line over {} columns)",
+            comment_width::MAX_WIDTH
+        );
+        true
+    } else {
+        println!(
+            "comment-width: {} comment line(s) over {} columns:",
+            violations.len(),
+            comment_width::MAX_WIDTH
         );
         for v in &violations {
             println!("  - {v}");
@@ -572,11 +611,11 @@ fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
 ///
 /// The block is *returned* rather than printed at the point it is computed, for one reason: a unit
 /// test inside a binary target cannot capture `println!`, and R-13's mitigation (d) **is** the
-/// printed count -- "the ordinary run prints the partial count on every invocation, so the number is
-/// in front of whoever runs the gate rather than buried in a table"
+/// printed count -- "the ordinary run prints the partial count on every invocation, so the number
+/// is in front of whoever runs the gate rather than buried in a table"
 /// (`docs/02-architecture.md:2564`). Asserting only on the generated plan would leave the one
-/// mechanism R-13 names untested end to end. [`run_traceability`] prints it, in the same position it
-/// has always occupied: last, after the uncovered list.
+/// mechanism R-13 names untested end to end. [`run_traceability`] prints it, in the same position
+/// it has always occupied: last, after the uncovered list.
 struct TraceabilityRun {
     ok: bool,
     partial_lines: Vec<String>,
@@ -1085,7 +1124,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|ci-commands|schema [path...]|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|comment-width|feature-guard|network-free|error-catalogue|ci-commands|schema [path...]|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
     );
 }
 
@@ -1096,6 +1135,7 @@ fn main() {
     let ok = match args.first().map(String::as_str) {
         Some("layering") => run_layering(&root),
         Some("rt-logging") => run_rt_logging(&root),
+        Some("comment-width") => run_comment_width(&root),
         Some("feature-guard") => run_feature_guard(&root),
         Some("network-free") => run_network_free(&root),
         Some("error-catalogue") => run_error_catalogue(&root),
@@ -1445,7 +1485,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // --- FR-ERR-030: the audio-thread logging ban, wired to the real tree --------------------------
+    // --- FR-ERR-030: the audio-thread logging ban, wired to the real tree
+    // --------------------------
 
     /// The gate as CI runs it. Doubles as the existence check for every path in
     /// `rt_logging::AUDIO_THREAD_MODULES`, since an unreadable entry is a violation — so a module
@@ -1479,7 +1520,8 @@ mod tests {
     fn a_planted_record_call_in_an_audio_thread_module_fails_the_gate() {
         // The other negative control, and the one that matters: the check fires on the exact hazard
         // FR-ERR-030 names. Every listed module is copied verbatim into a scratch root and one of
-        // them has a logging call appended, so the tree differs from the real one in precisely that.
+        // them has a logging call appended, so the tree differs from the real one in precisely
+        // that.
         let dir = std::env::temp_dir().join(format!("xtask-rt-logging-hit-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let root = repo_root();
@@ -1775,8 +1817,8 @@ mod tests {
     /// A fixture written as a multi-line string literal whose *physical* line began with a marker
     /// would therefore be read as a genuine `xtask` annotation however deeply it is nested inside a
     /// literal -- the line-based scanner's one residual limit, recorded in `traceability.rs`'s
-    /// module header, which rule 1 shrank rather than closed. `traceability.rs`'s own fixtures avoid
-    /// it with a leading `\x20`; the fixtures here need the marker at the true start of the
+    /// module header, which rule 1 shrank rather than closed. `traceability.rs`'s own fixtures
+    /// avoid it with a leading `\x20`; the fixtures here need the marker at the true start of the
     /// generated line, so they interpolate this instead. Do not inline it.
     const SLASHES: &str = "//";
 

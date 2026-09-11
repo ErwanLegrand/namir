@@ -106,6 +106,11 @@ cargo test -p namir-params --lib -- --ignored generate_params_lock
 cargo run -p xtask -- preset [output-path]
 cargo run -p xtask -- preset --verify <path>
 
+# The 100-column convention for comment prose, which `cargo fmt` cannot see (issue #176): the
+# options that wrap comments are nightly-only. Exempt automatically, with no annotation: a token
+# too long to fit on a line of its own (URL, hash, path), a Markdown table row, a fenced block.
+cargo run -p xtask -- comment-width
+
 # Benchmarks (release only; see "Benchmark methodology" below before trusting a number)
 cargo build --release --bench <name> -p <crate>
 ```
@@ -215,9 +220,10 @@ bench *could* carry `#![allow(unsafe_code)]` — it may not, and nothing mechani
 `xtask`'s subcommands are `layering`, `params-lock`, `attribution`, `traceability`, `preset`,
 `nam-parity` (added M10), `identity` (added M12), `bundle` (added M13), `rt-logging` (added
 M9b — FR-ERR-030's static half; it reads for the *logger's* name in the modules that carry
-audio-thread code, not for `unsafe`), and `network-free`, `error-catalogue`, `feature-guard`,
-`assets`, `schema` and `ci-commands` — fifteen in all, the dispatch at
-`xtask/src/main.rs:1096-1148` — none of which reads for `unsafe`; the only mention of the word
+audio-thread code, not for `unsafe`), `comment-width` (added from issue #176 — the 100-column
+convention for comment prose), and `network-free`, `error-catalogue`, `feature-guard`,
+`assets`, `schema` and `ci-commands` — sixteen in all, the dispatch at
+`xtask/src/main.rs:1135-1188` — none of which reads for `unsafe`; the only mention of the word
 under `xtask/src/` is a prose aside in `network_free.rs`. When a harness looks like it needs
 `unsafe`, the answer this project has reached every time is to take the capability from a
 dependency whose own `unsafe` is already audited, or to move the tested logic to a seam that takes
