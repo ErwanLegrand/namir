@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use namir_core::{ChannelConfig, ErrorCode, SampleRate};
+use namir_core::ErrorCode;
 use namir_engine::{
     AudioEngine, ParamChange, ParamId as EngineParamId, TelemetryEntry, TelemetryReader,
 };
@@ -45,7 +45,7 @@ use namir_ui::{
 use namir_worker::Target;
 use namir_worker::library::LibraryService;
 
-use crate::audio_io::{AudioBackend, HostInfo, StreamFailure, StreamParams};
+use crate::audio_io::{AudioBackend, HostInfo, StreamFailure};
 use crate::instance::SharedInstance;
 use crate::settings::AppSettings;
 use crate::stream::{Direction, RunningStreams, StreamSetup, ThreadPriorityReport};
@@ -579,49 +579,35 @@ impl AppHost {
             );
             return;
         };
+        // Assembled by `crate::app::assemble_stream_config`, the same function start-up uses, so
+        // the two paths cannot drift (issue #192). Only the failure handling below is this call
+        // site's own: the running stream stays up and a notice is posted.
+        let crate::app::AssembledAudioConfig {
+            input_params,
+            output_params,
+            max_block_size,
+            channel_config,
+            sample_rate,
+            supported_sample_rates,
+            supported_buffer_sizes,
+        } = crate::app::assemble_stream_config(&negotiated);
         let crate::app::AudioNegotiation {
             input,
             output,
             sample_rate_hz,
             buffer_frames,
-            input_channels,
-            output_channels,
             share_mode,
+            ..
         } = negotiated;
 
-        let input_params = StreamParams {
-            sample_rate_hz,
-            buffer_frames,
-            channels: input_channels,
-            share_mode: share_mode.mode,
-        };
-        let mut output_params = StreamParams {
-            sample_rate_hz,
-            buffer_frames,
-            channels: output_channels,
-            share_mode: share_mode.mode,
-        };
-        // Issue #166: the output stream asks the device for its own buffer, so the render path
-        // keeps a reserve instead of being drained every callback. The engine's block size still
-        // comes from `buffer_frames` below -- see `audio_io::output_buffer_request`, whose rule is
-        // mode-independent.
-        output_params.buffer_frames = crate::audio_io::output_buffer_request();
-
-        let max_block_size = crate::audio_io::block_frames(buffer_frames);
-        let channel_config = if output_channels >= 2 {
-            ChannelConfig::MonoToStereo
-        } else {
-            ChannelConfig::Mono
-        };
-
-        let Some(_) = SampleRate::new(sample_rate_hz) else {
+        if sample_rate.is_none() {
             self.audio_mode = None;
             self.push_notice(
                 crate::error_codes::NO_SUPPORTED_CONFIG,
                 format!("negotiated an invalid sample rate ({sample_rate_hz} Hz)"),
             );
             return;
-        };
+        }
 
         // FR-IO-020: the same explanation `app::run` gives at start-up. Without it a selector
         // change on a device that refuses exclusive mode flips the mode indicator to shared and
@@ -633,15 +619,6 @@ impl AppHost {
                 detail.clone(),
             );
         }
-
-        // Pre-compute supported sets from the negotiated device configs.
-        let supported_sample_rates =
-            crate::device_state::supported_sample_rates(&input.configs, &output.configs);
-        let supported_buffer_sizes = crate::device_state::supported_buffer_sizes(
-            &input.configs,
-            &output.configs,
-            sample_rate_hz,
-        );
 
         // Drop old streams before the engine is rebuilt — the old audio callback must stop
         // before the instance is replaced on the worker thread (D-15.3, D-8.1).
@@ -2745,6 +2722,117 @@ mod tests {
 
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.output_device_name.as_deref(), Some("Headphones"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// **Issue #192.** The reopen path must open with exactly the values
+    /// [`crate::app::assemble_stream_config`] derives, because a hand-written copy here is what
+    /// drifted from start-up twice — and silently, since a reopen only runs when a user changes a
+    /// selector. So this drives the real path (`dispatch` -> `initiate_audio_reopen`) and compares
+    /// the `pending_reopen` it produced against that function's output for the same negotiation.
+    /// Dropping D-13.3's `output_buffer_request` line from a re-inlined copy fails this.
+    ///
+    /// `pending_reopen` is read directly rather than through a snapshot because no event is pumped
+    /// here: `apply_audio_reopen` consumes it, and this test is about what Phase 1 assembled.
+    #[test]
+    fn a_reopen_assembles_its_stream_config_through_the_shared_function() {
+        let dir = temp_dir("reopen_assembled_config");
+        let (mut host, _engine) = build_host(&dir);
+        let device = |name: &str, is_default| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default,
+        };
+        // Exclusive ranges, granted, so the negotiated buffer is a real `Some(256)` — otherwise
+        // `output_buffer_request()`'s `None` would match the negotiated value by accident and the
+        // D-13.3 line could be dropped unnoticed.
+        let exclusive = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 48_000,
+                max_sample_rate_hz: 48_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(
+                    vec![device("Mic", true)],
+                    vec![device("Speakers", true), device("Headphones", false)],
+                )
+                .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
+                .granting_exclusive_to("Mic")
+                .granting_exclusive_to("Headphones"),
+        );
+        let host_info = HostInfo {
+            name: "fake".to_string(),
+        };
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+            host_info: host_info.clone(),
+            xruns: Arc::new(XrunCounter::new()),
+        });
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings {
+                exclusive_mode: true,
+                ..AppSettings::default()
+            },
+            vec!["Mic".to_string()],
+            vec!["Speakers".to_string(), "Headphones".to_string()],
+            Some("Mic".to_string()),
+            Some("Speakers".to_string()),
+            vec![44_100, 48_000],
+            48_000,
+            vec![256],
+            256,
+        );
+
+        host.dispatch(UiIntent::SelectOutputDevice {
+            name: "Headphones".to_string(),
+        });
+
+        let expected = crate::app::assemble_stream_config(
+            &crate::app::negotiate_audio(
+                backend.as_ref(),
+                &host_info,
+                backend.input_devices(&host_info),
+                backend.output_devices(&host_info),
+                &crate::app::AudioPreferences {
+                    input_device: Some("Mic"),
+                    output_device: Some("Headphones"),
+                    sample_rate_hz: None,
+                    buffer_size_frames: None,
+                    exclusive_mode: true,
+                },
+            )
+            .expect("both directions have a device"),
+        );
+        let pending = host
+            .pending_reopen
+            .as_ref()
+            .expect("the reopen stored pending stream params");
+
+        assert_eq!(pending.input_params, expected.input_params);
+        assert_eq!(pending.output_params, expected.output_params);
+        assert_eq!(pending.max_block_size, expected.max_block_size);
+        assert_eq!(pending.channel_config, expected.channel_config);
+        // #190's drift was in these two lines specifically, so compare them too: a re-inlined
+        // copy of just the supported lists would otherwise pass everything above.
+        assert_eq!(
+            pending.supported_sample_rates,
+            expected.supported_sample_rates
+        );
+        assert_eq!(
+            pending.supported_buffer_sizes,
+            expected.supported_buffer_sizes
+        );
+        assert_eq!(
+            expected.input_params.buffer_frames,
+            Some(256),
+            "the negotiated buffer must be a real value, or this test proves nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
