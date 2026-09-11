@@ -21,6 +21,12 @@
 //!   surfacing it as a one-off notice the way [`crate::audio_io::StreamFailure::DeviceLost`] and
 //!   `Other` are) will be [`crate::app`]'s job, since that is also where the counter this module
 //!   increments for bridge under- and overruns lives.
+//!   Since issue #189 the output side's pads are gated on this `open`'s pair having settled: the
+//!   capture side must have delivered a callback, and the ring must have had a bounded settling
+//!   window to fill. An output device takes a few hundred milliseconds to start running, and a
+//!   callback's demand need not divide into the captured block size, so the pads before then are
+//!   activation rather than dropouts — they used to open every session, and every settings
+//!   reopen, at a non-zero count.
 //!
 //! # Why the engine runs in the *output* callback, not the input one
 //!
@@ -335,6 +341,19 @@ pub fn open(
         "fresh bridge with capacity >= 8 * max_block_size cannot drop prefill"
     );
 
+    // Issue #189: the output stream's device activation is not a dropout. On a healthy session
+    // the output callback fires once, then the device takes a few hundred milliseconds to start
+    // running (measured on §2's interface: one callback, a ~524 ms gap, then an exact 10.000 ms
+    // cadence for the rest of the run). The bridge is pulled across that gap and legitimately has
+    // nothing beyond the prefill above, so `pull_into` pads and every healthy session used to
+    // open at `xrun count is now 2` before the user played a note. This latch says whether the
+    // capture side has ever delivered a callback; it is what anchors [`build_output`]'s settling
+    // window, so an activation gap of any length is covered rather than a fixed number of
+    // callbacks from here. It is created per `open`, not per session — `crate::host`'s reopen
+    // path re-enters this function for every device/rate/buffer change, and each reopen pays the
+    // same transient.
+    let capture_started = Arc::new(AtomicBool::new(false));
+
     let input_channel_index = setup.input_channel_index as usize;
     let input_channels = setup.input_params.channels as usize;
 
@@ -344,6 +363,7 @@ pub fn open(
         input_channel_index,
         input_channels,
         Arc::clone(&xruns),
+        Arc::clone(&capture_started),
         Box::new(on_input_failure),
     )?;
     let thread_priority = Arc::new(ThreadPriorityReport::new());
@@ -352,6 +372,7 @@ pub fn open(
         engine,
         consumer,
         Arc::clone(&xruns),
+        Arc::clone(&capture_started),
         Arc::clone(&thread_priority),
         Box::new(on_output_failure),
     ) {
@@ -375,6 +396,7 @@ fn build_input(
     channel_index: usize,
     channel_count: usize,
     xruns: Arc<XrunCounter>,
+    capture_started: Arc<AtomicBool>,
     on_error: Box<dyn FnMut(StreamFailure) + Send>,
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
     let max_block = setup.max_block_size.max(1);
@@ -383,6 +405,11 @@ fn build_input(
         if channel_count == 0 {
             return;
         }
+        // Issue #189: the capture side is running, so from here on an output pad is a real
+        // dropout rather than the output device's activation transient. A relaxed store per
+        // callback rather than a compare-and-swap: this is a monotonic latch, and the pull side
+        // only needs to see it eventually, within a callback or two of the first real audio.
+        capture_started.store(true, Ordering::Relaxed);
         // Chunked at `max_block` frames rather than extending over the whole callback in one go
         // (NFR-RT-010, found by `the_audio_callbacks_this_module_builds_allocate_nothing` at M14):
         // `mono_scratch` is reserved for exactly `max_block` samples, so a host that hands this
@@ -424,6 +451,7 @@ fn build_output(
     mut engine: AudioEngine,
     mut consumer: BridgeConsumer,
     xruns: Arc<XrunCounter>,
+    capture_started: Arc<AtomicBool>,
     thread_priority: Arc<ThreadPriorityReport>,
     on_error: Box<dyn FnMut(StreamFailure) + Send>,
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
@@ -445,6 +473,48 @@ fn build_output(
     // in this crate to run these callbacks under D-7.5's harness (NFR-RT-010).
     let mut engine_left = vec![0.0f32; max_block];
     let mut engine_right = vec![0.0f32; max_block];
+    // Issue #189: a freshly opened pair does not reach its steady-state bridge occupancy
+    // immediately, and the silence it pads in on the way there is its activation rather than
+    // FR-IO-060's "audio dropout". Two things happen at once. The output device takes a few
+    // hundred milliseconds to start running (measured on §2's interface: one callback, a ~524 ms
+    // gap, then an exact cadence for the rest of the run), which `capture_started` in `open`
+    // covers; and once both sides are running, the ring still has to fill, because a callback's
+    // demand need not divide into the capture side's block — measured here, WASAPI shared asks
+    // 480 frames per output callback against 256-frame captured blocks, so the pull chunked at
+    // 256 + 224 starves once more before occupancy builds. Counting is therefore suppressed for
+    // a settling window after the capture side's first callback.
+    //
+    // Both budgets are wall-clock, not pull counts (PR #206 review): a pull is at most
+    // `max_block` frames, and `STANDARD_BUFFER_SIZES` offers 32..=2048, so a fixed pull count
+    // would swing 64x in real time — at 32 frames a 512-pull ceiling is ~341 ms, *below* the
+    // ~524 ms activation it exists to outlast, and issue #189 would come back at exactly the
+    // buffer sizes a latency-sensitive user picks. So the settling window is `SETTLING_MS`
+    // (100 ms, at or above the ~85 ms the 256-frame reference machine was measured with) and the
+    // ceiling is `ACTIVATION_MS` (3 s, comfortably past the measured ~524 ms activation at every
+    // offered size and rate). Both are converted to pulls here, once per open, outside the
+    // callback — the RT path keeps its two counters, one relaxed load and one comparison, and no
+    // division.
+    //
+    // The ceiling bounds the *other* half. Waiting on `capture_started` alone means an input
+    // device that opens and then silently delivers nothing — which raises no `StreamFailure`,
+    // since there is no error to report — suppresses every pad for the life of the stream, so
+    // the one failure FR-IO-060 matters most for would read a clean 0. Finite, so a dead capture
+    // side starts counting.
+    //
+    // A genuine dropout inside the settling window is not counted, which is the deliberate
+    // trade — the alternative is every session and every settings change opening at a non-zero
+    // count, which is what a user reads as "my audio glitched" before they have played a note.
+    //
+    // Both pieces of state are local to this closure, so both are per-open by construction:
+    // `crate::host::apply_audio_reopen` builds a new one for every device, rate or buffer change,
+    // and each reopen pays the same transient.
+    const SETTLING_MS: u64 = 100;
+    const ACTIVATION_MS: u64 = 3_000;
+    let pulls_per_second = setup.output_params.sample_rate_hz as u64 / max_block as u64;
+    let settling_pulls = (pulls_per_second * SETTLING_MS / 1_000).max(1) as u32;
+    let activation_pulls_max = (pulls_per_second * ACTIVATION_MS / 1_000).max(1) as u32;
+    let mut pulls_since_capture: u32 = 0;
+    let mut pulls: u32 = 0;
 
     let on_data = Box::new(move |out: &mut [f32]| {
         if !priority_elevated.swap(true, Ordering::AcqRel) {
@@ -471,9 +541,13 @@ fn build_output(
         let mut done = 0usize;
         while done < frames {
             let chunk = (frames - done).min(max_block);
-
             let padded = consumer.pull_into(&mut mono_in[..chunk], 0.0);
-            if padded > 0 {
+            pulls = pulls.saturating_add(1);
+            if capture_started.load(Ordering::Relaxed) {
+                pulls_since_capture = pulls_since_capture.saturating_add(1);
+            }
+            let settled = pulls_since_capture > settling_pulls || pulls > activation_pulls_max;
+            if padded > 0 && settled {
                 xruns.record();
             }
 
@@ -1074,19 +1148,89 @@ mod tests {
         assert!(out.iter().any(|s| s.abs() > 1e-6));
     }
 
-    /// FR-IO-060's bridge-underrun path: pulling with nothing pushed yet counts an xrun rather
-    /// than panicking or silently producing garbage — but only once `open`'s one-block prefill has
-    /// been drained, which is the whole point of that prefill: the *first* pull of a session runs
-    /// before any input callback has necessarily fired, and must not be a dropout.
+    /// FR-IO-060's bridge-underrun path, and issue #189's activation transient, which are the
+    /// same code path seen from either side. A pull with nothing pushed pads, and padding counts
+    /// an xrun rather than panicking or silently producing garbage — but **only once the capture
+    /// side has actually run**. Before that, every pad belongs to the output device's own
+    /// activation: on §2's interface the first output callback fires, the device then takes
+    /// ~524 ms to start running, and the two blocks pulled across that gap opened every healthy
+    /// session at `xrun count is now 2` before the user played anything. `open`'s one-block
+    /// prefill absorbs the first of them; the flag this test drives absorbs the rest of the gap,
+    /// however long the device takes.
+    ///
+    /// Red before the gate: the second `output_cb` below counted, with no input callback ever
+    /// having run.
     // trace-partial: FR-IO-060
     // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
     // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
     // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
     // uncovered: anywhere in the window; and cpal-detected dropouts are not counted at all:
     // uncovered: `cpal` 0.19 delivers them via `CallbackInfo::xrun()`, which `AudioBackend`'s
-    // uncovered: callback signature does not carry; closes M8
+    // uncovered: callback signature does not carry — issue #200 item 6 owns widening that seam;
+    // uncovered: closes M8
     #[test]
-    fn an_output_pull_with_no_input_yet_counts_an_xrun() {
+    fn output_pads_during_the_activation_transient_are_not_counted() {
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, 64),
+            engine(64),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+
+        let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+        let mut out = [0.0f32; 128];
+
+        output_cb(&mut out); // 64 frames, exactly the prefill -- no input_cb call needed.
+        assert_eq!(xruns.count(), 0, "the prefill absorbs the first pull");
+
+        // The prefill is spent, the device is still activating, and the capture side has not run:
+        // these pads are the transient, however many callbacks it lasts (up to the activation
+        // ceiling, below). The suppression is not a fixed number of callbacks from the *open* —
+        // it is anchored on the capture side's first callback, so an activation gap of any
+        // realistic length is covered.
+        for _ in 0..64 {
+            output_cb(&mut out);
+        }
+        assert_eq!(
+            xruns.count(),
+            0,
+            "pads before the first input callback are the output device's activation, not dropouts"
+        );
+
+        // Capture is live from here. The settling window (100 ms of pulls: one pull per callback
+        // at a 64-frame `max_block`, so 48_000 / 64 / 10) still absorbs the pads while the ring
+        // fills; past it, a starved pull is a real dropout again.
+        let settling_pulls = 48_000 / 64 / 10;
+        input_cb(&[0.1f32; 64]);
+        for _ in 0..settling_pulls {
+            output_cb(&mut out);
+        }
+        assert_eq!(
+            xruns.count(),
+            0,
+            "pads inside the settling window after capture starts are still the transient"
+        );
+
+        for _ in 0..4 {
+            output_cb(&mut out);
+        }
+        assert!(
+            xruns.count() > 0,
+            "once the stream has settled, an underrun must reach the session's xrun count"
+        );
+    }
+
+    /// A capture side that opens and then delivers nothing raises no `StreamFailure` — there is no
+    /// error for the driver to report — so without a ceiling on the pre-capture suppression the
+    /// session would pad silence forever at a clean `xrun count` of 0. That is the one failure
+    /// FR-IO-060 matters most for, so the suppression is bounded (PR #206 review).
+    #[test]
+    fn a_capture_side_that_never_runs_eventually_counts_dropouts() {
         let backend = FakeBackend::new();
         let xruns = Arc::new(XrunCounter::new());
         let _streams = open(
@@ -1100,11 +1244,58 @@ mod tests {
 
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
         let mut out = [0.0f32; 128];
-        output_cb(&mut out); // 64 frames, exactly the prefill -- no input_cb call needed.
-        assert_eq!(xruns.count(), 0, "the prefill absorbs the first pull");
 
-        output_cb(&mut out); // the prefill is spent and input still has not run.
-        assert!(xruns.count() > 0);
+        // One pull per callback here (64 frames against a 64-frame `max_block`), so the ceiling
+        // is the 3 s activation budget in pulls — the first absorbed by `open`'s prefill, the
+        // rest padded — and no input callback ever fires.
+        let activation_pulls_max = 48_000 / 64 * 3;
+        for _ in 0..activation_pulls_max {
+            output_cb(&mut out);
+        }
+        assert_eq!(
+            xruns.count(),
+            0,
+            "the activation ceiling has not been passed yet"
+        );
+
+        output_cb(&mut out);
+        assert!(
+            xruns.count() > 0,
+            "past the ceiling, a silent capture side's pads are dropouts the user can see"
+        );
+    }
+
+    /// The same silent-capture scenario at the smallest buffer size `STANDARD_BUFFER_SIZES`
+    /// offers. The ceiling is a wall-clock budget, so it must still outlast the measured ~524 ms
+    /// device activation at 32 frames — a fixed 512-pull ceiling would be ~341 ms there and would
+    /// start counting an activation that is still in progress, which is issue #189 resurfacing at
+    /// exactly the buffer sizes a latency-sensitive user picks (PR #206 review).
+    #[test]
+    fn the_activation_ceiling_outlasts_device_activation_at_the_smallest_buffer_size() {
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, 32),
+            engine(32),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+        let mut out = [0.0f32; 64]; // 32 frames: one pull per callback.
+
+        // 600 ms of pulls at 32 frames / 48 kHz — past the ~524 ms activation, and well short of
+        // the 3 s budget. A 512-pull ceiling (~341 ms here) counts dropouts before this point.
+        for _ in 0..(48_000 * 600 / 1_000 / 32) {
+            output_cb(&mut out);
+        }
+        assert_eq!(
+            xruns.count(),
+            0,
+            "at 32 frames the ceiling must still be past the measured ~524 ms activation"
+        );
     }
 
     /// A callback asking for more frames than `max_block_size` is processed in more than one
@@ -1222,7 +1413,8 @@ mod tests {
     // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
     // uncovered: anywhere in the window; and cpal-detected dropouts are not counted at all:
     // uncovered: `cpal` 0.19 delivers them via `CallbackInfo::xrun()`, which `AudioBackend`'s
-    // uncovered: callback signature does not carry; closes M8
+    // uncovered: callback signature does not carry — issue #200 item 6 owns widening that seam;
+    // uncovered: closes M8
     #[test]
     fn input_capture_that_outruns_the_output_callback_counts_an_xrun() {
         const MAX_BLOCK: usize = 64;
