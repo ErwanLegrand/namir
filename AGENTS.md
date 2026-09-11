@@ -81,7 +81,8 @@ up after the fact.
 # runs is documented in one — so the gate guarantees a subcommand appears *somewhere* in the
 # README, not that it appears in this block. `xtask bundle` is the standing example: CI runs it
 # (`.github/workflows/ci.yml:644`) in its own `bundle-and-inspect` job rather than the
-# required-gate job, and it is documented in the Packaging fence (`README.md:73`), not here.
+# required-gate job, and it is documented in the fence under `## Running` (`README.md:73`), not
+# here.
 # What follows is only what the Testing block does not carry.
 cargo test --workspace --no-fail-fast   # --no-fail-fast: see below, it hides failures without it
 
@@ -184,9 +185,13 @@ a file legal is a `#![allow(unsafe_code)]` at the top of that file, and exactly 
 one: `namir-platform/src/denormal.rs`, `namir-platform/src/thread_priority.rs`,
 `namir-clap/src/gui.rs` and `namir-clap/src/host_wake.rs`. So it is **two** designated modules in
 `namir-platform` and **two** in `namir-clap`, not one each — this file previously said "confined to
-one module each" and was wrong. Each carries a written `// SAFETY:` argument on every unsafe block
-and a module-level doc comment giving the fuller argument; see `namir-platform/src/denormal.rs` or
-`namir-clap/src/gui.rs` for the house style.
+one module each" and was wrong. Every *production* unsafe block carries a written `// SAFETY:`
+argument, and each file a module-level doc comment giving the fuller argument; see
+`namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for the house style. The exception is
+`host_wake.rs`'s three `#[cfg(test)]` blocks, counted below: `:241` and `:243` carry no `// SAFETY:`
+at all and `:213` only a one-liner, and that module's D-5.3 argument is scoped to `from_shared`
+(`host_wake.rs:30`), i.e. to the production block alone. New unsafe in a test is held to the house
+style like any other — those three are a gap, not a precedent.
 
 **Tests and benches get no exemption** (D-5.3's *Consequence (added M9, 2026-08-08)*). Cargo
 applies a package's `[lints]` table to bench and integration-test targets too, so a `namir-clap`
@@ -198,23 +203,21 @@ audio-thread code, not for `unsafe`), and `network-free`, `error-catalogue`, `fe
 `assets`, `schema` and `ci-commands` — fifteen in all, the dispatch at
 `xtask/src/main.rs:1096-1148` — none of which reads for `unsafe`; the only mention of the word
 under `xtask/src/` is a prose aside in `network_free.rs`. When a harness looks like it needs
-`unsafe`, the answer this
-project has reached every time is to take the capability from a dependency whose own `unsafe` is
-already audited, or to move the tested logic to a seam that takes plain types: `assert_no_alloc`
-for D-7.5's RT-allocation harness (`namir-dsp`/`namir-engine` say so in as many words in their own
-Cargo.toml comments), `rtrb` for both SPSC rings, and — decided at M9's P0 pass, built at M9b —
-`clack-host` as a `namir-clap` **dev**-dependency for the in-process CLAP host harness, adopted
-precisely because `clack-extensions`' own `__doc_utils.rs` instantiates a plugin through
-`PluginEntry::load_from_clack` with no `unsafe` at all. Checked this pass: the only `unsafe` blocks
-anywhere under `crates/` are one in `gui.rs`, one in `host_wake.rs` (issue #94's erased-lifetime
-`HostSharedHandle`) plus three more in that file's own `#[cfg(test)]` support — its test-host
-constructor and its `unsafe extern "C"` callback (`host_wake.rs:213`, `:241`, `:243`) — five in
-`denormal.rs` and six in `thread_priority.rs` — plus that file's `unsafe extern "system"`
-declaration block, which edition
-2024 requires of any `extern` block — and none at all in any bench or integration test, where there
-should be none. Any new `unsafe` block outside those four files is a bug, not a style choice —
-inside a `forbid` crate the compiler enforces that; inside the two `deny` crates only review does,
-so say so in the review.
+`unsafe`, the answer this project has reached every time is to take the capability from a
+dependency whose own `unsafe` is already audited, or to move the tested logic to a seam that takes
+plain types: `assert_no_alloc` for D-7.5's RT-allocation harness (`namir-dsp`/`namir-engine` say
+so in as many words in their own Cargo.toml comments), `rtrb` for both SPSC rings, and — decided
+at M9's P0 pass, built at M9b — `clack-host` as a `namir-clap` **dev**-dependency for the
+in-process CLAP host harness, adopted precisely because `clack-extensions`' own `__doc_utils.rs`
+instantiates a plugin through `PluginEntry::load_from_clack` with no `unsafe` at all. Checked this
+pass: the only `unsafe` blocks anywhere under `crates/` are one in `gui.rs`, one in `host_wake.rs`
+(issue #94's erased-lifetime `HostSharedHandle`) plus three more in that file's own `#[cfg(test)]`
+support — its test-host constructor and its `unsafe extern "C"` callback (`host_wake.rs:213`,
+`:241`, `:243`) — five in `denormal.rs` and six in `thread_priority.rs` — plus that file's
+`unsafe extern "system"` declaration block, which edition 2024 requires of any `extern` block —
+and none at all in any bench or integration test, where there should be none. Any new `unsafe`
+block outside those four files is a bug, not a style choice — inside a `forbid` crate the compiler
+enforces that; inside the two `deny` crates only review does, so say so in the review.
 
 ## `namir-ui`'s host seam — the key cross-cutting design to know before touching UI or either product shell
 

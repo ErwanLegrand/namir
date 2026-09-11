@@ -30,7 +30,7 @@
 //!   names nothing here; that is `deny.toml`'s half, and it is by-name and non-exhaustive. The two
 //!   halves together are what FR-ERR-060's partial still records.
 //! - **Nothing sees a raw syscall or a `libc` socket call.** Neither is reachable in this workspace
-//!   — D-5.3 confines `unsafe` to three named files, none of which is a network module — but the
+//!   — D-5.3 confines `unsafe` to four named files, none of which is a network module — but the
 //!   limit is real rather than argued away.
 
 /// Standard-library networking names, matched as whole identifiers. Every one of them is

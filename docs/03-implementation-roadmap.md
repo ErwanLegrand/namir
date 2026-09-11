@@ -157,11 +157,16 @@ M9b closed out **without** reaching zero uncovered Musts and moved it again to *
 ground that issue #34's manual-document `Result:`-line fix had to land before the flip (§16's M9b
 close-out subsection carries that reasoning). So every "**M13's close-out**" — this note's own,
 §14's `### M9a re-audit` preamble, §16's restated acceptance and §20's first `### M13 scope note`
-— and every "**M9b's close-out**" — §16's `**Correction (added M13, 2026-08-11)**` and §20's
-`### M13 scope note, second correction` — is superseded by this note. The tool itself is the
+— and every "**M9b's close-out**" — §16's `**Correction (added M13, 2026-08-11)**`, §20's
+`### M13 scope note, second correction` and §20's `### M13 close-out`, which gives the close-out's
+own answer to why M13 did not flip it — is superseded by this note. The tool itself is the
 authority and already prints it: `cargo run -p xtask -- traceability` emits "becomes required at
 M14's close-out (D-18.5) -- M9b's own close-out moved it there, having closed out without reaching
-it" (`xtask/src/traceability.rs:1352-1355`). Nothing else in those notes changes — the required
+it" (`xtask/src/traceability.rs:1352-1355`). `.github/workflows/ci.yml`'s step names the same
+moment as "M14 Phase 6" — §21's phases run 0–6 and Phase 6 is its last — and adds that the flip
+moves with the evidence rather than with a milestone boundary, which is the same claim read
+forwards: the close-out is where the evidence is expected to be in, not a date the flip owes
+anything to. Nothing else in those notes changes — the required
 plan-diff half is still required from M9a, and the flip is still the deletion of
 `--allow-uncovered` and of the `continue-on-error` step.
 
