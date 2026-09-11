@@ -50,3 +50,25 @@ whenever the negotiated output channel count is 2, which is every case this sess
 tested. Genuine independent-stereo-input (`ChannelConfig::Stereo`) is not built. Neither has an
 interactive UI. All three gaps are structural (recorded in code comments) rather than silently
 absent.
+
+## Note appended 2026-09-11 (input-channel selector)
+
+The "No UI to set these interactively" bullet above now overstates the gap for the **input**
+channel only, and the recorded PARTIAL verdict is unchanged. `namir-ui`'s audio settings panel
+carries an "Input Channel:" combo beside the sample-rate and buffer-size selectors, listing one
+entry per channel the open input stream offers, labelled 1-based ("Input 1", "Input 2", …) over the
+0-based index `ChannelMapping::input_channel` stores. Choosing one dispatches
+`UiIntent::SelectInputChannel`, which `namir-app`'s `AppHost` persists and then reopens the stream
+through, the same path `SelectSampleRate` takes. A persisted index the current device does not have
+is clamped to the last channel it does offer (`clamp_input_channel`, used by both the selector and
+the stream setup), so switching from an 8-in interface to a 2-in one no longer captures silence out
+of a channel that is not there.
+
+What that automates of the script above: step 3's *control* half for the input channel, verified in
+`crates/namir-ui/tests/ui_interaction_scripts.rs`
+(`input_channel_combo_dispatches_the_zero_based_index_of_the_chosen_channel`) and
+`crates/namir-app/src/host.rs`
+(`a_persisted_input_channel_past_the_device_end_is_clamped_to_an_existing_one`). What still needs a
+human with hardware, and so keeps this file's `Verify: M` unpromoted: that the remapped physical
+channel is the one actually heard, the output-channel half (no UI for it), and
+`ChannelConfig::Stereo`, which remains unbuilt.

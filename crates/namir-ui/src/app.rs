@@ -131,8 +131,9 @@ pub fn render(
     }
 }
 
-/// Audio device configuration panel (FR-IO-010/040/070/080).
-/// Renders device selectors for input and output, sample rate, buffer size, and a close button.
+/// Audio device configuration panel (FR-IO-010/040/070/080/090).
+/// Renders device selectors for input and output, sample rate, buffer size, input channel, and a
+/// close button.
 fn audio_settings_panel(
     ctx: &egui::Context,
     panel: &AudioDevicePanelSnapshot,
@@ -225,6 +226,28 @@ fn audio_settings_panel(
                                 let selected = panel.current_buffer_size == buf;
                                 if ui.selectable_label(selected, label).clicked() {
                                     intents.push(UiIntent::SelectBufferSize { buffer_size: buf });
+                                }
+                            }
+                        });
+                });
+            });
+
+            // Input Channel selector (FR-IO-090). The snapshot's indices are zero-based, as the
+            // host's settings field stores them; the 1-based numbering a musician reads off the
+            // interface's front panel is produced here, by `channel + 1`, and nowhere else.
+            ui.horizontal(|ui| {
+                ui.label("Input Channel:");
+                let current_ch = format!("Input {}", panel.current_input_channel + 1);
+                let has_channels = panel.supported_input_channels > 0;
+                ui.add_enabled_ui(has_channels, |ui| {
+                    egui::ComboBox::from_id_salt("namir_audio_input_channel")
+                        .selected_text(current_ch)
+                        .show_ui(ui, |ui| {
+                            for channel in 0..panel.supported_input_channels {
+                                let label = format!("Input {}", channel + 1);
+                                let selected = panel.current_input_channel == channel;
+                                if ui.selectable_label(selected, label).clicked() {
+                                    intents.push(UiIntent::SelectInputChannel { channel });
                                 }
                             }
                         });
@@ -1462,6 +1485,8 @@ mod tests {
                 current_sample_rate: 48_000,
                 supported_buffer_sizes: vec![64, 128, 256, 512],
                 current_buffer_size: 256,
+                supported_input_channels: 2,
+                current_input_channel: 0,
             }),
             ..Default::default()
         };

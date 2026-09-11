@@ -678,6 +678,7 @@ pub fn run() {
         supported_buffer_sizes,
         buffer_frames.unwrap_or(256),
     );
+    host.configure_input_channels(input_params.channels);
     // FR-STATE-030: `<config_dir>/Presets` (`namir_platform::presets` owns preset location and
     // naming rules). `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly,
     // so a NFR-PERF-030 measurement run stays inside the directory its harness owns.

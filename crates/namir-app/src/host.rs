@@ -365,6 +365,17 @@ fn basename(path_or_desc: &str) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path_or_desc.to_string())
 }
+
+/// FR-IO-090's persisted input channel index, clamped to what the open device actually offers.
+///
+/// A settings file remembering channel 5 of an 8-in interface is still there after the user
+/// switches to a 2-in one, and `build_input`'s `frame.get(index)` would then capture silence with
+/// nothing on screen saying why. Clamping here instead means the selector shows a channel that
+/// exists and the stream reads that same channel -- one answer for both, since both call this.
+fn clamp_input_channel(persisted: Option<u16>, channel_count: u16) -> u16 {
+    persisted.unwrap_or(0).min(channel_count.saturating_sub(1))
+}
+
 /// The context required to dynamically re-open and re-configure audio streams when device
 /// selection or stream parameters are changed in the UI.
 pub struct AudioReopenContext {
@@ -434,6 +445,9 @@ pub struct AppHost {
     current_sample_rate: u32,
     supported_buffer_sizes: Vec<u32>,
     current_buffer_size: u32,
+    /// Interleaved input channel count of the open input stream (FR-IO-090's selector range).
+    /// `0` until a stream opens, and on the `open_window_without_audio` path.
+    input_channel_count: u16,
     settings: AppSettings,
     /// Bumped on every `initiate_audio_reopen` and carried through the command/event round
     /// trip, so an `AppEvent::AudioStreamReady` overtaken by a newer reopen is ignored.
@@ -488,6 +502,7 @@ impl AppHost {
             current_sample_rate: 48_000,
             supported_buffer_sizes: Vec::new(),
             current_buffer_size: 256,
+            input_channel_count: 0,
             settings: AppSettings::default(),
             reopen_generation: 0,
             audio_reopen: None,
@@ -686,6 +701,7 @@ impl AppHost {
 
         let input_name = pending.input_device.name.clone();
         let output_name = pending.output_device.name.clone();
+        let input_channel_count = pending.input_params.channels;
 
         let (input_failure_tx, input_failure_rx) =
             rtrb::RingBuffer::new(crate::app::STREAM_FAILURE_RING_SLOTS);
@@ -701,7 +717,10 @@ impl AppHost {
             output_device: pending.output_device,
             output_params: pending.output_params,
             channel_config: pending.channel_config,
-            input_channel_index: self.settings.channel_mapping.input_channel.unwrap_or(0),
+            input_channel_index: clamp_input_channel(
+                self.settings.channel_mapping.input_channel,
+                input_channel_count,
+            ),
             output_channel_left: self
                 .settings
                 .channel_mapping
@@ -743,6 +762,7 @@ impl AppHost {
                         self.current_output_device = Some(output_name.clone());
                         self.current_sample_rate = pending.sample_rate_hz;
                         self.current_buffer_size = pending.buffer_frames.unwrap_or(256);
+                        self.input_channel_count = input_channel_count;
                         self.supported_sample_rates = pending.supported_sample_rates;
                         self.supported_buffer_sizes = pending.supported_buffer_sizes;
                         self.hold_streams(running);
@@ -863,6 +883,13 @@ impl AppHost {
         self.current_sample_rate = current_sample_rate;
         self.supported_buffer_sizes = supported_buffer_sizes;
         self.current_buffer_size = current_buffer_size;
+    }
+
+    /// Sets FR-IO-090's selector range from the input stream this launch actually opened. A
+    /// reopen refreshes it from its own negotiation (`apply_audio_reopen`); this is start-up's
+    /// one-off, kept separate so the `configure_audio_devices` argument list stops growing.
+    pub fn configure_input_channels(&mut self, channel_count: u16) {
+        self.input_channel_count = channel_count;
     }
 
     /// Persists current `AppSettings` to `<config_dir>/audio-settings.json`.
@@ -1298,6 +1325,11 @@ impl UiHost for AppHost {
                 current_sample_rate: self.current_sample_rate,
                 supported_buffer_sizes: self.supported_buffer_sizes.clone(),
                 current_buffer_size: self.current_buffer_size,
+                supported_input_channels: self.input_channel_count,
+                current_input_channel: clamp_input_channel(
+                    self.settings.channel_mapping.input_channel,
+                    self.input_channel_count,
+                ),
             }),
         }
     }
@@ -1419,6 +1451,11 @@ impl UiHost for AppHost {
             UiIntent::SelectBufferSize { buffer_size } => {
                 self.current_buffer_size = buffer_size;
                 self.settings.buffer_size_frames = Some(buffer_size);
+                self.persist_settings();
+                self.initiate_audio_reopen();
+            }
+            UiIntent::SelectInputChannel { channel } => {
+                self.settings.channel_mapping.input_channel = Some(channel);
                 self.persist_settings();
                 self.initiate_audio_reopen();
             }
@@ -1574,6 +1611,30 @@ mod tests {
         let (mut host, _engine) = build_host_with_audio_mode(&dir, Some(granted.clone()));
         assert_eq!(host.snapshot().audio_mode.as_ref(), Some(&granted));
         assert_eq!(host.snapshot().audio_mode.as_ref(), Some(&granted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FR-IO-090: a persisted input channel the current device does not have (an 8-in interface's
+    /// channel 6 remembered after switching to a 2-in one) is clamped to a channel that exists,
+    /// both for the selector and for the stream that reads it -- not left pointing past the end
+    /// of the frame, where `build_input` captures silence with nothing on screen to explain it.
+    #[test]
+    fn a_persisted_input_channel_past_the_device_end_is_clamped_to_an_existing_one() {
+        let dir = temp_dir("input_channel_clamp");
+        let (mut host, _engine) = build_host(&dir);
+        host.settings.channel_mapping.input_channel = Some(6);
+        host.configure_input_channels(2);
+        let panel = host.snapshot().audio_panel.expect("standalone has a panel");
+        assert_eq!(panel.supported_input_channels, 2);
+        assert_eq!(
+            panel.current_input_channel, 1,
+            "clamped to the last channel the device actually offers"
+        );
+        // The same clamp the stream setup uses, so the selector and the capture agree.
+        assert_eq!(clamp_input_channel(Some(6), 2), 1);
+        // An in-range selection is left alone, and "no device yet" reads as channel 0.
+        assert_eq!(clamp_input_channel(Some(1), 4), 1);
+        assert_eq!(clamp_input_channel(Some(3), 0), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
