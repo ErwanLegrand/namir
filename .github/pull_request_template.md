@@ -11,8 +11,8 @@
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace --no-fail-fast`
-- [ ] The rest of the gate block in `README.md` (every `xtask` subcommand + `cargo deny check`),
-      which `xtask ci-commands` keeps in step with `.github/workflows/ci.yml` in both directions
+- [ ] The rest of the gate block in `README.md` (every *other* `xtask` subcommand + `cargo deny
+      check`), which `xtask ci-commands` keeps in step with `.github/workflows/ci.yml` both ways
 - [ ] `cargo run -p xtask -- traceability` (with `--allow-uncovered` until M14's close-out, when
       D-18.5 makes the zero-uncovered half required and the flag is deleted)
 - [ ] Manual test executed (name the file under `docs/manual-tests/`)
