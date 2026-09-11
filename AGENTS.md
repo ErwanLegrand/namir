@@ -377,6 +377,9 @@ this repository, all of which the PR template asks for explicitly:
   touched, `trace:`/`trace-partial:` tags added, moved or demoted, appended *Consequence* /
   status / close-out subsections. "None" is the common answer and is worth writing.
 - **One finding per issue.** Review write-ups that stack five independent findings into one body
-  (#199, #200) are hard to close and hard to own; file them separately and cross-reference.
+  (#199, #200) are hard to close and hard to own; file them separately and cross-reference. Where
+  a stacked body is unavoidable, number its items and keep the numbers stable: in practice they
+  get cited from elsewhere — #200's item 6 is named in a `// uncovered:` field in
+  `crates/namir-app/src/stream.rs` and from PR #206 — and a renumbered item silently breaks those.
 
 No length limit and no CI check — the fix for long bodies is a skeleton, not a cap (#201).
