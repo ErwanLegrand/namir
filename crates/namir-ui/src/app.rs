@@ -233,20 +233,30 @@ fn audio_settings_panel(
             });
 
             // Input Channel selector (FR-IO-090). The snapshot's indices are zero-based, as the
-            // host's settings field stores them; the 1-based numbering a musician reads off the
-            // interface's front panel is produced here, by `channel + 1`, and nowhere else.
+            // host's settings field stores them; `input_channel_label` is the only place the
+            // 1-based numbering a musician reads off the interface's front panel is produced, so
+            // the closed combo and its entries cannot disagree about what channel 2 is called.
             ui.horizontal(|ui| {
                 ui.label("Input Channel:");
-                let current_ch = format!("Input {}", panel.current_input_channel + 1);
                 let has_channels = panel.supported_input_channels > 0;
+                // No input stream, no channels to name: "Input 1" here would name a channel that
+                // does not exist (`namir-app` opens its window with no audio at all when no
+                // device could be opened, and that panel reports zero).
+                let current_ch = if has_channels {
+                    input_channel_label(panel.current_input_channel)
+                } else {
+                    "None".to_string()
+                };
                 ui.add_enabled_ui(has_channels, |ui| {
                     egui::ComboBox::from_id_salt("namir_audio_input_channel")
                         .selected_text(current_ch)
                         .show_ui(ui, |ui| {
                             for channel in 0..panel.supported_input_channels {
-                                let label = format!("Input {}", channel + 1);
                                 let selected = panel.current_input_channel == channel;
-                                if ui.selectable_label(selected, label).clicked() {
+                                if ui
+                                    .selectable_label(selected, input_channel_label(channel))
+                                    .clicked()
+                                {
                                     intents.push(UiIntent::SelectInputChannel { channel });
                                 }
                             }
@@ -264,6 +274,13 @@ fn audio_settings_panel(
     if !is_open || close_clicked {
         intents.push(UiIntent::ToggleAudioSettings);
     }
+}
+
+/// FR-IO-090's one conversion from a stored zero-based channel index to what the front panel of
+/// an interface calls it. Every label in the input-channel combo -- the closed one and each
+/// entry -- comes from here, so the two cannot drift apart by one.
+fn input_channel_label(channel: u16) -> String {
+    format!("Input {}", channel + 1)
 }
 
 /// The two ends of the chain, side by side at the top of the screen: each is a level control with

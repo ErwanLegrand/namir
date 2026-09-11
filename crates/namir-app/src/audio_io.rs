@@ -94,6 +94,22 @@ pub(crate) fn buffer_decline_detail(requested: u32, actual: Option<u32>) -> Opti
     }
 }
 
+/// FR-IO-090's counterpart to [`buffer_decline_detail`]: the notice detail when the input channel
+/// the settings file remembers is not one the opened stream has, so a different one is in use.
+/// `None` when the selection was honoured, which is every ordinary open.
+///
+/// Both numbers are 1-based here, as the selector shows them -- the argument is the stored
+/// zero-based index, and this is the one place besides the selector that renders one for a human.
+pub(crate) fn input_channel_decline_detail(requested: u16, actual: u16) -> Option<String> {
+    (requested != actual).then(|| {
+        format!(
+            "requested input {}, using input {}",
+            requested + 1,
+            actual + 1
+        )
+    })
+}
+
 /// What the **output** stream asks the device for: `None`, meaning `cpal::BufferSize::Default` —
 /// the device's own buffer, never a size Namir picked.
 ///

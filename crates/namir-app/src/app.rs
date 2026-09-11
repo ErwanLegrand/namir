@@ -105,6 +105,10 @@ pub(crate) struct AudioPreferences<'a> {
     pub(crate) output_device: Option<&'a str>,
     pub(crate) sample_rate_hz: Option<u32>,
     pub(crate) buffer_size_frames: Option<u32>,
+    /// FR-IO-090's selected hardware input channel, zero-based, as
+    /// [`crate::settings::ChannelMapping`] stores it. The input stream has to be opened wide
+    /// enough to *contain* that index -- see [`settle`].
+    pub(crate) input_channel: Option<u16>,
     pub(crate) exclusive_mode: bool,
 }
 
@@ -231,6 +235,9 @@ pub(crate) struct AssembledAudioConfig {
     /// notice — deliberately different, so this function does not choose.
     pub sample_rate: Option<SampleRate>,
     pub supported_sample_rates: Vec<u32>,
+    /// FR-IO-090's selector range: how many input channels the device reports at the negotiated
+    /// rate, which is not how many the stream opened with (see [`settle`]).
+    pub input_channel_count: u16,
     pub supported_buffer_sizes: Vec<u32>,
 }
 
@@ -310,6 +317,11 @@ pub(crate) fn assemble_stream_config(negotiated: &AudioNegotiation) -> Assembled
             &output.configs,
             sample_rate_hz,
         ),
+        input_channel_count: crate::device_state::max_channels_at_rate(
+            &input.configs,
+            sample_rate_hz,
+        )
+        .unwrap_or(*input_channels),
     }
 }
 
@@ -335,7 +347,17 @@ fn settle(
     (
         sample_rate_hz,
         buffer_frames,
-        crate::device_state::negotiate_channels(&input.configs, sample_rate_hz, 1).unwrap_or(1),
+        // FR-IO-090: the engine still reads one channel, so "smallest that suffices" stands --
+        // but a selected channel 6 does not arrive in a 1-channel stream, so what suffices is
+        // `selected + 1` interleaved channels. A device that cannot go that wide falls back to
+        // its largest count (`negotiate_channels`' own fallback) and the selection is clamped
+        // against that by `clamp_input_channel`.
+        crate::device_state::negotiate_channels(
+            &input.configs,
+            sample_rate_hz,
+            prefs.input_channel.unwrap_or(0) + 1,
+        )
+        .unwrap_or(1),
         crate::device_state::negotiate_channels(&output.configs, sample_rate_hz, 2).unwrap_or(1),
     )
 }
@@ -524,6 +546,7 @@ pub fn run() {
             output_device: settings.output_device_name.as_deref(),
             sample_rate_hz: settings.sample_rate_hz,
             buffer_size_frames: settings.buffer_size_frames,
+            input_channel: settings.channel_mapping.input_channel,
             exclusive_mode: settings.exclusive_mode,
         },
     );
@@ -549,6 +572,7 @@ pub fn run() {
         sample_rate,
         supported_sample_rates,
         supported_buffer_sizes,
+        input_channel_count,
     } = assemble_stream_config(&negotiated);
     let AudioNegotiation {
         input,
@@ -678,7 +702,10 @@ pub fn run() {
         supported_buffer_sizes,
         buffer_frames.unwrap_or(256),
     );
-    host.configure_input_channels(input_params.channels);
+    // FR-IO-090: the index this stream opens with is the host's own settled answer, so the
+    // selector and the capture below read the same channel (the reopen path settles its own in
+    // `AppHost::apply_audio_reopen`, through the same `clamp_input_channel`).
+    let input_channel = host.configure_input_channels(input_channel_count, input_params.channels);
     // FR-STATE-030: `<config_dir>/Presets` (`namir_platform::presets` owns preset location and
     // naming rules). `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly,
     // so a NFR-PERF-030 measurement run stays inside the directory its harness owns.
@@ -712,6 +739,12 @@ pub fn run() {
     {
         host.report(crate::error_codes::BUFFER_SIZE_DECLINED, detail);
     }
+    if let Some(requested) = settings.channel_mapping.input_channel
+        && let Some(detail) =
+            crate::audio_io::input_channel_decline_detail(requested, input_channel)
+    {
+        host.report(crate::error_codes::INPUT_CHANNEL_DECLINED, detail);
+    }
 
     let stream_setup = StreamSetup {
         backend: backend.as_ref(),
@@ -722,7 +755,7 @@ pub fn run() {
         output_device: output.device.clone(),
         output_params,
         channel_config,
-        input_channel_index: settings.channel_mapping.input_channel.unwrap_or(0),
+        input_channel_index: input_channel,
         output_channel_left: settings.channel_mapping.output_channel_left.unwrap_or(0),
         output_channel_right: settings.channel_mapping.output_channel_right.unwrap_or(1),
         max_block_size,
@@ -1063,6 +1096,7 @@ mod tests {
                 output_device: Some(OUT),
                 sample_rate_hz: None,
                 buffer_size_frames: None,
+                input_channel: None,
                 exclusive_mode,
             },
         )

@@ -302,6 +302,20 @@ pub fn supported_sample_rates(
     rates
 }
 
+/// FR-IO-090's selector range: the largest channel count `configs` reports at `sample_rate_hz`,
+/// i.e. how many hardware input channels the device *has* to choose from.
+///
+/// Deliberately not [`negotiate_channels`]' answer. That one picks the smallest count that
+/// suffices for the engine (one channel for a mono capture), which is the right thing to *open*
+/// and the wrong thing to *offer*: an 8-in interface would present a one-entry selector. The
+/// count a stream then opens with follows from the choice, through `negotiate_channels`' own
+/// `minimum` argument.
+pub fn max_channels_at_rate(configs: &[SupportedConfigRange], sample_rate_hz: u32) -> Option<u16> {
+    configs_at_rate(configs, sample_rate_hz)
+        .map(|c| c.channels)
+        .max()
+}
+
 /// Returns all standard buffer sizes supported by both `input_configs` and `output_configs`
 /// at `sample_rate_hz`.
 pub fn supported_buffer_sizes(

@@ -72,3 +72,21 @@ What that automates of the script above: step 3's *control* half for the input c
 human with hardware, and so keeps this file's `Verify: M` unpromoted: that the remapped physical
 channel is the one actually heard, the output-channel half (no UI for it), and
 `ChannelConfig::Stereo`, which remains unbuilt.
+
+### Amendment, same day (review of the note above)
+
+Two things the note as first written did not say, both found in review and now built. **The
+selector's range is the device's own reported channel count**, not the count one stream opened
+with: `negotiate_channels` prefers the smallest config that suffices for the engine, so a snapshot
+fed from the opened stream showed a single entry on an eight-in interface and made every channel
+but the first unreachable. The range now comes from `device_state::max_channels_at_rate`, and the
+chosen index is passed into `negotiate_channels`' `minimum`, so the stream is opened wide enough
+to carry it (`crates/namir-app/src/host.rs`,
+`an_eight_input_device_offers_every_channel_and_opens_a_stream_containing_the_chosen_one`).
+**A clamped channel is now reported**, as `app.audio_io.input_channel_declined`, rather than
+silently substituted — the same treatment a declined buffer size gets.
+
+Still unautomated, and still the reason this file's `Verify: M` is unpromoted: that the channel
+selected is the one physically heard needs a signal fed into one input of a real multi-input
+interface. No hardware of that shape was available in this session; the eight-input device above
+is a fake backend reporting eight configs, which proves the plumbing and not the wiring.
