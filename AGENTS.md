@@ -27,7 +27,7 @@ Three documents in `docs/` form a strict hierarchy; where they conflict, the ear
   silently rewritten — a later milestone that changes one appends a
   `*Consequence (added M<n>)*` note at the original decision, in place, rather than editing the
   original text.
-- **`docs/03-implementation-roadmap.md`** — *order*. Milestones M0–M13, each with Deliverables and
+- **`docs/03-implementation-roadmap.md`** — *order*. Milestones M0–M14, each with Deliverables and
   Acceptance criteria. §14 has a Must-requirement status snapshot table (Done/Partial/Not started
   per FRS section); §15 tracks open decisions still to make. **The numbers are not the running
   order**: M9–M13 were added after M8 existed and run *before* it, because M8 is the 1.0 exit gate
@@ -35,15 +35,15 @@ Three documents in `docs/` form a strict hierarchy; where they conflict, the ear
   Must-requirement triage, §14's rebuild, the traceability gate's split, the FRS §10 correction),
   and **M9b**, the build work that triage scopes. These are phase labels inside §16, not new
   milestone numbers — the same device M10 already uses for its Phase 0–4 — so every existing
-  reference to "M9" still resolves. Execution order is M9a → M10 → M11 → M12 → M13 → M9b → M8;
-  M9b blocks only M8, whose exit checklist nominates FR-CFG-020's golden vector. §12's arrow line
-  still reads M9 → M10 → M11 → M12 → M13 → M8 and is deliberately left as written; the refinement
-  is a dated note appended beneath it, not an edit to it. §14 now holds **two** tables: the M0
-  snapshot, superseded and kept as historical text — do not edit it — and the `### M9a re-audit`
-  table D-23.2 prescribes. That heading, its column order and its row-label form are machine-parsed,
-  and its row set and Must-count column are *derived from the FRS* and checked by `xtask
-  traceability`; a disagreement fails the required half of that gate and is fixed by hand in the
-  roadmap, never by `--write`. Its three verdict columns are hand-adjudicated against each
+  reference to "M9" still resolves. Execution order is M9a → M10 → M11 → M12 → M13 → M9b → M14 →
+  M8; M9b blocks only M8, whose exit checklist nominates FR-CFG-020's golden vector. §12's arrow
+  line still reads M9 → M10 → M11 → M12 → M13 → M8 and is deliberately left as written; the
+  refinement is a dated note appended beneath it, not an edit to it. §14 now holds **two** tables:
+  the M0 snapshot, superseded and kept as historical text — do not edit it — and the `### M9a
+  re-audit` table D-23.2 prescribes. That heading, its column order and its row-label form are
+  machine-parsed, and its row set and Must-count column are *derived from the FRS* and checked by
+  `xtask traceability`; a disagreement fails the required half of that gate and is fixed by hand in
+  the roadmap, never by `--write`. Its three verdict columns are hand-adjudicated against each
   requirement's own text and stated `Verify:` method, every cell naming its evidence by file path,
   and are outside every gate (§22 **R-14**) — so read `docs/03-test-plan.md` (generated) for the
   mechanical view, and treat a verdict cell as current only as of the milestone whose own evidence
@@ -73,22 +73,21 @@ up after the fact.
 ## Common commands
 
 ```bash
-# Full local gate (also what CI runs, on Windows/Linux/macOS; traceability's CI form differs, below)
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+# Full local gate: **`README.md`'s "Testing" section is the canonical enumeration** — twelve `xtask`
+# subcommands plus fmt/clippy/test/`cargo deny check`. Run every command in that block; do not
+# maintain a second list here. What keeps it honest is `xtask ci-commands`
+# (`xtask/src/ci_commands.rs`), which checks in both directions that every `cargo` line in *any*
+# README fence is run by `.github/workflows/ci.yml` and that every `xtask` subcommand that file
+# runs is documented in one — so the gate guarantees a subcommand appears *somewhere* in the
+# README, not that it appears in this block. `xtask bundle` is the standing example: CI runs it
+# (`.github/workflows/ci.yml:644`) in its own `bundle-and-inspect` job rather than the
+# required-gate job, and it is documented in the fence under `## Running` (`README.md:73`), not
+# here.
+# What follows is only what the Testing block does not carry.
 cargo test --workspace --no-fail-fast   # --no-fail-fast: see below, it hides failures without it
-cargo run -p xtask -- layering       # D-5.1 dependency-graph + platform-cfg lint
-cargo run -p xtask -- rt-logging     # FR-ERR-030: no audio-thread module may name the logger
-cargo run -p xtask -- params-lock    # checks params.lock is in sync with namir-params::REGISTRY
-cargo run -p xtask -- attribution    # NFR-LIC-030 THIRD-PARTY-NOTICES.md freshness
-cargo run -p xtask -- identity       # M12: brand-mark blob freshness + README/TRADEMARK statements
-cargo run -p xtask -- traceability   # NFR-QUAL-010 coverage + plan diff + §14's denominators
-cargo deny check                     # NFR-LIC-020 license/advisory gate
 
-# The generate-and-diff checks take --write to regenerate rather than verify:
-cargo run -p xtask -- params-lock --write
-cargo run -p xtask -- attribution --write
-cargo run -p xtask -- identity --write       # regenerates the brand-mark alpha blob
+# README says which subcommands take --write to regenerate rather than verify; the one with a
+# hand-edit hazard worth repeating:
 cargo run -p xtask -- traceability --write   # regenerates docs/03-test-plan.md; never hand-edit it
 
 # traceability's second flag: keep only the required half of its exit status (see below).
@@ -124,12 +123,14 @@ with the flag.
 **`xtask traceability` is two gates behind one exit status (D-18.5).** The **required** half is the
 generated-plan diff — `docs/03-test-plan.md` matching what the tool would write — **and** D-23.2's
 denominator check, that §14's `### M9a re-audit` table agrees with the Musts parsed out of the FRS
-(`required = plan_up_to_date && section_table_ok`, `xtask/src/main.rs:449`). The other half is zero
-uncovered Musts, which no milestone before M13 can reach, so it stays informational:
-`--allow-uncovered` derives the exit status from the required half alone (`exit_ok`,
-`xtask/src/traceability.rs:924`) while printing byte-identical output, full uncovered list included.
+(`required = plan_up_to_date && section_table_ok`, `xtask/src/main.rs:901`). The other half is zero
+uncovered Musts, which no milestone before M14 can reach, so it stays informational:
+`--allow-uncovered` derives the exit status from the required half alone (`exit_ok`, in
+`xtask/src/traceability.rs`) while printing byte-identical output, full uncovered list included.
 D-18.5 pairs the flag with a second, `continue-on-error: true` CI step running the plain form, so
-the gap list stays a visible annotation; that half becomes required at **M13's close-out**, and the
+the gap list stays a visible annotation; that half becomes required at **M14's close-out** — D-18.5
+moved it M13 → M9b, and M9b closed out without reaching it, so M14 owns the flip (the tool's own
+generated header says so, `xtask/src/traceability.rs:1354`) — and the
 flip is the deletion of the flag and of that step — two lines, deliberately. Three things no flag
 softens: a wrong §14 denominator fails even under `--write --allow-uncovered`, because `--write`
 regenerates the plan and must not become a one-flag bypass of a table it cannot regenerate; a
@@ -200,31 +201,39 @@ a file legal is a `#![allow(unsafe_code)]` at the top of that file, and exactly 
 one: `namir-platform/src/denormal.rs`, `namir-platform/src/thread_priority.rs`,
 `namir-clap/src/gui.rs` and `namir-clap/src/host_wake.rs`. So it is **two** designated modules in
 `namir-platform` and **two** in `namir-clap`, not one each — this file previously said "confined to
-one module each" and was wrong. Each carries a written `// SAFETY:` argument on every unsafe block
-and a module-level doc comment giving the fuller argument; see `namir-platform/src/denormal.rs` or
-`namir-clap/src/gui.rs` for the house style.
+one module each" and was wrong. Every *production* unsafe block carries a written `// SAFETY:`
+argument, and each file a module-level doc comment giving the fuller argument; see
+`namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for the house style. The exception is
+`host_wake.rs`'s three `#[cfg(test)]` blocks, counted below: `:241` and `:243` carry no `// SAFETY:`
+at all and `:213` only a one-liner, and that module's D-5.3 argument is scoped to `from_shared`
+(`host_wake.rs:30`), i.e. to the production block alone. New unsafe in a test is held to the house
+style like any other — those three are a gap, not a precedent.
 
 **Tests and benches get no exemption** (D-5.3's *Consequence (added M9, 2026-08-08)*). Cargo
 applies a package's `[lints]` table to bench and integration-test targets too, so a `namir-clap`
 bench *could* carry `#![allow(unsafe_code)]` — it may not, and nothing mechanical would catch it:
 `xtask`'s subcommands are `layering`, `params-lock`, `attribution`, `traceability`, `preset`,
-`nam-parity` (added M10), `identity` (added M12), `bundle` (added M13) and `rt-logging` (added
+`nam-parity` (added M10), `identity` (added M12), `bundle` (added M13), `rt-logging` (added
 M9b — FR-ERR-030's static half; it reads for the *logger's* name in the modules that carry
-audio-thread code, not for `unsafe`), none of which reads for `unsafe`. When a harness looks like it needs `unsafe`, the answer this
-project has reached every time is to take the capability from a dependency whose own `unsafe` is
-already audited, or to move the tested logic to a seam that takes plain types: `assert_no_alloc`
-for D-7.5's RT-allocation harness (`namir-dsp`/`namir-engine` say so in as many words in their own
-Cargo.toml comments), `rtrb` for both SPSC rings, and — decided at M9's P0 pass, built at M9b —
-`clack-host` as a `namir-clap` **dev**-dependency for the in-process CLAP host harness, adopted
-precisely because `clack-extensions`' own `__doc_utils.rs` instantiates a plugin through
-`PluginEntry::load_from_clack` with no `unsafe` at all. Checked this pass: the only `unsafe` blocks
-anywhere under `crates/` are one in `gui.rs`, one in `host_wake.rs` (issue #94's erased-lifetime
-`HostSharedHandle`), five in `denormal.rs` and six in
-`thread_priority.rs` — plus that file's `unsafe extern "system"` declaration block, which edition
-2024 requires of any `extern` block — and none at all in any bench or integration test, where there
-should be none. Any new `unsafe` block outside those four files is a bug, not a style choice —
-inside a `forbid` crate the compiler enforces that; inside the two `deny` crates only review does,
-so say so in the review.
+audio-thread code, not for `unsafe`), and `network-free`, `error-catalogue`, `feature-guard`,
+`assets`, `schema` and `ci-commands` — fifteen in all, the dispatch at
+`xtask/src/main.rs:1096-1148` — none of which reads for `unsafe`; the only mention of the word
+under `xtask/src/` is a prose aside in `network_free.rs`. When a harness looks like it needs
+`unsafe`, the answer this project has reached every time is to take the capability from a
+dependency whose own `unsafe` is already audited, or to move the tested logic to a seam that takes
+plain types: `assert_no_alloc` for D-7.5's RT-allocation harness (`namir-dsp`/`namir-engine` say
+so in as many words in their own Cargo.toml comments), `rtrb` for both SPSC rings, and — decided
+at M9's P0 pass, built at M9b — `clack-host` as a `namir-clap` **dev**-dependency for the
+in-process CLAP host harness, adopted precisely because `clack-extensions`' own `__doc_utils.rs`
+instantiates a plugin through `PluginEntry::load_from_clack` with no `unsafe` at all. Checked this
+pass: the only `unsafe` blocks anywhere under `crates/` are one in `gui.rs`, one in `host_wake.rs`
+(issue #94's erased-lifetime `HostSharedHandle`) plus three more in that file's own `#[cfg(test)]`
+support — its test-host constructor and its `unsafe extern "C"` callback (`host_wake.rs:213`,
+`:241`, `:243`) — five in `denormal.rs` and six in `thread_priority.rs` — plus that file's
+`unsafe extern "system"` declaration block, which edition 2024 requires of any `extern` block —
+and none at all in any bench or integration test, where there should be none. Any new `unsafe`
+block outside those four files is a bug, not a style choice — inside a `forbid` crate the compiler
+enforces that; inside the two `deny` crates only review does, so say so in the review.
 
 ## `namir-ui`'s host seam — the key cross-cutting design to know before touching UI or either product shell
 
@@ -308,7 +317,7 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   milestone has not run. A partial counts as covered for the ordinary run — the teeth are elsewhere,
   and they are real: it renders as a `**PARTIAL**` row carrying its `uncovered:` text verbatim into
   checked-in `docs/03-test-plan.md`, every run prints the partial count and each partial's declared
-  closing milestone (§22 **R-13**), the zero-uncovered gate goes required at M13's close-out, and
+  closing milestone (§22 **R-13**), the zero-uncovered gate goes required at M14's close-out, and
   under D-23.2 a Partial is not **Done** for §14 or for M8's exit checklist. FR-NAM-030 ("for
   **each** supported architecture… match the reference NAM implementation") is the standing
   illustration — **and this file described it wrongly until M9a**: the gap is not that only WaveNet
@@ -339,15 +348,15 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
 - **Expect `trace-partial:` to be the common case, not a rarity.** M9a swept every Must against
   D-23.1's two questions and demoted 54 tags from plain `trace:` in one comment-only pass — no test
   logic changed and nothing regressed; the tags stopped over-claiming. The tally that sweep left
-  was **130 Musts = 54 plain, 56 partial, 20 with no tag at all**; M10 and M12 have moved it since,
-  and the number to trust is what `cargo run -p xtask -- traceability` prints today, not this
-  sentence. A `**PARTIAL**` row in
+  was **130 Musts = 54 plain, 56 partial, 20 with no tag at all**; M10 through M14 have all moved
+  it since, and the number to trust is what `cargo run -p xtask -- traceability` prints today, not
+  this sentence. A `**PARTIAL**` row in
   `docs/03-test-plan.md` is the ordinary mid-project state of a requirement, not a defect someone
   forgot to clean up. The way to retire one is to close the gap its `// uncovered:` field names and
   then promote the tag; promoting the tag on its own deletes the ledger entry and is the failure
   mode D-23.1 exists to prevent.
-- **What the tool actually enforces about a tag** (`scan_annotations`,
-  `xtask/src/traceability.rs:219`), each of these a hard error that aborts the whole run rather than
+- **What the tool actually enforces about a tag** (`scan_annotations`, in
+  `xtask/src/traceability.rs`), each of these a hard error that aborts the whole run rather than
   a silent drop — dropping a malformed tag would delete its author's intended coverage without
   saying so. The marker must **begin** its trimmed comment line, in one of two spellings: `// trace:`
   in `.rs`, `# trace:` in the four non-Rust files the scanner reads (the scanned set is `crates/**`

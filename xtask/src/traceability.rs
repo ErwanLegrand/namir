@@ -1253,7 +1253,7 @@ pub fn build_report(
             // D-23.1: a `trace-partial` counts as coverage for the ordinary run. It must --
             // FR-NAM-030 is knowingly half-met until M10 Phase 4, and a gate that cannot go green
             // is the red-check-nobody-can-act-on problem M7 marked this check informational over.
-            // The teeth are elsewhere: D-18.5's zero-uncovered half becomes required at M13's
+            // The teeth are elsewhere: D-18.5's zero-uncovered half becomes required at M14's
             // close-out, and D-23.2 rules that a Partial is not Done for M8's exit checklist.
             unresolved.extend(req.verify.iter().filter(|c| !matches!(c, 'M' | 'P')));
         }
@@ -1496,7 +1496,7 @@ pub struct TraceabilityArgs {
 /// `--write`, so a mistyped flag is silently ignored (`02-architecture.md:2025-2026`). Once the flag
 /// selects between a required and an informational gate, a typo must be loud. It is fail-safe in
 /// both directions -- a mistyped `--allow-uncovered` cannot make a lenient run look strict and
-/// green, and at M9b's close-out a `ci.yml` that still passes the deleted flag hard-fails instead of
+/// green, and at the flip a `ci.yml` that still passes the deleted flag hard-fails instead of
 /// quietly running the strict form against a tree nobody expected it to gate.
 pub fn parse_traceability_args(args: &[String]) -> Result<TraceabilityArgs, String> {
     let mut parsed = TraceabilityArgs::default();
@@ -1519,7 +1519,9 @@ pub fn parse_traceability_args(args: &[String]) -> Result<TraceabilityArgs, Stri
 ///
 /// `required_half` is the conjunction of the two properties that are required from M9a onward: the
 /// generated-plan diff (D-18.5) and §14's derived denominators (D-23.2, `02-architecture.md:2892`).
-/// `coverage_clean` is the zero-uncovered half, which stays informational until M9b's close-out.
+/// `coverage_clean` is the zero-uncovered half, which stays informational until the flip -- M14's
+/// close-out, since M9b closed out without reaching it (the generated header at `:1354` is the
+/// authority; `ci.yml` words the same moment as "M14 Phase 6", Phase 6 being M14's last).
 /// `--allow-uncovered` relaxes **only** the second; it never softens the first, and it never softens
 /// a tool failure, which `main.rs` returns on before reaching here.
 ///
