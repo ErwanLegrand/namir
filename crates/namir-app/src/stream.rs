@@ -482,25 +482,37 @@ fn build_output(
     // demand need not divide into the capture side's block — measured here, WASAPI shared asks
     // 480 frames per output callback against 256-frame captured blocks, so the pull chunked at
     // 256 + 224 starves once more before occupancy builds. Counting is therefore suppressed for
-    // the first `SETTLING_PULLS` pulls after the capture side's first callback: at a 480-frame
-    // request against a 256-frame `max_block` a callback is two pulls, so 16 pulls is ~8
-    // callbacks, ~80 ms at the measured 10 ms cadence. A genuine dropout inside that window is
-    // not counted, which is the deliberate trade — the alternative is every session and every
-    // settings change opening at a non-zero count, which is what a user reads as "my audio
-    // glitched" before they have played a note.
+    // a settling window after the capture side's first callback.
     //
-    // `ACTIVATION_PULLS_MAX` bounds the *other* half (PR #206 review). Waiting on
-    // `capture_started` alone means an input device that opens and then silently delivers
-    // nothing — which raises no `StreamFailure`, since there is no error to report — suppresses
-    // every pad for the life of the stream, so the one failure FR-IO-060 matters most for would
-    // read a clean 0. Measured against a ~524 ms activation, 512 pulls is ~2.5 s: far past any
-    // real activation, and finite, so a dead capture side starts counting.
+    // Both budgets are wall-clock, not pull counts (PR #206 review): a pull is at most
+    // `max_block` frames, and `STANDARD_BUFFER_SIZES` offers 32..=2048, so a fixed pull count
+    // would swing 64x in real time — at 32 frames a 512-pull ceiling is ~341 ms, *below* the
+    // ~524 ms activation it exists to outlast, and issue #189 would come back at exactly the
+    // buffer sizes a latency-sensitive user picks. So the settling window is `SETTLING_MS`
+    // (100 ms, at or above the ~85 ms the 256-frame reference machine was measured with) and the
+    // ceiling is `ACTIVATION_MS` (3 s, comfortably past the measured ~524 ms activation at every
+    // offered size and rate). Both are converted to pulls here, once per open, outside the
+    // callback — the RT path keeps its two counters, one relaxed load and one comparison, and no
+    // division.
+    //
+    // The ceiling bounds the *other* half. Waiting on `capture_started` alone means an input
+    // device that opens and then silently delivers nothing — which raises no `StreamFailure`,
+    // since there is no error to report — suppresses every pad for the life of the stream, so
+    // the one failure FR-IO-060 matters most for would read a clean 0. Finite, so a dead capture
+    // side starts counting.
+    //
+    // A genuine dropout inside the settling window is not counted, which is the deliberate
+    // trade — the alternative is every session and every settings change opening at a non-zero
+    // count, which is what a user reads as "my audio glitched" before they have played a note.
     //
     // Both pieces of state are local to this closure, so both are per-open by construction:
     // `crate::host::apply_audio_reopen` builds a new one for every device, rate or buffer change,
     // and each reopen pays the same transient.
-    const SETTLING_PULLS: u32 = 16;
-    const ACTIVATION_PULLS_MAX: u32 = 512;
+    const SETTLING_MS: u64 = 100;
+    const ACTIVATION_MS: u64 = 3_000;
+    let pulls_per_second = setup.output_params.sample_rate_hz as u64 / max_block as u64;
+    let settling_pulls = (pulls_per_second * SETTLING_MS / 1_000).max(1) as u32;
+    let activation_pulls_max = (pulls_per_second * ACTIVATION_MS / 1_000).max(1) as u32;
     let mut pulls_since_capture: u32 = 0;
     let mut pulls: u32 = 0;
 
@@ -534,7 +546,7 @@ fn build_output(
             if capture_started.load(Ordering::Relaxed) {
                 pulls_since_capture = pulls_since_capture.saturating_add(1);
             }
-            let settled = pulls_since_capture > SETTLING_PULLS || pulls > ACTIVATION_PULLS_MAX;
+            let settled = pulls_since_capture > settling_pulls || pulls > activation_pulls_max;
             if padded > 0 && settled {
                 xruns.record();
             }
@@ -1177,10 +1189,10 @@ mod tests {
         assert_eq!(xruns.count(), 0, "the prefill absorbs the first pull");
 
         // The prefill is spent, the device is still activating, and the capture side has not run:
-        // these pads are the transient, however many callbacks it lasts (up to
-        // `ACTIVATION_PULLS_MAX`, below). The suppression is not a fixed number of callbacks from
-        // the *open* — it is anchored on the capture side's first callback, so an activation gap
-        // of any realistic length is covered.
+        // these pads are the transient, however many callbacks it lasts (up to the activation
+        // ceiling, below). The suppression is not a fixed number of callbacks from the *open* —
+        // it is anchored on the capture side's first callback, so an activation gap of any
+        // realistic length is covered.
         for _ in 0..64 {
             output_cb(&mut out);
         }
@@ -1190,10 +1202,12 @@ mod tests {
             "pads before the first input callback are the output device's activation, not dropouts"
         );
 
-        // Capture is live from here. The settling window (`SETTLING_PULLS` pulls) still absorbs
-        // the pads while the ring fills; past it, a starved pull is a real dropout again.
+        // Capture is live from here. The settling window (100 ms of pulls: one pull per callback
+        // at a 64-frame `max_block`, so 48_000 / 64 / 10) still absorbs the pads while the ring
+        // fills; past it, a starved pull is a real dropout again.
+        let settling_pulls = 48_000 / 64 / 10;
         input_cb(&[0.1f32; 64]);
-        for _ in 0..16 {
+        for _ in 0..settling_pulls {
             output_cb(&mut out);
         }
         assert_eq!(
@@ -1231,10 +1245,11 @@ mod tests {
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
         let mut out = [0.0f32; 128];
 
-        // One pull per callback here (64 frames against a 64-frame `max_block`), so 512 callbacks
-        // is exactly `ACTIVATION_PULLS_MAX` pulls — the first absorbed by `open`'s prefill, the
+        // One pull per callback here (64 frames against a 64-frame `max_block`), so the ceiling
+        // is the 3 s activation budget in pulls — the first absorbed by `open`'s prefill, the
         // rest padded — and no input callback ever fires.
-        for _ in 0..512 {
+        let activation_pulls_max = 48_000 / 64 * 3;
+        for _ in 0..activation_pulls_max {
             output_cb(&mut out);
         }
         assert_eq!(
@@ -1247,6 +1262,39 @@ mod tests {
         assert!(
             xruns.count() > 0,
             "past the ceiling, a silent capture side's pads are dropouts the user can see"
+        );
+    }
+
+    /// The same silent-capture scenario at the smallest buffer size `STANDARD_BUFFER_SIZES`
+    /// offers. The ceiling is a wall-clock budget, so it must still outlast the measured ~524 ms
+    /// device activation at 32 frames — a fixed 512-pull ceiling would be ~341 ms there and would
+    /// start counting an activation that is still in progress, which is issue #189 resurfacing at
+    /// exactly the buffer sizes a latency-sensitive user picks (PR #206 review).
+    #[test]
+    fn the_activation_ceiling_outlasts_device_activation_at_the_smallest_buffer_size() {
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, 32),
+            engine(32),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+        let mut out = [0.0f32; 64]; // 32 frames: one pull per callback.
+
+        // 600 ms of pulls at 32 frames / 48 kHz — past the ~524 ms activation, and well short of
+        // the 3 s budget. A 512-pull ceiling (~341 ms here) counts dropouts before this point.
+        for _ in 0..(48_000 * 600 / 1_000 / 32) {
+            output_cb(&mut out);
+        }
+        assert_eq!(
+            xruns.count(),
+            0,
+            "at 32 frames the ceiling must still be past the measured ~524 ms activation"
         );
     }
 
