@@ -8,13 +8,10 @@
      do not tick a box for a command you did not type. A number measured off
      docs/02-architecture.md §2's reference machine is informational, never certified. -->
 
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] `cargo test --workspace --no-fail-fast`
-- [ ] `cargo run -p xtask -- layering` / `rt-logging` / `params-lock` / `attribution` / `identity`
+- [ ] The gate block in `README.md` (all `xtask` subcommands + `cargo deny check`), which
+      `xtask ci-commands` keeps in step with `.github/workflows/ci.yml` in both directions
 - [ ] `cargo run -p xtask -- traceability` (with `--allow-uncovered` until M14's close-out, when
       D-18.5 makes the zero-uncovered half required and the flag is deleted)
-- [ ] `cargo deny check`
 - [ ] Manual test executed (name the file under `docs/manual-tests/`)
 
 ## Requirements and documents
