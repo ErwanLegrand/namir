@@ -366,10 +366,10 @@ fn parse_seq(lines: &[Line], cursor: &mut usize, indent: usize) -> Result<Yaml, 
 /// `Some(false)` for literal (`|`), or `None` for anything else.
 ///
 /// Both indicators are validated for shape and then discarded: only the fold flag reaches
-/// [`parse_block_scalar`], which always clip-chomps (trailing blank lines dropped, whatever `+`
-/// or `-` asked for) and always infers block indentation from the first content line. Accepting
-/// and documenting the surplus matches how the rest of this parser handles YAML it does not
-/// implement; nothing in `release.yml` carries an indicator today.
+/// [`parse_block_scalar`], which always strips trailing blank lines and never emits a trailing
+/// newline, whatever `+` or `-` asked for, and always infers block indentation from the first
+/// content line. Accepting and documenting the surplus matches how the rest of this parser
+/// handles YAML it does not implement; nothing in `release.yml` carries an indicator today.
 fn block_scalar_indicator(rest: &str) -> Option<bool> {
     let rest = rest.trim();
     let fold = match rest.chars().next()? {

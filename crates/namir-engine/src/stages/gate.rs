@@ -44,7 +44,7 @@ use crate::telemetry::{TelemetryEntry, TelemetrySink};
 const BYPASS_CROSSFADE_TIME_CONSTANT_MS: f64 = 15.0;
 
 // Short local names for this stage's descriptor ids, for `apply`'s comparison chain.
-// Aliases only: every use site is an `==`, not a `match` arm.
+// Aliases only: every `apply` use site is an `==`, not a `match` arm.
 const ENABLED_ID: ParamId = ENABLED.id;
 const THRESHOLD_DB_ID: ParamId = THRESHOLD_DB.id;
 const ATTACK_MS_ID: ParamId = ATTACK_MS.id;

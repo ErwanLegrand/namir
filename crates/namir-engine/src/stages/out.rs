@@ -40,7 +40,7 @@ const GAIN_RAMP_TIME_CONSTANT_MS: f32 = 25.0;
 const SILENCE_SETTLE_MARGIN_DB: f32 = 1.0;
 
 // Short local names for this stage's descriptor ids, for `apply`'s comparison chain.
-// Aliases only: every use site is an `==`, not a `match` arm.
+// Aliases only: every `apply` use site is an `==`, not a `match` arm.
 const GAIN_DB_ID: ParamId = GAIN_DB.id;
 
 /// One channel's telemetry signal ids, precomputed in `prepare` (D-6.1: hashing a `format!`-built

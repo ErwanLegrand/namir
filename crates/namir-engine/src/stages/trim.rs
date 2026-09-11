@@ -53,7 +53,7 @@ const DC_BLOCKER_CORNER_HZ: f32 = 20.0;
 const DOWNMIX_EACH_TERM_DB: f32 = -6.0;
 
 // Short local names for this stage's descriptor ids, for `apply`'s comparison chain.
-// Aliases only: every use site is an `==`, not a `match` arm.
+// Aliases only: every `apply` use site is an `==`, not a `match` arm.
 const GAIN_DB_ID: ParamId = GAIN_DB.id;
 const DC_BLOCKER_ENABLED_ID: ParamId = DC_BLOCKER_ENABLED.id;
 
