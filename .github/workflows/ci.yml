@@ -358,11 +358,11 @@ jobs:
       #
       # **The assertion is the frame count, not the exit status alone** (M15 review, note b). This
       # step asserted only that the example exited 0, and that was not the property it was here to
-      # check: `EguiWindow::open_blocking` runs the window on its own thread and joins it with
-      # `unwrap_or_else(eprintln!)`, and `open_with_srgb_fallback` catches only the *first*
-      # attempt's panic -- so a `namir_ui::render` that panicked on every single frame would unwind
-      # that thread, be reported to stderr, return normally, print "window closed cleanly" and
-      # exit 0. A required job that a totally broken interface passes is not a gate.
+      # check: returning from the event loop does not mean frames were drawn -- on Windows a panic
+      # inside `namir_ui::render` cannot even unwind through the platform's non-unwinding window
+      # proc -- so a broken interface could come back as an ordinary window close, print "window
+      # closed cleanly" and exit 0. A required job that a totally broken interface passes is not a
+      # gate.
       #
       # So the example counts the frames whose `render` returned, exits 1 unless it drew all of
       # them, and prints the count; and this step additionally requires that line, with the number
