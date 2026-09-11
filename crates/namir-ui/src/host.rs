@@ -142,7 +142,7 @@ impl PresetSummary {
     /// Constructs a list of `PresetSummary` from `(name, path)` tuples as reported by
     /// `namir_platform::presets::list_preset_files`.
     #[must_use]
-    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, std::path::PathBuf)>) -> Vec<Self> {
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, PathBuf)>) -> Vec<Self> {
         pairs
             .into_iter()
             .map(|(name, path)| Self { name, path })
