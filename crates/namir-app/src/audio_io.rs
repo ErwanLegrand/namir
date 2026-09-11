@@ -576,19 +576,40 @@ pub trait AudioStream: Send {
 
 /// What the backend reports about one data callback, alongside the samples themselves.
 ///
-/// One field, because one is all this crate reads: `cpal` 0.19 moved xrun delivery from the error
-/// callback to `CallbackInfo::xrun()`, and FR-IO-060 needs that bit. A Namir-owned `Copy` struct
-/// rather than a re-exported `cpal::CallbackInfo` keeps D-13.1's boundary intact — the fake
-/// backend in [`crate::stream`] constructs one with no hardware behind it — and a named field
-/// rather than a bare `bool` so a call site reads as `status.xrun` and not as `true`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Two fields: the dropout bit FR-IO-060 needs (`cpal` 0.19 moved xrun delivery from the error
+/// callback to `CallbackInfo::xrun()`), and the device-callback boundary that makes "one xrun
+/// per callback" expressible at all — see [`Self::first_of_callback`]. A Namir-owned `Copy`
+/// struct rather than a re-exported `cpal::CallbackInfo` keeps D-13.1's boundary intact (the
+/// fake backend in [`crate::stream`] constructs one with no hardware behind it), and named
+/// fields rather than bare `bool`s so a call site reads as `status.xrun` and not as `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallbackStatus {
     /// The backend detected a dropout for this callback: samples lost by the device, as opposed
     /// to the ones [`crate::bridge`]'s ring loses. Counted into [`crate::xrun::XrunCounter`] by
     /// [`crate::stream`], which collapses this and its own bridge losses into **at most one
-    /// xrun per data callback** — see that module's doc comment for the latch and for what a
-    /// "callback" means on the integer-converting path.
+    /// xrun per device callback**.
     pub xrun: bool,
+    /// Whether this call begins a new device callback.
+    ///
+    /// `true` on every call from a path that hands the device buffer straight through (the
+    /// `f32` streams, and the fake backend). The integer-converting path
+    /// (`crate::audio_io`'s `convert`) splits one device callback into scratch-length slices,
+    /// and sets this on the first slice only — the same place it stops carrying
+    /// [`Self::xrun`] — so [`crate::stream`]'s per-callback latch spans the whole device
+    /// callback rather than resetting once per slice, and a 480-frame integer callback that
+    /// starves twice still counts one dropout.
+    pub first_of_callback: bool,
+}
+
+/// A fresh device callback with nothing wrong: `first_of_callback` is `true`, because a status
+/// built from nothing describes the start of one, not a continuation slice of one.
+impl Default for CallbackStatus {
+    fn default() -> Self {
+        Self {
+            xrun: false,
+            first_of_callback: true,
+        }
+    }
 }
 
 /// D-13.1's Namir-owned trait over `cpal`. Every method is deliberately synchronous and may
@@ -1281,7 +1302,13 @@ mod cpal_impl {
                     configured.build_input_stream::<f32, _, _>(
                         stream_config(params),
                         move |data: &[f32], info| {
-                            on_data(data, CallbackStatus { xrun: info.xrun() })
+                            on_data(
+                                data,
+                                CallbackStatus {
+                                    xrun: info.xrun(),
+                                    first_of_callback: true,
+                                },
+                            )
                         },
                         move |err| on_error(to_stream_failure(err)),
                         Some(activation_timeout),
@@ -1333,7 +1360,13 @@ mod cpal_impl {
                     configured.build_output_stream::<f32, _, _>(
                         stream_config(params),
                         move |data: &mut [f32], info| {
-                            on_data(data, CallbackStatus { xrun: info.xrun() })
+                            on_data(
+                                data,
+                                CallbackStatus {
+                                    xrun: info.xrun(),
+                                    first_of_callback: true,
+                                },
+                            )
                         },
                         move |err| on_error(to_stream_failure(err)),
                         Some(activation_timeout),
@@ -1394,7 +1427,10 @@ mod cpal_impl {
             stream_config(params),
             T::FORMAT,
             move |data: &cpal::Data, info| {
-                let status = CallbackStatus { xrun: info.xrun() };
+                let status = CallbackStatus {
+                    xrun: info.xrun(),
+                    first_of_callback: true,
+                };
                 match data.as_slice::<T>() {
                     Some(codes) => converter.drain(codes, status),
                     // `cpal`'s own typed builder `expect()`s on the `None` here. A host handing
@@ -1430,7 +1466,10 @@ mod cpal_impl {
             stream_config(params),
             T::FORMAT,
             move |data: &mut cpal::Data, info| {
-                let status = CallbackStatus { xrun: info.xrun() };
+                let status = CallbackStatus {
+                    xrun: info.xrun(),
+                    first_of_callback: true,
+                };
                 match data.as_slice_mut::<T>() {
                     Some(codes) => converter.fill(codes, status),
                     // As `build_converting_input`, except that an output callback must leave

@@ -193,7 +193,10 @@ impl OutputConverter {
         for chunk in out.chunks_mut(chunk_len) {
             let engine = &mut self.scratch[..chunk.len()];
             (self.on_data)(engine, status);
-            status = CallbackStatus::default();
+            status = CallbackStatus {
+                xrun: false,
+                first_of_callback: false,
+            };
             for (code, sample) in chunk.iter_mut().zip(engine.iter()) {
                 *code = T::from_engine(*sample);
             }
@@ -242,7 +245,10 @@ impl InputConverter {
                 *sample = code.to_engine();
             }
             (self.on_data)(engine, status);
-            status = CallbackStatus::default();
+            status = CallbackStatus {
+                xrun: false,
+                first_of_callback: false,
+            };
         }
     }
 
@@ -430,7 +436,13 @@ mod tests {
             4,
         );
         let mut out = [0i32; 10];
-        output.fill(&mut out, CallbackStatus { xrun: true });
+        output.fill(
+            &mut out,
+            CallbackStatus {
+                xrun: true,
+                ..CallbackStatus::default()
+            },
+        );
         assert_eq!(
             reports.lock().unwrap().as_slice(),
             [true, false, false],
@@ -446,7 +458,13 @@ mod tests {
             4,
         );
         let codes = [I24::new(1).unwrap(); 10];
-        input.drain(&codes, CallbackStatus { xrun: true });
+        input.drain(
+            &codes,
+            CallbackStatus {
+                xrun: true,
+                ..CallbackStatus::default()
+            },
+        );
         assert_eq!(seen.lock().unwrap().as_slice(), [true, false, false]);
     }
 
@@ -465,8 +483,17 @@ mod tests {
             }),
             4,
         );
-        input.report(CallbackStatus { xrun: true });
-        input.drain::<i32>(&[], CallbackStatus { xrun: true });
+        input.report(CallbackStatus {
+            xrun: true,
+            ..CallbackStatus::default()
+        });
+        input.drain::<i32>(
+            &[],
+            CallbackStatus {
+                xrun: true,
+                ..CallbackStatus::default()
+            },
+        );
         assert_eq!(reports.lock().unwrap().as_slice(), [(0, true), (0, true)]);
 
         let out_reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -477,8 +504,67 @@ mod tests {
             }),
             4,
         );
-        output.fill::<i32>(&mut [], CallbackStatus { xrun: true });
+        output.fill::<i32>(
+            &mut [],
+            CallbackStatus {
+                xrun: true,
+                ..CallbackStatus::default()
+            },
+        );
         assert_eq!(out_reports.lock().unwrap().as_slice(), [(0, true)]);
+    }
+
+    /// **One *device* callback is one xrun, on the converting path too (PR #209 review).** This
+    /// converter splits a device callback into scratch-length slices and calls `crate::stream`'s
+    /// callback once per slice, so the per-callback latch there only spans a whole device
+    /// callback because [`CallbackStatus::first_of_callback`] marks the boundary. Without it,
+    /// a device callback longer than the scratch that starves on several slices counts several
+    /// dropouts — and a device callback *is* routinely longer than the scratch here, which is
+    /// `block_frames(negotiated)` (§24's 0.60 row: WASAPI shared asking 480 against 256).
+    ///
+    /// Integer formats are not a corner either: `crate::audio_io::acceptable_formats` is where
+    /// exclusive mode lives, which is what D-13.4's fork exists for.
+    #[test]
+    fn one_device_callback_split_across_slices_counts_one_xrun() {
+        const SCRATCH: usize = 64;
+        let backend = crate::stream::FakeBackend::new();
+        let xruns = std::sync::Arc::new(crate::xrun::XrunCounter::new());
+        let _streams = crate::stream::open(
+            crate::stream::fake_duplex_setup(&backend, SCRATCH),
+            crate::stream::default_test_engine(SCRATCH),
+            std::sync::Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let input_cb = backend.input_data.lock().unwrap().take().unwrap();
+        let mut converter = InputConverter::new(input_cb, SCRATCH);
+
+        // Nothing drains the bridge, so the ring fills and every later push loses samples.
+        let codes = [123_456_789i32; SCRATCH * 10];
+        for _ in 0..4 {
+            converter.drain(&codes, CallbackStatus::default());
+        }
+        let before = xruns.count();
+        assert!(
+            before > 0,
+            "the ring has to be overrunning or this proves nothing"
+        );
+
+        // One device callback, ten slices, every one of them losing samples, and the device
+        // reported it as well.
+        converter.drain(
+            &codes,
+            CallbackStatus {
+                xrun: true,
+                ..CallbackStatus::default()
+            },
+        );
+        assert_eq!(
+            xruns.count() - before,
+            1,
+            "one device callback is one dropout however many slices it was converted in"
+        );
     }
 
     /// NFR-RT-010 for the conversion arithmetic itself: neither converter allocates once built, in

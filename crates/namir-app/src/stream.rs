@@ -16,14 +16,15 @@
 //!   #85); and — since issue #200 item 6 — the backend's own per-callback report, which `cpal`
 //!   0.19 delivers through `CallbackInfo::xrun()` and which reaches this module as
 //!   [`crate::audio_io::CallbackStatus::xrun`]. All three increment the same
-//!   [`crate::xrun::XrunCounter`], and **one data callback contributes at most one xrun**: each
-//!   callback carries a `recorded` latch, so a callback the device reported *and* whose bridge
-//!   pull starved — the ordinary pairing, since they have the same cause — counts once, and a
-//!   host buffer several blocks long counts once rather than once per chunk (PR #209 review;
-//!   the over-count axis issues #189 and #194 were filed about). The latch is per call into
-//!   these closures, which on the integer-converting path (`crate::audio_io`'s `convert`) is one
-//!   scratch-length slice of a device callback rather than the whole of it; that path reports
-//!   the device's own xrun on the first slice only, so it too counts once per device callback.
+//!   [`crate::xrun::XrunCounter`], and **one device callback contributes at most one xrun** on
+//!   every path: each callback closure holds a `recorded` latch, reset when
+//!   [`crate::audio_io::CallbackStatus::first_of_callback`] marks a new device callback, so a
+//!   callback the device reported *and* whose bridge transfer lost something — the ordinary
+//!   pairing, since they have the same cause — counts once, and a host buffer several blocks
+//!   long counts once rather than once per chunk (PR #209 review; the over-count axis issues
+//!   #189 and #194 were filed about). The integer-converting path (`crate::audio_io`'s
+//!   `convert`) calls these closures once per scratch-length slice of a device callback and
+//!   marks only the first slice, which is what makes the claim hold there too.
 //!   The backend's report is not gated on the settling window below: that window excuses pads
 //!   this pair manufactured while starting up, and a device's report is not one.
 //!   Since issue #189 the output side's pads are gated on this `open`'s pair having settled: the
@@ -406,16 +407,24 @@ fn build_input(
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
     let max_block = setup.max_block_size.max(1);
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(max_block);
+    // FR-IO-060 counts **dropouts**, not losses, so one device callback contributes at most one
+    // xrun however many ways it lost something (PR #209 review). Two sources meet in the closure
+    // below: the device's own report (`cpal` 0.19's `CallbackInfo::xrun()`, carried across the
+    // seam since issue #200 item 6) and the bridge ring's overrun — and a callback the device
+    // dropped samples on is typically also the one whose push does not fit, so without this
+    // latch one dropout would count twice, on exactly the over-count axis issues #189 and #194
+    // were filed about.
+    //
+    // Captured rather than a local, and reset on `status.first_of_callback`, because the
+    // integer-converting path calls this closure once per scratch-length *slice* of a device
+    // callback: a local would give each slice its own latch and a 480-frame callback starving
+    // on both slices would count twice again. One bool of closure state and one branch; the
+    // record itself is a single relaxed `fetch_add`.
+    let mut recorded = false;
     let on_data = Box::new(move |data: &[f32], status: CallbackStatus| {
-        // FR-IO-060 counts **dropouts**, not losses, so one data callback contributes at most
-        // one xrun however many ways it lost something (PR #209 review). Two sources meet here:
-        // the device's own report (`cpal` 0.19's `CallbackInfo::xrun()`, carried across the seam
-        // since issue #200 item 6) and the bridge ring's overrun below — and a callback the
-        // device dropped samples on is typically also the one whose push does not fit, so
-        // without this latch one dropout would be counted twice, on exactly the over-count axis
-        // issues #189 and #194 were filed about. A stack bool and a branch; the record itself is
-        // one relaxed `fetch_add`.
-        let mut recorded = false;
+        if status.first_of_callback {
+            recorded = false;
+        }
         if status.xrun {
             xruns.record();
             recorded = true;
@@ -540,13 +549,17 @@ fn build_output(
     let mut pulls_since_capture: u32 = 0;
     let mut pulls: u32 = 0;
 
+    // One device callback, at most one xrun — see `build_input` for the argument, and for why
+    // the latch is captured state reset on `status.first_of_callback` rather than a local. The
+    // device's own report is not gated on the settling window below (that window exists to
+    // excuse pads this pair manufactured while starting up, and a backend report is the
+    // device's claim about samples it lost), but it does consume this callback's single count,
+    // so an output callback that both was reported and starved counts once.
+    let mut recorded = false;
     let on_data = Box::new(move |out: &mut [f32], status: CallbackStatus| {
-        // One data callback, at most one xrun — see `build_input` for the argument. The device's
-        // own report is not gated on the settling window below (that window exists to excuse
-        // pads this pair manufactured while starting up, and a backend report is the device's
-        // claim about samples it lost), but it does consume this callback's single count, so an
-        // output callback that both was reported and starved counts once.
-        let mut recorded = false;
+        if status.first_of_callback {
+            recorded = false;
+        }
         if status.xrun {
             xruns.record();
             recorded = true;
@@ -1418,6 +1431,7 @@ mod tests {
             // kind of claim this harness exists to check rather than assert by reasoning.
             let status = CallbackStatus {
                 xrun: iteration == 7,
+                ..CallbackStatus::default()
             };
             crate::rt_harness::audio_section(|| input_cb(&exact_in, status));
             crate::rt_harness::audio_section(|| output_cb(&mut exact_out, status));
@@ -1521,7 +1535,10 @@ mod tests {
         let mut out = [0.0f32; 128];
 
         let clean = CallbackStatus::default();
-        let glitched = CallbackStatus { xrun: true };
+        let glitched = CallbackStatus {
+            xrun: true,
+            ..CallbackStatus::default()
+        };
 
         input_cb(&[0.1f32; 64], clean);
         output_cb(&mut out, clean);
@@ -1577,7 +1594,13 @@ mod tests {
             "the ring has to be overrunning or this proves nothing"
         );
 
-        input_cb(&[0.1f32; MAX_BLOCK], CallbackStatus { xrun: true });
+        input_cb(
+            &[0.1f32; MAX_BLOCK],
+            CallbackStatus {
+                xrun: true,
+                ..CallbackStatus::default()
+            },
+        );
         assert_eq!(
             xruns.count() - before,
             1,
@@ -1807,7 +1830,7 @@ mod tests {
     /// count — for a true reason, and it is not what this test is about.
     ///
     /// **The backend's own report is deliberately *not* suppressed here (issue #200 item 6).**
-    /// The teardown replay below ends with a callback carrying `CallbackStatus { xrun: true }`,
+    /// The teardown replay below ends with a callback carrying `xrun: true`,
     /// and that one does count. The asymmetry is the point: a bridge pad during teardown is an
     /// artefact Namir manufactured — it stopped draining one side and then pulled from the ring
     /// it stopped feeding — whereas a backend report is the *device's* claim that it lost
@@ -1869,7 +1892,10 @@ mod tests {
         // And now the other half of the rule: the *device* reporting a dropout across the same
         // window is counted, because it is the device's claim rather than the teardown's own
         // artefact. See this test's doc comment for why that asymmetry is deliberate.
-        let glitched = CallbackStatus { xrun: true };
+        let glitched = CallbackStatus {
+            xrun: true,
+            ..CallbackStatus::default()
+        };
         if input_outlived_output {
             input_cb(&[0.1f32; 64], glitched);
         } else {

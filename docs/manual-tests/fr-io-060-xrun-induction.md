@@ -118,3 +118,22 @@ Two corrections to the note above, appended rather than edited into it.
 The verdict is still **PARTIAL** for the same unchanged reason: no real-hardware xrun has been
 induced, and whether a driver raises `CallbackInfo::xrun()` on the callbacks bracketing a stop
 is still unknown here (`crate::stream`'s teardown test records the choice made in its absence).
+
+### Correction, same day (PR #209 follow-up review)
+
+Amendment item 1 above said the per-callback latch made "at most one xrun per data callback"
+true. It did so only on the `f32` path. The latch was a local, and the integer-converting path
+(`crate::audio_io`'s `convert`, which is where exclusive mode's formats are handled) calls the
+stream callbacks once per scratch-length slice of a device callback — so each slice got a fresh
+latch and a device callback longer than the negotiated block that starved on several slices
+still counted several dropouts. Item 2's instruction to whoever executes this script — *n*
+glitching callbacks should read *n* — was therefore wrong on exactly those devices.
+
+Closed rather than scoped: `CallbackStatus` gained a `first_of_callback` flag, set by the
+converters on the first slice only (where they already stop carrying `xrun`) and `true` on every
+call from the passthrough paths, and the latch became closure state reset on that flag. Item 2's
+instruction now reads true on every format: *n* glitching device callbacks read *n*. Pinned by
+`audio_io::convert::tests::one_device_callback_split_across_slices_counts_one_xrun`, which
+starves ten slices of one device callback and asserts a delta of 1.
+
+Verdict unchanged: still **PARTIAL**, still no real-hardware induction.
