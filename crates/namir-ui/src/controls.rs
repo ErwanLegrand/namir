@@ -85,6 +85,16 @@ pub fn param_control(
         //    the layout: a control that stops rendering every frame (a collapsed section, a tab,
         //    a virtualised list) leaves a stamp behind, and a stale one is ignored instead of
         //    swallowing the first legitimate `SetParam` when the control returns (issue #200).
+        //    "Pass", not "frame", is deliberate and matches what the late commit itself is
+        //    scoped to. If the Escape frame runs a second pass (`Context::request_discard`
+        //    anywhere in the UI), the re-run pass carries no events — `run_dyn` takes the
+        //    `RawInput` for the first pass only — so `key_pressed(Escape)` is false there and
+        //    the stamp is *not* rewritten. It does not need to be: `DragValue`'s focus-loss
+        //    re-commit moves up to that same pass, so stamp-pass + 1 still names it exactly.
+        //    Observed on a two-pass Escape frame: pass N has `lost_focus && Escape` and stamps;
+        //    pass N+1 (same frame) has `lost_focus` but no Escape, and is where the re-commit
+        //    is suppressed. A frame-scoped stamp would miss it — see
+        //    `escape_cancellation_survives_a_multi_pass_frame`.
         // 3. `value as f32 != current` is **not** a defensive extra: (1) makes `DragValue` report
         //    `changed()` once with the value unmoved, and without this guard three unrelated
         //    numeric-entry tests see a spurious leading `SetParam` carrying the pre-edit value.

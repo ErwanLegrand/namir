@@ -548,10 +548,13 @@ pub fn open_with_srgb_fallback<T>(
     settings: egui_baseview::EguiWindowSettings,
     mut open: impl FnMut(egui_baseview::EguiWindowSettings) -> T,
 ) -> T {
-    // `AssertUnwindSafe` because nothing observable survives a failed attempt: `open` moves its own
-    // window state into `baseview`'s window thread, which drops it while unwinding, and the only
-    // value this function itself carries across the two attempts is `settings`, which it clones
-    // rather than mutates.
+    // `AssertUnwindSafe` because nothing observable survives a *failed* attempt: `open` moves its
+    // own window state into `baseview`'s window thread, which drops it while unwinding, and the
+    // only value this function itself carries across the two attempts is `settings`, which it
+    // clones rather than mutates. The success path is the other case, and is deliberately not
+    // covered by that argument: since issue #200 item 1 the closure *returns* a live window that
+    // outlives it, and the caller drives its frames — but a closure that returns never unwinds,
+    // so no state crosses a `catch_unwind` boundary there.
     let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(settings.clone())));
     match first {
         Ok(opened) => opened,
