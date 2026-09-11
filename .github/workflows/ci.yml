@@ -182,6 +182,13 @@ jobs:
       - name: xtask rt-logging (FR-ERR-030)
         run: cargo run -p xtask -- rt-logging
 
+      # Issue #176: the 100-column convention for comment prose, which `cargo fmt` cannot see --
+      # `rustfmt`'s `wrap_comments` is nightly-only, so 174 over-width comment lines accumulated
+      # across 68 files with a green format gate. Same class as the two steps above: a line-based
+      # scan over checked-in source, with no OS-specific behaviour to matrix over.
+      - name: xtask comment-width (issue #176)
+        run: cargo run -p xtask -- comment-width
+
       # M15 review, finding 3. Five `xtask` subcommands were wired into `xtask/src/main.rs` and
       # into no CI step at all: the three steps that follow this comment, `assets` (below
       # `params-lock`, beside the other generate-and-diff checks) and `schema` (below `identity`).
