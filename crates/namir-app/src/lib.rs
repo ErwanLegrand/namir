@@ -23,8 +23,8 @@
 //!   and, since this milestone's `Instance::try_submit_param`, ordinary parameter changes too — see
 //!   [`instance`]'s module doc comment for why this crate used to build a substitute instead, and
 //!   `docs/02-architecture.md`'s D-7.2 "added M6" consequence note for the closed API gap.
-//! - **`namir_ui`** — [`host::AppUiHost`] implements [`namir_ui::UiHost`]; [`namir_ui::open_blocking`]
-//!   opens the window.
+//! - **`namir_ui`** — [`host::AppUiHost`] implements [`namir_ui::UiHost`];
+//!   [`namir_ui::open_blocking`] opens the window.
 //!
 //! # Module map
 //!

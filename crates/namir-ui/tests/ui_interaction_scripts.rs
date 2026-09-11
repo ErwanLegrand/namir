@@ -540,7 +540,8 @@ fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
     let (text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text, "6.0");
 
-    // Advance additional frames to verify no late commit occurs on lost focus (e.g. frame after Escape)
+    // Advance additional frames to verify no late commit occurs on lost focus (e.g. frame after
+    // Escape)
     driver.frame(vec![]);
     driver.frame(vec![]);
 
@@ -647,7 +648,8 @@ fn escape_cancellation_in_one_control_preserves_staged_edit_in_another() {
         "escaped control must remain at its initial value"
     );
 
-    // Control A was not cancelled: clicking back into it and pressing Enter should commit its 12.0 edit
+    // Control A was not cancelled: clicking back into it and pressing Enter should commit its 12.0
+    // edit
     let (_, rect_a_again) = driver.locate_value_for_control("Input Level");
     driver.click_at(rect_a_again.center());
     driver.frame(vec![Event::Key {

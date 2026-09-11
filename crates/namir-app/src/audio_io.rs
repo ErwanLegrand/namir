@@ -17,10 +17,10 @@
 //!
 //! D-13.4's Namir-maintained `cpal` fork — pinned by commit hash in this crate's `Cargo.toml`, with
 //! its own narrow `[sources]` allowance in the workspace `deny.toml` — adds
-//! `cpal::platform::{ShareMode, WasapiStreamOptions, WasapiDeviceExt}`: a share-mode-aware mirror of
-//! `DeviceTrait`'s configuration queries and stream builders. [`CpalBackend::supports_exclusive`]
-//! now asks the device through that trait instead of answering from a constant, and both stream
-//! builders carry [`StreamParams::share_mode`] into the open.
+//! `cpal::platform::{ShareMode, WasapiStreamOptions, WasapiDeviceExt}`: a share-mode-aware mirror
+//! of `DeviceTrait`'s configuration queries and stream builders.
+//! [`CpalBackend::supports_exclusive`] now asks the device through that trait instead of answering
+//! from a constant, and both stream builders carry [`StreamParams::share_mode`] into the open.
 //!
 //! # The other half of exclusive mode: sample formats (added M11)
 //!
@@ -206,12 +206,12 @@ impl SupportedConfigRange {
 /// One direction's enumeration answer: the ranges, and **the share mode they actually describe**.
 ///
 /// The second half is not the mode that was asked for. A device with no reachable exclusive
-/// endpoint answers an exclusive request with its shared ranges (see `exclusive_configs_when_asked`),
-/// and [`crate::app::negotiate_audio`] has to tell that apart from a device that answered the
-/// exclusive query for real: only the latter needs re-enumerating when the mode is then refused.
-/// Without this field the two are indistinguishable, and the re-enumeration runs on every
-/// non-WASAPI host with `exclusive_mode: true` in its settings, repeating a query whose answer is
-/// already in hand.
+/// endpoint answers an exclusive request with its shared ranges (see
+/// `exclusive_configs_when_asked`), and [`crate::app::negotiate_audio`] has to tell that apart
+/// from a device that answered the exclusive query for real: only the latter needs re-enumerating
+/// when the mode is then refused. Without this field the two are indistinguishable, and the
+/// re-enumeration runs on every non-WASAPI host with `exclusive_mode: true` in its settings,
+/// repeating a query whose answer is already in hand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumeratedConfigs {
     /// The mode `ranges` describe — [`ShareMode::Exclusive`] only when the device answered the
@@ -427,8 +427,9 @@ pub enum StreamFailure {
     /// The device was disconnected or otherwise stopped being reachable (`cpal`'s
     /// `ErrorKind::DeviceNotAvailable`/`HostUnavailable`).
     DeviceLost,
-    /// `cpal` detected a buffer underrun/overrun (in `cpal` 0.19 delivered via `CallbackInfo::xrun()`,
-    /// retained here for when the backend callback seam is extended to carry it).
+    /// `cpal` detected a buffer underrun/overrun (in `cpal` 0.19 delivered via
+    /// `CallbackInfo::xrun()`, retained here for when the backend callback seam is extended to
+    /// carry it).
     Xrun,
     /// Anything else, carrying `cpal`'s own message for diagnostics (FR-ERR-050).
     Other(InlineDetail),
@@ -630,7 +631,8 @@ pub trait AudioBackend: Send + Sync {
     ///
     /// `params.share_mode` is ignored by implementations of this method — the question *is* whether
     /// exclusive mode is possible, so the caller ([`crate::app`]) passes the rest of the
-    /// configuration (rate, buffer, channels) that an exclusive open would have to satisfy natively.
+    /// configuration (rate, buffer, channels) that an exclusive open would have to satisfy
+    /// natively.
     fn supports_exclusive(
         &self,
         host: &HostInfo,
@@ -1210,9 +1212,9 @@ mod cpal_impl {
         /// settled, since the rate and buffer size are what the user picks and persists). A device
         /// whose exclusive-mode format list does not happen to include that settled rate therefore
         /// answers `Unsupported` and the session runs shared, even though some *other* rate would
-        /// have opened exclusively. Re-negotiating rate and buffer per share mode is a larger change
-        /// to the settings path than M11 takes on; recorded here so it is not mistaken for a bug in
-        /// the probe.
+        /// have opened exclusively. Re-negotiating rate and buffer per share mode is a larger
+        /// change to the settings path than M11 takes on; recorded here so it is not mistaken for
+        /// a bug in the probe.
         fn supports_exclusive(
             &self,
             host: &HostInfo,
@@ -1407,10 +1409,10 @@ mod cpal_impl {
             T::FORMAT,
             move |data: &mut cpal::Data, _info| match data.as_slice_mut::<T>() {
                 Some(codes) => converter.fill(codes),
-                // As `build_converting_input`, except that an output callback must leave *something*
-                // in the buffer: an all-zero byte pattern is silence in every signed integer and
-                // IEEE float format `cpal` can hand back here, so this is silence rather than
-                // whatever the device buffer happened to hold.
+                // As `build_converting_input`, except that an output callback must leave
+                // *something* in the buffer: an all-zero byte pattern is silence in every signed
+                // integer and IEEE float format `cpal` can hand back here, so this is silence
+                // rather than whatever the device buffer happened to hold.
                 None => data.bytes_mut().fill(0),
             },
             move |err| on_error(to_stream_failure(err)),

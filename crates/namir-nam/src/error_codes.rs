@@ -156,10 +156,11 @@ pub const UNSUPPORTED_LSTM_CHANNELS: ErrorCode = ErrorCode::new(
 /// build does not implement, not a damaged file. Left unchecked it was one of the two files that
 /// loaded cleanly and then panicked *on the audio thread* inside
 /// `wavenet::PreparedWaveNet::process_block`; the other, `layers[0].input_size != 1`, is
-/// `INCONSISTENT_CONFIGURATION` below rather than this code, and that entry says why. **Distinct from `MALFORMED_JSON` by
-/// construction**: reaching this code means `serde` already accepted the document as a `NamFile`,
-/// so "not valid JSON" was never a true statement about it. This is FR-NAM-140's *configuration*
-/// clause; `UNSUPPORTED_ARCHITECTURE` above remains its *architecture* clause.
+/// `INCONSISTENT_CONFIGURATION` below rather than this code, and that entry says why. **Distinct
+/// from `MALFORMED_JSON` by construction**: reaching this code means `serde` already accepted the
+/// document as a `NamFile`, so "not valid JSON" was never a true statement about it. This is
+/// FR-NAM-140's *configuration* clause; `UNSUPPORTED_ARCHITECTURE` above remains its
+/// *architecture* clause.
 pub const UNSUPPORTED_CONFIGURATION: ErrorCode = ErrorCode::new(
     "nam.load.unsupported_configuration",
     Severity::Error,

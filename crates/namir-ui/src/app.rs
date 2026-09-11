@@ -20,7 +20,8 @@ use crate::library_view::{self, LibraryViewState};
 use crate::notices;
 use crate::{UiIntent, meter};
 
-/// Re-exported `baseview::Window` type from `egui-baseview` for embedding shells (such as `namir-clap`).
+/// Re-exported `baseview::Window` type from `egui-baseview` for embedding shells (such as
+/// `namir-clap`).
 pub type Window = egui_baseview::baseview::Window;
 
 /// Per-window state carried across frames -- everything that is *this crate's own* UI state
@@ -507,11 +508,11 @@ fn default_window_size() -> egui_baseview::baseview::dpi::Size {
 /// diagnosis): GLX is merely the call that comes back empty. Retrying without the flag opens the
 /// window on the very same display.
 ///
-/// Dropping the flag costs nothing visually on this stack, because nothing was using it: `egui_glow`
-/// (0.35, the renderer `egui-baseview` 0.6 drives) calls `gl.disable(FRAMEBUFFER_SRGB)` in
-/// `prepare_painting` on every frame it can, since egui's shader already emits gamma-encoded
-/// colour and must not have the driver convert it again. So `srgb: true` only ever selected a
-/// framebuffer *capable* of a conversion that egui then switched off.
+/// Dropping the flag costs nothing visually on this stack, because nothing was using it:
+/// `egui_glow` (0.35, the renderer `egui-baseview` 0.6 drives) calls
+/// `gl.disable(FRAMEBUFFER_SRGB)` in `prepare_painting` on every frame it can, since egui's shader
+/// already emits gamma-encoded colour and must not have the driver convert it again. So `srgb:
+/// true` only ever selected a framebuffer *capable* of a conversion that egui then switched off.
 ///
 /// Measured as far as one machine can measure it: a frame rendered through the fallback and read
 /// back off the X server (`xwd`) paints `egui::Visuals::dark()`'s `panel_fill` as exactly
@@ -879,11 +880,11 @@ mod tests {
         matches[0]
     }
 
-    /// **The glue `NamirUi::frame` is: snapshot → [`render`] → collect intents → `UiHost::dispatch`.**
-    /// Driven end to end here by dragging a real control in a real frame, rather than by calling
-    /// `dispatch` directly -- which is what this test used to do, and which only re-tested
-    /// `RecordingHost`'s own `Vec::push` while leaving the one path it claimed to cover untested
-    /// (issue #102).
+    /// **The glue `NamirUi::frame` is: snapshot → [`render`] → collect intents →
+    /// `UiHost::dispatch`.** Driven end to end here by dragging a real control in a real frame,
+    /// rather than by calling `dispatch` directly -- which is what this test used to do, and which
+    /// only re-tested `RecordingHost`'s own `Vec::push` while leaving the one path it claimed to
+    /// cover untested (issue #102).
     ///
     /// The control is located by the text it actually paints (`unique_text_rect`), so nothing here
     /// depends on a layout constant or a widget id this module would have to expose: the pointer

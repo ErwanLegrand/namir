@@ -25,7 +25,8 @@ use crate::error_codes;
 ///
 /// FR-IO-090 (Should) is the requirement this exists for; it is deliberately a thin, inert record
 /// here — [`crate::stream`] is what would actually honour a non-default mapping, and doing so is
-/// this crate's own manual-test-documented gap (see `docs/manual-tests/fr-io-090-channel-mapping.md`).
+/// this crate's own manual-test-documented gap (see
+/// `docs/manual-tests/fr-io-090-channel-mapping.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ChannelMapping {

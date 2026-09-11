@@ -62,9 +62,9 @@ impl BridgeProducer {
 
 impl BridgeConsumer {
     /// Fills every slot of `out` with the next captured sample, in order. Any slot for which no
-    /// sample was yet available is set to `pad` instead (silence, in practice) — this is FR-IO-060's
-    /// underrun: the input side has not produced enough since the last pull. Returns how many
-    /// slots were padded (`0` means a clean pull, no dropout).
+    /// sample was yet available is set to `pad` instead (silence, in practice) — this is
+    /// FR-IO-060's underrun: the input side has not produced enough since the last pull. Returns
+    /// how many slots were padded (`0` means a clean pull, no dropout).
     pub fn pull_into(&mut self, out: &mut [f32], pad: f32) -> usize {
         let mut padded = 0;
         for slot in out.iter_mut() {

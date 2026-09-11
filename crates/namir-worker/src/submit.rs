@@ -64,7 +64,8 @@ const RETRY_BACKOFF: Duration = Duration::from_micros(500);
 /// this many `pause` instructions **whatever any other thread does**, which is the property the GUI
 /// thread needs and a `lock()` cannot offer. It is sized against the longest hold that now exists —
 /// one `is_abandoned` plus one `try_push`, tens of nanoseconds — with enough headroom to ride out a
-/// worker in its own `SPIN_ATTEMPTS` phase, which re-takes the mutex rapidly for a few microseconds.
+/// worker in its own `SPIN_ATTEMPTS` phase, which re-takes the mutex rapidly for a few
+/// microseconds.
 const LOCK_SPIN_ATTEMPTS: u32 = 256;
 
 /// How long a blocking submit keeps trying before giving the command back.
@@ -445,8 +446,8 @@ mod tests {
     ///
     /// So the contract is pinned here instead, against the only thing that can ever make it false:
     /// *something* holding the producer for a long time. The holder is this test, so the guarantee
-    /// no longer depends on any other method's retry policy — which is what let the property quietly
-    /// lose its guard in the first place.
+    /// no longer depends on any other method's retry policy — which is what let the property
+    /// quietly lose its guard in the first place.
     #[test]
     fn try_submit_does_not_wait_for_whoever_holds_the_producer() {
         let (tx, _rx) = ring::<Command>(4);

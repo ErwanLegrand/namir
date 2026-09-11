@@ -44,9 +44,9 @@
 //! **Alternatives rejected:** `crossbeam-queue`'s `ArrayQueue` — bounded and preallocated, but
 //! MPMC and lock-free rather than SPSC and wait-free, so it would satisfy NFR-RT-020's letter less
 //! well than the structure D-7.2 actually names, for a larger dependency. Amending D-5.3 to let
-//! this one module carry `unsafe` — rejected because hand-written lock-free code is the highest-risk
-//! thing in this milestone and D-5.3's confinement list is a decision this project made
-//! deliberately; reopening it to avoid a zero-dependency, audio-domain-standard crate is a bad
+//! this one module carry `unsafe` — rejected because hand-written lock-free code is the
+//! highest-risk thing in this milestone and D-5.3's confinement list is a decision this project
+//! made deliberately; reopening it to avoid a zero-dependency, audio-domain-standard crate is a bad
 //! trade. `std::sync::mpsc::sync_channel` — its receive path can deallocate, which is a P1
 //! violation on the consumer side, and it is not wait-free.
 

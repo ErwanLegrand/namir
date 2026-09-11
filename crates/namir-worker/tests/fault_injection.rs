@@ -243,7 +243,8 @@ fn a_fault_in_any_non_audio_subsystem_is_contained_and_audio_keeps_flowing() {
         "a corrupt index must degrade to an empty one, not to whatever parsed"
     );
 
-    // ---- Subsystem 3: the library scanner -- a root that is a file, and garbage `.nam` bytes. ----
+    // ---- Subsystem 3: the library scanner -- a root that is a file, and garbage `.nam`
+    // bytes. ----
     {
         // Garbage that *looks* scannable: the right extensions, contents that parse as nothing.
         std::fs::write(dir.join("garbage.nam"), b"\x00\x01\x02 not json at all").unwrap();

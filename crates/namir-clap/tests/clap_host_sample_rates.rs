@@ -395,13 +395,13 @@ mod loaded {
     /// **The gate reads each block's peak, not its RMS, and that choice is what makes this number
     /// meaningful.** A block is not a whole number of 1 kHz cycles at any of these rates, and at
     /// the top of [`RATES`] it is barely more than one -- 256 frames at 191 100 Hz is 1.34 cycles
-    /// -- so a *settled* tone's per-block RMS still swings between 0.1453 and 0.1606, i.e. **10.5%**,
-    /// purely from where the window happens to cut the waveform. That is a quarter of the +3 dB
-    /// (41%) excursion this gate exists to catch, which leaves no honest threshold between them.
-    /// Peak has no such term: every block at every rate here spans at least one full period of the
-    /// chain's output, which is periodic at the probe frequency however hard the model distorts it,
-    /// so a settled peak repeats to within the sampling grid's own ~0.01%. 5% is far above that and
-    /// far below 41%.
+    /// -- so a *settled* tone's per-block RMS still swings between 0.1453 and 0.1606, i.e.
+    /// **10.5%**, purely from where the window happens to cut the waveform. That is a quarter of
+    /// the +3 dB (41%) excursion this gate exists to catch, which leaves no honest threshold
+    /// between them. Peak has no such term: every block at every rate here spans at least one full
+    /// period of the chain's output, which is periodic at the probe frequency however hard the
+    /// model distorts it, so a settled peak repeats to within the sampling grid's own ~0.01%. 5%
+    /// is far above that and far below 41%.
     const SETTLE_TOLERANCE: f64 = 0.05;
 
     /// The rate set. Both endpoints, the six standard rates, and two values off every grid.

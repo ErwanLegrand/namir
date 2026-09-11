@@ -27,8 +27,8 @@
 //! **Parameter values** — three settings: everything at its descriptor default, everything driven
 //! to an extreme (gate pinned shut, EQ at ±15 dB with a Q of 5 and both defeatable filters on, IR
 //! at +24 dB with both cuts engaged), and everything bypassed. Bypassed is the interesting one:
-//! FR-CHAIN-020's bypass is a *blend*, not a branch — every stage still computes its wet path — so a
-//! chain whose stages are all "off" must cost the same as one whose stages are all on. If it does
+//! FR-CHAIN-020's bypass is a *blend*, not a branch — every stage still computes its wet path — so
+//! a chain whose stages are all "off" must cost the same as one whose stages are all on. If it does
 //! not, the bypass has become a branch, which is the failure mode this row exists to catch.
 //!
 //! **How long the engine has been running** — measured within each arm rather than across arms:
@@ -136,13 +136,13 @@ const IR_PERIOD_BLOCKS: usize = 8192 / BLOCK_SIZE;
 /// noise in the estimator rather than real content- or parameter-dependence.
 ///
 /// Measured on the development machine — **not** `docs/02-architecture.md` §2's reference machine,
-/// so the absolute percentages that run printed are not quotable; a *ratio* between arms measured in
-/// the same interleaved session is, which is the whole reason the arms are interleaved — at a
+/// so the absolute percentages that run printed are not quotable; a *ratio* between arms measured
+/// in the same interleaved session is, which is the whole reason the arms are interleaved — at a
 /// deliberately short 2 560 blocks per arm, which widens the spread (see [`BLOCKS_ENV`]). Over five
 /// interleaved repetitions the nine arms' best estimators landed between **24.93% and 26.32%** of
-/// the block period: a **part 1 spread of 5.6%**, and a **part 2 worst half-to-half drift of 6.0%**,
-/// on a machine busy enough that D-2.4 discarded every single arm's raw `p99.9`. The cheapest arm
-/// was the one decaying into subnormals, which is the guard doing its job.
+/// the block period: a **part 1 spread of 5.6%**, and a **part 2 worst half-to-half drift of
+/// 6.0%**, on a machine busy enough that D-2.4 discarded every single arm's raw `p99.9`. The
+/// cheapest arm was the one decaying into subnormals, which is the guard doing its job.
 ///
 /// Re-run at 1 280 blocks with the assertions live, the same nine arms measured **1.9%** apart with
 /// a worst half-to-half drift of **10.1%** — the drift figure inflating as the run shortens exactly

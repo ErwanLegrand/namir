@@ -43,7 +43,8 @@
 //!   `egui`-accessible name via `Response::labelled_by`, and is keyboard-operable via `egui`'s own
 //!   `DragValue` focus/arrow-key handling. **Platform adapters (issue #35, Decision D-15.4):**
 //!   wired for Windows (`accesskit_windows`) and macOS (`accesskit_macos`); Linux/X11 is a no-op.
-//!   See `controls.rs`'s module doc comment and `docs/manual-tests/fr-ui-030-accessibility-script.md`.
+//!   See `controls.rs`'s module doc comment and
+//!   `docs/manual-tests/fr-ui-030-accessibility-script.md`.
 //! - FR-UI-040 -- [`format::parse_value`] (typed entry) plus `ParamDescriptor::format_value`
 //!   (already in `namir-params`, reused rather than duplicated) for numeric display.
 //! - FR-UI-050 -- documented in `controls.rs`'s module doc comment and in-app via each control's

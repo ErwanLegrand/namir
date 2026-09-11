@@ -49,10 +49,10 @@ pub const LOG_ROTATED: ErrorCode = ErrorCode::new(
 /// **Admitted regardless of the resolved level, `off` excepted** (issue #79). [`Severity::Warning`]
 /// is below what [`crate::logging::LogLevel::Error`] admits, so routing this through the ordinary
 /// `record` path discarded it for exactly the user who had already chosen a quiet log *and*
-/// mistyped the variable — leaving the record's own promise above unkept. [`crate::logging::Logger::new`]
-/// therefore writes it directly. The single exception is [`crate::logging::LogLevel::Off`], whose
-/// contract is that the file is never opened or created at all; forcing a record past that would
-/// create a log the user switched off.
+/// mistyped the variable — leaving the record's own promise above unkept.
+/// [`crate::logging::Logger::new`] therefore writes it directly. The single exception is
+/// [`crate::logging::LogLevel::Off`], whose contract is that the file is never opened or created
+/// at all; forcing a record past that would create a log the user switched off.
 ///
 /// **Severity divergence, recorded rather than glossed.** D-16.5's parameter prose calls these
 /// three "`Severity::Info` consts" in one sentence and then calls this one's record a "`WARN

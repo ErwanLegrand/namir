@@ -23,9 +23,10 @@
 //! (added M14): the whole FR-UI-020 screen rendered beside a real `namir_library::Scanner` pass
 //! over `namir-fixtures`' 10,000-file corpus, with the index identity changed on every frame so
 //! the re-filter path below runs inside every measured one, asserting the 100 ms ceiling against
-//! the slowest frame. [`tests::rendering_ten_thousand_entries_stays_well_under_the_100ms_frame_budget`]
-//! stays here as the `cargo test`-speed regression guard for the same properties, against the same
-//! real corpus and not a guessed row count.
+//! the slowest frame.
+//! [`tests::rendering_ten_thousand_entries_stays_well_under_the_100ms_frame_budget`] stays here as
+//! the `cargo test`-speed regression guard for the same properties, against the same real corpus
+//! and not a guessed row count.
 
 use std::path::PathBuf;
 use std::sync::Arc;

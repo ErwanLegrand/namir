@@ -198,13 +198,13 @@ pub const README: &str = "README.md";
 
 /// Also staged beside [`LICENCE_DOCUMENTS`], and for a sharper reason than [`README`]'s.
 ///
-/// The shipped binaries **carry the brand mark** — M12 embedded it, and `namir-ui` `include_bytes!`s
-/// the generated alpha blob — and **NFR-LIC-070** requires the terms on which the name and mark may
-/// be used to be stated explicitly, precisely because a permissive code licence beside an unstated
-/// trademark position is the combination that produces awkward conversations later. `README.md`'s
-/// licence section points at `TRADEMARK.md`; staging the README without it makes that pointer
-/// dangle in every distribution, which is the one way a distribution can be *worse* than no
-/// document at all: it names a file and then does not carry it.
+/// The shipped binaries **carry the brand mark** — M12 embedded it, and `namir-ui`
+/// `include_bytes!`s the generated alpha blob — and **NFR-LIC-070** requires the terms on which
+/// the name and mark may be used to be stated explicitly, precisely because a permissive code
+/// licence beside an unstated trademark position is the combination that produces awkward
+/// conversations later. `README.md`'s licence section points at `TRADEMARK.md`; staging the README
+/// without it makes that pointer dangle in every distribution, which is the one way a distribution
+/// can be *worse* than no document at all: it names a file and then does not carry it.
 ///
 /// It is deliberately **not** in [`LICENCE_DOCUMENTS`]. FR-PKG-040's set is exactly three, named by
 /// the requirement, and widening a requirement's own enumeration to hold a file it does not mention
@@ -1278,7 +1278,8 @@ mod tests {
     fn the_two_pkginfo_files_differ_in_type_and_are_eight_bytes_each() {
         // Apple's definition: PkgInfo is the four-byte package type followed by the four-byte
         // creator code, carrying the same two values as CFBundlePackageType and CFBundleSignature.
-        // A loadable bundle is BNDL; an application is APPL. `????` is the documented unset creator.
+        // A loadable bundle is BNDL; an application is APPL. `????` is the documented unset
+        // creator.
         assert_eq!(PLUGIN_PKG_INFO.len(), 8);
         assert_eq!(APP_PKG_INFO.len(), 8);
         assert_eq!(&PLUGIN_PKG_INFO[..4], "BNDL");

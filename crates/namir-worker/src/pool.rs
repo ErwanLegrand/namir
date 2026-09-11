@@ -18,11 +18,11 @@ static LIVE_WORKER_THREADS: AtomicUsize = AtomicUsize::new(0);
 /// How many pool worker threads are alive in this process right now, summed over every
 /// [`ThreadPool`].
 ///
-/// **Test observability**, for one assertion that cannot be made any other way: that a *host-driven*
-/// teardown has joined the threads the torn-down thing started, before the call that tore it down
-/// returned. `clap_plugin.destroy`'s caller is entitled to `FreeLibrary` the plugin the instant
-/// destroy returns, so "did destroy join its workers?" is a correctness question, not a tidiness
-/// one — and from outside the plugin (an in-process CLAP host harness, which is all
+/// **Test observability**, for one assertion that cannot be made any other way: that a
+/// *host-driven* teardown has joined the threads the torn-down thing started, before the call that
+/// tore it down returned. `clap_plugin.destroy`'s caller is entitled to `FreeLibrary` the plugin
+/// the instant destroy returns, so "did destroy join its workers?" is a correctness question, not
+/// a tidiness one — and from outside the plugin (an in-process CLAP host harness, which is all
 /// `crates/namir-clap/tests/clap_host_teardown.rs` gets) there is no handle on that instance's pool
 /// to ask. Answered process-globally instead.
 ///

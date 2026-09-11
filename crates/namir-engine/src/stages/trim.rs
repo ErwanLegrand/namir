@@ -216,8 +216,8 @@ impl Stage for TrimStage {
     }
 }
 
-/// Issue #127's follow-up: the one place this stage's gain ramp is constructed, so `prepare` and the
-/// test that pins its start point cannot drift apart. `GainRamp::new_at_db` rather than
+/// Issue #127's follow-up: the one place this stage's gain ramp is constructed, so `prepare` and
+/// the test that pins its start point cannot drift apart. `GainRamp::new_at_db` rather than
 /// `GainRamp::new` followed by `set_target_db`: the latter leaves `current` at unity and `target`
 /// at the default, so the first ~25 ms of audio after every prepare, sample-rate change or
 /// re-prepare ramps from 0 dB to the parameter's real default. That is inaudible only because
@@ -294,8 +294,8 @@ mod tests {
         }
     }
 
-    /// The other half: `prepare` really does route through gain_ramp_at_default, so the assertion above is
-    /// about this stage and not just about `namir-dsp`. At the shipped default this is a
+    /// The other half: `prepare` really does route through gain_ramp_at_default, so the assertion
+    /// above is about this stage and not just about `namir-dsp`. At the shipped default this is a
     /// tripwire rather than a live check -- it starts failing the day the default moves and the
     /// construction has drifted back.
     #[test]

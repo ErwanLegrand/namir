@@ -51,9 +51,9 @@ impl ContentHash {
     }
 
     /// Parses 64 lowercase-or-uppercase hex characters (as produced by [`Display`](Self), which is
-    /// always lowercase, but a hand-edited preset per FR-STATE-040 may not be) into a `ContentHash`.
-    /// The non-panicking counterpart to `FromStr::from_str`, named so a caller reading the code
-    /// doesn't have to know `FromStr` is implemented to find it.
+    /// always lowercase, but a hand-edited preset per FR-STATE-040 may not be) into a
+    /// `ContentHash`. The non-panicking counterpart to `FromStr::from_str`, named so a caller
+    /// reading the code doesn't have to know `FromStr` is implemented to find it.
     pub fn from_hex(s: &str) -> Result<Self, ContentHashParseError> {
         if s.len() != 64 {
             return Err(ContentHashParseError::WrongLength);

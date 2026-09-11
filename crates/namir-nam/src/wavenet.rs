@@ -552,13 +552,13 @@ fn resolve_activation_kind(
 //    file. See `pin_to_measurement_core` in any of this workspace's benchmarks.
 //
 // 3. **AArch64 / NEON vectorization (2026-09-06, Issue #148).** On `target_arch = "aarch64"`,
-//    NEON is part of the standard baseline. `wide` 1.7.0's `pick!` macro selects `core::arch::aarch64`
-//    NEON intrinsics (`float32x4_t`) for `f32x4`, and `wide::f32x8` is composed of `{ a: f32x4, b: f32x4 }`,
-//    confirming vectorization at the source dependency level rather than a scalar fallback. Because
-//    NEON registers are 128-bit wide, each 8-lane operation compiles to two paired 128-bit NEON vector
-//    operations (`fmul v.4s`, `fadd v.4s`, `fsub v.4s`, etc.) with 128-bit load/store pairs
-//    (`ldp q, q` / `stp q, q`). Performance on AArch64 remains unmeasured without an ARM reference
-//    benchmarking rig.
+//    NEON is part of the standard baseline. `wide` 1.7.0's `pick!` macro selects
+//    `core::arch::aarch64` NEON intrinsics (`float32x4_t`) for `f32x4`, and `wide::f32x8` is
+//    composed of `{ a: f32x4, b: f32x4 }`, confirming vectorization at the source dependency level
+//    rather than a scalar fallback. Because NEON registers are 128-bit wide, each 8-lane operation
+//    compiles to two paired 128-bit NEON vector operations (`fmul v.4s`, `fadd v.4s`, `fsub v.4s`,
+//    etc.) with 128-bit load/store pairs (`ldp q, q` / `stp q, q`). Performance on AArch64 remains
+//    unmeasured without an ARM reference benchmarking rig.
 //
 // **Still true, and worth keeping:** this benchmark's `p50` is stable and trustworthy; its raw
 // `p99.9` is not reproducible run-to-run on a general-purpose desktop even after both fixes
@@ -1240,13 +1240,14 @@ fn named_secondary_activation(secondary: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Confirms `cfg` uses only features this build supports (via [`reject_unsupported_layer_features`])
-/// and resolves its `Option`/alternative-shaped A1-or-A2 fields to the concrete, per-layer values
-/// `PreparedWaveNet::from_file`'s weight walk needs. Both-or-neither-present and
-/// length-disagreement cases (`kernel_size`/`kernel_sizes`, `head_size`+`head_bias`/`head`, a
-/// per-layer `kernel_sizes`/`activation`/`gating_mode`/`secondary_activation` array whose length
-/// disagrees with `dilations`) are self-contradictory files — well-formed JSON, every feature it
-/// names supported, but internally inconsistent about which shape it is — hence
+/// Confirms `cfg` uses only features this build supports (via
+/// [`reject_unsupported_layer_features`]) and resolves its `Option`/alternative-shaped A1-or-A2
+/// fields to the concrete, per-layer values `PreparedWaveNet::from_file`'s weight walk needs.
+/// Both-or-neither-present and length-disagreement cases (`kernel_size`/`kernel_sizes`,
+/// `head_size`+`head_bias`/`head`, a per-layer
+/// `kernel_sizes`/`activation`/`gating_mode`/`secondary_activation` array whose length disagrees
+/// with `dilations`) are self-contradictory files — well-formed JSON, every feature it names
+/// supported, but internally inconsistent about which shape it is — hence
 /// `INCONSISTENT_CONFIGURATION` rather than `UNSUPPORTED_CONFIGURATION`.
 fn resolve_layer_array(
     cfg: &LayerArrayConfig,
@@ -1290,7 +1291,8 @@ fn resolve_layer_array(
     // must not happen before this dimension is bounded — see `PreparedWaveNet::from_file`'s
     // load-bearing ordering doc comment. `validate_layer_array_dims` still checks this same bound
     // again afterwards (harmless — `check_max` is a pure comparison); that copy documents the bound
-    // as part of "every declared dimension", this one is what actually guards the allocations below.
+    // as part of "every declared dimension", this one is what actually guards the allocations
+    // below.
     check_max(
         cfg.dilations.len(),
         MAX_DILATIONS_PER_LAYER_ARRAY,
@@ -2547,13 +2549,13 @@ mod tests {
         );
     }
 
-    /// Issue #48, the allocation half — the reason the ordering above matters. `ActivationSpec::One`
-    /// clones its resolved activation once per dilation, so an unbounded `bottleneck` bought an
-    /// unbounded clone: the issue measured a 188 KB file (`dilations: [1; 4096]`,
-    /// `bottleneck: 9000`, a 9000-entry `negative_slopes`) allocating 4096 * 9000 f32 = 147 MB and
-    /// only *then* returning `DIMENSION_LIMIT_EXCEEDED`, scaling linearly with file size from
-    /// there. With the ceiling moved ahead of the resolution, the file is refused before the first
-    /// of those clones.
+    /// Issue #48, the allocation half — the reason the ordering above matters.
+    /// `ActivationSpec::One` clones its resolved activation once per dilation, so an unbounded
+    /// `bottleneck` bought an unbounded clone: the issue measured a 188 KB file (`dilations: [1;
+    /// 4096]`, `bottleneck: 9000`, a 9000-entry `negative_slopes`) allocating 4096 * 9000 f32 =
+    /// 147 MB and only *then* returning `DIMENSION_LIMIT_EXCEEDED`, scaling linearly with file
+    /// size from there. With the ceiling moved ahead of the resolution, the file is refused before
+    /// the first of those clones.
     #[test]
     fn rejects_an_over_ceiling_bottleneck_without_cloning_its_slopes_per_layer() {
         let over = MAX_CHANNELS + 808; // 9000, the figure the issue measured

@@ -21,8 +21,8 @@
 //! ownership on this document because the document is written in milestone order and its convention
 //! is to append rather than rewrite, so a requirement that moves is named again later --
 //! NFR-PERF-030 is exactly that case, named by M5, M7, M9 and finally M13. A future milestone that
-//! names an id only in passing would take the label. That is tolerable *precisely because* the label
-//! is printed text with no code path reading it (D-18.5's Consequence,
+//! names an id only in passing would take the label. That is tolerable *precisely because* the
+//! label is printed text with no code path reading it (D-18.5's Consequence,
 //! `docs/02-architecture.md:2047-2051`); it would not be tolerable for anything that gates, and
 //! this derivation must not later be reused for something that does.
 //!
