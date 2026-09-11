@@ -585,8 +585,9 @@ pub trait AudioStream: Send {
 pub struct CallbackStatus {
     /// The backend detected a dropout for this callback: samples lost by the device, as opposed
     /// to the ones [`crate::bridge`]'s ring loses. Counted into [`crate::xrun::XrunCounter`] by
-    /// [`crate::stream`], one xrun per reporting callback — the same granularity the bridge
-    /// detector uses, so the two sources stay commensurable.
+    /// [`crate::stream`], which collapses this and its own bridge losses into **at most one
+    /// xrun per data callback** — see that module's doc comment for the latch and for what a
+    /// "callback" means on the integer-converting path.
     pub xrun: bool,
 }
 

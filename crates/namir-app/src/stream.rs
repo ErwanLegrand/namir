@@ -16,10 +16,16 @@
 //!   #85); and — since issue #200 item 6 — the backend's own per-callback report, which `cpal`
 //!   0.19 delivers through `CallbackInfo::xrun()` and which reaches this module as
 //!   [`crate::audio_io::CallbackStatus::xrun`]. All three increment the same
-//!   [`crate::xrun::XrunCounter`] at the same granularity — one xrun per callback that lost
-//!   anything, never one per lost sample — so the counts stay commensurable. The backend's
-//!   report is counted unconditionally; only the bridge pads are gated on the settling window
-//!   below, because only they can be an artefact of activation.
+//!   [`crate::xrun::XrunCounter`], and **one data callback contributes at most one xrun**: each
+//!   callback carries a `recorded` latch, so a callback the device reported *and* whose bridge
+//!   pull starved — the ordinary pairing, since they have the same cause — counts once, and a
+//!   host buffer several blocks long counts once rather than once per chunk (PR #209 review;
+//!   the over-count axis issues #189 and #194 were filed about). The latch is per call into
+//!   these closures, which on the integer-converting path (`crate::audio_io`'s `convert`) is one
+//!   scratch-length slice of a device callback rather than the whole of it; that path reports
+//!   the device's own xrun on the first slice only, so it too counts once per device callback.
+//!   The backend's report is not gated on the settling window below: that window excuses pads
+//!   this pair manufactured while starting up, and a device's report is not one.
 //!   Since issue #189 the output side's pads are gated on this `open`'s pair having settled: the
 //!   capture side must have delivered a callback, and the ring must have had a bounded settling
 //!   window to fill. An output device takes a few hundred milliseconds to start running, and a
@@ -401,14 +407,24 @@ fn build_input(
     let max_block = setup.max_block_size.max(1);
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(max_block);
     let on_data = Box::new(move |data: &[f32], status: CallbackStatus| {
-        // Issue #200 item 6: `cpal` 0.19 reports a device-side dropout per callback, and this is
-        // the only place it can be counted. One relaxed atomic increment, before the early return
-        // below, because a lost callback is a lost callback whatever this stream then does with
-        // it. Same granularity as the bridge detector: one xrun per reporting callback.
+        // FR-IO-060 counts **dropouts**, not losses, so one data callback contributes at most
+        // one xrun however many ways it lost something (PR #209 review). Two sources meet here:
+        // the device's own report (`cpal` 0.19's `CallbackInfo::xrun()`, carried across the seam
+        // since issue #200 item 6) and the bridge ring's overrun below — and a callback the
+        // device dropped samples on is typically also the one whose push does not fit, so
+        // without this latch one dropout would be counted twice, on exactly the over-count axis
+        // issues #189 and #194 were filed about. A stack bool and a branch; the record itself is
+        // one relaxed `fetch_add`.
+        let mut recorded = false;
         if status.xrun {
             xruns.record();
+            recorded = true;
         }
-        if channel_count == 0 {
+        // An empty callback delivers no samples, so it must not latch `capture_started` below:
+        // that is what the integer-converting path's `InputConverter::report` hands down when a
+        // device callback arrives mis-typed or zero-length, and #189's gating reads the latch as
+        // "real audio has started flowing".
+        if channel_count == 0 || data.is_empty() {
             return;
         }
         // Issue #189: the capture side is running, so from here on an output pad is a real
@@ -434,11 +450,13 @@ fn build_input(
             // a real dropout of exactly the class `crate::bridge` exists to detect. Discarding it
             // did not merely lose detail — it made the session count under-report, which is the
             // worst direction for a diagnostic, because a user watching a zero while their audio
-            // glitches concludes the counter works and the glitch is elsewhere. Counted the same
-            // way `build_output` counts an underrun below: one xrun per callback chunk that lost
-            // anything, not one per lost sample, so the two sources are commensurable.
-            if producer.push_captured(&mono_scratch) > 0 {
+            // glitches concludes the counter works and the glitch is elsewhere. Gated on the
+            // same per-callback latch as the device's report above, so a callback that lost
+            // something both ways still counts one — and so a callback the host made larger than
+            // `max_block` counts one rather than one per chunk.
+            if producer.push_captured(&mono_scratch) > 0 && !recorded {
                 xruns.record();
+                recorded = true;
             }
         }
     });
@@ -523,11 +541,15 @@ fn build_output(
     let mut pulls: u32 = 0;
 
     let on_data = Box::new(move |out: &mut [f32], status: CallbackStatus| {
-        // Issue #200 item 6: the backend's own dropout report, counted unconditionally — unlike
-        // the bridge pads below it is not an artefact of this pair's activation transient, so the
-        // settling window does not apply to it.
+        // One data callback, at most one xrun — see `build_input` for the argument. The device's
+        // own report is not gated on the settling window below (that window exists to excuse
+        // pads this pair manufactured while starting up, and a backend report is the device's
+        // claim about samples it lost), but it does consume this callback's single count, so an
+        // output callback that both was reported and starved counts once.
+        let mut recorded = false;
         if status.xrun {
             xruns.record();
+            recorded = true;
         }
         if !priority_elevated.swap(true, Ordering::AcqRel) {
             // D-13.2: once, lazily, from this callback thread itself -- see this module's doc
@@ -559,8 +581,9 @@ fn build_output(
                 pulls_since_capture = pulls_since_capture.saturating_add(1);
             }
             let settled = pulls_since_capture > settling_pulls || pulls > activation_pulls_max;
-            if padded > 0 && settled {
+            if padded > 0 && settled && !recorded {
                 xruns.record();
+                recorded = true;
             }
 
             engine_left[..chunk].copy_from_slice(&mono_in[..chunk]);
@@ -1520,6 +1543,45 @@ mod tests {
             xruns.count(),
             2,
             "a render callback the device dropped samples on must be counted too"
+        );
+    }
+
+    /// **One data callback is at most one xrun (PR #209 review).** A callback the device
+    /// reported is, in the ordinary case, also the one whose bridge push or pull loses — same
+    /// physical dropout, two detectors — so without the per-callback latch FR-IO-060's
+    /// user-facing count would read double on exactly the axis issues #189 and #194 were filed
+    /// about. Driven on the capture side, where a full ring makes both conditions true at once.
+    #[test]
+    fn a_callback_that_lost_samples_both_ways_counts_one_xrun() {
+        const MAX_BLOCK: usize = 64;
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, MAX_BLOCK),
+            engine(MAX_BLOCK),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
+
+        // Fill the ring past its capacity with nothing draining it, so the next push is certain
+        // to lose samples as well.
+        for _ in 0..32 {
+            input_cb(&[0.1f32; MAX_BLOCK], CallbackStatus::default());
+        }
+        let before = xruns.count();
+        assert!(
+            before > 0,
+            "the ring has to be overrunning or this proves nothing"
+        );
+
+        input_cb(&[0.1f32; MAX_BLOCK], CallbackStatus { xrun: true });
+        assert_eq!(
+            xruns.count() - before,
+            1,
+            "a callback that the device reported and whose push overran is one dropout, not two"
         );
     }
 

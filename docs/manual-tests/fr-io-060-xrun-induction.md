@@ -97,3 +97,24 @@ the script now has a second, cheaper form worth trying first on real hardware: a
 xrun needs no `sleep` injected into the callback, only a device that actually drops samples.
 
 Still **PARTIAL**, unchanged.
+
+### Amendment, same day (PR #209 review)
+
+Two corrections to the note above, appended rather than edited into it.
+
+1. **"One xrun per reporting callback" was a claim, not yet a property.** The bridge detectors
+   recorded per *chunk* — `build_input` inside its `data.chunks(..)` loop, `build_output` inside
+   its pull loop — so a host buffer several blocks long counted several times, and a callback
+   the device reported was typically also the callback whose bridge transfer lost something, so
+   one physical dropout could count twice. Both callbacks now carry a per-callback `recorded`
+   latch, which makes the claim true: **at most one xrun per data callback**, from all sources
+   together. On the integer-converting path a "callback" is one scratch-length slice of the
+   device callback, and the device's own report crosses on the first slice only.
+2. **Step 0's baseline is unaffected**, but note for whoever executes this script that a count
+   of 1 on a callback is now the ceiling for that callback, so a real induction that produces
+   *n* glitching callbacks should read *n*, not some multiple of it that depends on the host's
+   buffer length.
+
+The verdict is still **PARTIAL** for the same unchanged reason: no real-hardware xrun has been
+induced, and whether a driver raises `CallbackInfo::xrun()` on the callbacks bracketing a stop
+is still unknown here (`crate::stream`'s teardown test records the choice made in its absence).

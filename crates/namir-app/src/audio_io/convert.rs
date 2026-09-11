@@ -184,6 +184,11 @@ impl OutputConverter {
     /// and a device buffer longer than the scratch is an ordinary case here, not a corner — see
     /// `crate::audio_io::scratch_samples`.
     pub(super) fn fill<T: IntegerFormat>(&mut self, out: &mut [T], mut status: CallbackStatus) {
+        if out.is_empty() {
+            // Zero chunks would mean zero calls to `on_data`, and `status` would go nowhere —
+            // most plausibly on exactly the callback that glitched (PR #209 review).
+            return self.report(status);
+        }
         let chunk_len = self.scratch.len();
         for chunk in out.chunks_mut(chunk_len) {
             let engine = &mut self.scratch[..chunk.len()];
@@ -195,11 +200,13 @@ impl OutputConverter {
         }
     }
 
-    /// Reports a device callback this converter has no samples for — the mis-typed-buffer branch
-    /// of `crate::audio_io`'s `build_converting_output`. An empty buffer, because there is
-    /// genuinely nothing to render; what must still cross is `status`, since a device that
-    /// glitched *and* handed back the wrong format has lost samples either way and
-    /// [`crate::stream`]'s callback reads `status` before it looks at the buffer at all.
+    /// Reports a device callback this converter has no samples for: the mis-typed-buffer branch
+    /// of `crate::audio_io`'s `build_converting_output`, and a zero-length buffer. An empty
+    /// slice, because there is genuinely nothing to render; what must still cross is `status`,
+    /// since a device that glitched *and* handed back an unusable buffer has lost samples either
+    /// way. `crate::stream`'s callbacks read `status` first and then return on an empty buffer,
+    /// which is deliberate on the capture side: an empty callback must not latch issue #189's
+    /// `capture_started`, since no audio has started flowing.
     pub(super) fn report(&mut self, status: CallbackStatus) {
         (self.on_data)(&mut [], status);
     }
@@ -225,6 +232,9 @@ impl InputConverter {
     /// Converts one device callback buffer, in chunks of at most the pre-sized scratch length.
     /// `status` is reported on the first chunk only, as [`OutputConverter::fill`].
     pub(super) fn drain<T: IntegerFormat>(&mut self, data: &[T], mut status: CallbackStatus) {
+        if data.is_empty() {
+            return self.report(status);
+        }
         let chunk_len = self.scratch.len();
         for chunk in data.chunks(chunk_len) {
             let engine = &mut self.scratch[..chunk.len()];
@@ -440,10 +450,11 @@ mod tests {
         assert_eq!(seen.lock().unwrap().as_slice(), [true, false, false]);
     }
 
-    /// A device that glitched *and* handed back a buffer in the wrong format still loses samples,
-    /// so the report has to cross even though there is nothing to convert — the branch
-    /// `crate::audio_io`'s `build_converting_input`/`build_converting_output` take when
-    /// `as_slice` answers `None`.
+    /// A device that glitched and handed back a buffer this converter cannot use — the wrong
+    /// format (`as_slice` answers `None`) or zero-length (`Some(&[])`) — still lost samples, so
+    /// the report has to cross even though there is nothing to convert. The zero-length case is
+    /// the one `chunks`/`chunks_mut` silently drop, since an empty slice yields no iterations
+    /// (PR #209 review).
     #[test]
     fn a_callback_with_no_convertible_buffer_still_reports_its_xrun() {
         let reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -455,7 +466,19 @@ mod tests {
             4,
         );
         input.report(CallbackStatus { xrun: true });
-        assert_eq!(reports.lock().unwrap().as_slice(), [(0, true)]);
+        input.drain::<i32>(&[], CallbackStatus { xrun: true });
+        assert_eq!(reports.lock().unwrap().as_slice(), [(0, true), (0, true)]);
+
+        let out_reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let out_recorder = std::sync::Arc::clone(&out_reports);
+        let mut output = OutputConverter::new(
+            Box::new(move |buf: &mut [f32], status: CallbackStatus| {
+                out_recorder.lock().unwrap().push((buf.len(), status.xrun))
+            }),
+            4,
+        );
+        output.fill::<i32>(&mut [], CallbackStatus { xrun: true });
+        assert_eq!(out_reports.lock().unwrap().as_slice(), [(0, true)]);
     }
 
     /// NFR-RT-010 for the conversion arithmetic itself: neither converter allocates once built, in
