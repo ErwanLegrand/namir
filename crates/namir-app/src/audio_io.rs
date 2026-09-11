@@ -1393,13 +1393,18 @@ mod cpal_impl {
             stream_config(params),
             T::FORMAT,
             move |data: &cpal::Data, info| {
-                if let Some(codes) = data.as_slice::<T>() {
-                    converter.drain(codes, CallbackStatus { xrun: info.xrun() });
+                let status = CallbackStatus { xrun: info.xrun() };
+                match data.as_slice::<T>() {
+                    Some(codes) => converter.drain(codes, status),
+                    // `cpal`'s own typed builder `expect()`s on the `None` here. A host handing
+                    // back a different format than it was asked for is a bug, but an audio
+                    // callback is the worst place in the process to panic from, so this drops the
+                    // block instead: the stream stays alive, the bridge underruns, and
+                    // FR-IO-060's xrun counter says so. The device's own report still crosses —
+                    // a callback that both glitched and arrived mis-typed lost samples twice
+                    // over, and counting it nowhere is the bug this seam was widened to fix.
+                    None => converter.report(status),
                 }
-                // `cpal`'s own typed builder `expect()`s on the `None` here. A host handing back a
-                // different format than it was asked for is a bug, but an audio callback is the
-                // worst place in the process to panic from, so this drops the block instead: the
-                // stream stays alive, the bridge underruns, and FR-IO-060's xrun counter says so.
             },
             move |err| on_error(to_stream_failure(err)),
             Some(activation_timeout),
@@ -1423,13 +1428,19 @@ mod cpal_impl {
         configured.build_output_stream_raw(
             stream_config(params),
             T::FORMAT,
-            move |data: &mut cpal::Data, info| match data.as_slice_mut::<T>() {
-                Some(codes) => converter.fill(codes, CallbackStatus { xrun: info.xrun() }),
-                // As `build_converting_input`, except that an output callback must leave *something*
-                // in the buffer: an all-zero byte pattern is silence in every signed integer and
-                // IEEE float format `cpal` can hand back here, so this is silence rather than
-                // whatever the device buffer happened to hold.
-                None => data.bytes_mut().fill(0),
+            move |data: &mut cpal::Data, info| {
+                let status = CallbackStatus { xrun: info.xrun() };
+                match data.as_slice_mut::<T>() {
+                    Some(codes) => converter.fill(codes, status),
+                    // As `build_converting_input`, except that an output callback must leave
+                    // *something* in the buffer: an all-zero byte pattern is silence in every
+                    // signed integer and IEEE float format `cpal` can hand back here, so this is
+                    // silence rather than whatever the device buffer happened to hold.
+                    None => {
+                        data.bytes_mut().fill(0);
+                        converter.report(status);
+                    }
+                }
             },
             move |err| on_error(to_stream_failure(err)),
             Some(activation_timeout),

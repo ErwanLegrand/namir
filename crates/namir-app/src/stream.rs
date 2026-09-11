@@ -1388,11 +1388,16 @@ mod tests {
         output_cb(&mut exact_out, CallbackStatus::default());
 
         let mut saw_output = false;
-        for _ in 0..32 {
-            crate::rt_harness::audio_section(|| input_cb(&exact_in, CallbackStatus::default()));
-            crate::rt_harness::audio_section(|| {
-                output_cb(&mut exact_out, CallbackStatus::default())
-            });
+        for iteration in 0..32 {
+            // One iteration carries a backend-reported xrun, so the `xruns.record()` branch these
+            // callbacks gained with issue #200 item 6 runs *inside* the harness rather than being
+            // the branch never taken. A relaxed `fetch_add` cannot allocate, which is exactly the
+            // kind of claim this harness exists to check rather than assert by reasoning.
+            let status = CallbackStatus {
+                xrun: iteration == 7,
+            };
+            crate::rt_harness::audio_section(|| input_cb(&exact_in, status));
+            crate::rt_harness::audio_section(|| output_cb(&mut exact_out, status));
             saw_output |= exact_out.iter().any(|s| s.abs() > 1e-6);
             crate::rt_harness::audio_section(|| input_cb(&big_in, CallbackStatus::default()));
             crate::rt_harness::audio_section(|| output_cb(&mut big_out, CallbackStatus::default()));
@@ -1738,6 +1743,20 @@ mod tests {
     /// headroom past the prefill; the headroom is a margin in time, not a guarantee (~75 ms at a
     /// 480-frame block, ~4.7 ms at the 32-frame minimum), so a deliberately longer replay would
     /// count — for a true reason, and it is not what this test is about.
+    ///
+    /// **The backend's own report is deliberately *not* suppressed here (issue #200 item 6).**
+    /// The teardown replay below ends with a callback carrying `CallbackStatus { xrun: true }`,
+    /// and that one does count. The asymmetry is the point: a bridge pad during teardown is an
+    /// artefact Namir manufactured — it stopped draining one side and then pulled from the ring
+    /// it stopped feeding — whereas a backend report is the *device's* claim that it lost
+    /// samples, made by the layer that alone can know. Suppressing it would mean deciding, from
+    /// this side of the seam, that a driver is wrong about its own dropout, and the suppression
+    /// would have to be a second stopping flag read on the audio thread. Not verified against
+    /// real hardware: whether a driver actually raises `CallbackInfo::xrun()` on the callbacks
+    /// bracketing a close is unknown here (see
+    /// `docs/manual-tests/fr-io-060-xrun-induction.md`), so if a real interface turns out to
+    /// report one per stop, this is the test and the argument to revisit — and #189/#194's
+    /// gating is the shape to copy.
     #[test]
     fn stopping_a_clean_session_leaves_the_xrun_count_where_the_run_left_it() {
         /// Callbacks the still-live side takes while the other side is closing.
@@ -1783,6 +1802,21 @@ mod tests {
             xruns.count(),
             0,
             "the teardown counted a dropout of its own -- the session's own stop is not an xrun"
+        );
+
+        // And now the other half of the rule: the *device* reporting a dropout across the same
+        // window is counted, because it is the device's claim rather than the teardown's own
+        // artefact. See this test's doc comment for why that asymmetry is deliberate.
+        let glitched = CallbackStatus { xrun: true };
+        if input_outlived_output {
+            input_cb(&[0.1f32; 64], glitched);
+        } else {
+            output_cb(&mut out, glitched);
+        }
+        assert_eq!(
+            xruns.count(),
+            1,
+            "a backend-reported dropout is not suppressed by the teardown window"
         );
     }
 }

@@ -177,15 +177,31 @@ impl OutputConverter {
     /// not clear the device buffer either and [`crate::stream`]'s callback writes every sample it
     /// is given. (It is zeroed once at construction, so even a first callback starts from silence
     /// rather than from whatever the device buffer held.)
-    pub(super) fn fill<T: IntegerFormat>(&mut self, out: &mut [T], status: CallbackStatus) {
+    ///
+    /// `status` describes the **device callback**, not a chunk of it, so it is reported on the
+    /// first chunk and cleared for the rest: `status.xrun` is counted once per callback that lost
+    /// something ([`crate::xrun::XrunCounter`]'s granularity, shared with the bridge detector),
+    /// and a device buffer longer than the scratch is an ordinary case here, not a corner — see
+    /// `crate::audio_io::scratch_samples`.
+    pub(super) fn fill<T: IntegerFormat>(&mut self, out: &mut [T], mut status: CallbackStatus) {
         let chunk_len = self.scratch.len();
         for chunk in out.chunks_mut(chunk_len) {
             let engine = &mut self.scratch[..chunk.len()];
             (self.on_data)(engine, status);
+            status = CallbackStatus::default();
             for (code, sample) in chunk.iter_mut().zip(engine.iter()) {
                 *code = T::from_engine(*sample);
             }
         }
+    }
+
+    /// Reports a device callback this converter has no samples for — the mis-typed-buffer branch
+    /// of `crate::audio_io`'s `build_converting_output`. An empty buffer, because there is
+    /// genuinely nothing to render; what must still cross is `status`, since a device that
+    /// glitched *and* handed back the wrong format has lost samples either way and
+    /// [`crate::stream`]'s callback reads `status` before it looks at the buffer at all.
+    pub(super) fn report(&mut self, status: CallbackStatus) {
+        (self.on_data)(&mut [], status);
     }
 }
 
@@ -207,7 +223,8 @@ impl InputConverter {
     }
 
     /// Converts one device callback buffer, in chunks of at most the pre-sized scratch length.
-    pub(super) fn drain<T: IntegerFormat>(&mut self, data: &[T], status: CallbackStatus) {
+    /// `status` is reported on the first chunk only, as [`OutputConverter::fill`].
+    pub(super) fn drain<T: IntegerFormat>(&mut self, data: &[T], mut status: CallbackStatus) {
         let chunk_len = self.scratch.len();
         for chunk in data.chunks(chunk_len) {
             let engine = &mut self.scratch[..chunk.len()];
@@ -215,7 +232,13 @@ impl InputConverter {
                 *sample = code.to_engine();
             }
             (self.on_data)(engine, status);
+            status = CallbackStatus::default();
         }
+    }
+
+    /// As [`OutputConverter::report`], for the capture direction.
+    pub(super) fn report(&mut self, status: CallbackStatus) {
+        (self.on_data)(&[], status);
     }
 }
 
@@ -380,6 +403,59 @@ mod tests {
         for (index, (sample, code)) in got.iter().zip(codes.iter()).enumerate() {
             assert_eq!(*sample, code.to_engine(), "sample {index}");
         }
+    }
+
+    /// One device callback is one xrun, however many chunks the scratch splits it into (issue
+    /// #200 item 6, PR review). `CallbackStatus` describes the callback; reporting it per chunk
+    /// would make the converting path count three dropouts where the `f32` path counts one, on
+    /// exactly the oversized-callback shape the two tests above exist for.
+    #[test]
+    fn a_chunked_callback_reports_the_backends_xrun_exactly_once() {
+        let reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let out_reports = std::sync::Arc::clone(&reports);
+        let mut output = OutputConverter::new(
+            Box::new(move |_buf: &mut [f32], status: CallbackStatus| {
+                out_reports.lock().unwrap().push(status.xrun)
+            }),
+            4,
+        );
+        let mut out = [0i32; 10];
+        output.fill(&mut out, CallbackStatus { xrun: true });
+        assert_eq!(
+            reports.lock().unwrap().as_slice(),
+            [true, false, false],
+            "three chunks, one dropout: the report belongs to the callback, not the chunk"
+        );
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let in_reports = std::sync::Arc::clone(&seen);
+        let mut input = InputConverter::new(
+            Box::new(move |_buf: &[f32], status: CallbackStatus| {
+                in_reports.lock().unwrap().push(status.xrun)
+            }),
+            4,
+        );
+        let codes = [I24::new(1).unwrap(); 10];
+        input.drain(&codes, CallbackStatus { xrun: true });
+        assert_eq!(seen.lock().unwrap().as_slice(), [true, false, false]);
+    }
+
+    /// A device that glitched *and* handed back a buffer in the wrong format still loses samples,
+    /// so the report has to cross even though there is nothing to convert — the branch
+    /// `crate::audio_io`'s `build_converting_input`/`build_converting_output` take when
+    /// `as_slice` answers `None`.
+    #[test]
+    fn a_callback_with_no_convertible_buffer_still_reports_its_xrun() {
+        let reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = std::sync::Arc::clone(&reports);
+        let mut input = InputConverter::new(
+            Box::new(move |buf: &[f32], status: CallbackStatus| {
+                recorder.lock().unwrap().push((buf.len(), status.xrun))
+            }),
+            4,
+        );
+        input.report(CallbackStatus { xrun: true });
+        assert_eq!(reports.lock().unwrap().as_slice(), [(0, true)]);
     }
 
     /// NFR-RT-010 for the conversion arithmetic itself: neither converter allocates once built, in
