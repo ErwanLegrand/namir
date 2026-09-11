@@ -101,14 +101,15 @@ pub(crate) fn buffer_decline_detail(requested: u32, actual: Option<u32>) -> Opti
 /// Both numbers are 1-based here, as the selector shows them -- the argument is the stored
 /// zero-based index, and this is the one place besides the selector that renders one for a human
 /// (`namir-ui`'s own label helper is private to that crate, so the two cannot share one). The
-/// adds saturate because `requested` comes from a hand-editable settings file: `u16::MAX` must
-/// read oddly, not panic.
+/// arithmetic is done in `u32` because `requested` comes from a hand-editable settings file and
+/// `u16::MAX + 1` has to be *exact* here, not saturated: saturating would render the largest
+/// hand-edited index one low, in the one function whose whole job is not being off by one.
 pub(crate) fn input_channel_decline_detail(requested: u16, actual: u16) -> Option<String> {
     (requested != actual).then(|| {
         format!(
             "requested input {}, using input {}",
-            requested.saturating_add(1),
-            actual.saturating_add(1)
+            u32::from(requested) + 1,
+            u32::from(actual) + 1
         )
     })
 }
@@ -2193,10 +2194,10 @@ mod tests {
             input_channel_decline_detail(6, 1),
             Some("requested input 7, using input 2".to_string())
         );
-        // A hand-edited `u16::MAX` must read oddly rather than panic (checked build) or wrap.
+        // A hand-edited `u16::MAX` still reads 1-based, and neither panics nor saturates.
         assert_eq!(
             input_channel_decline_detail(u16::MAX, 0),
-            Some("requested input 65535, using input 1".to_string())
+            Some("requested input 65536, using input 1".to_string())
         );
     }
 }

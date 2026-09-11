@@ -312,9 +312,12 @@ pub(crate) fn assemble_stream_config(negotiated: &AudioNegotiation) -> Assembled
             &input.configs,
             &output.configs,
         ),
+        // Narrowed to the settled channel counts for the same reason `settle` narrows before
+        // negotiating (PR #212): a size the selector offers must be one the config actually
+        // being opened accepts, not one some other channel count's config would have.
         supported_buffer_sizes: crate::device_state::supported_buffer_sizes(
-            &input.configs,
-            &output.configs,
+            &crate::device_state::configs_with_channels(&input.configs, *input_channels),
+            &crate::device_state::configs_with_channels(&output.configs, *output_channels),
             sample_rate_hz,
         ),
         input_channel_count: crate::device_state::max_channels_at_rate(
@@ -327,6 +330,19 @@ pub(crate) fn assemble_stream_config(negotiated: &AudioNegotiation) -> Assembled
 
 /// `(sample_rate_hz, buffer_frames, input_channels, output_channels)` for one pair of enumerated
 /// directions. Both sides' ranges, never one side's alone (issue #86).
+///
+/// # Why the channel counts are settled before the buffer size (PR #212)
+///
+/// `accepts_buffer_size` is an `.any()` over every config at the rate, so a flat view of a
+/// direction accepts a size *some* config allows rather than one the config being opened allows.
+/// That was unreachable while the input side always asked `minimum = 1` and therefore always
+/// landed on the smallest channel count; FR-IO-090's channel choice makes it reachable, because
+/// the choice moves which config is opened. On a device reporting `{2ch: 64..1024, 8ch:
+/// 512..1024}` the old order offered 64 frames and then opened the 8-channel config with them,
+/// which is a device-open failure rather than a graceful degrade. So each direction's channel
+/// count is settled first and the buffer is negotiated against that direction's configs *at that
+/// count*. Nothing here needs the buffer size to pick a channel count, so the dependency is one
+/// way and there is no cycle.
 fn settle(
     input: &DirectionSetup,
     output: &DirectionSetup,
@@ -338,32 +354,35 @@ fn settle(
         prefs.sample_rate_hz,
     )
     .unwrap_or(48_000);
-    let buffer_frames = crate::device_state::negotiate_shared_buffer_size(
+    // FR-IO-090: the engine still reads one channel, so "smallest that suffices" stands -- but a
+    // selected channel 6 does not arrive in a 1-channel stream, so what suffices is `selected +
+    // 1` interleaved channels. A device that cannot go that wide falls back to its largest count
+    // (`negotiate_channels`' own fallback) and the selection is clamped against that by
+    // `clamp_input_channel`.
+    //
+    // `saturating_add`: this number comes from a hand-editable settings file with no range
+    // validation, and `u16::MAX + 1` is a start-up panic in a checked build and a wrap to "no
+    // minimum" in release. Saturating asks for the widest stream the type can name, which no
+    // device meets, so the fallback picks the device's own largest count.
+    let input_channels = crate::device_state::negotiate_channels(
         &input.configs,
-        &output.configs,
+        sample_rate_hz,
+        prefs.input_channel.unwrap_or(0).saturating_add(1),
+    )
+    .unwrap_or(1);
+    let output_channels =
+        crate::device_state::negotiate_channels(&output.configs, sample_rate_hz, 2).unwrap_or(1);
+    let buffer_frames = crate::device_state::negotiate_shared_buffer_size(
+        &crate::device_state::configs_with_channels(&input.configs, input_channels),
+        &crate::device_state::configs_with_channels(&output.configs, output_channels),
         sample_rate_hz,
         prefs.buffer_size_frames,
     );
     (
         sample_rate_hz,
         buffer_frames,
-        // FR-IO-090: the engine still reads one channel, so "smallest that suffices" stands --
-        // but a selected channel 6 does not arrive in a 1-channel stream, so what suffices is
-        // `selected + 1` interleaved channels. A device that cannot go that wide falls back to
-        // its largest count (`negotiate_channels`' own fallback) and the selection is clamped
-        // against that by `clamp_input_channel`.
-        crate::device_state::negotiate_channels(
-            &input.configs,
-            sample_rate_hz,
-            // `saturating_add`: this number comes from a hand-editable settings file with no
-            // range validation, and `u16::MAX + 1` is a start-up panic in a checked build and a
-            // wrap to "no minimum" in release. Saturating asks for the widest stream the type
-            // can name, which no device meets, so the fallback picks the device's own largest
-            // count and the selection is clamped against it -- FR-IO-080's degrade rule.
-            prefs.input_channel.unwrap_or(0).saturating_add(1),
-        )
-        .unwrap_or(1),
-        crate::device_state::negotiate_channels(&output.configs, sample_rate_hz, 2).unwrap_or(1),
+        input_channels,
+        output_channels,
     )
 }
 

@@ -316,6 +316,30 @@ pub fn max_channels_at_rate(configs: &[SupportedConfigRange], sample_rate_hz: u3
         .max()
 }
 
+/// The subset of `configs` covering exactly `channels` interleaved channels — the configs a
+/// stream settled on that count can actually open with.
+///
+/// [`accepts_buffer_size`] is an `.any()`, so anything that reduces a direction to a flat list
+/// of [`BufferSizeRange`]s accepts a size *some* config allows. Narrowing to the settled channel
+/// count first is what makes "accepted" mean "accepted by the config being opened" (PR #212);
+/// falls back to the whole list if nothing reports that count, which leaves the previous,
+/// looser answer rather than no answer at all.
+pub fn configs_with_channels(
+    configs: &[SupportedConfigRange],
+    channels: u16,
+) -> Vec<SupportedConfigRange> {
+    let narrowed: Vec<SupportedConfigRange> = configs
+        .iter()
+        .filter(|c| c.channels == channels)
+        .copied()
+        .collect();
+    if narrowed.is_empty() {
+        configs.to_vec()
+    } else {
+        narrowed
+    }
+}
+
 /// Returns all standard buffer sizes supported by both `input_configs` and `output_configs`
 /// at `sample_rate_hz`.
 pub fn supported_buffer_sizes(

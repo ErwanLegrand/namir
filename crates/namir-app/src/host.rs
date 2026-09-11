@@ -2850,6 +2850,74 @@ mod tests {
         )
     }
 
+    /// The ALSA/CoreAudio shape PR #212's review names: one range per channel count, each with
+    /// its **own** buffer limits — a narrow 2-channel config that goes down to 64 frames, and a
+    /// wide 8-channel one that does not go below 512. A fixture whose ranges are all
+    /// `BufferSizeRange::Unknown` cannot see the coupling between the two negotiations at all.
+    fn fake_backend_with_per_channel_buffer_limits() -> Arc<crate::stream::FakeBackend> {
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let range = |channels, min, max| crate::audio_io::SupportedConfigRange {
+            channels,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: crate::audio_io::BufferSizeRange::Range { min, max },
+        };
+        Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_input_configs(vec![range(2, 64, 1024), range(8, 512, 1024)]),
+        )
+    }
+
+    /// PR #212: choosing a channel moves which config the stream opens with, so the buffer size
+    /// has to be negotiated against *that* config. `accepts_buffer_size` is an `.any()` over a
+    /// direction's flattened ranges, so before the channel count was settled first, picking
+    /// "Input 7" on this device kept the 64 frames the 2-channel config allows and handed them
+    /// to the 8-channel config, whose minimum is 512 — a device-open failure rather than
+    /// FR-IO-080's degrade.
+    #[test]
+    fn a_channel_choice_that_widens_the_config_takes_that_config_s_buffer_limits_with_it() {
+        let dir = temp_dir("input_channel_buffer_coupling");
+        let backend = fake_backend_with_per_channel_buffer_limits();
+        let settings = AppSettings {
+            buffer_size_frames: Some(64),
+            ..AppSettings::default()
+        };
+        let (mut host, _engine) = host_with_reopen(&dir, Arc::clone(&backend), settings);
+
+        host.dispatch(UiIntent::SelectInputChannel { channel: 6 });
+        let (panel, opened_index) = await_reopened_stream(&mut host);
+
+        assert_eq!(opened_index, 6);
+        let opened = backend
+            .opened_input_params
+            .lock()
+            .unwrap()
+            .expect("the capture side was opened");
+        // `None` here means `cpal::BufferSize::Default` — the device's own, which every backend
+        // accepts. What must not happen is the remembered 64, which only the 2-channel config
+        // allows and which this open would have been refused for.
+        assert_ne!(
+            opened.buffer_frames,
+            Some(64),
+            "opened the 8-channel config with a size only the 2-channel config accepts"
+        );
+        assert!(
+            opened.buffer_frames.is_none_or(|f| f >= 512),
+            "buffer {:?} is below the opened config's 512 minimum",
+            opened.buffer_frames
+        );
+        assert!(
+            !panel.supported_buffer_sizes.iter().any(|&f| f < 512),
+            "the selector offers sizes this config refuses: {:?}",
+            panel.supported_buffer_sizes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Spins until the reopen `dispatch` started has opened a stream, then hands back the panel
     /// and the stream it opened. The reopen is asynchronous (worker rebuild, then
     /// `AudioStreamReady`), so every assertion about it has to wait for it.
