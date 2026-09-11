@@ -99,13 +99,16 @@ pub(crate) fn buffer_decline_detail(requested: u32, actual: Option<u32>) -> Opti
 /// `None` when the selection was honoured, which is every ordinary open.
 ///
 /// Both numbers are 1-based here, as the selector shows them -- the argument is the stored
-/// zero-based index, and this is the one place besides the selector that renders one for a human.
+/// zero-based index, and this is the one place besides the selector that renders one for a human
+/// (`namir-ui`'s own label helper is private to that crate, so the two cannot share one). The
+/// adds saturate because `requested` comes from a hand-editable settings file: `u16::MAX` must
+/// read oddly, not panic.
 pub(crate) fn input_channel_decline_detail(requested: u16, actual: u16) -> Option<String> {
     (requested != actual).then(|| {
         format!(
             "requested input {}, using input {}",
-            requested + 1,
-            actual + 1
+            requested.saturating_add(1),
+            actual.saturating_add(1)
         )
     })
 }
@@ -2177,6 +2180,23 @@ mod tests {
         assert_eq!(
             buffer_decline_detail(960, None),
             Some("requested 960 frames, using the device default".to_string())
+        );
+    }
+
+    /// FR-IO-090: the channel notice reads in the 1-based numbering the selector uses, and says
+    /// nothing at all when the remembered channel was honoured. An off-by-one here would tell a
+    /// user to look at the wrong socket.
+    #[test]
+    fn input_channel_decline_detail_formats_expected_descriptions() {
+        assert_eq!(input_channel_decline_detail(6, 6), None);
+        assert_eq!(
+            input_channel_decline_detail(6, 1),
+            Some("requested input 7, using input 2".to_string())
+        );
+        // A hand-edited `u16::MAX` must read oddly rather than panic (checked build) or wrap.
+        assert_eq!(
+            input_channel_decline_detail(u16::MAX, 0),
+            Some("requested input 65535, using input 1".to_string())
         );
     }
 }

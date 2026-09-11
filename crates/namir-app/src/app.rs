@@ -355,7 +355,12 @@ fn settle(
         crate::device_state::negotiate_channels(
             &input.configs,
             sample_rate_hz,
-            prefs.input_channel.unwrap_or(0) + 1,
+            // `saturating_add`: this number comes from a hand-editable settings file with no
+            // range validation, and `u16::MAX + 1` is a start-up panic in a checked build and a
+            // wrap to "no minimum" in release. Saturating asks for the widest stream the type
+            // can name, which no device meets, so the fallback picks the device's own largest
+            // count and the selection is clamped against it -- FR-IO-080's degrade rule.
+            prefs.input_channel.unwrap_or(0).saturating_add(1),
         )
         .unwrap_or(1),
         crate::device_state::negotiate_channels(&output.configs, sample_rate_hz, 2).unwrap_or(1),

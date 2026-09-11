@@ -280,7 +280,7 @@ fn audio_settings_panel(
 /// an interface calls it. Every label in the input-channel combo -- the closed one and each
 /// entry -- comes from here, so the two cannot drift apart by one.
 fn input_channel_label(channel: u16) -> String {
-    format!("Input {}", channel + 1)
+    format!("Input {}", channel.saturating_add(1))
 }
 
 /// The two ends of the chain, side by side at the top of the screen: each is a level control with

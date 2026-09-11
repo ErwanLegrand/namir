@@ -2943,6 +2943,71 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// FR-IO-080/FR-IO-090's trust boundary: `input_channel` comes from a hand-editable JSON
+    /// file that nothing range-checks, so `u16::MAX` reaches the negotiation as a channel
+    /// minimum. Unchecked, `+ 1` panicked the session in a checked build and wrapped to "no
+    /// minimum" in release; it must instead degrade to a channel the device has, and say so.
+    #[test]
+    fn a_settings_file_naming_the_largest_possible_channel_degrades_instead_of_panicking() {
+        let dir = temp_dir("input_channel_u16_max");
+        let backend = fake_duplex_backend(2);
+        let settings = AppSettings {
+            channel_mapping: crate::settings::ChannelMapping {
+                input_channel: Some(u16::MAX),
+                ..Default::default()
+            },
+            ..AppSettings::default()
+        };
+        let (mut host, _engine) = host_with_reopen(&dir, Arc::clone(&backend), settings);
+
+        // Any reopen re-runs the negotiation with that remembered channel.
+        host.dispatch(UiIntent::SelectSampleRate { rate: 48_000 });
+        let (panel, opened_index) = await_reopened_stream(&mut host);
+
+        assert_eq!(panel.current_input_channel, 1, "clamped to a real channel");
+        assert_eq!(opened_index, 1);
+        let opened = backend
+            .opened_input_params
+            .lock()
+            .unwrap()
+            .expect("the capture side was opened");
+        assert_eq!(
+            opened.channels, 2,
+            "an impossible minimum falls back to the device's own largest count"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Start-up's half of FR-IO-090, at the only seam a test can reach: `crate::app::run` builds
+    /// its `StreamSetup` from this function's return value, and the selector from the fields it
+    /// sets, so the two agree by construction.
+    ///
+    /// **The call site itself is not pinned.** `run`'s `StreamSetup` assembly borrows the
+    /// backend, both enumerated devices and a dozen locals built along a path that ends in
+    /// `namir_ui::open_blocking`, so extracting a testable seam is not the small extraction it
+    /// would need to be; re-inlining a raw `settings.channel_mapping.input_channel` read there
+    /// would pass every test in this crate. Reviewers: that one line is the gap.
+    #[test]
+    fn the_startup_input_channel_is_clamped_and_reported_through_one_answer() {
+        let dir = temp_dir("input_channel_startup");
+        let (mut host, _engine) = build_host(&dir);
+        host.settings.channel_mapping.input_channel = Some(6);
+
+        // An eight-in device whose stream opened with two channels: the selector lists eight,
+        // the capture can only reach the second.
+        assert_eq!(host.configure_input_channels(8, 2), 1);
+        let panel = host
+            .snapshot()
+            .audio_panel
+            .expect("the standalone has an audio panel");
+        assert_eq!(panel.supported_input_channels, 8);
+        assert_eq!(
+            panel.current_input_channel, 1,
+            "the selector shows what the stream will read, not what was remembered"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     /// **Issue #192.** The reopen path must open with exactly the values
     /// [`crate::app::assemble_stream_config`] derives, because a hand-written copy here is what
     /// drifted from start-up twice — and silently, since a reopen only runs when a user changes a

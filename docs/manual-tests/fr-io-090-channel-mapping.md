@@ -68,7 +68,8 @@ What that automates of the script above: step 3's *control* half for the input c
 `crates/namir-ui/tests/ui_interaction_scripts.rs`
 (`input_channel_combo_dispatches_the_zero_based_index_of_the_chosen_channel`) and
 `crates/namir-app/src/host.rs`
-(`a_persisted_input_channel_past_the_device_end_is_clamped_to_an_existing_one`). What still needs a
+(`a_remembered_input_channel_the_device_lacks_is_clamped_and_explained`, corrected in place from a
+name that no longer exists — see the amendment below). What still needs a
 human with hardware, and so keeps this file's `Verify: M` unpromoted: that the remapped physical
 channel is the one actually heard, the output-channel half (no UI for it), and
 `ChannelConfig::Stereo`, which remains unbuilt.
@@ -90,3 +91,14 @@ Still unautomated, and still the reason this file's `Verify: M` is unpromoted: t
 selected is the one physically heard needs a signal fed into one input of a real multi-input
 interface. No hardware of that shape was available in this session; the eight-input device above
 is a fake backend reporting eight configs, which proves the plumbing and not the wiring.
+
+Two records from the same review. The note above cited
+`a_persisted_input_channel_past_the_device_end_is_clamped_to_an_existing_one`, a test that was
+replaced by the end-to-end pair named above; the dead name was corrected in place rather than
+left pointing nowhere in the one document D-18.6 makes this requirement's evidence record. And
+`crates/namir-ui/examples/manual_window_smoke.rs` — what the `headless window smoke (FR-UI-010)`
+CI job drives — now opens with the audio panel visible and an eight-input device's shape, so that
+job paints these selectors rather than only the chain, and a human running the example by hand
+sees them. A hand-editable settings file naming `u16::MAX` as the input channel degrades to a
+channel the device has instead of panicking the session
+(`a_settings_file_naming_the_largest_possible_channel_degrades_instead_of_panicking`).
