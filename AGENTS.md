@@ -125,8 +125,8 @@ generated-plan diff — `docs/03-test-plan.md` matching what the tool would writ
 denominator check, that §14's `### M9a re-audit` table agrees with the Musts parsed out of the FRS
 (`required = plan_up_to_date && section_table_ok`, `xtask/src/main.rs:901`). The other half is zero
 uncovered Musts, which no milestone before M14 can reach, so it stays informational:
-`--allow-uncovered` derives the exit status from the required half alone (`exit_ok`,
-`xtask/src/traceability.rs:1531`) while printing byte-identical output, full uncovered list included.
+`--allow-uncovered` derives the exit status from the required half alone (`exit_ok`, in
+`xtask/src/traceability.rs`) while printing byte-identical output, full uncovered list included.
 D-18.5 pairs the flag with a second, `continue-on-error: true` CI step running the plain form, so
 the gap list stays a visible annotation; that half becomes required at **M14's close-out** — D-18.5
 moved it M13 → M9b, and M9b closed out without reaching it, so M14 owns the flip (the tool's own
@@ -339,8 +339,8 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   forgot to clean up. The way to retire one is to close the gap its `// uncovered:` field names and
   then promote the tag; promoting the tag on its own deletes the ledger entry and is the failure
   mode D-23.1 exists to prevent.
-- **What the tool actually enforces about a tag** (`scan_annotations`,
-  `xtask/src/traceability.rs:395`), each of these a hard error that aborts the whole run rather than
+- **What the tool actually enforces about a tag** (`scan_annotations`, in
+  `xtask/src/traceability.rs`), each of these a hard error that aborts the whole run rather than
   a silent drop — dropping a malformed tag would delete its author's intended coverage without
   saying so. The marker must **begin** its trimmed comment line, in one of two spellings: `// trace:`
   in `.rs`, `# trace:` in the four non-Rust files the scanner reads (the scanned set is `crates/**`
