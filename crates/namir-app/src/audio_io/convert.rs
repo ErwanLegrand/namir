@@ -70,6 +70,8 @@
 
 use cpal::{I24, Sample, SizedSample};
 
+use super::CallbackStatus;
+
 /// One integer sample format the audio callback can convert to and from.
 ///
 /// Implemented for exactly the two formats `crate::audio_io::acceptable_formats` names — `i32` and
@@ -141,10 +143,10 @@ impl IntegerFormat for I24 {
 /// [`crate::audio_io::AudioBackend::build_output_stream`] takes, named so the converter's
 /// signatures stay readable — and so `clippy::type_complexity` has a definition to point at rather
 /// than an `allow` at every mention, which is how the trait's own methods deal with it.
-pub(super) type OutputCallback = Box<dyn FnMut(&mut [f32]) + Send>;
+pub(super) type OutputCallback = Box<dyn FnMut(&mut [f32], CallbackStatus) + Send>;
 
 /// The engine-side capture callback, as [`OutputCallback`].
-pub(super) type InputCallback = Box<dyn FnMut(&[f32]) + Send>;
+pub(super) type InputCallback = Box<dyn FnMut(&[f32], CallbackStatus) + Send>;
 
 /// The output callback's converting body: run the engine into an `f32` scratch buffer, then write
 /// that scratch out as device codes.
@@ -175,11 +177,11 @@ impl OutputConverter {
     /// not clear the device buffer either and [`crate::stream`]'s callback writes every sample it
     /// is given. (It is zeroed once at construction, so even a first callback starts from silence
     /// rather than from whatever the device buffer held.)
-    pub(super) fn fill<T: IntegerFormat>(&mut self, out: &mut [T]) {
+    pub(super) fn fill<T: IntegerFormat>(&mut self, out: &mut [T], status: CallbackStatus) {
         let chunk_len = self.scratch.len();
         for chunk in out.chunks_mut(chunk_len) {
             let engine = &mut self.scratch[..chunk.len()];
-            (self.on_data)(engine);
+            (self.on_data)(engine, status);
             for (code, sample) in chunk.iter_mut().zip(engine.iter()) {
                 *code = T::from_engine(*sample);
             }
@@ -205,14 +207,14 @@ impl InputConverter {
     }
 
     /// Converts one device callback buffer, in chunks of at most the pre-sized scratch length.
-    pub(super) fn drain<T: IntegerFormat>(&mut self, data: &[T]) {
+    pub(super) fn drain<T: IntegerFormat>(&mut self, data: &[T], status: CallbackStatus) {
         let chunk_len = self.scratch.len();
         for chunk in data.chunks(chunk_len) {
             let engine = &mut self.scratch[..chunk.len()];
             for (sample, code) in engine.iter_mut().zip(chunk.iter()) {
                 *sample = code.to_engine();
             }
-            (self.on_data)(engine);
+            (self.on_data)(engine, status);
         }
     }
 }
@@ -337,7 +339,7 @@ mod tests {
     fn an_output_callback_larger_than_the_scratch_is_chunked_without_losing_a_frame() {
         let mut next = 0.0f32;
         let mut converter = OutputConverter::new(
-            Box::new(move |buf: &mut [f32]| {
+            Box::new(move |buf: &mut [f32], _status: CallbackStatus| {
                 for slot in buf.iter_mut() {
                     *slot = next;
                     next += ONE_I24_STEP;
@@ -346,7 +348,7 @@ mod tests {
             4,
         );
         let mut out = [0i32; 10];
-        converter.fill(&mut out);
+        converter.fill(&mut out, CallbackStatus::default());
         for (index, code) in out.iter().enumerate() {
             let expected = index as f32 * ONE_I24_STEP;
             let got = code.to_engine();
@@ -364,13 +366,15 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorder = std::sync::Arc::clone(&seen);
         let mut converter = InputConverter::new(
-            Box::new(move |buf: &[f32]| recorder.lock().unwrap().extend_from_slice(buf)),
+            Box::new(move |buf: &[f32], _status: CallbackStatus| {
+                recorder.lock().unwrap().extend_from_slice(buf)
+            }),
             4,
         );
         let codes: Vec<I24> = (0..10)
             .map(|i| I24::new(i * 100_000).unwrap())
             .collect::<Vec<_>>();
-        converter.drain(&codes);
+        converter.drain(&codes, CallbackStatus::default());
         let got = seen.lock().unwrap().clone();
         assert_eq!(got.len(), codes.len());
         for (index, (sample, code)) in got.iter().zip(codes.iter()).enumerate() {
@@ -392,7 +396,7 @@ mod tests {
     fn neither_converter_allocates_once_the_stream_is_built() {
         let mut phase = 0.0f32;
         let mut output = OutputConverter::new(
-            Box::new(move |buf: &mut [f32]| {
+            Box::new(move |buf: &mut [f32], _status: CallbackStatus| {
                 for slot in buf.iter_mut() {
                     // Deliberately includes out-of-range values: the clamp is on the hot path and
                     // has to be allocation-free too.
@@ -408,7 +412,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = std::sync::Arc::clone(&seen);
         let mut input = InputConverter::new(
-            Box::new(move |buf: &[f32]| {
+            Box::new(move |buf: &[f32], _status: CallbackStatus| {
                 counter.fetch_add(buf.len(), std::sync::atomic::Ordering::Relaxed);
             }),
             8,
@@ -420,10 +424,10 @@ mod tests {
         let in_i24 = [I24::new(1_234_567).unwrap(); 32];
 
         audio_section(|| {
-            output.fill(&mut out_i32);
-            output.fill(&mut out_i24);
-            input.drain(&in_i32);
-            input.drain(&in_i24);
+            output.fill(&mut out_i32, CallbackStatus::default());
+            output.fill(&mut out_i24, CallbackStatus::default());
+            input.drain(&in_i32, CallbackStatus::default());
+            input.drain(&in_i24, CallbackStatus::default());
         });
 
         // The buffers really were written and read -- an allocation-free no-op would pass the
@@ -485,16 +489,16 @@ mod tests {
         let mut out_i24 = [I24::new(0).unwrap(); 2800];
 
         // Warm-up, un-asserted: see this test's own doc comment.
-        input.drain(&in_i32);
-        output.fill(&mut out_i32);
+        input.drain(&in_i32, CallbackStatus::default());
+        output.fill(&mut out_i32, CallbackStatus::default());
 
         let mut saw_output = false;
         for _ in 0..8 {
-            audio_section(|| input.drain(&in_i32));
-            audio_section(|| output.fill(&mut out_i32));
+            audio_section(|| input.drain(&in_i32, CallbackStatus::default()));
+            audio_section(|| output.fill(&mut out_i32, CallbackStatus::default()));
             saw_output |= out_i32.iter().any(|c| *c != 0);
-            audio_section(|| input.drain(&in_i24));
-            audio_section(|| output.fill(&mut out_i24));
+            audio_section(|| input.drain(&in_i24, CallbackStatus::default()));
+            audio_section(|| output.fill(&mut out_i24, CallbackStatus::default()));
             saw_output |= out_i24.iter().any(|c| c.inner() != 0);
         }
 

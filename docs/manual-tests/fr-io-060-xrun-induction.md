@@ -77,3 +77,23 @@ Two things above are now out of date, recorded here rather than rewritten.
 
 Still **PARTIAL**, and for the same reason: no real-hardware xrun has been induced. This note
 changes the baseline, not the verdict.
+
+## Note added 2026-09-11 (issue #200 item 6)
+
+The parenthetical in "What real-hardware execution would add" is now out of date, recorded here
+rather than rewritten. `AudioBackend`'s data-callback seam was widened to carry
+`audio_io::CallbackStatus`, whose `xrun` field is `cpal` 0.19's `CallbackInfo::xrun()`, and
+`crate::stream`'s input and output callbacks record it into the same `XrunCounter` the bridge
+under/overrun detector increments — one xrun per reporting callback, counted unconditionally
+(the activation settling window gates bridge pads only). So backend-detected dropouts are no
+longer counted nowhere: bridge under/overruns are one of **two** live sources, not the only one.
+`StreamFailure::Xrun`, which had no constructor left, was deleted with that change.
+
+What this does **not** change is this document's verdict or its script. The new path is proven
+only by a fake backend — `stream::tests::a_backend_reported_xrun_reaches_the_session_count_from_either_direction`
+drives a callback carrying `CallbackStatus { xrun: true }` and asserts the count — and no real
+interface was made to xrun for it, which is precisely the remainder recorded above. Step 2 of
+the script now has a second, cheaper form worth trying first on real hardware: a backend-reported
+xrun needs no `sleep` injected into the callback, only a device that actually drops samples.
+
+Still **PARTIAL**, unchanged.
