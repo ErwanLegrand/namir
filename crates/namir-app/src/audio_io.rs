@@ -582,7 +582,16 @@ pub trait AudioStream: Send {
 /// struct rather than a re-exported `cpal::CallbackInfo` keeps D-13.1's boundary intact (the
 /// fake backend in [`crate::stream`] constructs one with no hardware behind it), and named
 /// fields rather than bare `bool`s so a call site reads as `status.xrun` and not as `true`.
+///
+/// **`#[non_exhaustive]` deliberately (PR #209 review).** An out-of-crate backend cannot write a
+/// partial literal and must go through `..Default::default()`, so a new field can never default
+/// to the unsafe value at a call site the compiler did not flag. The field that makes this worth
+/// an attribute is [`Self::first_of_callback`]: [`crate::stream`]'s latch is persistent state,
+/// and a producer spelling `first_of_callback: false` on a genuine first callback would leave a
+/// stale latch set and *swallow* a dropout — silent under-counting, which is the direction
+/// FR-IO-060 can least afford and the exact defect this type was added to fix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CallbackStatus {
     /// The backend detected a dropout for this callback: samples lost by the device, as opposed
     /// to the ones [`crate::bridge`]'s ring loses. Counted into [`crate::xrun::XrunCounter`] by
