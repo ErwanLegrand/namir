@@ -11,6 +11,23 @@
 
 name: CI
 
+# No `types:` is declared below, so `pull_request` gets GitHub's default set -- `opened`,
+# `synchronize`, `reopened`. **Retargeting a PR's base to `trunk` fires `edited`, which is not in
+# that set, so a retargeted PR starts no run and shows zero checks** (issue #175). After
+# retargeting, push any commit (or `--force-with-lease` after a rebase) to produce a `synchronize`.
+# Since issue #29 required status checks on `trunk`, a PR with zero check runs is not mergeable:
+# each required check sits at "Expected — waiting for status to be reported" and holds the merge
+# button, so the symptom is a stall with a non-obvious cause. Anyone with ruleset bypass -- and any
+# period in which those required checks are not configured -- gets the worse version instead: a PR
+# that looks clean because nothing ever ran. Either way, worth knowing before landing a stacked
+# pair.
+#
+# Adding `edited` was considered and not taken here: GitHub cannot filter `edited` down to base
+# changes at the trigger level, and the job-level guard that would do it
+# (`github.event.action != 'edited' || github.event.changes.base`) makes every job report the
+# `skipped` conclusion on an ordinary title or body edit -- which branch protection counts as a
+# *satisfied* required check. That would let a body edit paper over a red run for the same commit,
+# which is a worse failure than the stall above. #175 carries the analysis and the decision.
 on:
   push:
     branches: [trunk]

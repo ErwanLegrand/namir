@@ -147,6 +147,22 @@ not clippy or the test suite (see the hook's own comment: slow checks on the com
 `--no-verify` tempting, which is worse than clippy catching it one step later in CI). Don't bypass
 it with `--no-verify`; fix what it flags.
 
+**Retargeting a stacked PR to `trunk` starts no CI** (issue #175). `pull_request` in both
+workflows declares no `types:`, so it gets GitHub's defaults — `opened`, `synchronize`,
+`reopened` — and a base change fires `edited`. The PR then sits with *zero* check runs. Since
+issue #29 required status checks on `trunk`, that is not a mergeable PR but a stalled one: each
+required check reads "Expected — waiting for status to be reported" and blocks the merge button,
+so the failure mode is a stall with a non-obvious cause. With ruleset bypass, or in any period
+where those required checks are not configured, you get the worse version — a PR that looks clean
+because nothing ever ran. After retargeting, push any commit (or `--force-with-lease` after a
+rebase) to produce a `synchronize`, then confirm the PR has a *nonzero* number of check runs: at a
+terminal, `gh api repos/ErwanLegrand/namir/commits/<head-sha>/check-runs --jq .total_count` (any
+count > 0; it was 26 on 2026-09-07 and moves with the job list, so don't treat that as a target);
+with no `gh` CLI — an agent on the web has none — the PR's Checks tab
+or any GitHub MCP tool that reads check runs for the head SHA answers the same question.
+Adding `edited` to the trigger is *not* the fix as things stand — see ci.yml's comment above the
+trigger for why a skipped job satisfies a required check and would make this worse.
+
 ## Workspace layering (D-5.1) — a hard, mechanically-enforced dependency graph
 
 `cargo run -p xtask -- layering` checks every crate's dependency edges against this table and
