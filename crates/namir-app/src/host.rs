@@ -2918,6 +2918,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The mirror of the test above, and the half of the same fix that needs no channel selected
+    /// at all: a device whose *smallest* channel config is the more buffer-restrictive one
+    /// (`{2ch: 512..1024, 8ch: 64..1024}`), on the **output** direction, where `settle` always
+    /// asks for a minimum of 2 and therefore always lands on the 2-channel config.
+    ///
+    /// Flattened, `accepts_buffer_size` accepted a remembered 64 because the 8-channel config
+    /// allows it, and the 2-channel config was then opened with it — a pre-existing looseness on
+    /// the default path, with no FR-IO-090 selection involved, that the same narrowing closes.
+    #[test]
+    fn an_output_config_narrower_than_its_siblings_keeps_its_own_buffer_limits() {
+        let dir = temp_dir("output_channel_buffer_coupling");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let range = |channels, min, max| crate::audio_io::SupportedConfigRange {
+            channels,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: crate::audio_io::BufferSizeRange::Range { min, max },
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_output_configs(vec![range(2, 512, 1024), range(8, 64, 1024)]),
+        );
+        let settings = AppSettings {
+            buffer_size_frames: Some(64),
+            ..AppSettings::default()
+        };
+        let (mut host, _engine) = host_with_reopen(&dir, Arc::clone(&backend), settings);
+
+        // No channel selected: any reopen re-runs the negotiation on the default path.
+        host.dispatch(UiIntent::SelectSampleRate { rate: 48_000 });
+        let (panel, opened_index) = await_reopened_stream(&mut host);
+
+        assert_eq!(opened_index, 0, "no channel was selected");
+        assert_ne!(
+            host.current_buffer_size, 64,
+            "the 2-channel output config refuses 64 frames"
+        );
+        assert!(
+            !panel.supported_buffer_sizes.iter().any(|&f| f < 512),
+            "the selector offers sizes the output config refuses: {:?}",
+            panel.supported_buffer_sizes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Spins until the reopen `dispatch` started has opened a stream, then hands back the panel
     /// and the stream it opened. The reopen is asynchronous (worker rebuild, then
     /// `AudioStreamReady`), so every assertion about it has to wait for it.

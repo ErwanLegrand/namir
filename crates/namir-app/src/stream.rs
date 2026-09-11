@@ -690,6 +690,9 @@ pub(crate) struct FakeBackend {
     /// What this backend reports when asked for **shared** input configs, or `None` for the
     /// one-channel default. See [`FakeBackend::reporting_input_configs`].
     shared_input_configs: Option<Vec<SupportedConfigRange>>,
+    /// [`FakeBackend::shared_input_configs`]' playback counterpart, or `None` for the
+    /// two-channel default. See [`FakeBackend::reporting_output_configs`].
+    shared_output_configs: Option<Vec<SupportedConfigRange>>,
     /// The [`StreamParams`] the capture direction was last opened with — the observable for how
     /// *wide* a stream FR-IO-090's channel choice asked for, which the share-mode log does not
     /// carry.
@@ -711,6 +714,7 @@ impl FakeBackend {
             input_stream,
             exclusive_input_configs: None,
             shared_input_configs: None,
+            shared_output_configs: None,
             exclusive_output_configs: None,
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream,
@@ -768,6 +772,13 @@ impl FakeBackend {
     /// FR-IO-090's whole subject.
     pub(crate) fn reporting_input_configs(mut self, ranges: Vec<SupportedConfigRange>) -> Self {
         self.shared_input_configs = Some(ranges).filter(|r: &Vec<_>| !r.is_empty());
+        self
+    }
+
+    /// [`FakeBackend::reporting_input_configs`]' playback counterpart — how a test says "the
+    /// output device's channel configs carry different buffer limits from each other".
+    pub(crate) fn reporting_output_configs(mut self, ranges: Vec<SupportedConfigRange>) -> Self {
+        self.shared_output_configs = Some(ranges).filter(|r: &Vec<_>| !r.is_empty());
         self
     }
 
@@ -989,12 +1000,14 @@ impl AudioBackend for FakeBackend {
         }
         Ok(crate::audio_io::EnumeratedConfigs {
             share_mode: ShareMode::Shared,
-            ranges: vec![SupportedConfigRange {
-                channels: 2,
-                min_sample_rate_hz: 48_000,
-                max_sample_rate_hz: 48_000,
-                buffer_size: BufferSizeRange::Unknown,
-            }],
+            ranges: self.shared_output_configs.clone().unwrap_or_else(|| {
+                vec![SupportedConfigRange {
+                    channels: 2,
+                    min_sample_rate_hz: 48_000,
+                    max_sample_rate_hz: 48_000,
+                    buffer_size: BufferSizeRange::Unknown,
+                }]
+            }),
         })
     }
     fn supports_exclusive(
