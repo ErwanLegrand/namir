@@ -145,7 +145,7 @@ M9 — **ten** once the same pass moves NFR-PERF-030 to M13 (§20's dated scope 
 standing gates above are unchanged; what changes is which half of this one check blocks a merge,
 and on which date. From M9a, deleting a coverage annotation from a currently-covered Must stops
 being something CI tolerates — today it is, because the tool returns a single exit value for both
-halves (`xtask/src/main.rs:304`) and CI's one invocation of it carries `continue-on-error: true`
+halves (`xtask/src/main.rs:343`) and CI's one invocation of it carries `continue-on-error: true`
 (`.github/workflows/ci.yml:108-120`), which suppresses them together.
 
 *Third consequence (added 2026-09-11, documentation drift sweep)* — **the flip date in the note
@@ -162,7 +162,7 @@ close-out subsection carries that reasoning). So every "**M13's close-out**" —
 own answer to why M13 did not flip it — is superseded by this note. The tool itself is the
 authority and already prints it: `cargo run -p xtask -- traceability` emits "becomes required at
 M14's close-out (D-18.5) -- M9b's own close-out moved it there, having closed out without reaching
-it" (`xtask/src/traceability.rs:1352-1355`). `.github/workflows/ci.yml`'s step names the same
+it" (`xtask/src/traceability.rs:1353-1356`). `.github/workflows/ci.yml`'s step names the same
 moment as "M14 Phase 6" — §21's phases run 0–6 and Phase 6 is its last — and adds that the flip
 moves with the evidence rather than with a milestone boundary, which is the same claim read
 forwards: the close-out is where the evidence is expected to be in, not a date the flip owes
@@ -1441,7 +1441,7 @@ simply untagged, which is precisely the category the original sentence claimed t
   including `recalling_both_a_model_and_an_ir_never_offers_them_simultaneously`, which is exactly
   the property the requirement states.
 - **FR-LIB-020** — covered by `cancelling_a_large_scan_stops_it_before_completion`
-  (`crates/namir-worker/src/library.rs:437`).
+  (`crates/namir-worker/src/library.rs:438`).
 
 The remaining thirteen have **not** been individually re-checked this session, so the honest
 statement is "at least three", not "exactly three". The full re-audit is M9's first deliverable and
@@ -1908,8 +1908,8 @@ form, so the ledger and the source agree.
   (`xtask/src/layering.rs:40-44`) argues compile-time separation; "each is installed alone into a
   clean environment and exercised" is executed by nothing.
 - **5.1 CHAIN — 3 / 5 / 0.** *Done:* FR-CHAIN-030 (`crates/namir-engine/src/chain.rs:562-607`, plus
-  the through-the-ring form at `crates/namir-engine/src/engine.rs:895-933`); FR-CHAIN-040
-  (`crates/namir-engine/src/stages/nam.rs:946-958`, `crates/namir-engine/src/stages/ir.rs:916-928` —
+  the through-the-ring form at `crates/namir-engine/src/engine.rs:896-934`); FR-CHAIN-040
+  (`crates/namir-engine/src/stages/nam.rs:947-959`, `crates/namir-engine/src/stages/ir.rs:916-928` —
   both enumerated stages, real nonzero signal); FR-CHAIN-090
   (`crates/namir-engine/src/chain.rs:650-678`, default pinned at
   `crates/namir-params/src/global.rs:66-72`). *Partial:* FR-CHAIN-010 — order and non-reorderability
@@ -1922,7 +1922,7 @@ form, so the ledger and the source agree.
   but no IR is loaded under `MonoToStereo`. FR-CHAIN-080 — the silence-and-fault behaviour is
   asserted (`crates/namir-engine/src/chain.rs:615-648`) but no NaN is injected into any product
   stage's state.
-- **5.2 IN — 1 / 2 / 0.** *Done:* FR-IN-010 (`crates/namir-ui/src/controls.rs:250-256` pins range and
+- **5.2 IN — 1 / 2 / 0.** *Done:* FR-IN-010 (`crates/namir-ui/src/controls.rs:251-257` pins range and
   default; `crates/namir-engine/src/stages/trim.rs:264-288` applies the gain). *Partial:* FR-IN-020 —
   the `U` measurement half passes (`crates/namir-dsp/src/meter.rs:165-191`); the `M` display half has
   no document and no UI field (`namir_ui::MeterReading` carries no peak-hold). FR-IN-030 — the latch
@@ -1940,33 +1940,33 @@ form, so the ledger and the source agree.
   `crates/namir-nam/tests/lstm_fixtures.rs:33-57`, identification by content at
   `crates/namir-library/src/probe.rs:11-13`); FR-NAM-070, the `Verify: I` method run literally
   (`crates/namir-engine/src/engine.rs:513-571`); FR-NAM-130
-  (`crates/namir-engine/src/stages/nam.rs:946-958`). *Partial:* FR-NAM-020 — both architectures load
+  (`crates/namir-engine/src/stages/nam.rs:947-959`). *Partial:* FR-NAM-020 — both architectures load
   and dispatch (`crates/namir-nam/src/model.rs:226-237`), but the `Verify: G` comparison is executed
   for neither; the tagged artifacts parse metadata only. FR-NAM-030 — parity is against
   `namir-fixtures`' own port (`crates/namir-fixtures/src/nam/mod.rs:95`, `:142`), not the reference
   implementation, and the probe is ~83 ms rather than the specified 10 s. FR-NAM-040 — the catalogue
   and rejection paths exist (`crates/namir-nam/src/error_codes.rs:14-112`,
-  `crates/namir-nam/src/file.rs:347-350`), but "naming the file" holds in `namir-app` only
-  (`crates/namir-app/src/host.rs:263-267` vs `crates/namir-clap/src/worker_jobs.rs:77-79`) and the
+  `crates/namir-nam/src/file.rs:348-351`), but "naming the file" holds in `namir-app` only
+  (`crates/namir-app/src/host.rs:264-268` vs `crates/namir-clap/src/worker_jobs.rs:77-79`) and the
   corrupted-file corpus asserts non-panic, not a specific reason. FR-NAM-050 — the resampling is
-  integrated (`crates/namir-engine/src/stages/nam.rs:245-418`); the cross-rate comparison the method
+  integrated (`crates/namir-engine/src/stages/nam.rs:245-419`); the cross-rate comparison the method
   specifies is computed nowhere. FR-NAM-060 — both resamplers are live
-  (`crates/namir-engine/src/stages/nam.rs:278-418`, `crates/namir-ir/src/convolver.rs:845-914`) and
+  (`crates/namir-engine/src/stages/nam.rs:278-419`, `crates/namir-ir/src/convolver.rs:845-914`) and
   their own comments record the stopband/ripple figures as unmeasured. FR-NAM-080 — the read half is
   asserted (`crates/namir-nam/src/probe.rs:141-160`); "display" spans the name field only
   (`crates/namir-ui/src/host.rs:111`). FR-NAM-110 — both tagged tests read an accessor whose body is
-  the literal `0` (`crates/namir-nam/src/wavenet.rs:1260-1266`,
+  the literal `0` (`crates/namir-nam/src/wavenet.rs:1261-1267`,
   `crates/namir-nam/src/lstm.rs:612-618`); no impulse is cross-correlated. FR-NAM-140 — the
   architecture clause is built and tested on the byte path
   (`crates/namir-nam/src/error_codes.rs:28-32`, `crates/namir-nam/src/model.rs:241-246`); the
   configuration clause is false, an A2 file failing as `nam.load.malformed_json`
-  (`crates/namir-nam/src/file.rs:153-161`). *Not started:* FR-NAM-090 (no loudness measurement
+  (`crates/namir-nam/src/file.rs:154-162`). *Not started:* FR-NAM-090 (no loudness measurement
   anywhere; `crates/namir-nam/src/lib.rs:54` records why) and FR-NAM-150 (no A2 support and no
   `namir-fixtures` A2 generator) — both M10's.
 - **5.5 IR — 4 / 3 / 0.** *Done:* FR-IR-010 (`crates/namir-ir/src/wav.rs:298-429`, the full
   depth × channel × rate matrix, boundaries at `:469-496`); FR-IR-040
   (`crates/namir-ir/src/convolver.rs:1224-1254` against the direct reference at `:815-826`, and
-  `crates/namir-engine/src/stages/ir.rs:931-975`); FR-IR-050 (choice recorded as D-9.7; acceptance
+  `crates/namir-engine/src/stages/ir.rs:931-976`); FR-IR-050 (choice recorded as D-9.7; acceptance
   and truncation at `crates/namir-ir/src/convolver.rs:1502-1540`, report reaching the user via
   `crates/namir-worker/src/cache.rs:171-186`); FR-IR-100
   (`crates/namir-engine/src/stages/ir.rs:916-928`). *Partial:* FR-IR-030 — resample-on-load works
@@ -1985,25 +1985,25 @@ form, so the ledger and the source agree.
 - **5.7 OUT — 0 / 2 / 0.** *Partial:* FR-OUT-010 — the requirement states **three** literal
   parameters (range −60 dB to +12 dB, default 0 dB, exact silence at or below −60 dB) and **only the
   silence clause is asserted**: exact silence at and below the floor holds
-  (`crates/namir-engine/src/stages/out.rs:292-334`), gain is applied (`:255-286`), and the floor is
+  (`crates/namir-engine/src/stages/out.rs:293-335`), gain is applied (`:255-286`), and the floor is
   pinned to the declared range minimum (`crates/namir-params/src/stages/out.rs:32-38`). The **+12 dB
   maximum** and the **0 dB default** are declared in `GAIN_DB`
   (`crates/namir-params/src/stages/out.rs:14-18`) and asserted nowhere — no test reads either back,
   and `params.lock` records no bounds at all, its columns being key, id, kind and live/tombstoned
   state — so an edit to either passes every gate in this workspace. Named evidence for the cell is
   the `// trace-partial:` pair at `crates/namir-engine/src/stages/out.rs:287-291`. FR-OUT-020 — the clip latch is asserted
-  (`crates/namir-engine/src/stages/out.rs:396-430`); of the four characteristics imported from
+  (`crates/namir-engine/src/stages/out.rs:397-431`); of the four characteristics imported from
   FR-IN-020/-030, the published `peak_db`, `average_db` and `peak_hold_db` telemetry is read by no
   test and the indicator has no user reset path.
 - **5.8 PARAM — 0 / 5 / 0.** *Partial:* FR-PARAM-010 and FR-PARAM-050 — both tagged tests assert
   `format_value` against a fabricated const declared inside `mod tests`
-  (`crates/namir-params/src/descriptor.rs:201`, `:214`); no shipped parameter's name, unit, range,
+  (`crates/namir-params/src/descriptor.rs:202`, `:214`); no shipped parameter's name, unit, range,
   default or steppedness is asserted, and the only REGISTRY-enumerating test
   (`crates/namir-params/src/lib.rs:105-114`) checks uniqueness alone. FR-PARAM-020 — `check_manifest`,
   which detects `TOMBSTONE_REUSED`/`ID_CHANGED`, has no caller outside its own test module
   (`crates/namir-params/src/manifest.rs:143`, `:220`), so the reused-identifier half is outside the
   gate CI runs (`.github/workflows/ci.yml:110-111`). FR-PARAM-030 — of the three sources, only two
-  engine-internal paths are compared (`crates/namir-engine/src/engine.rs:855`); no artifact drives
+  engine-internal paths are compared (`crates/namir-engine/src/engine.rs:856`); no artifact drives
   `namir_state::State` or `UiIntent::SetParam` into the comparison. FR-PARAM-040 — the gain limb is
   genuinely bounded (`crates/namir-dsp/src/gain_ramp.rs:103-134`); "measure the artefact's spectral
   energy" is executed nowhere and frequency-affecting parameters interpolate outside `GainRamp`.
@@ -2029,11 +2029,11 @@ form, so the ledger and the source agree.
   manually" exists nowhere in the product.
 - **5.10 LIB — 1 / 4 / 0.** *Done:* FR-LIB-040, both limbs the requirement names
   (`crates/namir-library/src/search.rs:157-163`, `:165-171`), wired to the real UI path
-  (`crates/namir-ui/src/library_view.rs:120-127`). *Partial:* FR-LIB-010 — recursive scan is covered
+  (`crates/namir-ui/src/library_view.rs:121-128`). *Partial:* FR-LIB-010 — recursive scan is covered
   (`crates/namir-library/src/scan.rs:356`, `:379`) but "nominate one or more directories as library
   roots" has no mechanism: both shells hard-code the single root through
   `LibraryService::open_at`/`open_default`. FR-LIB-020 — three of four clauses meet the 10 000-file
-  scale (`crates/namir-worker/src/library.rs:462`, `:533`, against
+  scale (`crates/namir-worker/src/library.rs:463`, `:533`, against
   `crates/namir-fixtures/src/library.rs:104`); the off-the-audio-thread clause is exercised against a
   6-file corpus only. FR-LIB-030 — the bench prints CONCLUSIVE/INCONCLUSIVE and asserts no time bound
   (`crates/namir-library/benches/library_scan.rs:154`), and its persistence arms reuse an in-memory
@@ -2043,7 +2043,7 @@ form, so the ledger and the source agree.
   `crates/namir-fixtures/src/library.rs:590` was generated for exactly this trio and has no consumer.
 - **5.11 IO — 2 / 6 / 0** (FR-IO-020's cell was moved at M11, 2026-08-11; every other cell in this
   bullet is M9a's and untouched)**.** *Done:* FR-IO-080 — all four enumerated members round-tripped
-  (`crates/namir-app/src/settings.rs:167`) plus the graceful-degrade clause
+  (`crates/namir-app/src/settings.rs:168`) plus the graceful-degrade clause
   (`crates/namir-app/src/device_state.rs:226`), with an executed PASS across all six steps
   (`docs/manual-tests/fr-io-080-settings-persistence.md`). FR-IO-020 — `Verify: M`, so under D-18.6
   the manual document **is** the named artifact rather than a stand-in for one, and
@@ -2060,7 +2060,7 @@ form, so the ledger and the source agree.
   neither a clause of FR-IO-020's text:** the `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` retry path has
   never executed anywhere, this endpoint's device period being a whole 144 frames at 48 kHz; and
   shared-mode `I24` is unreachable from this product, `namir-app` restricting shared mode to `F32`
-  (`crates/namir-app/src/audio_io.rs:453`), so the fork's container-justification fix rests there on
+  (`crates/namir-app/src/audio_io.rs:454`), so the fork's container-justification fix rests there on
   the format contract rather than on measurement. At M9a this cell read a documented **FAIL** —
   exclusive mode unreachable through cpal 0.18.1 as pinned by D-13.1, and `exclusive_mode` read by
   nothing — and D-13.4's fork, built at M11 (§18's status), is what changed it. *Partial:* FR-IO-010
@@ -2080,12 +2080,12 @@ form, so the ledger and the source agree.
   apparatus, a virtual device that can be made to fail on demand, does not exist, and the tagged test
   opens no device (`crates/namir-app/src/device_state.rs:247`).
 - **5.12 CLAP — 2 / 9 / 0.** *Done:* FR-CLAP-010 and FR-CLAP-020 — the reference validator the
-  `Verify:` lines name, run as a blocking CI job (`.github/workflows/ci.yml:263-305`). This cell was
+  `Verify:` lines name, run as a blocking CI job (`.github/workflows/ci.yml:270-312`). This cell was
   first written on a local 32-of-32 run and **the gate's own first CI run falsified it within the
   hour** — `state-reproducibility-basic` crashed with `0xc0000005`. It reads Done again only because
   that crash was root-caused and fixed (see the close-out below); the evidence is now CI's own
   `44 tests run, 32 passed, 0 failed, 12 skipped`, plus
-  `crates/namir-clap/src/lib.rs:132`, `:143`. *Partial:* FR-CLAP-030 — one stereo port pair is
+  `crates/namir-clap/src/lib.rs:133`, `:143`. *Partial:* FR-CLAP-030 — one stereo port pair is
   declared (`crates/namir-clap/src/audio_ports_ext.rs:30-48`); two of FR-CHAIN-060's three
   configurations are undeclared, and "across at least two host implementations" is unexecuted
   (`docs/manual-tests/fr-clap-030-audio-ports-negotiation.md`). FR-CLAP-040 — the notify path is
@@ -2098,32 +2098,32 @@ form, so the ledger and the source agree.
   varying-block run against a fixed-block reference at chain or plugin level. FR-CLAP-080 —
   `activate` takes the host's rate (`crates/namir-clap/src/audio.rs:119`) and neither the 44.1-192 kHz
   range nor a mid-session change is exercised. FR-CLAP-090 — sharing is asserted
-  (`crates/namir-clap/src/shared.rs:343`); the `B` half of "I plus B" is measured by nothing, there
+  (`crates/namir-clap/src/shared.rs:344`); the `B` half of "I plus B" is measured by nothing, there
   being no memory benchmark in the workspace. FR-CLAP-100 — the extension is implemented
   (`crates/namir-clap/src/gui.rs`) and invoked by no in-process test; the embedding half of its
   document is **Not executed**; `is_api_supported` is `WIN32`-only with no `cfg` (`:91-105`).
   FR-CLAP-130 — neither half of "S plus I" reaches this crate: `AllocDisabler` is installed in five
   crates, none of which owns a real audio callback, and no static check for blocking exists.
 - **5.13 UI — 1 / 6 / 0.** *Done:* FR-UI-010 — one widget type
-  (`crates/namir-ui/src/app.rs:133`) rendered by both shells through one `render` (`:32`), with the
+  (`crates/namir-ui/src/app.rs:134`) rendered by both shells through one `render` (`:32`), with the
   manifest fact that neither shell depends on `egui` directly, corroborated by an executed run
   (`docs/manual-tests/fr-ui-010-standalone-window-renders.md` steps 1-2 PASS, 90 real frames).
   *Partial:* FR-UI-020 — the single screen exists and renders
-  (`crates/namir-ui/src/app.rs:32-93`) but there is **no** `docs/manual-tests/fr-ui-020-*.md`, and
+  (`crates/namir-ui/src/app.rs:33-94`) but there is **no** `docs/manual-tests/fr-ui-020-*.md`, and
   the one executed document records its visual-confirmation step as NOT EXECUTED. FR-UI-030 — **NOT
   EXECUTED** (`docs/manual-tests/fr-ui-030-accessibility-script.md`), and the document names a second
   gap: `egui-baseview` 0.6.0 wires no accesskit adapter, so accessible names exist at the data level
   only. FR-UI-040 and FR-UI-050 — both documents **NOT EXECUTED**; the automated halves
-  (`crates/namir-ui/src/format.rs:49`, `:93`; `crates/namir-ui/src/controls.rs:210`) are
+  (`crates/namir-ui/src/format.rs:49`, `:93`; `crates/namir-ui/src/controls.rs:211`) are
   supplementary under D-18.6 because both `Verify:` lines elect `M`, and FR-UI-050's fine-adjust
   gesture has no automated coverage of any kind. FR-UI-060 — the timed render
-  (`crates/namir-ui/src/library_view.rs:286`) omits the requirement's own condition, a scan in
+  (`crates/namir-ui/src/library_view.rs:287`) omits the requirement's own condition, a scan in
   progress, and is a `#[test]` rather than the `Verify: B` benchmark with a certified figure.
   FR-UI-070 — notices render non-modally (`crates/namir-ui/src/notices.rs`) but there is no
   `docs/manual-tests/fr-ui-070-*.md`, and "M against the error catalogue of FR-ERR-020" has been run
   against no catalogue entry.
 - **5.14 ERR — 1 / 4 / 1.** *Done:* FR-ERR-070 — the permanent network-free CI target the `S` method
-  names (`.github/workflows/ci.yml:183-191`, `deny.toml:90`); the "I per feature" half quantifies
+  names (`.github/workflows/ci.yml:183-198`, `deny.toml:90`); the "I per feature" half quantifies
   over post-1.0 network features, a set that is empty. *Partial:* FR-ERR-020 — the catalogue is
   enumerable and unique (`crates/namir-core/src/error.rs:77-97`); "every error path maps to an entry"
   has no artifact, and `crates/namir-ui/examples/manual_window_smoke.rs:27` constructs an
@@ -2135,7 +2135,7 @@ form, so the ledger and the source agree.
   real permanent gate (`deny.toml:63`) that its own comment calls non-exhaustive, and nothing detects
   first-party `std::net` use. *Not started:* FR-ERR-010 — nothing writes a log record anywhere;
   `crates/namir-platform/src/paths.rs:68` computes a path and
-  `crates/namir-clap/src/shared.rs:292-293` records the sink as a deliberate no-op. D-16.5 decided
+  `crates/namir-clap/src/shared.rs:293-294` records the sink as a deliberate no-op. D-16.5 decided
   the six parameters; none of it is implemented.
 - **5.15 PKG — 0 / 0 / 4.** *Not started:* FR-PKG-010, -020, -030 and -040, all M13's.
   `.github/workflows/` holds `ci.yml` and `fuzz.yml` only — there is no release workflow and nothing
@@ -2145,14 +2145,14 @@ form, so the ledger and the source agree.
   `crates/namir-platform/src/clap_paths.rs:38-99` resolves D-13.3's install-path table but is a
   runtime resolver consumed by no installer, and is deliberately not counted as scaffolding.
 - **6.1 RT — 0 / 4 / 0.** *Partial:* NFR-RT-010 — the three-axis stress test passes
-  (`crates/namir-worker/tests/rt_stress.rs:186-193`) but the allocation harness reaches neither crate
+  (`crates/namir-worker/tests/rt_stress.rs:187-194`) but the allocation harness reaches neither crate
   that owns a real audio callback; `crates/namir-app/src/stream.rs:262-266` builds a `Vec` inside the
   cpal callback, which is the class of thing the missing harness would catch. NFR-RT-020 — the sole
   artifact (`crates/namir-engine/src/ring.rs:174-192`) asserts non-allocation, which is not
   wait-freedom, and spans one of the audio thread's communication paths;
   `crates/namir-app/src/bridge.rs:22-32`, `crates/namir-app/src/xrun.rs:21` and
   `crates/namir-clap/src/param_mirror.rs:46` carry none. NFR-RT-030 — the certified figure is real
-  (`crates/namir-engine/benches/denormal_guard.rs:411-415`; §2 machine, five repetitions) but
+  (`crates/namir-engine/benches/denormal_guard.rs:412-416`; §2 machine, five repetitions) but
   measures the assembled chain's aggregate, not "each stage", and covers one of three platforms.
   NFR-RT-040 — `crates/namir-engine/benches/tail_structure.rs:211-217` varies neither audio content
   nor parameter values inside the measured loop, so the invariance the requirement states is
@@ -2160,7 +2160,7 @@ form, so the ledger and the source agree.
 - **6.2 PERF — 0 / 6 / 0.** *Partial:* NFR-PERF-010 — a certified figure exists (16.45-17.08% against
   25%) but the threshold is printed, never asserted
   (`crates/namir-engine/benches/six_stage_chain.rs:242-246`), and the CI job is titled informational
-  by design (`.github/workflows/ci.yml:597-613`), so "as a CI regression gate" is unmet on its face.
+  by design (`.github/workflows/ci.yml:604-620`), so "as a CI regression gate" is unmet on its face.
   NFR-PERF-020 — the tagged test asserts 0 with nothing loaded
   (`crates/namir-engine/src/stages/mod.rs:116-129`); no test compares actual group delay against a
   nonzero `latency_samples()`. NFR-PERF-030 — the behaviour exists and ships: `namir-app` opens its
@@ -2172,7 +2172,7 @@ form, so the ledger and the source agree.
   under `crates/`, `xtask/` or `.github/`, and **the 3 s bound has never been measured** on the §2
   machine or anywhere else. NFR-PERF-040 — same shape and the same named gap: the plugin demonstrably
   instantiates, the reference validator having constructed it 32 times out of 32 in a blocking CI job
-  (`.github/workflows/ci.yml:264-307`, `crates/namir-clap/src/lib.rs:132`), which is what carries
+  (`.github/workflows/ci.yml:271-314`, `crates/namir-clap/src/lib.rs:133`), which is what carries
   FR-CLAP-010/-020's own Done cells above; no `Verify: B` harness exists and **the 200 ms bound has
   never been measured**, in-process or in a real host — §15 item 14 is the open question of which of
   those two counts as "in a host" for a certified D-2.4 figure. NFR-PERF-050 — certified at M9a and
@@ -2183,8 +2183,8 @@ form, so the ledger and the source agree.
   exists (the only recorded numbers are M5's sandbox run) and nothing re-runs it when the code
   changes.
 - **6.3 PORT — 3 / 2 / 0.** *Done:* NFR-PORT-010 (`Cargo.toml:35` read at run time by the MSRV job,
-  `.github/workflows/ci.yml:314-344`, green on trunk 2026-08-08); NFR-PORT-030 (both mobile
-  cross-builds executed green, `.github/workflows/ci.yml:478-545`, covering exactly D-5.1's ten
+  `.github/workflows/ci.yml:321-351`, green on trunk 2026-08-08); NFR-PORT-030 (both mobile
+  cross-builds executed green, `.github/workflows/ci.yml:485-552`, covering exactly D-5.1's ten
   mobile crates — which discharges M5's "claimed by inspection" caveat); NFR-PORT-050 (all four named
   members asserted at `crates/namir-state/src/document.rs:318-361` and
   `crates/namir-state/src/reference.rs:342-348`, with the corpus at
@@ -2192,14 +2192,14 @@ form, so the ledger and the source agree.
   matches three literal substrings (`xtask/src/layering.rs:166-172`), so `cfg(not(windows))`,
   `cfg!(...)`, `cfg_attr` and `target_arch`/`target_family` forms pass unseen, and it scans
   `crates/*/src` only. NFR-PORT-040 — the no-C++-toolchain job is real and green
-  (`.github/workflows/ci.yml:354-428`) but spans one of the three tier-1/tier-2 platforms
+  (`.github/workflows/ci.yml:361-435`) but spans one of the three tier-1/tier-2 platforms
   (`ubuntu-latest`); Windows and macOS are never built with a C++ compiler absent.
 - **6.4 QUAL — 2 / 4 / 0.** *Done:* NFR-QUAL-030 — under D-9.11 the satisfied form is a stated,
   numerical, reproducible reference, and all six shipped stages have one
   (`crates/namir-nam/tests/fixtures.rs:128`, `crates/namir-nam/tests/lstm_fixtures.rs:120`,
   `crates/namir-ir/src/convolver.rs:1224`, `crates/namir-dsp/src/biquad.rs:369-433`,
   `crates/namir-dsp/src/gate.rs:232-353`, `crates/namir-engine/src/stages/trim.rs:266-345`,
-  `crates/namir-engine/src/stages/out.rs:255-334`); NFR-QUAL-060 (`.github/workflows/ci.yml:67-79`,
+  `crates/namir-engine/src/stages/out.rs:256-335`); NFR-QUAL-060 (`.github/workflows/ci.yml:67-79`,
   lint set at `Cargo.toml:36-46`, on all three platforms every push). *Partial:* NFR-QUAL-010 — CI's
   required step passes `--allow-uncovered` (`.github/workflows/ci.yml:156`) and the plain form is
   `continue-on-error` (`:159-160`), so "fails on any uncovered Must" is unexecuted and 20 uncovered
@@ -2227,10 +2227,10 @@ form, so the ledger and the source agree.
   fuzzed to depth; the IR kind is header-only
   (`crates/namir-ir/fuzz/fuzz_targets/probe_wav.rs:3-11`, `:18`), and the unreached code is exactly
   where this requirement's own failure modes live. NFR-SEC-020 — of the four kinds the limits doc
-  enumerates, the `.nam`/IR disk-load ceiling has no artifact: `crates/namir-worker/src/lib.rs:129`
+  enumerates, the `.nam`/IR disk-load ceiling has no artifact: `crates/namir-worker/src/lib.rs:130`
   refuses an over-large file and no test drives that branch
   (`crates/namir-state/src/document.rs:222-227`). NFR-SEC-030 — the build-producibility clause is
-  fully covered (`deny.toml:90`, `.github/workflows/ci.yml:183-191`); the no-outbound-connection
+  fully covered (`deny.toml:90`, `.github/workflows/ci.yml:183-198`); the no-outbound-connection
   clause is derivative of FR-ERR-060, which is itself Partial for a non-exhaustive deny list.
 - **6.7 BUILD — 0 / 2 / 0.** *Partial:* NFR-BUILD-010 — the property is true in fact (`Cargo.lock`
   committed, no `git`/`path` third-party dependency) but the tagged anchor is a manifest table that
@@ -2709,7 +2709,7 @@ that happens to depend on them first.
    route to a plain tag, and it was declined because M9b is scoped to verification infrastructure
    and this is a feature touching the audio path.
 10. ~~**Whether `xtask traceability`'s scanned-file list gains `.github/workflows/release.yml` when M13
-    creates it.** Raised 2026-08-08 by M9's P0 decision pass. The list at `xtask/src/main.rs:205-216`
+    creates it.** Raised 2026-08-08 by M9's P0 decision pass. The list at `xtask/src/main.rs:244-255`
     is hard-coded to `ci.yml`, `fuzz.yml`, `Cargo.toml` and `deny.toml` — nothing derives it, so a
     new workflow is invisible to the check until someone edits that array. FR-PKG-010's `*Verify:*`
     line elects the release workflow as its artifact, which FRS §10's M9 adequacy rule makes
@@ -2721,7 +2721,7 @@ that happens to depend on them first.
     **Resolved 2026-08-11, at M13's start: the second answer — an in-repo assertion, and the scanned
     list is left alone.** FRS §10 admits "an annotated test **or** `xtask` subcommand", and a test
     is the cheaper of the two here, so `release.yml` gains no `# trace:` tag and the hard-coded
-    arrays (now `xtask/src/main.rs:301-312`, not `:205-216` — the citation had already drifted) are
+    arrays (now `xtask/src/main.rs:340-351`, not `:205-216` — the citation had already drifted) are
     unchanged. Three things decided this rather than the elected-configuration route, which was
     otherwise admissible. **A tag in a workflow asserts nothing a reader can check**, which is this
     item's own stated cost, and FR-PKG-010 has four separable clauses — tag-triggered, from a tagged
@@ -2744,7 +2744,7 @@ that happens to depend on them first.
     lands** rather than after — M9a is the phase that adds the job.~~
     **Resolved at M9a, 2026-08-08: pinned by commit** — this item's first option, taken over the
     other two. The gate landed as `.github/workflows/ci.yml`'s new `clap-validator` job
-    (`ci.yml:253-296` as of this pass), which installs the tool with `cargo install --locked --git
+    (`ci.yml:260-303` as of this pass), which installs the tool with `cargo install --locked --git
     https://github.com/free-audio/clap-validator --rev b2f1d9b79b1d264a5747f46707d72b1aa40a02ef`
     (`:266-271`). **The record lives in that job's own `# ---- Supply-chain shape` comment**
     (`:191-222`), not in `02-architecture.md` §17 — deliberately, and on that register's own titled
@@ -2845,7 +2845,7 @@ that happens to depend on them first.
     set-quantification sweep. `build_report` credits a manual document to a `Verify: M` requirement
     if **either** the filename starts with the id's lowercase prefix **or** the file's text contains
     the id anywhere, taking the first match in directory order
-    (`xtask/src/traceability.rs:689-699`). Both arms admit a document that does not verify the
+    (`xtask/src/traceability.rs:690-700`). Both arms admit a document that does not verify the
     requirement it is credited to, and the second one is doing so today: **FR-UI-020 resolves to
     `docs/manual-tests/fr-clap-030-audio-ports-negotiation.md`**, a CLAP audio-port negotiation
     script that names FR-UI-020 once, in a parenthesis about watching a meter, and wins only by
@@ -2855,7 +2855,7 @@ that happens to depend on them first.
     arm has the complementary weakness: it reads no content at all, so a correctly-named document
     recording "not executed, no hardware available" credits its requirement in full and identically
     to one recording a clean pass. Neither is catchable downstream — D-23.1 refuses a
-    `trace-partial:` on a `Verify: M` Must (`xtask/src/traceability.rs:616-633`, and §16's
+    `trace-partial:` on a `Verify: M` Must (`xtask/src/traceability.rs:617-634`, and §16's
     2026-08-09 status), so for the thirteen there is no disposition between "covered" and
     "UNRESOLVED" at all. Three answers, and the cheapest is not obviously the right one: match on the
     document's own `**Requirement (literal):**` line, which makes the credit an assertion its author
@@ -2942,7 +2942,7 @@ that happens to depend on them first.
     **Resolved 2026-09-08, answered by construction: the panel shipped in PR #159 (merge `11cdf11`,
     2026-09-07), and issue #26 is closed.** Four new `UiIntent`s (`SelectInputDevice`,
     `SelectOutputDevice`, `SelectSampleRate`, `SelectBufferSize`) call `initiate_audio_reopen()` in
-    `crates/namir-app/src/host.rs:1422-1444`, reopening the audio stream in-session rather than only
+    `crates/namir-app/src/host.rs:1425-1447`, reopening the audio stream in-session rather than only
     across an application restart. `UiSnapshot` carries `audio_panel_open: bool` and
     `audio_panel: Option<AudioDevicePanelSnapshot>` (`crates/namir-ui/src/host.rs`). What it does
     and does not cover:
@@ -3064,7 +3064,7 @@ that happens to depend on them first.
     desktop-only windowing model (`docs/01-functional-requirements.md:964-968`). Its `*Verify:*`
     line elects one check for all five — "S — the engine and its supporting crates shall build for
     `aarch64-linux-android` and `aarch64-apple-ios` in CI" (`:971-972`) — and both jobs run green
-    (`.github/workflows/ci.yml:478-545`, plain-tagged at `:478`). **A cross-build proves none of the
+    (`.github/workflows/ci.yml:485-552`, plain-tagged at `:478`). **A cross-build proves none of the
     five.** A crate that assumes a mouse, blocks on a dialog or spawns a thread per scan job
     compiles for `aarch64-linux-android` exactly as well as one that does not. The verdict is Done
     because D-23.2 adjudicates against the requirement's **own stated method** and that method is
@@ -3307,7 +3307,7 @@ annotations under 3 below, the regenerated `docs/03-test-plan.md`, `ci.yml`'s tw
 `clack-host`'s manifest entry, and `docs/manual-tests/fr-lib-020-ui-responsiveness-during-scan.md`.
 Those cannot land piecemeal: the commit that makes the plan-diff half required is the same commit
 that changes three rows of the generated plan and invokes a flag `xtask` does not have today
-(`xtask/src/main.rs:304` returns the single `plan_up_to_date && coverage_clean`, and the argument
+(`xtask/src/main.rs:343` returns the single `plan_up_to_date && coverage_clean`, and the argument
 parser at `:328-329` recognises only `--write`), so any other split makes the new required check red
 on arrival.
 
@@ -3347,7 +3347,7 @@ must not be satisfiable by declining to look.
 
 *The gate is weaker than it reads, which matters more than the count.* `xtask traceability` returns
 a single value for two independent checks — `plan_up_to_date && coverage_clean`
-(`xtask/src/main.rs:304`), exiting 1 if either fails — and CI's one invocation of it carries
+(`xtask/src/main.rs:343`), exiting 1 if either fails — and CI's one invocation of it carries
 `continue-on-error: true` (`.github/workflows/ci.yml:108-120`), which suppresses both halves
 together. Stated plainly, because it is the strongest argument for this restatement: **deleting a
 coverage annotation from a currently-covered Must leaves CI green today.** The plan file would go
@@ -3370,7 +3370,7 @@ catch it — it runs `fmt` and `check` only, by design.
   Attribution is printed by the tool, never stored in the plan file, and **the exit status never
   depends on it** — an owner label explains a gap, it must never excuse one. Both the flag and the
   attribution are M9a's `xtask` change, not descriptions of today's tool: today it prints
-  `  - {id} (Verify: {verify})` and nothing else (`xtask/src/main.rs:299`), and it holds no
+  `  - {id} (Verify: {verify})` and nothing else (`xtask/src/main.rs:338`), and it holds no
   milestone data at all. Where the id→milestone mapping comes from is left to M9a's implementation
   and must not be a hard-coded exemption table, which is the allowlist rejected below under another
   name.
@@ -3496,7 +3496,7 @@ for visibility.
 *The adjacency clause must admit `fn main()`, and this is the highest-risk detail in the pass.*
 D-23.1 requires a tag to sit immediately above the artifact it claims. Every benchmark in this
 workspace is `harness = false` with a plain `fn main()`, and all four existing bench tags sit
-directly above one — `crates/namir-engine/benches/denormal_guard.rs:411` (NFR-RT-030),
+directly above one — `crates/namir-engine/benches/denormal_guard.rs:412` (NFR-RT-030),
 `six_stage_chain.rs:242` (NFR-PERF-010), `tail_structure.rs:211` (NFR-RT-040),
 `crates/namir-library/benches/library_scan.rs:154` (FR-LIB-030, NFR-PERF-060). For **all five** of
 the identifiers those tags carry, the bench tag is the only coverage there is — every source hit for
@@ -3558,7 +3558,7 @@ reading the source this session, not by re-reading an earlier summary:
   (`01-functional-requirements.md:635`); a named scale is a quantifier under D-23.1's first
   question, not decoration. Cancellation is measured at that scale (`library.rs:437-461`) and the
   new progress test will be. The **off-the-audio-thread** clause is not: its only evidence is
-  `rt_stress.rs` axis C (`crates/namir-worker/tests/rt_stress.rs:273-281`), whose corpus is **six
+  `rt_stress.rs` axis C (`crates/namir-worker/tests/rt_stress.rs:274-282`), whose corpus is **six
   files** (`write_small_scan_corpus`, `:138-149`) — and that is deliberate rather than an oversight
   to patch, since that function's own doc comment says it wants many fast scan cycles inside the run
   window rather than one slow one, so re-pointing it at the shared corpus would destroy the axis it
@@ -3579,7 +3579,7 @@ reading the source this session, not by re-reading an earlier summary:
   architecture clause is tested (`model.rs:241`, `wavenet.rs:1164`, `lstm.rs:543`). But every
   configuration-clause test builds a `NamFile` **struct** via `minimal_valid_file()` and mutates one
   field (`wavenet.rs:1172/1188/1196`), never touching the byte path — where `NamFile::parse` maps
-  every serde failure to `MALFORMED_JSON` (`file.rs:156-161`), FR-NAM-040's own code. So an A2 file
+  every serde failure to `MALFORMED_JSON` (`file.rs:157-162`), FR-NAM-040's own code. So an A2 file
   gets a false error, exactly as `02-architecture.md` §9.5 records, and **no test anywhere performs
   the paired comparison FR-NAM-140's own `Verify:` names**. A `trace-partial` records a debt; this is
   a requirement that is currently *false* for the case it was written for. It is attributed to M10
@@ -3912,7 +3912,7 @@ is the second finding this sweep did not discover so much as *find already recor
 
 **Fourteen findings cannot be a source annotation in any form, so §14's verdict columns are their
 only ledger — R-14 made concrete on its first real use.** D-23.1's `trace-partial` is refused
-outright for a `Verify: M` or `Verify: Process` Must (`xtask/src/traceability.rs:616-633`), and the
+outright for a `Verify: M` or `Verify: Process` Must (`xtask/src/traceability.rs:617-634`), and the
 tool's own doc comment states the scope exactly: false "for 14 of the FRS's 130 Musts (13 `M`, 1
 `Process`)" (`:590-591`). The refusal is right — a manual script is not a `.rs` file and review is
 not an artifact — but its consequence is that **for those fourteen requirements there is no
@@ -4007,7 +4007,7 @@ design constraints — no path-namespace assumption, no mouse, no unlimited thre
 on an audio-affecting path, no desktop-only windowing model — and a cross-build proves none of them.
 That is true, and the verdict **stays Done** anyway, because its `*Verify:*` line is explicit that
 the method is the two mobile cross-builds and both jobs run green
-(`.github/workflows/ci.yml:478-545`). D-23.2 adjudicates against the requirement's **own stated
+(`.github/workflows/ci.yml:485-552`). D-23.2 adjudicates against the requirement's **own stated
 method**, and that method is executed. If the method is too weak for the text — and the argument that
 it is has not been rebutted — the remedy is to amend the `*Verify:*` line, which is an FRS change
 needing its own decision, the same shape as FR-CHAIN-010's resolution earlier in M9a and not
@@ -4064,7 +4064,7 @@ tool for each of these; each is Partial on the requirement's own text. `FR-NAM-0
 whose two tagged artifacts compare nothing at all — they parse metadata; missed by the sweep that
 demoted FR-NAM-030 for the same structural reason). `FR-NAM-040` (a `.nam` rejection in the **plugin**
 does not name the file: `crates/namir-clap/src/worker_jobs.rs:77-79` pushes a bare code while
-`crates/namir-app/src/host.rs:263-267` prepends it, and nothing tests the clause in either product).
+`crates/namir-app/src/host.rs:264-268` prepends it, and nothing tests the clause in either product).
 `FR-LIB-070` (the requirement's own sentence enumerates three members — files that disappear, change
 or **are added** — and deletion and change each have a dedicated before/after test while addition has
 none; `crates/namir-fixtures/src/library.rs:590` was generated for exactly this trio and has no
@@ -4220,7 +4220,7 @@ doing.
 passed, including the newly-required traceability step.
 
 **Root cause — an ownership cycle that let `destroy` return while plugin threads were still running
-inside the DLL.** `SharedInner` owns its `ThreadPool` (`crates/namir-clap/src/shared.rs:80`), every
+inside the DLL.** `SharedInner` owns its `ThreadPool` (`crates/namir-clap/src/shared.rs:81`), every
 worker job captures an `Arc<SharedInner>` to reach the rest of it, and the pool's only join was
 `impl Drop for ThreadPool` — which cannot run until the last `Arc` dies, and that `Arc` belongs to
 whichever *job* finishes last, not to the host thread inside `clap_plugin.destroy`. So `destroy`
@@ -4257,7 +4257,7 @@ FR-CLAP-050's `// trace-partial:` annotation is unchanged: the fix does not exer
 
 **Blast radius beyond the reported test, recorded because it is wider than FR-CLAP-020.** The same
 cycle exists at every site cloning `Arc<SharedInner>` into a job — `audio.rs:178` (`activate`),
-`ui_host.rs:138`, and `shared.rs`'s `start_library_scan`, which holds the reference for a whole
+`ui_host.rs:139`, and `shared.rs`'s `start_library_scan`, which holds the reference for a whole
 library walk and so turns a millisecond window into a multi-second one. Closing a plugin during a
 rescan was the same crash with a far larger target. The fix is at the teardown seam, so it covers
 all of them. `namir-app` does not share the shape.
@@ -5094,7 +5094,7 @@ hand-edited JSON key is as the only mechanism a user has, not a sixth requiremen
   hardware. The reference machine's device period is 3 ms = 144 frames at 48 kHz, a whole number, so
   the error never arose; step 8 records that as the expected non-event it is, not as a pass.
 - **Shared-mode `I24` is unexercised and unreachable from this product.** `namir-app` restricts
-  shared mode to `F32` (`crates/namir-app/src/audio_io.rs:453`), so step 9 exercised the fork's
+  shared mode to `F32` (`crates/namir-app/src/audio_io.rs:454`), so step 9 exercised the fork's
   container-justification path returning a **zero** shift for a full container. The fix is correct
   for shared-mode `I24` by the format contract, not by measurement.
 - **Packed 24-bit (a 3-byte container) cannot be expressed by `cpal` at all** — `SampleFormat::I24`'s
@@ -5144,7 +5144,7 @@ requirement and by REUSE compliance respectively.
 - **`README.md` at the repository root** (NFR-DOC-040): the logo, what Namir is, the licence, and
   build/run/test instructions. It also serves NFR-BUILD-020's "documented and CI-exercised" clause,
   which today holds only on the CI-exercised half.
-- **The in-app brand mark.** `crates/namir-ui/src/app.rs:40` renders `ui.heading("Namir")` today —
+- **The in-app brand mark.** `crates/namir-ui/src/app.rs:41` renders `ui.heading("Namir")` today —
   a text heading standing in for a mark. One thing to know before starting: this UI is
   **egui-on-baseview, not eframe**, so the usual `eframe` window-icon recipe does not apply and the
   window icon has to be set through baseview's own window options instead.
@@ -6378,17 +6378,17 @@ accepted. Evidence, per D-23.2's rule that every moved cell names a file path:
 
 - **5.1 CHAIN +3** — FR-CHAIN-010, -050, -080 (`crates/namir-engine/src/chain_probes.rs:116`, `:368`, `:592`).
 - **5.3 GATE +2** — FR-GATE-010 (`crates/namir-engine/src/stages/gate.rs:467`), FR-GATE-030 (`crates/namir-dsp/src/gate.rs:360`).
-- **5.4 NAM +2** — FR-NAM-110 (`crates/namir-engine/src/stages/nam.rs:1641`), FR-NAM-150 (`crates/namir-nam/tests/golden_reference.rs:409`).
-- **5.5 IR +3** — FR-IR-030 (`crates/namir-ir/src/convolver.rs:1632`), FR-IR-060 (`crates/namir-engine/src/engine.rs:582`), FR-IR-070 (`crates/namir-engine/src/stages/ir.rs:1371`).
+- **5.4 NAM +2** — FR-NAM-110 (`crates/namir-engine/src/stages/nam.rs:1642`), FR-NAM-150 (`crates/namir-nam/tests/golden_reference.rs:409`).
+- **5.5 IR +3** — FR-IR-030 (`crates/namir-ir/src/convolver.rs:1632`), FR-IR-060 (`crates/namir-engine/src/engine.rs:582`), FR-IR-070 (`crates/namir-engine/src/stages/ir.rs:1373`).
 - **5.6 EQ +2** — FR-EQ-010 (`crates/namir-engine/src/stages/eq.rs:664`), FR-EQ-020 (`crates/namir-dsp/src/biquad.rs:461`).
-- **5.7 OUT +1** — FR-OUT-010 (`crates/namir-engine/src/stages/out.rs:286`).
+- **5.7 OUT +1** — FR-OUT-010 (`crates/namir-engine/src/stages/out.rs:287`).
 - **5.8 PARAM +3** — FR-PARAM-010, -050 (`crates/namir-params/tests/registry_descriptors.rs:248`, `:406`), FR-PARAM-020 (`xtask/src/params_lock.rs:33`).
 - **5.9 STATE +1** — FR-STATE-050 (`crates/namir-worker/tests/recall_continuity.rs:277`).
 - **5.10 LIB +1** — FR-LIB-030 (`crates/namir-library/benches/library_scan.rs:395`).
 - **5.13 UI +1** — FR-UI-060 (`crates/namir-ui/benches/library_frame.rs:184`).
 - **5.14 ERR +2** — FR-ERR-010 (`crates/namir-platform/tests/logging.rs:756`), FR-ERR-020 (`crates/namir-core/src/error.rs:233`).
 - **6.2 PERF +1** — NFR-PERF-020 (`crates/namir-engine/src/chain_probes.rs:693`).
-- **6.3 PORT +1** — NFR-PORT-020 (`xtask/src/main.rs:1254`).
+- **6.3 PORT +1** — NFR-PORT-020 (`xtask/src/main.rs:1294`).
 - **6.5 LIC +1** — NFR-LIC-050 (`crates/namir-fixtures/src/lib.rs:28`).
 - **6.6 SEC +1** — NFR-SEC-020 (`crates/namir-state/src/document.rs:227`).
 
@@ -6687,7 +6687,7 @@ This addendum supersedes in place the earlier M14 planning and scoping passages 
   input and output device lists, `current_output_device`, `supported_sample_rates`,
   `current_sample_rate`, `supported_buffer_sizes`, and `current_buffer_size`. New intents
   `UiIntent::SelectInputDevice`, `SelectOutputDevice`, `SelectSampleRate`, and `SelectBufferSize`.
-- `crates/namir-app/src/host.rs:1422-1444`: each of the four intents invokes
+- `crates/namir-app/src/host.rs:1425-1447`: each of the four intents invokes
   `initiate_audio_reopen()`, so device, rate, and buffer changes now occur dynamically in-session
   rather than only across a restart.
 
@@ -6737,7 +6737,7 @@ cell names its evidence, per D-23.2:
   D-18.6 (`docs/manual-tests/fr-ui-040-numeric-value-entry.md`, `**Result: PASS, 2026-09-08**`, six
   of six steps on the §2 reference machine). M9a's Partial rested on the document reading NOT
   EXECUTED; it now records a run. **Step 6 failed first**: Escape committed the typed value instead
-  of cancelling it, which is the defect `crates/namir-ui/src/controls.rs:70-104` fixes and
+  of cancelling it, which is the defect `crates/namir-ui/src/controls.rs:70-105` fixes and
   `crates/namir-ui/tests/ui_interaction_scripts.rs`'s Escape script pins as a red/green pair.
 - **FR-UI-050 — Partial → Done.** Same shape
   (`docs/manual-tests/fr-ui-050-reset-and-fine-adjust.md`, six of six). This one retires a

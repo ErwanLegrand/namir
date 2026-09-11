@@ -80,7 +80,7 @@ up after the fact.
 # README fence is run by `.github/workflows/ci.yml` and that every `xtask` subcommand that file
 # runs is documented in one — so the gate guarantees a subcommand appears *somewhere* in the
 # README, not that it appears in this block. `xtask bundle` is the standing example: CI runs it
-# (`.github/workflows/ci.yml:644`) in its own `bundle-and-inspect` job rather than the
+# (the `bundle-and-inspect` job in `.github/workflows/ci.yml`) rather than the
 # required-gate job, and it is documented in the fence under `## Running` (`README.md:73`), not
 # here.
 # What follows is only what the Testing block does not carry.
@@ -128,14 +128,16 @@ with the flag.
 **`xtask traceability` is two gates behind one exit status (D-18.5).** The **required** half is the
 generated-plan diff — `docs/03-test-plan.md` matching what the tool would write — **and** D-23.2's
 denominator check, that §14's `### M9a re-audit` table agrees with the Musts parsed out of the FRS
-(`required = plan_up_to_date && section_table_ok`, `xtask/src/main.rs:901`). The other half is zero
+(`required = plan_up_to_date && section_table_ok`, in `traceability_outcome`,
+`xtask/src/main.rs`). The other half is zero
 uncovered Musts, which no milestone before M14 can reach, so it stays informational:
 `--allow-uncovered` derives the exit status from the required half alone (`exit_ok`, in
 `xtask/src/traceability.rs`) while printing byte-identical output, full uncovered list included.
 D-18.5 pairs the flag with a second, `continue-on-error: true` CI step running the plain form, so
 the gap list stays a visible annotation; that half becomes required at **M14's close-out** — D-18.5
 moved it M13 → M9b, and M9b closed out without reaching it, so M14 owns the flip (the tool's own
-generated header says so, `xtask/src/traceability.rs:1354`) — and the
+generated header says so, in `render_test_plan`,
+`xtask/src/traceability.rs`) — and the
 flip is the deletion of the flag and of that step — two lines, deliberately. Three things no flag
 softens: a wrong §14 denominator fails even under `--write --allow-uncovered`, because `--write`
 regenerates the plan and must not become a one-flag bypass of a table it cannot regenerate; a
@@ -209,9 +211,10 @@ one: `namir-platform/src/denormal.rs`, `namir-platform/src/thread_priority.rs`,
 one module each" and was wrong. Every *production* unsafe block carries a written `// SAFETY:`
 argument, and each file a module-level doc comment giving the fuller argument; see
 `namir-platform/src/denormal.rs` or `namir-clap/src/gui.rs` for the house style. The exception is
-`host_wake.rs`'s three `#[cfg(test)]` blocks, counted below: `:241` and `:243` carry no `// SAFETY:`
-at all and `:213` only a one-liner, and that module's D-5.3 argument is scoped to `from_shared`
-(`host_wake.rs:30`), i.e. to the production block alone. New unsafe in a test is held to the house
+`host_wake.rs`'s three `#[cfg(test)]` blocks, counted below: the two in `test_request_callback`
+carry no `// SAFETY:` at all and the one in the test-host constructor only a two-line note, and
+that module's D-5.3 argument is scoped to `from_shared`, i.e. to the production block alone.
+New unsafe in a test is held to the house
 style like any other — those three are a gap, not a precedent.
 
 **Tests and benches get no exemption** (D-5.3's *Consequence (added M9, 2026-08-08)*). Cargo
@@ -223,7 +226,8 @@ M9b — FR-ERR-030's static half; it reads for the *logger's* name in the module
 audio-thread code, not for `unsafe`), `comment-width` (added from issue #176 — the 100-column
 convention for comment prose), and `network-free`, `error-catalogue`, `feature-guard`,
 `assets`, `schema` and `ci-commands` — sixteen in all, the dispatch at
-`xtask/src/main.rs:1135-1188` — none of which reads for `unsafe`; the only mention of the word
+the `match` in `main` (`xtask/src/main.rs`) — none of which reads for `unsafe`; the only
+mention of the word
 under `xtask/src/` is a prose aside in `network_free.rs`. When a harness looks like it needs
 `unsafe`, the answer this project has reached every time is to take the capability from a
 dependency whose own `unsafe` is already audited, or to move the tested logic to a seam that takes
@@ -234,8 +238,8 @@ in-process CLAP host harness, adopted precisely because `clack-extensions`' own 
 instantiates a plugin through `PluginEntry::load_from_clack` with no `unsafe` at all. Checked this
 pass: the only `unsafe` blocks anywhere under `crates/` are one in `gui.rs`, one in `host_wake.rs`
 (issue #94's erased-lifetime `HostSharedHandle`) plus three more in that file's own `#[cfg(test)]`
-support — its test-host constructor and its `unsafe extern "C"` callback (`host_wake.rs:213`,
-`:241`, `:243`) — five in `denormal.rs` and six in `thread_priority.rs` — plus that file's
+support — its test-host constructor and its `unsafe extern "C"` callback
+(`test_request_callback`) — five in `denormal.rs` and six in `thread_priority.rs` — plus that file's
 `unsafe extern "system"` declaration block, which edition 2024 requires of any `extern` block —
 and none at all in any bench or integration test, where there should be none. Any new `unsafe`
 block outside those four files is a bug, not a style choice — inside a `forbid` crate the compiler

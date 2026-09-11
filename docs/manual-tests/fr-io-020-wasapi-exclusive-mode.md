@@ -5,7 +5,7 @@ exclusive mode. ASIO support is **Should**, and if included shall be built such 
 licensing does not contaminate the distribution of Namir's own source (NFR-LIC-040)."
 
 **Verify: M.** Under D-18.6 a `Verify: M` Must is traced by this document and by nothing else — no
-source annotation resolves it, and `xtask/src/traceability.rs:616-641` refuses a
+source annotation resolves it, and `xtask/src/traceability.rs:617-642` refuses a
 `// trace-partial: FR-IO-020` outright. So this file is FR-IO-020's entire evidence, and the
 Result section at the bottom is the whole of it.
 
@@ -229,7 +229,7 @@ name, and is not evidence the path works.
 
 **Step 9 — shared mode unregressed. PASS.** With `"exclusive_mode": false` the app behaves as it did
 before the fork and the indicator reads shared. **The limit of what that proves, precisely:**
-`namir-app` restricts shared mode to `F32` (`crates/namir-app/src/audio_io.rs:453`), so what this
+`namir-app` restricts shared mode to `F32` (`crates/namir-app/src/audio_io.rs:454`), so what this
 exercised is the fork's `container_shift`/`padding_bits` path returning **zero** for a container that
 is exactly full. **Shared-mode `I24` remains unexercised, and Namir cannot reach it** — no setting in
 this product asks shared mode for an integer format. The fork's container-justification fix is

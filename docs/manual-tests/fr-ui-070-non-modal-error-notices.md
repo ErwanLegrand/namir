@@ -25,7 +25,7 @@ not be renamed.
 - **Never interrupts audio, by construction.** `namir-ui` cannot depend on `namir-engine` or
   `namir-worker` at all (D-5.1, enforced by `xtask layering`), so no code path in the view layer can
   name an audio thread, let alone block one. Notices are pushed on the worker/main side
-  (`AppHost::push_notice`, `crates/namir-app/src/host.rs:192`) and only ever *read* by the view.
+  (`AppHost::push_notice`, `crates/namir-app/src/host.rs:193`) and only ever *read* by the view.
 - **Catalogue-backed.** Every notice carries a `namir_core::ErrorCode` — a stable id, a severity and
   a message template (FR-ERR-020) — never a free-formatted string; `notice_text` renders
   `{code.id}: {message_template} ({detail})`.
@@ -202,7 +202,7 @@ catalogue of FR-ERR-020**", so which entries went unexercised is part of the res
 
 - **`app.host.state_save_failed`, `app.host.state_load_failed`, `app.host.reference_missing`
   (standalone).** Not inducible by any user gesture today. `AppHost::save_state`/`load_state`
-  (`crates/namir-app/src/host.rs:461`/`:466`) are public but wired to no control — that function's
+  (`crates/namir-app/src/host.rs:463`/`:466`) are public but wired to no control — that function's
   own doc comment says so: "not a `UiIntent` today (`namir-ui`'s FR-UI-020 screen has no save/load
   control yet)". `reference_missing` is reached only from `apply_recall_summary`, i.e. only from a
   state load, so it is behind the same gap. Step 15 exercises the equivalent path in the plugin,
@@ -333,14 +333,14 @@ but each pushes its own notice (`worker_jobs.rs:139`) and nothing deduplicates. 
 idempotent does not make its reporting idempotent.
 
 **6. Notices never expire, and the list is unbounded.** `push_notice` appends to a plain `Vec` in
-both shells (`crates/namir-app/src/host.rs:208`, `crates/namir-clap/src/shared.rs:212`) and
+both shells (`crates/namir-app/src/host.rs:209`, `crates/namir-clap/src/shared.rs:213`) and
 `Dismiss` is the only removal path (`:456` / `:220`). No expiry, no severity-based timeout, no cap.
 
 **7. And therefore, in the plugin, notices that can never be removed — step 14's failure.** Four
 defensible choices compose into an unusable state: `notices.rs:28` lays each notice out as
 `ui.horizontal`, label first and `Dismiss` after, and an egui horizontal layout does not wrap, so a
 long label pushes the button past the right edge; the editor is fixed at 960x640 with
-`can_resize() == false` (`crates/namir-clap/src/gui.rs:87`/`:196`), so the standalone's escape hatch
+`can_resize() == false` (`crates/namir-clap/src/gui.rs:88`/`:196`), so the standalone's escape hatch
 — widen the window — does not exist; notices never expire (finding 6); and the duplication
 (finding 2) makes these lines roughly twice as long as they need to be, which is what pushes the
 button off-screen in the first place. **A defect that looked cosmetic at step 1 produces a
