@@ -196,7 +196,7 @@ through the one `namir_ui::render`. But **the editor does not resize with the ho
 step 10's "all at once" arrangement is unreachable there: below `EQ Enabled` every element is
 reachable only by scrolling, permanently. That is by decision, not by defect —
 `crates/namir-clap/src/gui.rs:88` fixes `GUI_WIDTH`/`GUI_HEIGHT` at 960x640 and `can_resize()`
-returns `false` (`:196`), because FR-CLAP-110 (host-driven resize) is a **Should** that was scoped
+returns `false` (`:197`), because FR-CLAP-110 (host-driven resize) is a **Should** that was scoped
 out. **What is worth recording is the interaction, which is written down nowhere:** a Should's
 absence makes a Must's "one screen" clause satisfiable in the plugin shell *only* under the
 scrolling adjudication above. Had that adjudication gone the other way, FR-UI-020 would fail in the
@@ -219,7 +219,7 @@ FR-CLAP-110. Neither D-13.x, `gui.rs`'s own comment, nor FR-CLAP-110's text note
 - **Notices never expire, and in the plugin that compounds the fixed editor.** A notice occupies
   the top panel until the user clicks `Dismiss`: `push_notice` appends to an unbounded `Vec` in
   both shells (`crates/namir-app/src/host.rs:209`, `crates/namir-clap/src/shared.rs:213`) and
-  dismissal is the only removal path (`:456` / `:220`). There is no expiry, no severity-based
+  dismissal is the only removal path (`:457` / `:221`). There is no expiry, no severity-based
   timeout and no cap on how many can accumulate. No requirement asks for auto-dismissal, so this is
   a design gap rather than a violation — but the standalone escapes it only by being resizable, and
   the plugin cannot: every undismissed notice permanently takes vertical space from a screen that

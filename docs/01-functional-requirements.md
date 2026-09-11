@@ -1760,7 +1760,7 @@ Must requirements are covered today by nothing else — FR-CFG-010, FR-ERR-060, 
 NFR-BUILD-010, NFR-BUILD-020, NFR-DOC-020, NFR-LIC-010, NFR-LIC-020, NFR-LIC-040, NFR-PORT-010,
 NFR-PORT-030, NFR-PORT-040, NFR-QUAL-050, NFR-QUAL-060 and NFR-SEC-030 — carried by eight tags, at
 `Cargo.toml:1` and `:37`, `deny.toml:15` and `:82`, and `.github/workflows/ci.yml:34`, `:158`,
-`:197` and `:322`. Checked this pass rather than assumed: none of the fifteen has a `// trace:`
+`:204` and `:329`. Checked this pass rather than assumed: none of the fifteen has a `// trace:`
 annotation or an `fr_*`/`nfr_*`-named test function anywhere in Rust source, and
 `docs/03-test-plan.md` records all fifteen as covered by `ci` or `workspace`. Enforcing the sentence
 as written would therefore take the uncovered count from 24 to 39 rather than tighten anything, and

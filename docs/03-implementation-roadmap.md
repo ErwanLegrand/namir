@@ -1900,7 +1900,7 @@ form, so the ledger and the source agree.
 #### Per-row evidence for the verdict columns
 
 - **4 CFG — 1 / 2 / 0.** *Done:* FR-CFG-010, one workspace building both products
-  (`Cargo.toml:4-7`) and CI producing both on every push (`.github/workflows/ci.yml:88-89`, `:284-285`),
+  (`Cargo.toml:4-7`) and CI producing both on every push (`.github/workflows/ci.yml:88-89`, `:291-292`),
   over one shared engine (`crates/namir-app/src/app.rs:160`, `crates/namir-clap/src/audio.rs:151`).
   *Partial:* FR-CFG-020 — the shared engine is real at those same two call sites, but the `Verify: G`
   apparatus is wholly absent: no golden vector exists anywhere in the tree and nothing runs one
@@ -1985,7 +1985,7 @@ form, so the ledger and the source agree.
 - **5.7 OUT — 0 / 2 / 0.** *Partial:* FR-OUT-010 — the requirement states **three** literal
   parameters (range −60 dB to +12 dB, default 0 dB, exact silence at or below −60 dB) and **only the
   silence clause is asserted**: exact silence at and below the floor holds
-  (`crates/namir-engine/src/stages/out.rs:293-335`), gain is applied (`:255-286`), and the floor is
+  (`crates/namir-engine/src/stages/out.rs:293-335`), gain is applied (`:256-287`), and the floor is
   pinned to the declared range minimum (`crates/namir-params/src/stages/out.rs:32-38`). The **+12 dB
   maximum** and the **0 dB default** are declared in `GAIN_DB`
   (`crates/namir-params/src/stages/out.rs:14-18`) and asserted nowhere — no test reads either back,
@@ -1997,7 +1997,7 @@ form, so the ledger and the source agree.
   test and the indicator has no user reset path.
 - **5.8 PARAM — 0 / 5 / 0.** *Partial:* FR-PARAM-010 and FR-PARAM-050 — both tagged tests assert
   `format_value` against a fabricated const declared inside `mod tests`
-  (`crates/namir-params/src/descriptor.rs:202`, `:214`); no shipped parameter's name, unit, range,
+  (`crates/namir-params/src/descriptor.rs:202`, `:215`); no shipped parameter's name, unit, range,
   default or steppedness is asserted, and the only REGISTRY-enumerating test
   (`crates/namir-params/src/lib.rs:105-114`) checks uniqueness alone. FR-PARAM-020 — `check_manifest`,
   which detects `TOMBSTONE_REUSED`/`ID_CHANGED`, has no caller outside its own test module
@@ -2033,7 +2033,7 @@ form, so the ledger and the source agree.
   (`crates/namir-library/src/scan.rs:356`, `:379`) but "nominate one or more directories as library
   roots" has no mechanism: both shells hard-code the single root through
   `LibraryService::open_at`/`open_default`. FR-LIB-020 — three of four clauses meet the 10 000-file
-  scale (`crates/namir-worker/src/library.rs:463`, `:533`, against
+  scale (`crates/namir-worker/src/library.rs:463`, `:534`, against
   `crates/namir-fixtures/src/library.rs:104`); the off-the-audio-thread clause is exercised against a
   6-file corpus only. FR-LIB-030 — the bench prints CONCLUSIVE/INCONCLUSIVE and asserts no time bound
   (`crates/namir-library/benches/library_scan.rs:154`), and its persistence arms reuse an in-memory
@@ -2085,7 +2085,7 @@ form, so the ledger and the source agree.
   hour** — `state-reproducibility-basic` crashed with `0xc0000005`. It reads Done again only because
   that crash was root-caused and fixed (see the close-out below); the evidence is now CI's own
   `44 tests run, 32 passed, 0 failed, 12 skipped`, plus
-  `crates/namir-clap/src/lib.rs:133`, `:143`. *Partial:* FR-CLAP-030 — one stereo port pair is
+  `crates/namir-clap/src/lib.rs:133`, `:144`. *Partial:* FR-CLAP-030 — one stereo port pair is
   declared (`crates/namir-clap/src/audio_ports_ext.rs:30-48`); two of FR-CHAIN-060's three
   configurations are undeclared, and "across at least two host implementations" is unexecuted
   (`docs/manual-tests/fr-clap-030-audio-ports-negotiation.md`). FR-CLAP-040 — the notify path is
@@ -2101,11 +2101,11 @@ form, so the ledger and the source agree.
   (`crates/namir-clap/src/shared.rs:344`); the `B` half of "I plus B" is measured by nothing, there
   being no memory benchmark in the workspace. FR-CLAP-100 — the extension is implemented
   (`crates/namir-clap/src/gui.rs`) and invoked by no in-process test; the embedding half of its
-  document is **Not executed**; `is_api_supported` is `WIN32`-only with no `cfg` (`:91-105`).
+  document is **Not executed**; `is_api_supported` is `WIN32`-only with no `cfg` (`:92-106`).
   FR-CLAP-130 — neither half of "S plus I" reaches this crate: `AllocDisabler` is installed in five
   crates, none of which owns a real audio callback, and no static check for blocking exists.
 - **5.13 UI — 1 / 6 / 0.** *Done:* FR-UI-010 — one widget type
-  (`crates/namir-ui/src/app.rs:134`) rendered by both shells through one `render` (`:32`), with the
+  (`crates/namir-ui/src/app.rs:134`) rendered by both shells through one `render` (`:33`), with the
   manifest fact that neither shell depends on `egui` directly, corroborated by an executed run
   (`docs/manual-tests/fr-ui-010-standalone-window-renders.md` steps 1-2 PASS, 90 real frames).
   *Partial:* FR-UI-020 — the single screen exists and renders
@@ -2721,7 +2721,7 @@ that happens to depend on them first.
     **Resolved 2026-08-11, at M13's start: the second answer — an in-repo assertion, and the scanned
     list is left alone.** FRS §10 admits "an annotated test **or** `xtask` subcommand", and a test
     is the cheaper of the two here, so `release.yml` gains no `# trace:` tag and the hard-coded
-    arrays (now `xtask/src/main.rs:340-351`, not `:205-216` — the citation had already drifted) are
+    arrays (now `xtask/src/main.rs:340-351`, not `:244-255` — the citation had already drifted) are
     unchanged. Three things decided this rather than the elected-configuration route, which was
     otherwise admissible. **A tag in a workflow asserts nothing a reader can check**, which is this
     item's own stated cost, and FR-PKG-010 has four separable clauses — tag-triggered, from a tagged
@@ -2746,8 +2746,8 @@ that happens to depend on them first.
     other two. The gate landed as `.github/workflows/ci.yml`'s new `clap-validator` job
     (`ci.yml:260-303` as of this pass), which installs the tool with `cargo install --locked --git
     https://github.com/free-audio/clap-validator --rev b2f1d9b79b1d264a5747f46707d72b1aa40a02ef`
-    (`:266-271`). **The record lives in that job's own `# ---- Supply-chain shape` comment**
-    (`:191-222`), not in `02-architecture.md` §17 — deliberately, and on that register's own titled
+    (`:273-278`). **The record lives in that job's own `# ---- Supply-chain shape` comment**
+    (`:198-229`), not in `02-architecture.md` §17 — deliberately, and on that register's own titled
     instruction (`02-architecture.md:1836-1847`), which already names `clap-validator` as build
     tooling that puts nothing of its own into the shipped artifact and says its "availability,
     versions and licences are D-18.3's and the CI configuration's business, recorded there". Both
@@ -3064,7 +3064,7 @@ that happens to depend on them first.
     desktop-only windowing model (`docs/01-functional-requirements.md:964-968`). Its `*Verify:*`
     line elects one check for all five — "S — the engine and its supporting crates shall build for
     `aarch64-linux-android` and `aarch64-apple-ios` in CI" (`:971-972`) — and both jobs run green
-    (`.github/workflows/ci.yml:485-552`, plain-tagged at `:478`). **A cross-build proves none of the
+    (`.github/workflows/ci.yml:485-552`, plain-tagged at `:485`). **A cross-build proves none of the
     five.** A crate that assumes a mouse, blocks on a dialog or spawns a thread per scan job
     compiles for `aarch64-linux-android` exactly as well as one that does not. The verdict is Done
     because D-23.2 adjudicates against the requirement's **own stated method** and that method is
@@ -3308,7 +3308,7 @@ annotations under 3 below, the regenerated `docs/03-test-plan.md`, `ci.yml`'s tw
 Those cannot land piecemeal: the commit that makes the plan-diff half required is the same commit
 that changes three rows of the generated plan and invokes a flag `xtask` does not have today
 (`xtask/src/main.rs:343` returns the single `plan_up_to_date && coverage_clean`, and the argument
-parser at `:328-329` recognises only `--write`), so any other split makes the new required check red
+parser at `:367-368` recognises only `--write`), so any other split makes the new required check red
 on arrival.
 
 **1. The acceptance criterion restated, in two halves that flip on different dates —
@@ -3547,9 +3547,9 @@ reading the source this session, not by re-reading an earlier summary:
   a **two-file** fixture (`:294-295`), and its own message says it is testing the terminal report
   that fires "even for a scan shorter than the cadence". The cadence branch (`:206-211`), which is
   what "progress shall be visible" means during a long scan, is exercised by **no test at any
-  scale**: the only ≥10,000-file test passes `|_| {}` (`:446`). The fix is one new test running the
+  scale**: the only ≥10,000-file test passes `|_| {}` (`:447`). The fix is one new test running the
   shared corpus to completion and asserting ≥2 progress calls. It must be a **new** test, not an
-  edit to the cancel test: that test cancels immediately (`:449`), so the loop breaks before a 50 ms
+  edit to the cancel test: that test cancels immediately (`:450`), so the loop breaks before a 50 ms
   cadence window elapses and `>= 2` there would be flaky.
 
   **Even with that test written the tag is a partial — and this is the doctrine failing its own
@@ -3559,7 +3559,7 @@ reading the source this session, not by re-reading an earlier summary:
   question, not decoration. Cancellation is measured at that scale (`library.rs:437-461`) and the
   new progress test will be. The **off-the-audio-thread** clause is not: its only evidence is
   `rt_stress.rs` axis C (`crates/namir-worker/tests/rt_stress.rs:274-282`), whose corpus is **six
-  files** (`write_small_scan_corpus`, `:138-149`) — and that is deliberate rather than an oversight
+  files** (`write_small_scan_corpus`, `:139-150`) — and that is deliberate rather than an oversight
   to patch, since that function's own doc comment says it wants many fast scan cycles inside the run
   window rather than one slow one, so re-pointing it at the shared corpus would destroy the axis it
   exists to run. FR-LIB-020 therefore lands as a `// trace-partial:` carrying the mandatory
@@ -3613,7 +3613,7 @@ to the tool's dispatch. The vehicle is **`clack-host` 0.1.1 as a `namir-clap` de
 **adopted** (§17 gains a row) rather than left prospective: `clack-extensions` 0.1.1's own
 `src/__doc_utils.rs:114-146` instantiates a plugin in-process via `PluginEntry::load_from_clack` with
 **no `unsafe`**, and this crate already exports what that needs
-(`crates/namir-clap/src/lib.rs:84`, `:125`; `Cargo.toml:26`'s `crate-type = ["cdylib", "lib"]`).
+(`crates/namir-clap/src/lib.rs`'s `__test_support`; `Cargo.toml:26`'s `crate-type = ["cdylib", "lib"]`).
 Three gates must pass before the §17 row is treated as verified rather than argued: `cargo deny check
 bans`, `cargo deny check licenses`, and D-18.2's network-free build gate — plus `cargo tree -e normal`
 proving `clack-extensions`' `clack-host` feature does not reach the shipped `cdylib`, and an
@@ -3709,7 +3709,7 @@ question is also what showed the policy question to be free: there is no `unsafe
 integration test anywhere in this workspace today, and `assert_no_alloc` and `core_affinity` are both
 already used under `unsafe_code = "forbid"` in `namir-worker`. The `clack-host` harness adopted under
 5 above then closes the remainder from the other side — it reaches the plugin through the
-already-public surface (`crates/namir-clap/src/lib.rs:84`, `:125`; `Cargo.toml:26`), so no visibility
+already-public surface (`crates/namir-clap/src/lib.rs`'s `__test_support`; `Cargo.toml:26`), so no visibility
 hole and no seam refactor is needed, and the port/channel iteration inside `process()`,
 `request_callback()` and the CLAP factory dispatch NFR-PERF-040 would otherwise exclude are exercised
 by a real in-process host rather than booked as residuals. The FR-CLAP-130 harness still lives
@@ -3914,7 +3914,7 @@ is the second finding this sweep did not discover so much as *find already recor
 only ledger — R-14 made concrete on its first real use.** D-23.1's `trace-partial` is refused
 outright for a `Verify: M` or `Verify: Process` Must (`xtask/src/traceability.rs:617-634`), and the
 tool's own doc comment states the scope exactly: false "for 14 of the FRS's 130 Musts (13 `M`, 1
-`Process`)" (`:590-591`). The refusal is right — a manual script is not a `.rs` file and review is
+`Process`)" (`:591-592`). The refusal is right — a manual script is not a `.rs` file and review is
 not an artifact — but its consequence is that **for those fourteen requirements there is no
 mechanical place to write down a half-met finding at all.** The generated plan renders them as
 covered the moment a correctly-named document exists, with no PARTIAL disposition available; the
