@@ -111,6 +111,33 @@ impl HeadlessUiDriver {
         output
     }
 
+    /// One frame whose first pass calls `Context::request_discard`, so `egui`'s multi-pass loop
+    /// (`Context::run_dyn`) re-runs the entire UI a second time *within the same frame*.
+    fn frame_with_discard(&mut self, events: Vec<Event>) -> FullOutput {
+        self.time += 0.1;
+        let time = self.time;
+        let ui = &mut self.ui;
+        let mut pass = 0_u32;
+        let mut output = self.ctx.run_ui(
+            RawInput {
+                time: Some(time),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(960.0, 640.0))),
+                events,
+                ..Default::default()
+            },
+            |u| {
+                pass += 1;
+                if pass == 1 {
+                    u.ctx().request_discard("test: force a second pass");
+                }
+                ui.frame(u);
+            },
+        );
+        assert_eq!(pass, 2, "request_discard must have produced a second pass");
+        output.textures_delta.clear();
+        output
+    }
+
     fn painted_texts(output: &FullOutput) -> Vec<(String, Rect)> {
         fn walk(shape: &Shape, out: &mut Vec<(String, Rect)>) {
             match shape {
@@ -530,6 +557,57 @@ fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
     assert!(
         intents.is_empty(),
         "no SetParam intent with aborted value must be dispatched, got: {intents:?}"
+    );
+}
+
+/// The Escape frame is allowed to run more than one `egui` pass (anything in the UI may call
+/// `Context::request_discard`), and `param_control`'s cancellation stamp is scoped to a *pass*,
+/// not a frame. This pins the observed pairing that makes that correct: with two passes on the
+/// Escape frame, `DragValue`'s focus-loss re-commit lands on pass N+1 of the *same* frame, which
+/// is exactly the pass the stamp suppresses. A frame-scoped stamp would miss it and dispatch the
+/// cancelled 12.0.
+#[test]
+fn escape_cancellation_survives_a_multi_pass_frame() {
+    let mut params = ParamValues::defaults();
+    params.set(trim::GAIN_DB.key, 6.0).unwrap();
+    let mut driver = HeadlessUiDriver::new(UiSnapshot {
+        params,
+        ..Default::default()
+    });
+
+    let (_, rect) = driver.locate_value_for_control("Input Level");
+    driver.click_at(rect.center());
+    driver.frame(vec![
+        Event::Key {
+            key: Key::A,
+            pressed: true,
+            modifiers: Modifiers::COMMAND,
+            repeat: false,
+            physical_key: None,
+        },
+        Event::Text("12.0".to_string()),
+    ]);
+
+    // Escape, on a frame that egui re-runs a second time.
+    driver.frame_with_discard(vec![Event::Key {
+        key: Key::Escape,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+        physical_key: None,
+    }]);
+    driver.frame(vec![]);
+    driver.frame(vec![]);
+
+    assert_eq!(
+        driver.current_param(trim::GAIN_DB.key),
+        6.0,
+        "a discarded pass on the Escape frame must not let the cancelled edit commit"
+    );
+    let intents = driver.dispatched_intents();
+    assert!(
+        intents.is_empty(),
+        "no intent must be dispatched for a cancelled edit, got: {intents:?}"
     );
 }
 
