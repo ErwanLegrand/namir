@@ -12,13 +12,17 @@
 //! be annotated and none of them can be claimed for a long sentence of prose:
 //!
 //! 1. **An unbreakable token.** The token straddling column 100 is itself too long to fit on a
-//!    comment line of its own, so moving it down would not help. Prose never qualifies — prose
-//!    past column 100 has spaces in it.
-//! 2. **A Markdown table row** (the comment body starts with `|`). Wrapping one breaks the
-//!    table, and the cells are content, not prose to reflow.
+//!    comment line of its own, so moving it down would not help. Ordinary prose never qualifies,
+//!    since prose at column 100 has spaces in it — but the rule looks only at that one token, so
+//!    a line that puts a long URL *early* and then runs wrappable prose past column 100 is
+//!    exempt too. Nothing in the tree does that; it is a hole, not a licence.
+//! 2. **A Markdown table row** (the comment body both starts and ends with `|`). Wrapping one
+//!    breaks the table, and the cells are content, not prose to reflow. The closing `|` is what
+//!    keeps the rule off a sentence that merely begins with a pipe.
 //! 3. **Inside a fenced block** (between two comment lines whose body starts with ```` ``` ````).
 //!    Those lines are sample output or code, where a line break changes what is shown — and in a
-//!    doc comment, what the doc test runs.
+//!    doc comment, what the doc test runs. Scoped to one run of comment lines: an unmatched
+//!    fence closes at the end of its comment block, as rustdoc's own does.
 //!
 //! As of the sweep that introduced this check, no line relies on (1); the lines relying on (2)
 //! and (3) are the tables in `denormal_guard.rs`, `library_scan.rs`, `paths.rs` and friends, and
@@ -62,18 +66,23 @@ fn comment_body(line: &str) -> Option<&str> {
 /// exempt shapes the module doc describes. Returns `(1-indexed line number, width in
 /// characters)` per violation. Pure string logic so it is unit-testable without a filesystem;
 /// [`crate::main`] applies it to the real files.
+///
+/// The fence state is scoped to one run of comment lines: rustdoc closes an unmatched fence at
+/// the end of the doc comment, so an unmatched marker is not an error anywhere else, and letting
+/// it run to the end of the file would silently exempt everything after it.
 pub fn scan_over_width(source: &str) -> Vec<(usize, usize)> {
     let mut hits = Vec::new();
     let mut in_fence = false;
     for (i, line) in source.lines().enumerate() {
         let Some(body) = comment_body(line) else {
+            in_fence = false;
             continue;
         };
         if body.starts_with("```") {
             in_fence = !in_fence;
             continue;
         }
-        if in_fence || body.starts_with('|') {
+        if in_fence || (body.starts_with('|') && body.ends_with('|')) {
             continue;
         }
         let chars: Vec<char> = line.chars().collect();
@@ -90,21 +99,32 @@ mod tests {
 
     /// One case per rule: over-width prose is reported with its real width, and each of the
     /// three exempt shapes is not. The fenced text is the same string as the unfenced one, so
-    /// the fence is doing the work rather than the text.
+    /// the fence is doing the work rather than the text — and the unmatched fence in the second
+    /// block must not carry into the third, which is the failure mode that would exempt a whole
+    /// file.
     #[test]
     fn over_width_prose_is_reported_and_the_three_exempt_shapes_are_not() {
         let prose = format!("/// {}", "word ".repeat(25));
         let url = format!("/// see https://example.invalid/{}", "x".repeat(100));
         let row = format!("/// | cell | {} |", "x y ".repeat(30));
+        let ragged = format!("/// | smuggled prose {}", "word ".repeat(20));
         let fenced = format!("/// {}", "out put ".repeat(20));
-        let source =
-            format!("{prose}\n{url}\n{row}\n/// ```text\n{fenced}\n/// ```\n// short\n{fenced}\n");
+        let source = format!(
+            "{prose}\n{url}\n{row}\n{ragged}\n/// ```text\n{fenced}\n/// ```\n\
+             {fenced}\n\nfn a() {{}}\n\n/// ```text\n{fenced}\n\nfn b() {{}}\n\n{fenced}\n"
+        );
 
         assert!(url.chars().count() > MAX_WIDTH);
         assert!(row.chars().count() > MAX_WIDTH);
+        let w = fenced.chars().count();
         assert_eq!(
             scan_over_width(&source),
-            vec![(1, prose.chars().count()), (8, fenced.chars().count())]
+            vec![
+                (1, prose.chars().count()),
+                (4, ragged.chars().count()),
+                (8, w),
+                (17, w)
+            ]
         );
     }
 }

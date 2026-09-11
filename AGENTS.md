@@ -73,9 +73,9 @@ up after the fact.
 ## Common commands
 
 ```bash
-# Full local gate: **`README.md`'s "Testing" section is the canonical enumeration** — thirteen `xtask`
-# subcommands plus fmt/clippy/test/`cargo deny check`. Run every command in that block; do not
-# maintain a second list here. What keeps it honest is `xtask ci-commands`
+# Full local gate: **`README.md`'s "Testing" section is the canonical enumeration** — thirteen
+# `xtask` subcommands plus fmt/clippy/test/`cargo deny check`. Run every command in that block; do
+# not maintain a second list here. What keeps it honest is `xtask ci-commands`
 # (`xtask/src/ci_commands.rs`), which checks in both directions that every `cargo` line in *any*
 # README fence is run by `.github/workflows/ci.yml` and that every `xtask` subcommand that file
 # runs is documented in one — so the gate guarantees a subcommand appears *somewhere* in the

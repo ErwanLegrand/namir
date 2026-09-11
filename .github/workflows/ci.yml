@@ -183,8 +183,8 @@ jobs:
         run: cargo run -p xtask -- rt-logging
 
       # Issue #176: the 100-column convention for comment prose, which `cargo fmt` cannot see --
-      # `rustfmt`'s `wrap_comments` is nightly-only, so 174 over-width comment lines accumulated
-      # across 68 files with a green format gate. Same class as the two steps above: a line-based
+      # `rustfmt`'s `wrap_comments` is nightly-only, so 154 over-width comment lines accumulated
+      # across 71 files with a green format gate. Same class as the two steps above: a line-based
       # scan over checked-in source, with no OS-specific behaviour to matrix over.
       - name: xtask comment-width (issue #176)
         run: cargo run -p xtask -- comment-width
