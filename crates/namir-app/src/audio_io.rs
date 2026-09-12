@@ -583,13 +583,27 @@ pub trait AudioStream: Send {
 /// fake backend in [`crate::stream`] constructs one with no hardware behind it), and named
 /// fields rather than bare `bool`s so a call site reads as `status.xrun` and not as `true`.
 ///
-/// **`#[non_exhaustive]` deliberately (PR #209 review).** An out-of-crate backend cannot write a
-/// partial literal and must go through `..Default::default()`, so a new field can never default
-/// to the unsafe value at a call site the compiler did not flag. The field that makes this worth
-/// an attribute is [`Self::first_of_callback`]: [`crate::stream`]'s latch is persistent state,
-/// and a producer spelling `first_of_callback: false` on a genuine first callback would leave a
-/// stale latch set and *swallow* a dropout — silent under-counting, which is the direction
-/// FR-IO-060 can least afford and the exact defect this type was added to fix.
+/// **`#[non_exhaustive]` deliberately (PR #209 review).** Out of crate, no struct expression
+/// reaches this type at all — a partial literal *and* functional-update syntax are both E0639
+/// (verified: `CallbackStatus { xrun: true, ..Default::default() }` in a `namir-clap` test does
+/// not compile) — so an external backend builds one by taking [`Default`] and assigning the
+/// fields it means:
+///
+/// ```ignore
+/// let mut status = CallbackStatus::default();
+/// status.xrun = true;
+/// ```
+///
+/// which cannot leave a later-added field at an unsafe value. The field that makes this worth an
+/// attribute is [`Self::first_of_callback`]: [`crate::stream`]'s latch is persistent state, and a
+/// producer spelling `first_of_callback: false` on a genuine first callback would leave a stale
+/// latch set and *swallow* a dropout — silent under-counting, the direction FR-IO-060 can least
+/// afford and the exact defect this type was added to fix.
+///
+/// Inside `namir-app` the attribute does nothing, so the literals that actually set the flag
+/// today — the four `cpal` call sites and the converters' two continuation-slice literals — are
+/// held by the ordinary in-crate rule instead: a new field is a compile error at each of them,
+/// which is the outcome wanted and is not something the attribute buys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CallbackStatus {
