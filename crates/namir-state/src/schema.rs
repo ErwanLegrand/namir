@@ -35,11 +35,11 @@
 //!
 //! [`Severity::Rejected`] means the format document says a reader refuses the whole document over
 //! this — §4's `format_version` is the only such clause, "the one thing this format treats as
-//! fatal rather than tolerated". Everything else is [`Severity::Recovered`]: the value is off-schema
-//! and the documented reader behaviour is to carry on with a default, a clamp, or the reference
-//! treated as absent (D-11.2's tolerant deserialisation). A `Recovered` violation is still a
-//! violation — it is exactly the class a hand-editor (FR-STATE-040's whole point) produces and
-//! never hears about otherwise, because tolerant loading is silent by design.
+//! fatal rather than tolerated". Everything else is [`Severity::Recovered`]: the value is
+//! off-schema and the documented reader behaviour is to carry on with a default, a clamp, or the
+//! reference treated as absent (D-11.2's tolerant deserialisation). A `Recovered` violation is
+//! still a violation — it is exactly the class a hand-editor (FR-STATE-040's whole point) produces
+//! and never hears about otherwise, because tolerant loading is silent by design.
 
 use serde_json::Value;
 

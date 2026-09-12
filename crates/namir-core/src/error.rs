@@ -63,9 +63,9 @@ pub enum Severity {
 /// would have churned ~40 sites to no end.
 ///
 /// This is not by itself a guarantee — `ErrorCode::new` is still callable anywhere. It is what
-/// makes the guarantee *checkable*, and the check is `xtask error-catalogue`: every `ErrorCode::new`
-/// in the tree must be a named `const` in a catalogue module. See that module's doc comment for
-/// what it can and cannot see.
+/// makes the guarantee *checkable*, and the check is `xtask error-catalogue`: every
+/// `ErrorCode::new` in the tree must be a named `const` in a catalogue module. See that module's
+/// doc comment for what it can and cannot see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ErrorCode {

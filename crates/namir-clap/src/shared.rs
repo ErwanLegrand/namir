@@ -33,9 +33,10 @@
 //!   `AudioEngine::process`/`apply_param_direct`, neither of which is behind this lock).
 //! - `submitter: Mutex<Option<Arc<CommandSubmitter>>>` — producer-side submitter held in a separate
 //!   mutex from `instance` so GUI parameter submissions (`try_submit_param`) never contend on
-//!   worker asset loads. `instance` and `submitter` are updated non-atomically in `install_instance`/
-//!   `clear_instance`: a submission landing in the gap gets `SubmitError::Abandoned` or a stale
-//!   abandoned ring, which callers discard safely with `let _ =`.
+//!   worker asset loads. `instance` and `submitter` are updated non-atomically in
+//!   `install_instance`/ `clear_instance`: a submission landing in the gap gets
+//!   `SubmitError::Abandoned` or a stale abandoned ring, which callers discard safely with `let _
+//!   =`.
 //! - `nam_ref`/`ir_ref: Mutex<Option<FileRef>>` — the "what the user asked to have loaded" half of
 //!   a [`namir_state::State`], kept independently of whatever the worker has actually finished
 //!   loading (which can lag behind by however long a file read/parse takes) so that a save
@@ -763,7 +764,8 @@ impl SharedInner {
     }
 
     /// How many times the C vtable's `request_callback` was actually invoked through the
-    /// `HostSharedHandle`. Test-only, mirroring [`crate::host_wake::HostWake::c_callbacks_invoked`].
+    /// `HostSharedHandle`. Test-only, mirroring
+    /// [`crate::host_wake::HostWake::c_callbacks_invoked`].
     #[cfg(test)]
     pub(crate) fn c_callbacks_invoked(&self) -> usize {
         self.host_wake.c_callbacks_invoked()
@@ -1201,7 +1203,8 @@ mod tests {
 
         lock_acquired_rx.recv().unwrap();
 
-        // Submitting a parameter change must succeed non-blockingly without waiting for the instance lock.
+        // Submitting a parameter change must succeed non-blockingly without waiting for the
+        // instance lock.
         let result = inner.try_submit_param(ParamChange {
             id: namir_engine::ParamId(100),
             value: 0.75,

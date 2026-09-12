@@ -72,7 +72,8 @@ pub(crate) struct ClapUiHost {
     /// ring, leaving a captured clone draining a retired one for ever.
     telemetry: Option<TelemetryReader>,
     /// The [`SharedInner::telemetry_generation`] the clone above came from. When the shared
-    /// counter has moved past it, the clone is stale — see [`ClapUiHost::rebind_telemetry_if_stale`].
+    /// counter has moved past it, the clone is stale — see
+    /// [`ClapUiHost::rebind_telemetry_if_stale`].
     telemetry_generation: u64,
     /// The last reading [`ClapUiHost::drain_meters`] actually saw, held so that a GUI frame which
     /// drains no telemetry shows the previous value rather than dropping to silence.
@@ -293,8 +294,8 @@ impl UiHost for ClapUiHost {
             UiIntent::AddLibraryRoot { path } => {
                 self.inner.add_library_root(path);
                 // Adding a library root updates the configured list immediately for resolution and
-                // UI display, but does not trigger an automatic rescan. Rescanning remains an explicit
-                // user action via `RescanLibraryRequested`.
+                // UI display, but does not trigger an automatic rescan. Rescanning remains an
+                // explicit user action via `RescanLibraryRequested`.
                 return;
             }
             UiIntent::RemoveLibraryRoot { path } => {

@@ -98,8 +98,9 @@ pub fn param_control(
         // 3. `value as f32 != current` is **not** a defensive extra: (1) makes `DragValue` report
         //    `changed()` once with the value unmoved, and without this guard three unrelated
         //    numeric-entry tests see a spurious leading `SetParam` carrying the pre-edit value.
-        //    The comparison is exact rather than an epsilon hazard — `value` is `f64::from(current)`
-        //    and the round trip is lossless, so this reads as "did the widget move it".
+        //    The comparison is exact rather than an epsilon hazard — `value` is
+        //    `f64::from(current)` and the round trip is lossless, so this reads as "did the widget
+        //    move it".
         let mut value = f64::from(current);
         let response: Response = ui
             .add(

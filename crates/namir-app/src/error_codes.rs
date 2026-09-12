@@ -84,11 +84,11 @@ pub const NO_SUPPORTED_CONFIG: ErrorCode = ErrorCode::new(
 /// before a configuration was ever negotiated. A window still opens and parameters stay editable
 /// (`crate::app::open_window_without_audio`), which is what this entry has to say.
 ///
-/// Added M14 (issue #40). [`NO_SUPPORTED_CONFIG`] was reported here, and its own text is FR-IO-040's
-/// "none of the rates **a device** reports could be negotiated" — with no device present that
-/// sentence has no subject, and the notice named a device the window did not have. Two lines away,
-/// the same function already passes `None` for the share-mode indicator rather than a
-/// "truthful-looking Shared"; this entry is that judgement applied to the notice as well.
+/// Added M14 (issue #40). [`NO_SUPPORTED_CONFIG`] was reported here, and its own text is
+/// FR-IO-040's "none of the rates **a device** reports could be negotiated" — with no device
+/// present that sentence has no subject, and the notice named a device the window did not have.
+/// Two lines away, the same function already passes `None` for the share-mode indicator rather
+/// than a "truthful-looking Shared"; this entry is that judgement applied to the notice as well.
 pub const NO_AUDIO_DEVICE: ErrorCode = ErrorCode::new(
     "app.audio_io.no_device",
     Severity::Error,

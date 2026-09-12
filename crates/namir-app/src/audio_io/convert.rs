@@ -38,8 +38,8 @@
 //!   so that format would have survived without the clamp; `I24` would not, and one rule written
 //!   once for both is better than a rule that is only load-bearing in one of two places.)
 //! - Nothing legitimately in range is pushed over by rounding. The largest `f32` strictly below
-//!   `1.0` is `1 - 2^-24`; times `2^(N-1)` that is `2^(N-1) - 2^(N-25)`, exactly representable as an
-//!   `f32` for both supported widths, and it truncates to `2^23 - 1` (`I24`) and `2^31 - 128`
+//!   `1.0` is `1 - 2^-24`; times `2^(N-1)` that is `2^(N-1) - 2^(N-25)`, exactly representable as
+//!   an `f32` for both supported widths, and it truncates to `2^23 - 1` (`I24`) and `2^31 - 128`
 //!   (`i32`). So the clamp only ever fires at exactly `±1.0` and beyond.
 //! - `NaN` survives `f32::clamp` (which propagates it) and Rust's `as` cast maps it to `0` —
 //!   silence, not a wrapped extreme. `±inf` is pinned by the clamp before the multiply.

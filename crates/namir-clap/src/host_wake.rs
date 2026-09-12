@@ -132,7 +132,8 @@ impl HostWake {
     /// An empty wake slot, for the `SharedInner`s that have no host — the bare instances built
     /// by this crate's unit tests and benches (`SharedInner::new`/`new_at`, which construct no
     /// plugin and receive no `clap_host`). [`request_callback`](Self::request_callback) is a
-    /// no-op on it; the CLAP host path is only ever populated by [`from_shared`](Self::from_shared).
+    /// no-op on it; the CLAP host path is only ever populated by
+    /// [`from_shared`](Self::from_shared).
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self {
@@ -209,7 +210,8 @@ impl HostWake {
         state.host.host_data =
             (&state.callbacks_invoked as *const AtomicUsize as *mut AtomicUsize).cast();
         let raw = NonNull::from(&state.host);
-        // SAFETY: `state` is pinned on the heap by Box and outlives `handle` within this `HostWake` instance.
+        // SAFETY: `state` is pinned on the heap by Box and outlives `handle` within this
+        // `HostWake` instance.
         let handle = unsafe { HostSharedHandle::from_raw(raw) };
         Self {
             handle: Some(handle),

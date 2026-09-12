@@ -104,7 +104,7 @@ severity assessment.
 
 **A direct data point for R-5, and it is the one R-5 predicted.** `CpalBackend`'s
 `to_stream_failure` maps `cpal`'s `DeviceNotAvailable`/`HostUnavailable` to
-`StreamFailure::DeviceLost` (`crates/namir-app/src/audio_io.rs:526`). **This unplug did not produce
+`StreamFailure::DeviceLost` (`crates/namir-app/src/audio_io.rs:542`). **This unplug did not produce
 either.** It produced `StreamFailure::Other`, carrying an unmapped OS error whose own message
 formatting had failed (`FormatMessageW() returned error 317`). R-5's wording is that "FR-IO-070
 device-removal handling is weak in any cross-platform audio library"; this is that weakness
@@ -120,7 +120,7 @@ from the classification rather than only the direction.
 
 **Step 3 is now observed rather than inferred.** Re-plugging the interface did not resume capture
 or output. Device selection happens once at startup from `audio-settings.json`
-(`crates/namir-app/src/app.rs:217`), and there is no device-selection surface anywhere in
+(`crates/namir-app/src/app.rs:221`), and there is no device-selection surface anywhere in
 `namir-ui` or `namir-app` — no combo box, no `UiIntent`, nothing. Recovering from a removal
 requires editing JSON or restarting. FR-IO-070's third clause — "allow the user to select another
 device" — is **unbuilt**, which this file already recorded as a known gap; what is new is that a

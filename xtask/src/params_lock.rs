@@ -34,9 +34,9 @@
 //! set of stepped values therefore moved no byte of the file and this gate stayed green — while
 //! silently reinterpreting every saved preset and every host-normalised automation value carrying
 //! that id (issue #121). The line now carries the range, the default and a fingerprint of the
-//! stepped labels, so such a change lands here as a **stale file**: not a violation (D-10.1 reserves
-//! the build failure for a changed identifier or type, and a widened range is a legitimate edit),
-//! but a regeneration whose diff a reviewer reads.
+//! stepped labels, so such a change lands here as a **stale file**: not a violation (D-10.1
+//! reserves the build failure for a changed identifier or type, and a widened range is a
+//! legitimate edit), but a regeneration whose diff a reviewer reads.
 //!
 //! Two things follow for `--write`. A file declaring an **older** format version is migrated by it,
 //! deliberately: leaving the file in a state the documented regeneration command refuses to fix is

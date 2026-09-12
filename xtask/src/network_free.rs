@@ -1,7 +1,7 @@
 //! FR-ERR-060 (Must, `Verify:` **S**): "In 1.0, Namir shall make no outbound network connection and
 //! shall transmit no data off the user's machine: no telemetry, no crash-report upload, no update
-//! check. *Verify:* S — a build-time check that no network-capable dependency is linked into the 1.0
-//! binaries." Also NFR-SEC-030, which restates the same prohibition from the security side.
+//! check. *Verify:* S — a build-time check that no network-capable dependency is linked into the
+//! 1.0 binaries." Also NFR-SEC-030, which restates the same prohibition from the security side.
 //!
 //! # The half `deny.toml` cannot cover
 //!

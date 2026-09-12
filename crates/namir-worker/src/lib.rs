@@ -26,9 +26,10 @@
 //!
 //! - **A `LoadSource::File` path resolver** beyond `std::fs::read`. Anything that needs to *know*
 //!   where files live is `namir-platform`'s job (D-13.2), and this crate carries no platform code
-//!   at all (D-5.1's own column, enforced by `xtask layering`'s cfg scan) — [`library::LibraryService::open`]
-//!   takes the index path and every library root as caller-supplied arguments for exactly that
-//!   reason (seam 3, `namir-library`'s own crate doc comment).
+//!   at all (D-5.1's own column, enforced by `xtask layering`'s cfg scan) —
+//!   [`library::LibraryService::open`] takes the index path and every library root as
+//!   caller-supplied arguments for exactly that reason (seam 3, `namir-library`'s own crate doc
+//!   comment).
 
 #![doc(test(attr(deny(warnings))))]
 

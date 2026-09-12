@@ -52,22 +52,23 @@
 //!
 //! **What this crate does verify, rather than trust blindly.** `is_api_supported`/
 //! `get_preferred_api` restrict this plugin to `native_gui_api()`, non-floating, *before*
-//! `set_parent` is ever reachable — so the variant this plugin *expects* to read is fixed per platform.
-//! `clack_extensions::gui::Window::raw_window_handle` only returns `Err(HandleError::NotSupported)`
-//! for an *unrecognised* `clap_window_t.api` string; for any recognised one (`"win32"`, `"cocoa"`,
-//! `"x11"`, ...) it returns `Ok`, regardless of whether that tag matches the `GuiApiType` this
-//! plugin negotiated. A host that violates the `set_parent` contract by sending a *recognised but
-//! wrong* tag (e.g. `"cocoa"` on Windows or `"win32"` on Linux) would therefore make
-//! `borrow_handle_unchecked()` return a non-native raw handle here — not an error — and handing that
-//! straight to `namir_ui::open_parented` would reach `baseview`'s platform backend with an unsupported
-//! raw handle, which panics (`unsupported parent handle`). `clack_plugin`'s C trampoline catches that
-//! panic at the FFI boundary (`PluginWrapper::handle`'s `catch_unwind`) so it cannot become
-//! undefined behaviour, but the panic would fire *before* this crate's own `GUI_INVALID_PARENT`
-//! diagnostic ever gets a chance to, so the user would see nothing but a silently-failed GUI open.
-//! This crate closes that gap itself, below, by checking [`handle_matches_negotiated_api`] and
-//! treating anything other than the negotiated platform's window handle variant (`Win32` on Windows,
-//! `AppKit` on macOS, `Xlib`/`Xcb` on Linux) the same way an unrecognised tag is already treated —
-//! a pushed notice and an `Err`, never a fallthrough into `open_parented` with the wrong variant.
+//! `set_parent` is ever reachable — so the variant this plugin *expects* to read is fixed per
+//! platform. `clack_extensions::gui::Window::raw_window_handle` only returns
+//! `Err(HandleError::NotSupported)` for an *unrecognised* `clap_window_t.api` string; for any
+//! recognised one (`"win32"`, `"cocoa"`, `"x11"`, ...) it returns `Ok`, regardless of whether that
+//! tag matches the `GuiApiType` this plugin negotiated. A host that violates the `set_parent`
+//! contract by sending a *recognised but wrong* tag (e.g. `"cocoa"` on Windows or `"win32"` on
+//! Linux) would therefore make `borrow_handle_unchecked()` return a non-native raw handle here —
+//! not an error — and handing that straight to `namir_ui::open_parented` would reach `baseview`'s
+//! platform backend with an unsupported raw handle, which panics (`unsupported parent handle`).
+//! `clack_plugin`'s C trampoline catches that panic at the FFI boundary (`PluginWrapper::handle`'s
+//! `catch_unwind`) so it cannot become undefined behaviour, but the panic would fire *before* this
+//! crate's own `GUI_INVALID_PARENT` diagnostic ever gets a chance to, so the user would see
+//! nothing but a silently-failed GUI open. This crate closes that gap itself, below, by checking
+//! [`handle_matches_negotiated_api`] and treating anything other than the negotiated platform's
+//! window handle variant (`Win32` on Windows, `AppKit` on macOS, `Xlib`/`Xcb` on Linux) the same
+//! way an unrecognised tag is already treated — a pushed notice and an `Err`, never a fallthrough
+//! into `open_parented` with the wrong variant.
 //!
 //! Confined to this one module per D-5.3/NFR-QUAL-070 — `#![allow(unsafe_code)]` below opts only
 //! this file back into the one `unsafe` block above out of this crate's `[lints.rust] unsafe_code

@@ -93,23 +93,25 @@ const DROPOUT_PEAK_THRESHOLD: f32 = 1e-4;
 
 /// A multiple of one block's period (`BLOCK / SR`), originally copied from `rt_stress.rs`
 /// along with its reasoning: **not a performance measurement**, since this binary runs under
-/// `AllocDisabler` and a wall-clock figure gathered here would misrepresent NFR-PERF-010 if quoted as
-/// one (D-2.1/D-2.5). What it detects is the audio thread genuinely blocked on something — which is
-/// exactly the failure mode FR-LIB-020's "off the audio thread" clause forbids.
+/// `AllocDisabler` and a wall-clock figure gathered here would misrepresent NFR-PERF-010 if quoted
+/// as one (D-2.1/D-2.5). What it detects is the audio thread genuinely blocked on something —
+/// which is exactly the failure mode FR-LIB-020's "off the audio thread" clause forbids.
 ///
 /// This is the **sharp** term, and it stays at the `200` `rt_stress.rs` uses rather than being
-/// raised: a shared CI runner preempts this thread for a few hundred milliseconds now and again, and
-/// raising the per-block bound to cover that blunts the detector for every block of the run. Run
-/// `34161569482`'s `build + test (macos-latest)` job (2026-09-07T21:06:26Z, trunk) failed here at
-/// `a block took 349.991ms, over 200x the block period 1.333333ms` — one block out of a 2.29 s scan.
-/// What is tolerated is therefore a bounded *number* of exceedances ([`MAX_SLOW_BLOCKS`]), not a
-/// bigger ceiling; the ceiling a single block may never cross is [`MAX_BLOCK_MULTIPLE`] below.
+/// raised: a shared CI runner preempts this thread for a few hundred milliseconds now and again,
+/// and raising the per-block bound to cover that blunts the detector for every block of the run.
+/// Run `34161569482`'s `build + test (macos-latest)` job (2026-09-07T21:06:26Z, trunk) failed here
+/// at `a block took 349.991ms, over 200x the block period 1.333333ms` — one block out of a 2.29 s
+/// scan. What is tolerated is therefore a bounded *number* of exceedances ([`MAX_SLOW_BLOCKS`]),
+/// not a bigger ceiling; the ceiling a single block may never cross is [`MAX_BLOCK_MULTIPLE`]
+/// below.
 const SOFT_BLOCK_MULTIPLE: u32 = 200;
 
 /// How many blocks may cross [`SOFT_BLOCK_MULTIPLE`] before the run is read as blocking rather than
-/// preempted. A scheduler preemption is an isolated event a handful of times across the thousands of
-/// blocks this loop runs; a scan running *on* this thread, or behind a lock it takes, delays every
-/// block that touches the contended path, so a genuine violation clears this by orders of magnitude.
+/// preempted. A scheduler preemption is an isolated event a handful of times across the thousands
+/// of blocks this loop runs; a scan running *on* this thread, or behind a lock it takes, delays
+/// every block that touches the contended path, so a genuine violation clears this by orders of
+/// magnitude.
 const MAX_SLOW_BLOCKS: usize = 8;
 
 /// The absolute ceiling no single block may cross, catching the one failure the count above cannot:

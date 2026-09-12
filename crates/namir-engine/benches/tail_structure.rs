@@ -4,12 +4,12 @@
 //! # Why this binary exists
 //!
 //! M3's close-out repeatedly hit the same wall: interventions that provably reduce work did not
-//! move `six_stage_chain.rs`'s p99.9. Vectorizing the IR head convolution, fixing `build_schedule`'s
-//! cross-size phase alignment (worst-block modelled FFT load 11.9x -> 6.8x the mean), and sweeping
-//! `max_partition` from 8192 down to 2048 each left the measured IR p99.9 essentially unchanged,
-//! while `p50` moved exactly as predicted every time. Meanwhile repeated identical runs of the
-//! chain benchmark drift (43% -> 45% -> 49% p99.9) while their p50 holds stable to three
-//! significant figures.
+//! move `six_stage_chain.rs`'s p99.9. Vectorizing the IR head convolution, fixing
+//! `build_schedule`'s cross-size phase alignment (worst-block modelled FFT load 11.9x -> 6.8x the
+//! mean), and sweeping `max_partition` from 8192 down to 2048 each left the measured IR p99.9
+//! essentially unchanged, while `p50` moved exactly as predicted every time. Meanwhile repeated
+//! identical runs of the chain benchmark drift (43% -> 45% -> 49% p99.9) while their p50 holds
+//! stable to three significant figures.
 //!
 //! That pattern is consistent with a large share of the measured tail being **environmental**
 //! (scheduler preemption, SMT-sibling occupancy, memory-system contention from other processes)

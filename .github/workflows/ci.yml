@@ -162,7 +162,7 @@ jobs:
   # Pure static checks over the dependency graph and a checked-in manifest -- not
   # platform-dependent, so one OS is enough.
   layering-and-params:
-    name: layering + rt-logging + params.lock + attribution + identity
+    name: layering + rt-logging + comment-width + params.lock + attribution + identity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -181,6 +181,13 @@ jobs:
       # line-based scan over checked-in source, with no OS-specific behaviour to matrix over.
       - name: xtask rt-logging (FR-ERR-030)
         run: cargo run -p xtask -- rt-logging
+
+      # Issue #176: the 100-column convention for comment prose, which `cargo fmt` cannot see --
+      # `rustfmt`'s `wrap_comments` is nightly-only, so 154 over-width comment lines accumulated
+      # across 71 files with a green format gate. Same class as the two steps above: a line-based
+      # scan over checked-in source, with no OS-specific behaviour to matrix over.
+      - name: xtask comment-width (issue #176)
+        run: cargo run -p xtask -- comment-width
 
       # M15 review, finding 3. Five `xtask` subcommands were wired into `xtask/src/main.rs` and
       # into no CI step at all: the three steps that follow this comment, `assets` (below

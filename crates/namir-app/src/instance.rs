@@ -112,7 +112,8 @@ mod tests {
 
         lock_acquired_rx.recv().unwrap();
 
-        // Submitting parameter change must succeed non-blockingly while another thread holds the instance lock.
+        // Submitting parameter change must succeed non-blockingly while another thread holds the
+        // instance lock.
         let result = shared.try_submit_param(ParamChange {
             id: namir_engine::ParamId(10),
             value: -3.0,

@@ -343,11 +343,11 @@ fn plant(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
 // which is the window the clause is about. The handover's own cost is FR-NAM-070's, and is
 // measured by `namir-engine/benches/handover_crossfade.rs`.
 //
-// **The worker thread is pinned to a different core than the audio loop.** `pin_to_measurement_core`
-// runs on the main thread and a spawned thread inherits its affinity mask, so without this the
-// worker and the audio loop would contend for one core and the arm would fail for a reason that is
-// a property of the harness rather than of the code under test. A real product runs them on
-// different cores; so does this.
+// **The worker thread is pinned to a different core than the audio loop.**
+// `pin_to_measurement_core` runs on the main thread and a spawned thread inherits its affinity
+// mask, so without this the worker and the audio loop would contend for one core and the arm would
+// fail for a reason that is a property of the harness rather than of the code under test. A real
+// product runs them on different cores; so does this.
 //
 // **A fresh engine, instance and cache per repetition**, for the same "Cold, not cached" reason
 // the arms above give: `ResourceCache` would otherwise make the second load nearly free, which is

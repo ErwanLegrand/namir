@@ -396,8 +396,9 @@ impl LibraryService {
         Self::open_at_with_roots(config_dir, Vec::new())
     }
 
-    /// [`Self::open_at_with_roots`], resolved against this machine's real `namir_platform::config_dir()`.
-    /// `None` under the same conditions that itself degrades to `None` for.
+    /// [`Self::open_at_with_roots`], resolved against this machine's real
+    /// `namir_platform::config_dir()`. `None` under the same conditions that itself degrades to
+    /// `None` for.
     pub fn open_default_with_roots(
         roots: Vec<PathBuf>,
     ) -> Option<(LibraryService, Vec<WorkerError>)> {

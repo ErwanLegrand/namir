@@ -727,10 +727,11 @@ mod tests {
     /// **M5, FR-STATE-070: "the state shall load with that stage empty."** `Command::Unload`
     /// must crossfade smoothly to dry — no click — and must retire the outgoing slot through the
     /// return ring exactly as a `Load` handover does; it must not simply drop it. Same
-    /// self-calibrating-threshold shape as `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`
-    /// above: what's being measured is the sample-to-sample jump at the transition, not the
-    /// absolute level either side of it (a wet-to-dry transition is expected to change level; it
-    /// must not click while doing so).
+    /// self-calibrating-threshold shape as
+    /// `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout` above: what's
+    /// being measured is the sample-to-sample jump at the transition, not the absolute level
+    /// either side of it (a wet-to-dry transition is expected to change level; it must not click
+    /// while doing so).
     ///
     /// Committed red-first (NFR-QUAL-020): at this commit, `NamStage::unload` is a no-op stub,
     /// so this test must fail — no crossfade starts, the model never leaves, and nothing reaches

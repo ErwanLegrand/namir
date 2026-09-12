@@ -536,15 +536,16 @@ fn is_requirement_id(token: &str) -> bool {
 ///
 /// A match must begin at the start of the line or after a non-ASCII-alphanumeric byte, and must not
 /// be followed by an ASCII digit or letter. Those two boundary checks are what make the scan
-/// trustworthy on real prose: `NFR-` is tried before `FR-` and the match consumes its own length, so
-/// `NFR-PERF-030` cannot also yield a spurious `FR-PERF-030`; and the trailing check is the same
+/// trustworthy on real prose: `NFR-` is tried before `FR-` and the match consumes its own length,
+/// so `NFR-PERF-030` cannot also yield a spurious `FR-PERF-030`; and the trailing check is the same
 /// hazard [`fn_name_embeds_id`] guards by hand, so `FR-IO-0100` yields nothing rather than
 /// `FR-IO-010`. Markdown emphasis and punctuation fall out for free: `**FR-NAM-150**`,
 /// `FR-CLAP-030,` and `FR-IO-010's` all resolve.
 ///
 /// Deliberately does **not** expand the shorthand runs the roadmap writes (`FR-PKG-010, -020,
-/// -030`): only the first, full id resolves. Inferring that `-020` means `FR-PKG-020` is the kind of
-/// guess that is wrong silently, and every id it would reach is spelled out in full somewhere else.
+/// -030`): only the first, full id resolves. Inferring that `-020` means `FR-PKG-020` is the kind
+/// of guess that is wrong silently, and every id it would reach is spelled out in full somewhere
+/// else.
 pub fn scan_requirement_ids(line: &str) -> Vec<String> {
     let bytes = line.as_bytes();
     let mut out = Vec::new();
@@ -661,14 +662,14 @@ fn ends_with_closing_milestone(text: &str) -> bool {
 /// `ci.yml:109` is the standing instance". That attribution is wrong, and D-23.1's
 /// *Consequence (added M9a)* note records it as wrong: adjacency closes **none** of the three false
 /// positives the §23 M9 note lists. Rule 1 -- the marker must *begin* the trimmed line, matched by
-/// [`match_marker`]'s `strip_prefix` -- kills both the string-literal class and `ci.yml:109` itself,
-/// whose trimmed line reads ``# `// trace:`/manual-test coverage found…`` and is therefore a prefix
-/// of neither marker spelling; the tightened [`fn_name_embeds_id`] kills the fn-name class. The
-/// tests say so by name: `a_marker_that_does_not_begin_the_line_is_not_a_tag` labels its two cases
-/// after those classes, and `rule_1_not_adjacency_is_what_stops_a_prose_mention_of_the_marker`
-/// plants a line of `ci.yml:109`'s shape -- a prose mention of the marker, not that line verbatim
-/// -- above a perfectly admissible anchor, so this function would accept
-/// it and never runs.
+/// [`match_marker`]'s `strip_prefix` -- kills both the string-literal class and `ci.yml:109`
+/// itself, whose trimmed line reads ``# `// trace:`/manual-test coverage found…`` and is therefore
+/// a prefix of neither marker spelling; the tightened [`fn_name_embeds_id`] kills the fn-name
+/// class. The tests say so by name: `a_marker_that_does_not_begin_the_line_is_not_a_tag` labels
+/// its two cases after those classes, and
+/// `rule_1_not_adjacency_is_what_stops_a_prose_mention_of_the_marker` plants a line of
+/// `ci.yml:109`'s shape -- a prose mention of the marker, not that line verbatim -- above a
+/// perfectly admissible anchor, so this function would accept it and never runs.
 ///
 /// What adjacency *does* close is a fourth class none of those reach: a **well-formed** tag, naming
 /// real ids at the start of its own line, that sits above no declaration at all -- one inside a
@@ -757,12 +758,12 @@ pub fn manual_test_prefix(id: &str) -> String {
 /// consult `partial_hits` -- a `Verify: M` Must resolves to its manual-test document and a
 /// `Verify: Process` one to the process line, in neither case looking at whether a partial named
 /// it. Left alone, that makes D-23.1's own absolute -- "`xtask traceability` renders **every**
-/// `trace-partial` as a **PARTIAL** row [...] so a partial cannot be introduced without appearing in
-/// a generated, checked-in, diffable file in the same pull request"
+/// `trace-partial` as a **PARTIAL** row [...] so a partial cannot be introduced without appearing
+/// in a generated, checked-in, diffable file in the same pull request"
 /// (`docs/02-architecture.md:2710-2712`) -- false for 14 of the FRS's 130 Musts (13 `M`, 1
 /// `Process`), and false *silently*: the tag would parse, its mandatory `uncovered:` field would be
-/// validated against every rule [`scan_annotations`] applies, and then both would be dropped without
-/// a word.
+/// validated against every rule [`scan_annotations`] applies, and then both would be dropped
+/// without a word.
 ///
 /// **Refusing is chosen over rendering the partial in those two arms**, and the reason is D-23.1's
 /// own first sentence, which is exactly what the two arms are obeying: a tag asserts coverage **by
@@ -770,8 +771,8 @@ pub fn manual_test_prefix(id: &str) -> String {
 /// manual-test script under `docs/manual-tests/`, which no `.rs`/`.yml`/`.toml` file is or can be
 /// part of; for `Verify: Process` the FRS's own definition is review and commit order, with no
 /// artifact a build can inspect at all. Rendering would therefore write into a checked-in generated
-/// document a claim the doctrine says cannot be made -- visible, and wrong -- and for `Verify: M` it
-/// would additionally risk a source annotation standing in for the manual script NFR-QUAL-010
+/// document a claim the doctrine says cannot be made -- visible, and wrong -- and for `Verify: M`
+/// it would additionally risk a source annotation standing in for the manual script NFR-QUAL-010
 /// explicitly requires instead ("except where the Verify field states M, in which case it shall be
 /// covered by a written manual test script"). An error is also strictly stronger than the guarantee
 /// it defends: the partial cannot be introduced *at all*, rather than merely not introduced
@@ -783,8 +784,8 @@ pub fn manual_test_prefix(id: &str) -> String {
 /// split-evidence shape: an in-process test alongside the manual script, with the script still the
 /// traced artifact and still what the plan renders. Those drop harmlessly, because the requirement
 /// resolves by its own method either way and nothing their author wrote is lost. A `trace-partial:`
-/// is different in kind: its `uncovered:` field is mandatory, names a gap and a due date, and exists
-/// for no purpose other than to be rendered.
+/// is different in kind: its `uncovered:` field is mandatory, names a gap and a due date, and
+/// exists for no purpose other than to be rendered.
 pub fn check_partial_verify_code(id: &str, verify: &[char], line: usize) -> Result<(), String> {
     if resolves_through_partials(verify) {
         return Ok(());
@@ -870,8 +871,8 @@ pub struct Report {
 /// A line that opens `PASS` but goes on to say some part was not executed is **not** a pass here
 /// (`fr-ui-010-standalone-window-renders.md` was the live instance until M15: "PASS for steps 1–2
 /// (executed). Step 3 requires a human with a display — not executed this session"). The
-/// document's author wrote both halves; taking the headline word alone would discard the half that matters. As
-/// of M15 that shape is a **hard error** rather than a silent downgrade — see
+/// document's author wrote both halves; taking the headline word alone would discard the half that
+/// matters. As of M15 that shape is a **hard error** rather than a silent downgrade — see
 /// [`parse_manual_verdict`] — because the verdict token is what the gate reads and a token
 /// contradicted by its own sentence is a malformed verdict, not a verdict to interpret.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1311,8 +1312,8 @@ fn needs_manual_document(verify: &[char]) -> bool {
 /// module has been removing -- a partial on a Should is still someone recording a gap.
 ///
 /// The condition mirrors [`render_test_plan`]'s dispatch, and
-/// `partial_row_ids_are_exactly_the_rows_the_plan_marks_partial` checks it against the rendered text
-/// rather than against the reasoning, so the mirror cannot drift in silence.
+/// `partial_row_ids_are_exactly_the_rows_the_plan_marks_partial` checks it against the rendered
+/// text rather than against the reasoning, so the mirror cannot drift in silence.
 pub fn partial_row_ids(requirements: &[Requirement], report: &Report) -> Vec<String> {
     let mut ids: Vec<String> = requirements
         .iter()
@@ -1493,9 +1494,9 @@ pub struct TraceabilityArgs {
 /// Order-independent, repeat-tolerant, and **strict about anything else**.
 ///
 /// Rejecting an unknown argument is a deliberate behaviour change: today's parser recognises only
-/// `--write`, so a mistyped flag is silently ignored (`02-architecture.md:2025-2026`). Once the flag
-/// selects between a required and an informational gate, a typo must be loud. It is fail-safe in
-/// both directions -- a mistyped `--allow-uncovered` cannot make a lenient run look strict and
+/// `--write`, so a mistyped flag is silently ignored (`02-architecture.md:2025-2026`). Once the
+/// flag selects between a required and an informational gate, a typo must be loud. It is fail-safe
+/// in both directions -- a mistyped `--allow-uncovered` cannot make a lenient run look strict and
 /// green, and at the flip a `ci.yml` that still passes the deleted flag hard-fails instead of
 /// quietly running the strict form against a tree nobody expected it to gate.
 pub fn parse_traceability_args(args: &[String]) -> Result<TraceabilityArgs, String> {
@@ -1522,8 +1523,8 @@ pub fn parse_traceability_args(args: &[String]) -> Result<TraceabilityArgs, Stri
 /// `coverage_clean` is the zero-uncovered half, which stays informational until the flip -- M14's
 /// close-out, since M9b closed out without reaching it (the generated header at `:1354` is the
 /// authority; `ci.yml` words the same moment as "M14 Phase 6", Phase 6 being M14's last).
-/// `--allow-uncovered` relaxes **only** the second; it never softens the first, and it never softens
-/// a tool failure, which `main.rs` returns on before reaching here.
+/// `--allow-uncovered` relaxes **only** the second; it never softens the first, and it never
+/// softens a tool failure, which `main.rs` returns on before reaching here.
 ///
 /// **This function takes no attribution argument, and that signature is the mechanical guarantee**
 /// for D-18.5's "the exit status never depends on that attribution"

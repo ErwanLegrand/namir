@@ -253,9 +253,9 @@ mod host_ext {
     /// Every `REGISTRY` key appears exactly once — [`the_golden_vector_is_intact`] checks that
     /// against `REGISTRY` itself rather than trusting this list — because "identical parameter
     /// values" is a clause about the whole parameter set, not about the handful a test happened to
-    /// touch. Several entries are deliberately *at* their default and each says why: `global.bypass`
-    /// must stay off (a bypassed chain would compare two copies of the dry signal), and the four
-    /// stage `enabled` switches must stay on for the same reason.
+    /// touch. Several entries are deliberately *at* their default and each says why:
+    /// `global.bypass` must stay off (a bypassed chain would compare two copies of the dry
+    /// signal), and the four stage `enabled` switches must stay on for the same reason.
     ///
     /// The two `normalize_enabled` switches are at their default for a *different* reason, and it
     /// is the reason a reader would otherwise get backwards: both stages' normalisation gains are
