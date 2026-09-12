@@ -9,9 +9,10 @@
 //! (no blocking, no filesystem I/O — every blocking operation already ran, or is running, on
 //! [`crate::worker::WorkerHandle`]'s own thread):
 //!
-//! 1. Drains [`crate::worker::WorkerHandle`]'s event queue and folds every [`crate::worker::AppEvent`]
-//!    into this host's own state (`loaded_model_name`/`loaded_ir_name`, `notices`, the library
-//!    snapshot/scan progress, `unsaved_changes`).
+//! 1. Drains [`crate::worker::WorkerHandle`]'s event queue and folds every
+//!    [`crate::worker::AppEvent`] into this host's own state
+//!    (`loaded_model_name`/`loaded_ir_name`, `notices`, the library snapshot/scan progress,
+//!    `unsaved_changes`).
 //! 2. Drains the telemetry ring and converts the two readings FR-UI-020 needs into
 //!    [`namir_ui::MeterReading`]s — `telemetry.trim.peak_db`/`average_db` for the input meter (Trim
 //!    is the first real stage after Gate, so its own peak/average readings are the closest thing
@@ -435,7 +436,8 @@ pub struct AppHost {
     /// trip, so an `AppEvent::AudioStreamReady` overtaken by a newer reopen is ignored.
     reopen_generation: u64,
     audio_reopen: Option<AudioReopenContext>,
-    /// Pending stream-open params, set by `initiate_audio_reopen`, consumed by `apply_audio_reopen`.
+    /// Pending stream-open params, set by `initiate_audio_reopen`, consumed by
+    /// `apply_audio_reopen`.
     pending_reopen: Option<PendingStreamOpen>,
 }
 
@@ -802,13 +804,14 @@ impl AppHost {
     /// `audio-settings.json` (FR-IO-080) so the next launch starts from what worked this time.
     ///
     /// **The negotiated buffer size is deliberately not among them** (issue #167). A buffer size in
-    /// this file means "somebody asked for this" — either a hand edit or `UiIntent::SelectBufferSize`
-    /// — so writing a negotiated fallback here would make the next launch indistinguishable from a
-    /// request, warn about a decline the user never asked for, and pin the file to the first size the
-    /// first device happened to grant. A requested size is therefore carried through unchanged even
-    /// when negotiation declined it, and a clean install leaves the field absent. That is why this
-    /// method takes no buffer size: see the `*Consequence (added 2026-09-08, from issue #167)*` note
-    /// at D-13.1 for what it costs against FR-IO-080's literal wording.
+    /// this file means "somebody asked for this" — either a hand edit or
+    /// `UiIntent::SelectBufferSize` — so writing a negotiated fallback here would make the next
+    /// launch indistinguishable from a request, warn about a decline the user never asked for, and
+    /// pin the file to the first size the first device happened to grant. A requested size is
+    /// therefore carried through unchanged even when negotiation declined it, and a clean install
+    /// leaves the field absent. That is why this method takes no buffer size: see the
+    /// `*Consequence (added 2026-09-08, from issue #167)*` note at D-13.1 for what it costs
+    /// against FR-IO-080's literal wording.
     ///
     /// Called right after a successful `RunningStreams::play()`, both at startup (from
     /// `crate::app::run`) and after a stream reopen (`apply_audio_reopen`).
@@ -1384,8 +1387,8 @@ impl UiHost for AppHost {
                 self.library.add_root(path);
                 self.persist_library_roots();
                 // Adding a library root updates the configured list immediately for resolution and
-                // UI display, but does not trigger an automatic rescan. Rescanning remains an explicit
-                // user action via `RescanLibraryRequested`.
+                // UI display, but does not trigger an automatic rescan. Rescanning remains an
+                // explicit user action via `RescanLibraryRequested`.
             }
             UiIntent::RemoveLibraryRoot { path } => {
                 self.library.remove_root(&path);
@@ -2285,8 +2288,9 @@ mod tests {
     /// a reference, so `AppCommand::SaveState` serialised a `State` whose `nam`/`ir` were always
     /// `None` and every preset silently forgot which model and IR were loaded. A save button that
     /// quietly loses the user's setup is worse than no save button, so this asserts the reference
-    /// actually reaches the file: its content hash (P7's identity), its display name (FR-STATE-070's
-    /// "the user shall be shown the missing file's name") and its originating absolute path.
+    /// actually reaches the file: its content hash (P7's identity), its display name
+    /// (FR-STATE-070's "the user shall be shown the missing file's name") and its originating
+    /// absolute path.
     ///
     /// Driven with a generated IR rather than a `.nam` only because the fixture is one line
     /// (D-19.1: every fixture is generated, never captured); `crate::worker`'s recording step is

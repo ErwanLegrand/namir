@@ -17,11 +17,11 @@
 //! **The M2 gap this module used to document is closed.** Between M2 and M4 a completing handover
 //! dropped the outgoing slot right here, on the audio thread — freeing its `NamState` scratch and
 //! possibly the last `Arc<PreparedNam>` reference — and this comment recorded that as a real P1
-//! violation rather than hiding it. It is gone: the finalization in `process_channel0` now `take()`s
-//! the slot (a move) into `self.retired`, and the return ring carries it to a worker that can
-//! afford to free it. The evidence is that this module's RT-allocation tests no longer stop short
-//! of completion, and `handover_crossfade_has_no_large_single_sample_jump` now drives a full
-//! real-to-real handover *inside* `rt_harness::audio_section` — which it could not do before.
+//! violation rather than hiding it. It is gone: the finalization in `process_channel0` now
+//! `take()`s the slot (a move) into `self.retired`, and the return ring carries it to a worker
+//! that can afford to free it. The evidence is that this module's RT-allocation tests no longer
+//! stop short of completion, and `handover_crossfade_has_no_large_single_sample_jump` now drives a
+//! full real-to-real handover *inside* `rt_harness::audio_section` — which it could not do before.
 //! There is a second, subtler drop site closed at the same time: an install that displaces a slot
 //! still fading in used to drop the displaced slot. See [`NamStage::install`].
 //!
@@ -410,10 +410,11 @@ impl NamSlot {
 /// resamplers' `output_delay()` (converting the first one's model-rate figure to engine-rate
 /// samples) plus one `engine_block` for FIFO buffering granularity. Until M14 that derivation had
 /// never been checked against the pipeline's actual behaviour, and this note said so. It is checked
-/// now, and it is exact — `the_resampled_stages_reported_latency_is_the_delay_the_signal_actually_sees`
-/// cross-correlates a chirp through the resampled stage against the *same model at the engine's own
-/// rate*, so the model's own filtering group delay cancels and what is left is this field: **640
-/// reported, 640 measured** for a 44.1 kHz Nano model at a 48 kHz engine.
+/// now, and it is exact —
+/// `the_resampled_stages_reported_latency_is_the_delay_the_signal_actually_sees` cross-correlates
+/// a chirp through the resampled stage against the *same model at the engine's own rate*, so the
+/// model's own filtering group delay cancels and what is left is this field: **640 reported, 640
+/// measured** for a 44.1 kHz Nano model at a 48 kHz engine.
 ///
 /// Still not formally proven, and empirical rather than derived: the FIFOs' capacities are generous
 /// relative to the bound the design keeps them under (see the `engine_in_fifo`/`engine_out_fifo`
@@ -1442,8 +1443,8 @@ mod tests {
 
     /// Comfortably past the ~20 ms handover crossfade, the separate ~15 ms shared bypass blend,
     /// and FR-NAM-090's own 25 ms normalisation-gain ramp (all one-pole; several time constants
-    /// each) -- 400 ms at 48 kHz, the same margin `load_model_settles_to_match_direct_process_block`
-    /// already uses for the first two.
+    /// each) -- 400 ms at 48 kHz, the same margin
+    /// `load_model_settles_to_match_direct_process_block` already uses for the first two.
     const NORMALIZE_SETTLE_SAMPLES: usize = 19_200;
 
     // trace: FR-NAM-130
@@ -1775,9 +1776,9 @@ mod tests {
     /// **FR-NAM-110's `Verify: U` method — "cross-correlate an impulse through the stage" — for the
     /// figure `namir-nam` cannot see.** W3 closed the model's own half in
     /// `crates/namir-nam/tests/latency.rs`, which cross-correlates through every architecture and
-    /// would fail if inference introduced delay. What survived was this stage's *other* figure: when
-    /// a model's declared rate differs from the engine's, [`SlotResampler`] adds latency, and that
-    /// value was asserted only as `> 0` by
+    /// would fail if inference introduced delay. What survived was this stage's *other* figure:
+    /// when a model's declared rate differs from the engine's, [`SlotResampler`] adds latency, and
+    /// that value was asserted only as `> 0` by
     /// [`latency_reports_the_active_slots_resampler_latency`] below, with this module's own doc
     /// comment recording that it "is not proven sample-exact".
     ///
@@ -1789,12 +1790,13 @@ mod tests {
     ///
     /// The obvious construction — correlate the stage's output against the stage's *input* — does
     /// not measure this. A NAM model is a filter as well as a nonlinearity, and an arbitrary filter
-    /// has a **group delay of its own** that is neither latency nor constant with frequency: driving
-    /// this same chirp through a 1:1-rate stage, where D-9.2 bypasses the resampler entirely and the
-    /// stage correctly reports zero, an input-referenced correlation reads 11, 9, 8 or 7 samples
-    /// depending only on where the measurement window starts, because the chirp is at a different
-    /// frequency in each. That is the model's filtering, not a latency the stage failed to declare —
-    /// `namir-nam`'s own `tests/latency.rs` is what establishes that inference itself is causal.
+    /// has a **group delay of its own** that is neither latency nor constant with frequency:
+    /// driving this same chirp through a 1:1-rate stage, where D-9.2 bypasses the resampler
+    /// entirely and the stage correctly reports zero, an input-referenced correlation reads 11, 9,
+    /// 8 or 7 samples depending only on where the measurement window starts, because the chirp is
+    /// at a different frequency in each. That is the model's filtering, not a latency the stage
+    /// failed to declare — `namir-nam`'s own `tests/latency.rs` is what establishes that inference
+    /// itself is causal.
     ///
     /// So the reference is **the same model at the engine's own rate**. Both runs carry the model's
     /// filtering; the only thing between them is the resampler, so the lag between the two outputs
@@ -1802,8 +1804,8 @@ mod tests {
     /// report and the one nothing had ever checked from outside the stage.
     ///
     /// A chirp rather than a literal impulse: this stage's bypass blend needs a settling period
-    /// before the measurement and an impulse would be long over by then, while a sustained broadband
-    /// probe measures the same delay and conditions the correlation far better.
+    /// before the measurement and an impulse would be long over by then, while a sustained
+    /// broadband probe measures the same delay and conditions the correlation far better.
     // trace: FR-NAM-110
     #[test]
     fn the_resampled_stages_reported_latency_is_the_delay_the_signal_actually_sees() {
@@ -2201,8 +2203,8 @@ mod tests {
     /// method — which is the whole point of an offline reference.
     ///
     /// The kernel is normalised per output sample so DC gain is exactly 1 at every fractional
-    /// phase; the cutoff sits at 0.45 × the lower of the two rates, matching the region FR-NAM-060's
-    /// M14 note calls the satisfiable one.
+    /// phase; the cutoff sits at 0.45 × the lower of the two rates, matching the region
+    /// FR-NAM-060's M14 note calls the satisfiable one.
     fn resample_offline(input: &[f32], from_hz: f64, to_hz: f64) -> Vec<f32> {
         /// Half the kernel length. 96 taps either side is far longer than anything real-time would
         /// use, which is exactly what an offline reference is for.
@@ -2282,7 +2284,8 @@ mod tests {
     /// # The measured figures, and why this stays a partial
     ///
     /// **The tolerance is met — up to a probe bandwidth, and then it is not.** FR-NAM-030's figure
-    /// is an error RMS 90 dB below the reference's; measured over four probe bands, latency-aligned:
+    /// is an error RMS 90 dB below the reference's; measured over four probe bands,
+    /// latency-aligned:
     ///
     /// | Probe | Error RMS | FR-NAM-030's −90 dB |
     /// |---|---|---|
@@ -2294,21 +2297,21 @@ mod tests {
     /// The trend is the finding, and it is not a resampler passband problem: both conversions are
     /// flat far above 8 kHz. **It is the nonlinearity between them.** A NAM model is a distortion,
     /// so an 8 kHz probe puts harmonics at 16, 24 and 32 kHz — above the 22.05 kHz Nyquist the
-    /// return conversion has to fold or reject — and that is precisely where a 193-tap windowed sinc
-    /// and a 256-point overlap-add FFT resampler stop agreeing. Two *different* resamplers cannot
-    /// agree to −90 dB on content sitting in their transition bands, and an offline reference that
-    /// shared `SlotResampler`'s own implementation would be checking nothing.
+    /// return conversion has to fold or reject — and that is precisely where a 193-tap windowed
+    /// sinc and a 256-point overlap-add FFT resampler stop agreeing. Two *different* resamplers
+    /// cannot agree to −90 dB on content sitting in their transition bands, and an offline
+    /// reference that shared `SlotResampler`'s own implementation would be checking nothing.
     ///
     /// So the requirement's own tolerance is executed and met for a probe whose harmonics stay
-    /// inside both passbands, and the residue is a question the FRS has to answer rather than a test
-    /// can: FR-NAM-050's method names no probe signal and no reference resampler, and FR-NAM-030's
-    /// tolerance was written for a comparison against `NeuralAmpModelerCore` on a *fixed* 10-second
-    /// signal, not for a resampler-versus-resampler difference.
+    /// inside both passbands, and the residue is a question the FRS has to answer rather than a
+    /// test can: FR-NAM-050's method names no probe signal and no reference resampler, and
+    /// FR-NAM-030's tolerance was written for a comparison against `NeuralAmpModelerCore` on a
+    /// *fixed* 10-second signal, not for a resampler-versus-resampler difference.
     ///
     /// What every band establishes, and what nothing established before M14: the stage's round trip
     /// really does carry the signal through the model at the model's declared rate, sample-aligned
-    /// by the latency it reports. A regression that broke the conversion moves these figures by tens
-    /// of dB — as the one-sample-misalignment control below demonstrates.
+    /// by the latency it reports. A regression that broke the conversion moves these figures by
+    /// tens of dB — as the one-sample-misalignment control below demonstrates.
     // trace-partial: FR-NAM-050
     // uncovered: FR-NAM-050 — the comparison the Verify method specifies is computed here for the
     // uncovered: first time (a 48 kHz model in a 44.1 kHz engine against the same model driven at

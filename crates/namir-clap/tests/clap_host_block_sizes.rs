@@ -576,12 +576,13 @@ mod loaded {
     /// duration only keeps the landing quick.
     const RECALL_SETTLE: Duration = Duration::from_millis(750);
 
-    /// Silent blocks of [`DEFAULT_MAX_BLOCK`] frames every run processes between the install and the
-    /// signal under test. Fixed, and counted from the block on which the install landed rather than
-    /// from the start of the run, so every run reaches frame 0 of the comparison having processed
-    /// the identical number of frames *through the loaded chain* — which is the number the
-    /// resampler FIFO and the convolver partition phase are functions of. Blocks before the install
-    /// are pass-through silence with no model and no IR, so they leave no state behind to differ.
+    /// Silent blocks of [`DEFAULT_MAX_BLOCK`] frames every run processes between the install and
+    /// the signal under test. Fixed, and counted from the block on which the install landed rather
+    /// than from the start of the run, so every run reaches frame 0 of the comparison having
+    /// processed the identical number of frames *through the loaded chain* — which is the number
+    /// the resampler FIFO and the convolver partition phase are functions of. Blocks before the
+    /// install are pass-through silence with no model and no IR, so they leave no state behind to
+    /// differ.
     ///
     /// 128 x 512 = 65 536 frames. Two things have to have finished by then, and both do by orders
     /// of magnitude: the model's own causal-convolution history has to be flushed with the zeros

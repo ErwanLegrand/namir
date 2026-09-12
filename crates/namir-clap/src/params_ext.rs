@@ -184,11 +184,11 @@ impl GestureState {
 ///
 /// # A refused push must not leave a gesture hanging (issue #145)
 ///
-/// The three pushes were `&&`-chained, which reads as all-or-nothing and is not: `&&` short-circuits
-/// *after* the begin has already been handed to the host, so a buffer that filled up between the
-/// begin and the end left an unmatched `ParamGestureBegin` out there — and the retry path then
-/// emitted a *second* begin on the next block, because the change was correctly put back in the
-/// pending set. Two begins, one end.
+/// The three pushes were `&&`-chained, which reads as all-or-nothing and is not: `&&`
+/// short-circuits *after* the begin has already been handed to the host, so a buffer that filled
+/// up between the begin and the end left an unmatched `ParamGestureBegin` out there — and the
+/// retry path then emitted a *second* begin on the next block, because the change was correctly
+/// put back in the pending set. Two begins, one end.
 ///
 /// There is no un-push, and `OutputEvents` exposes no remaining capacity to check first, so the
 /// emission is made whole across calls rather than within one:

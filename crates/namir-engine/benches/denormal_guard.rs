@@ -100,9 +100,10 @@
 //!
 //! Same real six-stage chain, fixture seeds and non-default gate/EQ activation as
 //! `six_stage_chain.rs` — see that file's doc comment for why each choice is what it is. Three
-//! independent `Chain` instances are assembled (one per arm) sharing the same loaded `Arc<PreparedNam>`/
-//! `Arc<PreparedIr>`, per that file's own explanation of why `build_default_chain` cannot be used
-//! when a real resource has to be loaded into a concrete stage type after `prepare`.
+//! independent `Chain` instances are assembled (one per arm) sharing the same loaded
+//! `Arc<PreparedNam>`/ `Arc<PreparedIr>`, per that file's own explanation of why
+//! `build_default_chain` cannot be used when a real resource has to be loaded into a concrete
+//! stage type after `prepare`.
 //!
 //! # Result of the first run (this machine, dev-mode smoke run — NOT the certified figure)
 //!
@@ -150,9 +151,9 @@
 //! phase needs on the order of 1,360 blocks to first cross into the subnormal range at all, per its
 //! own doc comment's worked figure, so a warmup shorter than that measures a run that is only
 //! *partly* denormal rather than failing outright — `saw_subnormal_input` below still catches a
-//! warmup of `0`, just not a warmup too short to cover the *whole* measured window). `NAMIR_PIN_CORE`
-//! behaves identically to every other benchmark in this directory (default core index 4; see
-//! `pin_to_measurement_core` below).
+//! warmup of `0`, just not a warmup too short to cover the *whole* measured window).
+//! `NAMIR_PIN_CORE` behaves identically to every other benchmark in this directory (default core
+//! index 4; see `pin_to_measurement_core` below).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -336,8 +337,8 @@ fn stereo_ir_wav_bytes() -> Vec<u8> {
 /// why: the concrete `NamStage`/`IrStage` types have to stay in scope long enough to load real
 /// resources into them, which a boxed `Chain` from `build_default_chain` cannot offer). Called once
 /// per arm so each arm's chain is genuinely independent state, sharing only the same loaded
-/// `Arc<PreparedNam>`/`Arc<PreparedIr>` (cheap to clone, and keeps every arm measuring literally the
-/// same model and IR rather than three separately-generated approximations of it).
+/// `Arc<PreparedNam>`/`Arc<PreparedIr>` (cheap to clone, and keeps every arm measuring literally
+/// the same model and IR rather than three separately-generated approximations of it).
 fn assemble_real_chain(
     ctx: &PrepareContext,
     nam_model: &Arc<PreparedNam>,

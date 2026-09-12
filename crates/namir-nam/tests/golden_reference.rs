@@ -48,14 +48,14 @@
 //! `wavenet` code these renders exercise. Two reasons for excluding it, and one consequence stated
 //! rather than measured. (1) `NAM_USE_INLINE_GEMM` is what makes this build reproducible across
 //! Eigen version bumps, and the fast path is a hand-written kernel, not the GEMM the flag redirects
-//! -- pinning one while leaving the other free would defeat the pin. (2) The fast path is upstream's
-//! *optimisation* of the same declared model, so the general path is the definition and the fast
-//! path is a claimed-equivalent implementation of it; a reference should be the definition.
-//! **The consequence, unmeasured and not to be read as measured:** nothing here establishes that
-//! `a2_fast.cpp` agrees with the general path, so nothing here establishes that Namir agrees with
-//! what a default-built host actually runs. Closing that needs a second render pair from an
-//! `NAM_ENABLE_A2_FAST=ON` build; it is recorded at **R-9** (`docs/02-architecture.md` §22) rather
-//! than performed, because no such measurement was taken.
+//! -- pinning one while leaving the other free would defeat the pin. (2) The fast path is
+//! upstream's *optimisation* of the same declared model, so the general path is the definition and
+//! the fast path is a claimed-equivalent implementation of it; a reference should be the
+//! definition. **The consequence, unmeasured and not to be read as measured:** nothing here
+//! establishes that `a2_fast.cpp` agrees with the general path, so nothing here establishes that
+//! Namir agrees with what a default-built host actually runs. Closing that needs a second render
+//! pair from an `NAM_ENABLE_A2_FAST=ON` build; it is recorded at **R-9**
+//! (`docs/02-architecture.md` §22) rather than performed, because no such measurement was taken.
 //!
 //! # Regenerating these fixtures
 //!

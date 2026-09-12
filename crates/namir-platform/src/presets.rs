@@ -68,8 +68,8 @@ pub fn preset_path(dir: &Path, name: &str) -> Option<PathBuf> {
 /// Rejected: anything empty once trimmed, anything containing a path separator of either platform
 /// (so a name can never reach a sibling directory), anything that is `.` or `..`, anything
 /// containing a character Windows refuses in a filename, and anything Win32 resolves as a device
-/// rather than as a file (`names_a_win32_device`, below). The last two are checked on every platform
-/// on
+/// rather than as a file (`names_a_win32_device`, below). The last two are checked on every
+/// platform on
 /// purpose: a preset saved on Linux under a name Windows cannot represent would be a preset the
 /// other half of FR-STATE-030's interchangeability claim cannot open.
 ///

@@ -58,8 +58,8 @@ pub const FILE_TOO_LARGE: ErrorCode = ErrorCode::new(
 );
 
 /// D-12.3/P8: the on-disk index file was missing a `format_version`, carried an unsupported one,
-/// or failed to parse as the expected shape at all. Never fatal — [`crate::store::IndexStore::open`]
-/// degrades to an empty index and the next scan repopulates it.
+/// or failed to parse as the expected shape at all. Never fatal —
+/// [`crate::store::IndexStore::open`] degrades to an empty index and the next scan repopulates it.
 pub const INDEX_CORRUPT: ErrorCode = ErrorCode::new(
     "library.index.corrupt",
     Severity::Warning,

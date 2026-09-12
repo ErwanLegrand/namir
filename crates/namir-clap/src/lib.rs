@@ -78,13 +78,14 @@ use main_thread::NamirMainThread;
 use shared::NamirShared;
 
 /// Internal seam for `tests/clap_host_state.rs` (issue #94). A test binary is a **separate
-/// crate**, so it cannot reach this crate's `pub(crate)` `SharedInner`/`worker_jobs::spawn_recall_preset` —
-/// the worker-pool preset-recall path that sets `params_rescan_pending` and wakes the host. This
-/// module records the live instance's `Arc<SharedInner>` at construction and exposes one narrow
-/// `pub` function that dispatches a preset recall through that same path, so the integration test
-/// can drive the real worker job and observe the resulting host callback without widening any
-/// production API. `#[doc(hidden)]`: this is a test seam, not public surface. Only compiled under
-/// the `host-ext-tests` feature, so it adds nothing to the production build.
+/// crate**, so it cannot reach this crate's `pub(crate)`
+/// `SharedInner`/`worker_jobs::spawn_recall_preset` — the worker-pool preset-recall path that sets
+/// `params_rescan_pending` and wakes the host. This module records the live instance's
+/// `Arc<SharedInner>` at construction and exposes one narrow `pub` function that dispatches a
+/// preset recall through that same path, so the integration test can drive the real worker job and
+/// observe the resulting host callback without widening any production API. `#[doc(hidden)]`: this
+/// is a test seam, not public surface. Only compiled under the `host-ext-tests` feature, so it
+/// adds nothing to the production build.
 #[cfg(feature = "host-ext-tests")]
 #[doc(hidden)]
 pub mod __test_support {

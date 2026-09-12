@@ -39,9 +39,10 @@ pub struct LatencyReport {
 
 /// Computes the buffer-based estimate: `input_buffer_frames + output_buffer_frames +
 /// bridge_prefill_frames`, with `output_buffer_frames` `None` when the device chose its own buffer
-/// (the sum then omits that term and [`LatencyReport::includes_output_buffer`] says so), converted to milliseconds at `sample_rate_hz`. Returns `None` if
-/// `sample_rate_hz` is zero (nothing meaningful to report — the caller has a configuration error
-/// to surface separately, not a latency figure).
+/// (the sum then omits that term and [`LatencyReport::includes_output_buffer`] says so), converted
+/// to milliseconds at `sample_rate_hz`. Returns `None` if `sample_rate_hz` is zero (nothing
+/// meaningful to report — the caller has a configuration error to surface separately, not a
+/// latency figure).
 pub fn estimate_round_trip(
     input_buffer_frames: u32,
     output_buffer_frames: Option<u32>,

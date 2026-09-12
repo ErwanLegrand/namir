@@ -963,12 +963,13 @@ impl Stage for IrStage {
     }
 }
 
-/// Issue #127's follow-up: the one place this stage's per-channel level ramp is constructed, so `prepare` and the
-/// test that pins its start point cannot drift apart. `GainRamp::new_at_db` rather than
-/// `GainRamp::new` followed by `set_target_db`: the latter leaves `current` at unity and `target`
-/// at the default, so the first ~25 ms of audio after every prepare, sample-rate change or
-/// re-prepare ramps from 0 dB to the parameter's real default. That is inaudible only because
-/// `ir.level_db` happens to default to 0.0 dB today — see `GainRamp::new_at_db`'s own doc comment.
+/// Issue #127's follow-up: the one place this stage's per-channel level ramp is constructed, so
+/// `prepare` and the test that pins its start point cannot drift apart. `GainRamp::new_at_db`
+/// rather than `GainRamp::new` followed by `set_target_db`: the latter leaves `current` at unity
+/// and `target` at the default, so the first ~25 ms of audio after every prepare, sample-rate
+/// change or re-prepare ramps from 0 dB to the parameter's real default. That is inaudible only
+/// because `ir.level_db` happens to default to 0.0 dB today — see `GainRamp::new_at_db`'s own doc
+/// comment.
 fn level_ramp_at_default(sample_rate: SampleRate, default_db: f32) -> GainRamp {
     GainRamp::new_at_db(sample_rate, LEVEL_RAMP_TIME_CONSTANT_MS, default_db)
 }
@@ -1015,8 +1016,8 @@ mod tests {
         }
     }
 
-    /// The other half: `prepare` really does route through level_ramp_at_default, so the assertion above is
-    /// about this stage and not just about `namir-dsp`. At the shipped default this is a
+    /// The other half: `prepare` really does route through level_ramp_at_default, so the assertion
+    /// above is about this stage and not just about `namir-dsp`. At the shipped default this is a
     /// tripwire rather than a live check -- it starts failing the day the default moves and the
     /// construction has drifted back.
     #[test]
@@ -1267,12 +1268,13 @@ mod tests {
     ///
     /// Committed red-first: before the fix, `crossfade` is still `Some(remaining: 0)` and `active`
     /// is still 1 after the pen has been drained and further blocks processed.
-    /// **Issue #141 at this stage** — `nam.rs`'s `a_first_load_engages_the_bypass_blend_for_the_whole_fade`,
-    /// for the Ir stage, which reproduced the same defect with the same numbers (the wet signal
-    /// first appearing at frame 512, 768, 896 or 959 for block sizes 512, 256, 64 and 1). Read
-    /// that test's doc comment for the measurement that identified the mechanism: the equal-power
-    /// blend was computed correctly all along and then multiplied away by a bypass blend that
-    /// stayed shut for the fade's whole duration.
+    /// **Issue #141 at this stage** — `nam.rs`'s
+    /// `a_first_load_engages_the_bypass_blend_for_the_whole_fade`, for the Ir stage, which
+    /// reproduced the same defect with the same numbers (the wet signal first appearing at frame
+    /// 512, 768, 896 or 959 for block sizes 512, 256, 64 and 1). Read that test's doc comment for
+    /// the measurement that identified the mechanism: the equal-power blend was computed correctly
+    /// all along and then multiplied away by a bypass blend that stayed shut for the fade's whole
+    /// duration.
     #[test]
     fn a_first_load_engages_the_bypass_blend_for_the_whole_fade() {
         const SR: u32 = 48_000;
@@ -1315,11 +1317,11 @@ mod tests {
         );
     }
 
-    /// **The guard on issue #141's snap, which is this stage's own and has no `nam.rs` equivalent.**
-    /// FR-IR-070's low-cut/high-cut/level run on the wet path unconditionally, so with a low-cut
-    /// engaged and nothing loaded the wet path carries a high-passed copy of the dry input that
-    /// only `mix == 0.0` is discarding. Snapping `mix` to 1.0 there would step the output from
-    /// `dry` to `filter(dry)` in a single sample — the click FR-CHAIN-020 forbids — so
+    /// **The guard on issue #141's snap, which is this stage's own and has no `nam.rs`
+    /// equivalent.** FR-IR-070's low-cut/high-cut/level run on the wet path unconditionally, so
+    /// with a low-cut engaged and nothing loaded the wet path carries a high-passed copy of the
+    /// dry input that only `mix == 0.0` is discarding. Snapping `mix` to 1.0 there would step the
+    /// output from `dry` to `filter(dry)` in a single sample — the click FR-CHAIN-020 forbids — so
     /// [`IrStage::wet_path_is_transparent`] refuses it and the blend ramps instead.
     ///
     /// The onset is still not block-quantised (`mix_target` is engaged from the fade's first

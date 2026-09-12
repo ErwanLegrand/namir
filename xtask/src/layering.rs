@@ -307,7 +307,8 @@ pub fn scan_platform_cfg(source: &str) -> Vec<(usize, &'static str)> {
 /// dependency for one platform only, which is a platform conditional expressed in TOML rather than
 /// in Rust. `namir-platform`'s own manifest carries the tree's one legitimate instance
 /// (`alsa`/`coreaudio` — see its line 42); any other crate growing one would be taking a platform
-/// dependency the source-level lint cannot see at all, because the conditional is not in the source.
+/// dependency the source-level lint cannot see at all, because the conditional is not in the
+/// source.
 ///
 /// Returns `(1-indexed line number, the table header as written)`.
 pub fn scan_cargo_target_tables(source: &str) -> Vec<(usize, String)> {

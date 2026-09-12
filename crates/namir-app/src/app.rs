@@ -899,7 +899,8 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
     };
     let worker = WorkerHandle::spawn(worker_ctx);
     // No device was opened at all on this path, so there is no share mode to indicate -- `None`
-    // rather than a truthful-looking "Shared", which would claim a device this window does not have.
+    // rather than a truthful-looking "Shared", which would claim a device this window does not
+    // have.
     let mut host = AppHost::new(instance, worker, telemetry, library, state, None);
     let (settings, _) = match &config_dir {
         Some(dir) => settings::load(&settings::settings_path(dir)),

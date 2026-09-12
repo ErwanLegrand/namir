@@ -348,11 +348,11 @@ impl WaveNetShape {
 /// no researched LSTM shape was available to confirm against — unlike [`WaveNetShape::Standard`],
 /// which has always cited `neural-amp-modeler`'s own `get_wavenet_config`. That disclaimer is now
 /// retired: a set of 67 reference LSTM models published by NAM's author was examined directly
-/// (`docs/manual-tests/fr-nam-020-real-lstm-models.md` records the set, its provenance and its licence status), and it
-/// is a systematic sweep of `num_layers` 1–4 against `hidden_size` 1–12, 16, 20, 24, 28, 32, every
-/// one at `input_size: 1` and 48 kHz. **All three shapes below exist in that sweep** — `Standard`
-/// is its `LSTM-2-032`, `Small` its `LSTM-1-016`, `Tiny` its `LSTM-1-004` — so the guessed numbers
-/// turned out to be real ones and need no replacing.
+/// (`docs/manual-tests/fr-nam-020-real-lstm-models.md` records the set, its provenance and its
+/// licence status), and it is a systematic sweep of `num_layers` 1–4 against `hidden_size` 1–12,
+/// 16, 20, 24, 28, 32, every one at `input_size: 1` and 48 kHz. **All three shapes below exist in
+/// that sweep** — `Standard` is its `LSTM-2-032`, `Small` its `LSTM-1-016`, `Tiny` its
+/// `LSTM-1-004` — so the guessed numbers turned out to be real ones and need no replacing.
 ///
 /// What that does and does not buy: these are confirmed to be *shapes the ecosystem actually
 /// ships*, so a fixture built from them exercises a real configuration rather than an invented one.
@@ -821,9 +821,10 @@ fn a2_leaky_relu_config() -> A2ActivationConfig {
 }
 
 /// Builds the exact core-A2 layer array topology (`a2_fast.h`'s `kKernelSizes`/`kDilations`,
-/// `kLeakySlope`, `kHeadKernelSize`) for a given channel count (8 for "A2 standard"/[`A2Shape::Full`],
-/// 3 for "A2 nano"/[`A2Shape::Lite`]) — not a simplification: this is the real 23-layer,
-/// single-array topology the strict detector requires, reproduced exactly rather than invented.
+/// `kLeakySlope`, `kHeadKernelSize`) for a given channel count (8 for "A2
+/// standard"/[`A2Shape::Full`], 3 for "A2 nano"/[`A2Shape::Lite`]) — not a simplification: this is
+/// the real 23-layer, single-array topology the strict detector requires, reproduced exactly
+/// rather than invented.
 fn a2_core_layer_array(channels: usize) -> Vec<A2LayerArrayConfig> {
     // a2_fast.h:38-39.
     const KERNEL_SIZES: [usize; 23] = [

@@ -8,9 +8,10 @@
 //! > local build.
 //!
 //! Three clauses, checked by three separate functions ([`clause_1_triggered_by_a_tag`],
-//! [`clause_2_every_tier_1_and_tier_2_platform`], [`clause_3_every_distribution_is_this_workflows`])
-//! so that a failure names which one broke rather than "the workflow is wrong". Each returns a
-//! violations list in the same shape as `bundle::check` and `identity::check`.
+//! [`clause_2_every_tier_1_and_tier_2_platform`],
+//! [`clause_3_every_distribution_is_this_workflows`]) so that a failure names which one broke
+//! rather than "the workflow is wrong". Each returns a violations list in the same shape as
+//! `bundle::check` and `identity::check`.
 //!
 //! # Why a test here and not a `# trace:` in the workflow
 //!

@@ -23,7 +23,8 @@ impl XrunCounter {
         Self::default()
     }
 
-    /// Records one xrun. RT-safe: a single relaxed atomic increment, callable from an audio callback.
+    /// Records one xrun. RT-safe: a single relaxed atomic increment, callable from an audio
+    /// callback.
     #[inline]
     pub fn record(&self) {
         self.0.fetch_add(1, Ordering::Relaxed);
