@@ -4001,6 +4001,23 @@ internal inconsistency: **FR-CFG-020 was already Partial on exactly this reasoni
 built and its `Verify: G` apparatus wholly absent, and a performance Must with the same shape was
 being read the other way.
 
+**Correction (added 2026-09-13, issue #219) — the corroborating argument in the paragraph above is
+false, and the two verdicts stand without it.** Neither FR-STATE-050 nor FR-OUT-010 carries a
+`// trace-partial:` anywhere in the tree, at the cited lines or elsewhere; both carry plain
+`// trace:` tags — FR-OUT-010's at `crates/namir-engine/src/stages/out.rs:341` and `:387`,
+FR-STATE-050's at `crates/namir-worker/tests/recall_continuity.rs:277`. The only `trace-partial:` in
+`out.rs` is FR-OUT-**020**'s, a different requirement (`:531`), and the cited
+`crates/namir-worker/src/recall.rs:294-300` is a doc comment recording that FR-STATE-050's tag was
+*removed* here at M14, not one asserting a partial. The claim was false when written, not aged out.
+What survives is the adjudication itself: both cells rest on the table's own "Why the correction was
+accepted" column — FR-STATE-050's artifact processes no audio, FR-OUT-010's +12 dB maximum and 0 dB
+default are asserted nowhere — which is the requirement-text reasoning D-23.2 asks for and is
+independent of any tag. **The verdicts do not change.** What the plain tags actually show is the
+stronger point: a plain tag over-claiming is precisely the condition a Partial records under D-23.1,
+so the tags are what the correction asserts *against*, not evidence for it. The follow-on
+cross-check sentence — "no requirement carrying a partial was adjudicated Done" — is therefore not
+repaired by these two cells; they were never instances of it.
+
 **The rejected correction, recorded with its reasoning because it becomes an open item rather than a
 cell.** The spot-check argued **NFR-PORT-030** to Partial: the requirement's text enumerates five
 design constraints — no path-namespace assumption, no mouse, no unlimited threads, no blocking dialog
