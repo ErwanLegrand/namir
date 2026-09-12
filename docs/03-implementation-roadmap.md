@@ -1991,7 +1991,7 @@ form, so the ledger and the source agree.
   (`crates/namir-params/src/stages/out.rs:14-18`) and asserted nowhere — no test reads either back,
   and `params.lock` records no bounds at all, its columns being key, id, kind and live/tombstoned
   state — so an edit to either passes every gate in this workspace. Named evidence for the cell is
-  the `// trace-partial:` pair at `crates/namir-engine/src/stages/out.rs:287-291`. FR-OUT-020 — the clip latch is asserted
+  the `// trace-partial:` pair at `crates/namir-engine/src/stages/out.rs:531-540`. FR-OUT-020 — the clip latch is asserted
   (`crates/namir-engine/src/stages/out.rs:397-431`); of the four characteristics imported from
   FR-IN-020/-030, the published `peak_db`, `average_db` and `peak_hold_db` telemetry is read by no
   test and the indicator has no user reset path.
