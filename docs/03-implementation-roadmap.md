@@ -1928,7 +1928,7 @@ form, so the ledger and the source agree.
   no document and no UI field (`namir_ui::MeterReading` carries no peak-hold). FR-IN-030 — the latch
   is asserted (`crates/namir-dsp/src/meter.rs:140-158`) but "resettable by the user" is unbuilt:
   `Meter::reset_clip` has no caller outside its own test and `UiIntent`
-  (`crates/namir-ui/src/host.rs:148-179`) has no reset variant.
+  (`crates/namir-ui/src/host.rs`) has no reset variant.
 - **5.3 GATE — 1 / 2 / 0.** *Done:* FR-GATE-020, the method executed literally — a decaying envelope
   producing exactly one close event (`crates/namir-dsp/src/gate.rs:264-297`), hysteresis at `:140`.
   *Partial:* FR-GATE-010 — of the five controls "U per control" names, Attack and Release are
@@ -2067,7 +2067,7 @@ form, so the ledger and the source agree.
   — enumeration and a real opened stream PASS
   (`docs/manual-tests/fr-io-010-device-enumeration.md`), but "the user shall be able to select" has
   no interactive surface at all; selection happens once at start-up
-  (`crates/namir-app/src/app.rs:95-133`). FR-IO-030 — **NOT EXECUTED**
+  (`crates/namir-app/src/app.rs`'s `negotiate_audio` path). FR-IO-030 — **NOT EXECUTED**
   (`docs/manual-tests/fr-io-030-alsa-coreaudio.md`); no ALSA or CoreAudio stream has ever been
   opened, the evidence being structural only. FR-IO-040 — the
   negotiation logic is unit-tested (`crates/namir-app/src/device_state.rs`) but neither selection
@@ -2165,9 +2165,9 @@ form, so the ledger and the source agree.
   (`crates/namir-engine/src/stages/mod.rs:116-129`); no test compares actual group delay against a
   nonzero `latency_samples()`. NFR-PERF-030 — the behaviour exists and ships: `namir-app` opens its
   devices, negotiates a rate and a buffer, builds the engine and starts the stream on one path from
-  `run()` (`crates/namir-app/src/app.rs:74`, `:92-135`, `:164-178`), loading the default state at
-  `:187` and reaching an audible state at `:263`'s `play()`, with a real 90-frame run recorded
-  (`docs/manual-tests/fr-ui-010-standalone-window-renders.md`). What is absent is the whole of the
+  `run()` (`crates/namir-app/src/app.rs`, through `negotiate_audio` and `stream::open`), loading the
+  default state and reaching an audible state at that function's `play()` call, with a real 90-frame
+  run recorded (`docs/manual-tests/fr-ui-010-standalone-window-renders.md`). What is absent is the whole of the
   `Verify: B` half: no start-up harness exists, the identifier appears in no `.rs`, `.toml` or `.yml`
   under `crates/`, `xtask/` or `.github/`, and **the 3 s bound has never been measured** on the §2
   machine or anywhere else. NFR-PERF-040 — same shape and the same named gap: the plugin demonstrably
@@ -2910,9 +2910,9 @@ that happens to depend on them first.
 16. **Whether 1.0 ships an audio-device panel in `namir-ui`, and if not, what FR-IO-010/-040/-050
     mean.** Raised 2026-08-09 by M9a's sweep, which found the surface absent rather than untested —
     `UiSnapshot` carries no host, device, sample-rate, buffer-size, latency or xrun field and
-    `UiIntent` no device variant (`crates/namir-ui/src/host.rs:100-123`, `:148-176`), device
-    selection happening once at start-up from remembered settings
-    (`crates/namir-app/src/app.rs:95-133`). Five Musts lean on a panel existing; the table in §16's
+    `UiIntent` no device variant (`crates/namir-ui/src/host.rs`'s `UiSnapshot` and `UiIntent`, as of
+    that date), device selection happening once at start-up from remembered settings
+    (`crates/namir-app/src/app.rs`'s `negotiate_audio` path). Five Musts lean on a panel existing; the table in §16's
     2026-08-09 status names them and the clause each one loses. This is a scope decision with no
     current owner: **FR-IO-060's and FR-IO-070's partials book their UI halves to M9b**, which is a
     verification-infrastructure phase and a poor home for building a settings surface, and no
@@ -3427,8 +3427,8 @@ a later session can find it, rather than by buying a permanent three-runner matr
 
 *One scope change, so it is not reopened later:* **NFR-PERF-030 moves to M13** (§20 below, where a
 dated scope note records it). It cannot run on any CI runner — a machine with no audio device
-diverts `namir-app` to `open_window_without_audio` (`crates/namir-app/src/app.rs:120`, `:152`,
-`:159`, `:168`, `:309`) and never becomes audible — and measuring "time to an audible state" needs a
+diverts `namir-app` to `open_window_without_audio` (`crates/namir-app/src/app.rs`, the diversions in
+`run()`) and never becomes audible — and measuring "time to an audible state" needs a
 seam in `namir-app`'s entry path that exists solely to enable the measurement. M13's release
 pipeline already touches that launch path with a real machine in the loop, so that is where the
 harness costs least and means most. It is `**UNRESOLVED**` in the checked-in plan today, which is
@@ -3879,12 +3879,12 @@ two plus a conforming test signal, and §17 should be read with that in mind.
 **A product-scope discovery the sweep was not looking for: there is no audio-device panel, and five
 Musts lean on one existing.** `namir-ui` has seven modules (`app`, `controls`, `format`, `host`,
 `library_view`, `meter`, `notices`) and none of them is a device or settings surface. `UiSnapshot`
-(`crates/namir-ui/src/host.rs:100-123`) carries exactly eight fields — `params`, `input_meter`,
+(`crates/namir-ui/src/host.rs`) carries exactly eight fields — `params`, `input_meter`,
 `output_meter`, `loaded_model_name`, `loaded_ir_name`, `library`, `unsaved_changes`, `notices` — and
 **no host, device, sample-rate, buffer-size, latency or xrun field of any kind**. `UiIntent`
-(`:148-176`) has seven variants, all parameter, library or notice actions; none names a device.
+(same file) has seven variants, all parameter, library or notice actions; none names a device.
 Device selection happens once at start-up from remembered settings, non-interactively
-(`crates/namir-app/src/app.rs:95-133`, through `device_state::select_device` and the three
+(`crates/namir-app/src/app.rs`, through `device_state::select_device` and the three
 `negotiate_*` helpers), and the xrun count surfaces through an `eprintln!`. The five:
 
 | Requirement | Verify | The clause with no surface |
@@ -5410,7 +5410,7 @@ deliverables above, per this document's convention.
 **NFR-PERF-030 moves from M9 into this milestone.** The requirement measures the standalone
 application reaching an audible state within 3 seconds on the reference machine with a warm library
 index (FRS §6.2). It cannot run on any CI runner: a machine with no audio device diverts `namir-app`
-to `open_window_without_audio` (`crates/namir-app/src/app.rs:120`, `:152`, `:159`, `:168`, `:309`)
+to `open_window_without_audio` (`crates/namir-app/src/app.rs`, the diversions in `run()`)
 and never becomes audible, so the measurement needs both a real machine and a seam in `namir-app`'s
 entry path that exists solely to enable it. M13's release pipeline already touches that launch path
 with a real machine in the loop, which is why the harness costs least here. It is `**UNRESOLVED**`
