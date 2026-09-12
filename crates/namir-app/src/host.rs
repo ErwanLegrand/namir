@@ -778,7 +778,9 @@ impl AppHost {
                         self.current_input_device = Some(input_name.clone());
                         self.current_output_device = Some(output_name.clone());
                         self.current_sample_rate = pending.sample_rate_hz;
-                        self.current_buffer_size = pending.buffer_frames.unwrap_or(256);
+                        self.current_buffer_size = pending
+                            .buffer_frames
+                            .unwrap_or(crate::audio_io::DEFAULT_BLOCK_FRAMES);
                         self.input_channel_count = pending.input_channel_count;
                         self.current_input_channel = input_channel;
                         if let Some(requested) = self.settings.channel_mapping.input_channel
@@ -3427,6 +3429,85 @@ mod tests {
             Some("Out 2")
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Issue #213.** When the negotiation produces no buffer size, the panel must report the
+    /// size the session actually runs at — [`crate::audio_io::DEFAULT_BLOCK_FRAMES`], the same
+    /// constant `block_frames` gives the engine — not a literal of its own. The fake backend's
+    /// default configs report `BufferSizeRange::Unknown` on both directions, which is exactly
+    /// the case `negotiate_shared_buffer_size` answers `None` for.
+    #[test]
+    fn a_reopen_with_no_negotiated_buffer_size_reports_the_size_the_engine_runs_at() {
+        let dir = temp_dir("reopen_default_buffer");
+        let (mut host, _engine) = build_host(&dir);
+        let backend = Arc::new(crate::stream::FakeBackend::new().with_devices(
+            vec![
+                crate::audio_io::DeviceInfo {
+                    name: "Mic 1".to_string(),
+                    is_default: true,
+                },
+                crate::audio_io::DeviceInfo {
+                    name: "Mic 2".to_string(),
+                    is_default: false,
+                },
+            ],
+            vec![crate::audio_io::DeviceInfo {
+                name: "Out 1".to_string(),
+                is_default: true,
+            }],
+        ));
+        host.enable_audio_reopen(AudioReopenContext {
+            backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
+            host_info: HostInfo {
+                name: "fake".to_string(),
+            },
+            xruns: Arc::new(XrunCounter::new()),
+        });
+        host.configure_audio_devices(
+            Some(dir.clone()),
+            AppSettings::default(),
+            vec!["Mic 1".to_string(), "Mic 2".to_string()],
+            vec!["Out 1".to_string()],
+            Some("Mic 1".to_string()),
+            Some("Out 1".to_string()),
+            vec![48_000],
+            48_000,
+            vec![512, 1024],
+            64,
+        );
+
+        host.dispatch(UiIntent::SelectInputDevice {
+            name: "Mic 2".to_string(),
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let snapshot = loop {
+            let snapshot = host.snapshot();
+            if backend.stream_log(Direction::Input).plays() >= 1 {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SelectInputDevice reopen timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
+        assert_eq!(
+            panel.current_buffer_size,
+            crate::audio_io::DEFAULT_BLOCK_FRAMES,
+            "the panel must report the block size the engine runs at when the negotiation \
+             produced none"
+        );
+        assert!(
+            panel
+                .supported_buffer_sizes
+                .contains(&panel.current_buffer_size),
+            "the closed combo must not display a size its own list does not offer: list {:?}, \
+             displayed {}",
+            panel.supported_buffer_sizes,
+            panel.current_buffer_size
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

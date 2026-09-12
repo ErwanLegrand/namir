@@ -720,7 +720,7 @@ pub fn run() {
         supported_sample_rates,
         sample_rate_hz,
         supported_buffer_sizes,
-        buffer_frames.unwrap_or(256),
+        buffer_frames.unwrap_or(crate::audio_io::DEFAULT_BLOCK_FRAMES),
     );
     // FR-IO-090: the index this stream opens with is the host's own settled answer, so the
     // selector and the capture below read the same channel (the reopen path settles its own in
