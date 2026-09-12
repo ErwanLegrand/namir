@@ -10,17 +10,23 @@
 //!   "first call inside the callback, gated by a one-shot flag" is the only way to satisfy both
 //!   halves of that constraint at once).
 //! - Runs [`namir_engine::AudioEngine::process`] itself.
-//! - Counts **both** of FR-IO-060's bridge dropouts directly: the output callback's underrun, via
-//!   [`crate::bridge::BridgeConsumer::pull_into`]'s own return value, and — since issue #85 — the
-//!   input callback's overrun, via [`crate::bridge::BridgeProducer::push_captured`]'s. While `cpal`
-//!   0.19 moved xrun reporting to `CallbackInfo::xrun()`, Namir's [`crate::audio_io::AudioBackend`]
-//!   stream callback signature does not yet propagate per-callback xrun info across the trait
-//!   boundary, so the bridge under/overrun detector is currently FR-IO-060's only live source.
-//!   [`crate::audio_io::StreamFailure::Xrun`] is retained for when that backend seam is widened;
-//!   when that happens, classifying it into the same [`crate::xrun::XrunCounter`] (rather than
-//!   surfacing it as a one-off notice the way [`crate::audio_io::StreamFailure::DeviceLost`] and
-//!   `Other` are) will be [`crate::app`]'s job, since that is also where the counter this module
-//!   increments for bridge under- and overruns lives.
+//! - Counts **all three** of FR-IO-060's dropout sources directly: the output callback's bridge
+//!   underrun, via [`crate::bridge::BridgeConsumer::pull_into`]'s own return value; the input
+//!   callback's bridge overrun, via [`crate::bridge::BridgeProducer::push_captured`]'s (issue
+//!   #85); and — since issue #200 item 6 — the backend's own per-callback report, which `cpal`
+//!   0.19 delivers through `CallbackInfo::xrun()` and which reaches this module as
+//!   [`crate::audio_io::CallbackStatus::xrun`]. All three increment the same
+//!   [`crate::xrun::XrunCounter`], and **one device callback contributes at most one xrun** on
+//!   every path: each callback closure holds a `recorded` latch, reset when
+//!   [`crate::audio_io::CallbackStatus::first_of_callback`] marks a new device callback, so a
+//!   callback the device reported *and* whose bridge transfer lost something — the ordinary
+//!   pairing, since they have the same cause — counts once, and a host buffer several blocks
+//!   long counts once rather than once per chunk (PR #209 review; the over-count axis issues
+//!   #189 and #194 were filed about). The integer-converting path (`crate::audio_io`'s
+//!   `convert`) calls these closures once per scratch-length slice of a device callback and
+//!   marks only the first slice, which is what makes the claim hold there too.
+//!   The backend's report is not gated on the settling window below: that window excuses pads
+//!   this pair manufactured while starting up, and a device's report is not one.
 //!   Since issue #189 the output side's pads are gated on this `open`'s pair having settled: the
 //!   capture side must have delivered a callback, and the ring must have had a bounded settling
 //!   window to fill. An output device takes a few hundred milliseconds to start running, and a
@@ -65,7 +71,7 @@ use namir_engine::{AudioEngine, StageIo};
 use namir_platform::{DenormalGuard, ThreadPriorityOutcome, elevate_current_thread_priority};
 
 use crate::audio_io::{
-    AudioBackend, AudioStream, DeviceInfo, HostInfo, StreamFailure, StreamParams,
+    AudioBackend, AudioStream, CallbackStatus, DeviceInfo, HostInfo, StreamFailure, StreamParams,
 };
 #[cfg(test)]
 use crate::audio_io::{
@@ -401,8 +407,33 @@ fn build_input(
 ) -> Result<Box<dyn AudioStream>, crate::audio_io::AudioIoError> {
     let max_block = setup.max_block_size.max(1);
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(max_block);
-    let on_data = Box::new(move |data: &[f32]| {
-        if channel_count == 0 {
+    // FR-IO-060 counts **dropouts**, not losses, so one device callback contributes at most one
+    // xrun however many ways it lost something (PR #209 review). Two sources meet in the closure
+    // below: the device's own report (`cpal` 0.19's `CallbackInfo::xrun()`, carried across the
+    // seam since issue #200 item 6) and the bridge ring's overrun — and a callback the device
+    // dropped samples on is typically also the one whose push does not fit, so without this
+    // latch one dropout would count twice, on exactly the over-count axis issues #189 and #194
+    // were filed about.
+    //
+    // Captured rather than a local, and reset on `status.first_of_callback`, because the
+    // integer-converting path calls this closure once per scratch-length *slice* of a device
+    // callback: a local would give each slice its own latch and a 480-frame callback starving
+    // on both slices would count twice again. One bool of closure state and one branch; the
+    // record itself is a single relaxed `fetch_add`.
+    let mut recorded = false;
+    let on_data = Box::new(move |data: &[f32], status: CallbackStatus| {
+        if status.first_of_callback {
+            recorded = false;
+        }
+        if status.xrun {
+            xruns.record();
+            recorded = true;
+        }
+        // An empty callback delivers no samples, so it must not latch `capture_started` below:
+        // that is what the integer-converting path's `InputConverter::report` hands down when a
+        // device callback arrives mis-typed or zero-length, and #189's gating reads the latch as
+        // "real audio has started flowing".
+        if channel_count == 0 || data.is_empty() {
             return;
         }
         // Issue #189: the capture side is running, so from here on an output pad is a real
@@ -428,11 +459,13 @@ fn build_input(
             // a real dropout of exactly the class `crate::bridge` exists to detect. Discarding it
             // did not merely lose detail — it made the session count under-report, which is the
             // worst direction for a diagnostic, because a user watching a zero while their audio
-            // glitches concludes the counter works and the glitch is elsewhere. Counted the same
-            // way `build_output` counts an underrun below: one xrun per callback chunk that lost
-            // anything, not one per lost sample, so the two sources are commensurable.
-            if producer.push_captured(&mono_scratch) > 0 {
+            // glitches concludes the counter works and the glitch is elsewhere. Gated on the
+            // same per-callback latch as the device's report above, so a callback that lost
+            // something both ways still counts one — and so a callback the host made larger than
+            // `max_block` counts one rather than one per chunk.
+            if producer.push_captured(&mono_scratch) > 0 && !recorded {
                 xruns.record();
+                recorded = true;
             }
         }
     });
@@ -516,7 +549,21 @@ fn build_output(
     let mut pulls_since_capture: u32 = 0;
     let mut pulls: u32 = 0;
 
-    let on_data = Box::new(move |out: &mut [f32]| {
+    // One device callback, at most one xrun — see `build_input` for the argument, and for why
+    // the latch is captured state reset on `status.first_of_callback` rather than a local. The
+    // device's own report is not gated on the settling window below (that window exists to
+    // excuse pads this pair manufactured while starting up, and a backend report is the
+    // device's claim about samples it lost), but it does consume this callback's single count,
+    // so an output callback that both was reported and starved counts once.
+    let mut recorded = false;
+    let on_data = Box::new(move |out: &mut [f32], status: CallbackStatus| {
+        if status.first_of_callback {
+            recorded = false;
+        }
+        if status.xrun {
+            xruns.record();
+            recorded = true;
+        }
         if !priority_elevated.swap(true, Ordering::AcqRel) {
             // D-13.2: once, lazily, from this callback thread itself -- see this module's doc
             // comment for why "first call inside the callback" is the only place cpal lets this
@@ -547,8 +594,9 @@ fn build_output(
                 pulls_since_capture = pulls_since_capture.saturating_add(1);
             }
             let settled = pulls_since_capture > settling_pulls || pulls > activation_pulls_max;
-            if padded > 0 && settled {
+            if padded > 0 && settled && !recorded {
                 xruns.record();
+                recorded = true;
             }
 
             engine_left[..chunk].copy_from_slice(&mono_in[..chunk]);
@@ -892,9 +940,9 @@ impl Drop for FakeStream {
 }
 
 #[cfg(test)]
-pub(crate) type InputCallback = Box<dyn FnMut(&[f32]) + Send>;
+pub(crate) type InputCallback = Box<dyn FnMut(&[f32], CallbackStatus) + Send>;
 #[cfg(test)]
-pub(crate) type OutputCallback = Box<dyn FnMut(&mut [f32]) + Send>;
+pub(crate) type OutputCallback = Box<dyn FnMut(&mut [f32], CallbackStatus) + Send>;
 #[cfg(test)]
 pub(crate) type ErrorCallback = Box<dyn FnMut(StreamFailure) + Send>;
 
@@ -983,7 +1031,7 @@ impl AudioBackend for FakeBackend {
         _host: &HostInfo,
         _device: &DeviceInfo,
         params: StreamParams,
-        on_data: Box<dyn FnMut(&[f32]) + Send>,
+        on_data: Box<dyn FnMut(&[f32], CallbackStatus) + Send>,
         on_error: Box<dyn FnMut(StreamFailure) + Send>,
         _timeout: Duration,
     ) -> Result<Box<dyn AudioStream>, AudioIoError> {
@@ -1006,7 +1054,7 @@ impl AudioBackend for FakeBackend {
         _host: &HostInfo,
         _device: &DeviceInfo,
         params: StreamParams,
-        on_data: Box<dyn FnMut(&mut [f32]) + Send>,
+        on_data: Box<dyn FnMut(&mut [f32], CallbackStatus) + Send>,
         on_error: Box<dyn FnMut(StreamFailure) + Send>,
         _timeout: Duration,
     ) -> Result<Box<dyn AudioStream>, AudioIoError> {
@@ -1131,11 +1179,12 @@ mod tests {
         let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
 
-        input_cb(&[0.1f32; 64]);
+        input_cb(&[0.1f32; 64], CallbackStatus::default());
         let mut out = [0.0f32; 128]; // 64 frames * 2 channels
-        output_cb(&mut out); // drains `open`'s one-block prefill of silence
-        input_cb(&[0.1f32; 64]);
-        output_cb(&mut out); // and now the captured signal
+        // Drains `open`'s one-block prefill of silence.
+        output_cb(&mut out, CallbackStatus::default());
+        input_cb(&[0.1f32; 64], CallbackStatus::default());
+        output_cb(&mut out, CallbackStatus::default()); // and now the captured signal
 
         assert_eq!(
             xruns.count(),
@@ -1164,10 +1213,7 @@ mod tests {
     // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
     // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
     // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
-    // uncovered: anywhere in the window; and cpal-detected dropouts are not counted at all:
-    // uncovered: `cpal` 0.19 delivers them via `CallbackInfo::xrun()`, which `AudioBackend`'s
-    // uncovered: callback signature does not carry — issue #200 item 6 owns widening that seam;
-    // uncovered: closes M8
+    // uncovered: anywhere in the window; closes M8
     #[test]
     fn output_pads_during_the_activation_transient_are_not_counted() {
         let backend = FakeBackend::new();
@@ -1185,7 +1231,8 @@ mod tests {
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
         let mut out = [0.0f32; 128];
 
-        output_cb(&mut out); // 64 frames, exactly the prefill -- no input_cb call needed.
+        // 64 frames, exactly the prefill -- no input_cb call needed.
+        output_cb(&mut out, CallbackStatus::default());
         assert_eq!(xruns.count(), 0, "the prefill absorbs the first pull");
 
         // The prefill is spent, the device is still activating, and the capture side has not run:
@@ -1194,7 +1241,7 @@ mod tests {
         // it is anchored on the capture side's first callback, so an activation gap of any
         // realistic length is covered.
         for _ in 0..64 {
-            output_cb(&mut out);
+            output_cb(&mut out, CallbackStatus::default());
         }
         assert_eq!(
             xruns.count(),
@@ -1206,9 +1253,9 @@ mod tests {
         // at a 64-frame `max_block`, so 48_000 / 64 / 10) still absorbs the pads while the ring
         // fills; past it, a starved pull is a real dropout again.
         let settling_pulls = 48_000 / 64 / 10;
-        input_cb(&[0.1f32; 64]);
+        input_cb(&[0.1f32; 64], CallbackStatus::default());
         for _ in 0..settling_pulls {
-            output_cb(&mut out);
+            output_cb(&mut out, CallbackStatus::default());
         }
         assert_eq!(
             xruns.count(),
@@ -1217,7 +1264,7 @@ mod tests {
         );
 
         for _ in 0..4 {
-            output_cb(&mut out);
+            output_cb(&mut out, CallbackStatus::default());
         }
         assert!(
             xruns.count() > 0,
@@ -1250,7 +1297,7 @@ mod tests {
         // rest padded — and no input callback ever fires.
         let activation_pulls_max = 48_000 / 64 * 3;
         for _ in 0..activation_pulls_max {
-            output_cb(&mut out);
+            output_cb(&mut out, CallbackStatus::default());
         }
         assert_eq!(
             xruns.count(),
@@ -1258,7 +1305,7 @@ mod tests {
             "the activation ceiling has not been passed yet"
         );
 
-        output_cb(&mut out);
+        output_cb(&mut out, CallbackStatus::default());
         assert!(
             xruns.count() > 0,
             "past the ceiling, a silent capture side's pads are dropouts the user can see"
@@ -1289,7 +1336,7 @@ mod tests {
         // 600 ms of pulls at 32 frames / 48 kHz — past the ~524 ms activation, and well short of
         // the 3 s budget. A 512-pull ceiling (~341 ms here) counts dropouts before this point.
         for _ in 0..(48_000 * 600 / 1_000 / 32) {
-            output_cb(&mut out);
+            output_cb(&mut out, CallbackStatus::default());
         }
         assert_eq!(
             xruns.count(),
@@ -1316,9 +1363,9 @@ mod tests {
         let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
 
-        input_cb(&[0.1f32; 100]);
+        input_cb(&[0.1f32; 100], CallbackStatus::default());
         let mut out = [0.0f32; 200]; // 100 frames, over max_block_size (32)
-        output_cb(&mut out); // must not panic
+        output_cb(&mut out, CallbackStatus::default()); // must not panic
     }
 
     /// **NFR-RT-010 for this crate's own audio callbacks.** D-7.5's `assert_no_alloc` harness has
@@ -1373,16 +1420,24 @@ mod tests {
 
         // Warm-up, un-asserted, and deliberately *only* the exact-size pair: see this test's own
         // doc comment for why warming up with the oversized pair blinded it to issue #87.
-        input_cb(&exact_in);
-        output_cb(&mut exact_out);
+        input_cb(&exact_in, CallbackStatus::default());
+        output_cb(&mut exact_out, CallbackStatus::default());
 
         let mut saw_output = false;
-        for _ in 0..32 {
-            crate::rt_harness::audio_section(|| input_cb(&exact_in));
-            crate::rt_harness::audio_section(|| output_cb(&mut exact_out));
+        for iteration in 0..32 {
+            // One iteration carries a backend-reported xrun, so the `xruns.record()` branch these
+            // callbacks gained with issue #200 item 6 runs *inside* the harness rather than being
+            // the branch never taken. A relaxed `fetch_add` cannot allocate, which is exactly the
+            // kind of claim this harness exists to check rather than assert by reasoning.
+            let status = CallbackStatus {
+                xrun: iteration == 7,
+                ..CallbackStatus::default()
+            };
+            crate::rt_harness::audio_section(|| input_cb(&exact_in, status));
+            crate::rt_harness::audio_section(|| output_cb(&mut exact_out, status));
             saw_output |= exact_out.iter().any(|s| s.abs() > 1e-6);
-            crate::rt_harness::audio_section(|| input_cb(&big_in));
-            crate::rt_harness::audio_section(|| output_cb(&mut big_out));
+            crate::rt_harness::audio_section(|| input_cb(&big_in, CallbackStatus::default()));
+            crate::rt_harness::audio_section(|| output_cb(&mut big_out, CallbackStatus::default()));
             saw_output |= big_out.iter().any(|s| s.abs() > 1e-6);
         }
 
@@ -1411,10 +1466,7 @@ mod tests {
     // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
     // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
     // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
-    // uncovered: anywhere in the window; and cpal-detected dropouts are not counted at all:
-    // uncovered: `cpal` 0.19 delivers them via `CallbackInfo::xrun()`, which `AudioBackend`'s
-    // uncovered: callback signature does not carry — issue #200 item 6 owns widening that seam;
-    // uncovered: closes M8
+    // uncovered: anywhere in the window; closes M8
     #[test]
     fn input_capture_that_outruns_the_output_callback_counts_an_xrun() {
         const MAX_BLOCK: usize = 64;
@@ -1432,7 +1484,7 @@ mod tests {
 
         // Comfortably inside the ring's capacity: nothing is lost, so nothing may be counted.
         for _ in 0..4 {
-            input_cb(&[0.1f32; MAX_BLOCK]);
+            input_cb(&[0.1f32; MAX_BLOCK], CallbackStatus::default());
         }
         assert_eq!(
             xruns.count(),
@@ -1442,11 +1494,117 @@ mod tests {
 
         // Far past it, still with no output callback draining anything.
         for _ in 0..32 {
-            input_cb(&[0.1f32; MAX_BLOCK]);
+            input_cb(&[0.1f32; MAX_BLOCK], CallbackStatus::default());
         }
         assert!(
             xruns.count() > 0,
             "capture that overran the bridge ring must reach the session's xrun count"
+        );
+    }
+
+    /// FR-IO-060's **other** source, live again since issue #200 item 6: a dropout the *backend*
+    /// detected. `cpal` 0.19 reports it per data callback through `CallbackInfo::xrun()`, which
+    /// reaches this crate as [`CallbackStatus::xrun`]; before the seam carried it, a device that
+    /// lost samples of its own was counted nowhere, and a session whose bridge kept up read a
+    /// clean zero while the user heard crackling.
+    ///
+    /// Both directions, because each callback is built separately and a fix applied to one of
+    /// them is exactly the half-wiring this would otherwise miss. Counted unconditionally:
+    /// unlike a bridge pad, a backend report is not an artefact of the pair's activation
+    /// transient, so the settling window does not gate it — which is why this asserts from the
+    /// very first callback of each stream.
+    // trace-partial: FR-IO-060
+    // uncovered: FR-IO-060 — the "resettable by the user" clause has no path to exercise:
+    // uncovered: XrunCounter::reset has no caller outside its own two unit tests and no UiIntent
+    // uncovered: reaches it, and the running count surfaces only through an eprintln! rather than
+    // uncovered: anywhere in the window; closes M8
+    #[test]
+    fn a_backend_reported_xrun_reaches_the_session_count_from_either_direction() {
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, 64),
+            engine(64),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
+        let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
+        let mut out = [0.0f32; 128];
+
+        let clean = CallbackStatus::default();
+        let glitched = CallbackStatus {
+            xrun: true,
+            ..CallbackStatus::default()
+        };
+
+        input_cb(&[0.1f32; 64], clean);
+        output_cb(&mut out, clean);
+        assert_eq!(
+            xruns.count(),
+            0,
+            "a callback the backend reported nothing about is not a dropout"
+        );
+
+        input_cb(&[0.1f32; 64], glitched);
+        assert_eq!(
+            xruns.count(),
+            1,
+            "a capture callback the device dropped samples on must be counted"
+        );
+
+        output_cb(&mut out, glitched);
+        assert_eq!(
+            xruns.count(),
+            2,
+            "a render callback the device dropped samples on must be counted too"
+        );
+    }
+
+    /// **One data callback is at most one xrun (PR #209 review).** A callback the device
+    /// reported is, in the ordinary case, also the one whose bridge push or pull loses — same
+    /// physical dropout, two detectors — so without the per-callback latch FR-IO-060's
+    /// user-facing count would read double on exactly the axis issues #189 and #194 were filed
+    /// about. Driven on the capture side, where a full ring makes both conditions true at once.
+    #[test]
+    fn a_callback_that_lost_samples_both_ways_counts_one_xrun() {
+        const MAX_BLOCK: usize = 64;
+        let backend = FakeBackend::new();
+        let xruns = Arc::new(XrunCounter::new());
+        let _streams = open(
+            setup(&backend, MAX_BLOCK),
+            engine(MAX_BLOCK),
+            Arc::clone(&xruns),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let mut input_cb = backend.input_data.lock().unwrap().take().unwrap();
+
+        // Fill the ring past its capacity with nothing draining it, so the next push is certain
+        // to lose samples as well.
+        for _ in 0..32 {
+            input_cb(&[0.1f32; MAX_BLOCK], CallbackStatus::default());
+        }
+        let before = xruns.count();
+        assert!(
+            before > 0,
+            "the ring has to be overrunning or this proves nothing"
+        );
+
+        input_cb(
+            &[0.1f32; MAX_BLOCK],
+            CallbackStatus {
+                xrun: true,
+                ..CallbackStatus::default()
+            },
+        );
+        assert_eq!(
+            xruns.count() - before,
+            1,
+            "a callback that the device reported and whose push overran is one dropout, not two"
         );
     }
 
@@ -1517,7 +1675,7 @@ mod tests {
 
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
         let mut out = [0.0f32; 128];
-        output_cb(&mut out);
+        output_cb(&mut out, CallbackStatus::default());
 
         assert!(
             report.take().is_some(),
@@ -1529,7 +1687,7 @@ mod tests {
         );
 
         // Later callbacks do not elevate again (the one-shot flag), so nothing more appears.
-        output_cb(&mut out);
+        output_cb(&mut out, CallbackStatus::default());
         assert!(report.take().is_none());
     }
 
@@ -1670,6 +1828,20 @@ mod tests {
     /// headroom past the prefill; the headroom is a margin in time, not a guarantee (~75 ms at a
     /// 480-frame block, ~4.7 ms at the 32-frame minimum), so a deliberately longer replay would
     /// count — for a true reason, and it is not what this test is about.
+    ///
+    /// **The backend's own report is deliberately *not* suppressed here (issue #200 item 6).**
+    /// The teardown replay below ends with a callback carrying `xrun: true`,
+    /// and that one does count. The asymmetry is the point: a bridge pad during teardown is an
+    /// artefact Namir manufactured — it stopped draining one side and then pulled from the ring
+    /// it stopped feeding — whereas a backend report is the *device's* claim that it lost
+    /// samples, made by the layer that alone can know. Suppressing it would mean deciding, from
+    /// this side of the seam, that a driver is wrong about its own dropout, and the suppression
+    /// would have to be a second stopping flag read on the audio thread. Not verified against
+    /// real hardware: whether a driver actually raises `CallbackInfo::xrun()` on the callbacks
+    /// bracketing a close is unknown here (see
+    /// `docs/manual-tests/fr-io-060-xrun-induction.md`), so if a real interface turns out to
+    /// report one per stop, this is the test and the argument to revisit — and #189/#194's
+    /// gating is the shape to copy.
     #[test]
     fn stopping_a_clean_session_leaves_the_xrun_count_where_the_run_left_it() {
         /// Callbacks the still-live side takes while the other side is closing.
@@ -1690,8 +1862,8 @@ mod tests {
 
         let mut out = [0.0f32; 128];
         for _ in 0..8 {
-            input_cb(&[0.1f32; 64]);
-            output_cb(&mut out);
+            input_cb(&[0.1f32; 64], CallbackStatus::default());
+            output_cb(&mut out, CallbackStatus::default());
         }
         assert_eq!(
             xruns.count(),
@@ -1705,9 +1877,9 @@ mod tests {
             > backend.stream_log(Direction::Output).stop_tick();
         for _ in 0..TEARDOWN_CALLBACKS {
             if input_outlived_output {
-                input_cb(&[0.1f32; 64]);
+                input_cb(&[0.1f32; 64], CallbackStatus::default());
             } else {
-                output_cb(&mut out);
+                output_cb(&mut out, CallbackStatus::default());
             }
         }
 
@@ -1715,6 +1887,24 @@ mod tests {
             xruns.count(),
             0,
             "the teardown counted a dropout of its own -- the session's own stop is not an xrun"
+        );
+
+        // And now the other half of the rule: the *device* reporting a dropout across the same
+        // window is counted, because it is the device's claim rather than the teardown's own
+        // artefact. See this test's doc comment for why that asymmetry is deliberate.
+        let glitched = CallbackStatus {
+            xrun: true,
+            ..CallbackStatus::default()
+        };
+        if input_outlived_output {
+            input_cb(&[0.1f32; 64], glitched);
+        } else {
+            output_cb(&mut out, glitched);
+        }
+        assert_eq!(
+            xruns.count(),
+            1,
+            "a backend-reported dropout is not suppressed by the teardown window"
         );
     }
 }

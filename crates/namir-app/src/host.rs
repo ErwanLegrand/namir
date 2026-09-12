@@ -161,10 +161,6 @@ pub(crate) mod local_error_codes {
     pub fn stream_failure_code(failure: &StreamFailure) -> ErrorCode {
         match failure {
             StreamFailure::DeviceLost => crate::error_codes::DEVICE_LOST,
-            // Not reported as a notice today (`crate::app`'s callback counts xruns instead), but
-            // matched rather than folded into the catch-all so adding that report later cannot
-            // silently pick up the wrong entry.
-            StreamFailure::Xrun => crate::error_codes::STREAM_FAILED,
             StreamFailure::Other(message) => {
                 if crate::audio_io::classifies_as_device_loss(message.as_str()) {
                     crate::error_codes::DEVICE_LOST
@@ -726,8 +722,8 @@ impl AppHost {
             stream_setup,
             engine,
             Arc::clone(&xruns),
-            crate::app::stream_failure_sink(Arc::clone(&xruns), input_failure_tx),
-            crate::app::stream_failure_sink(Arc::clone(&xruns), output_failure_tx),
+            crate::app::stream_failure_sink(input_failure_tx),
+            crate::app::stream_failure_sink(output_failure_tx),
         );
 
         match running {
@@ -1869,8 +1865,8 @@ mod tests {
             crate::stream::fake_duplex_setup(backend, BLOCK),
             crate::stream::default_test_engine(BLOCK),
             Arc::clone(&xruns),
-            crate::app::stream_failure_sink(Arc::clone(&xruns), input_tx),
-            crate::app::stream_failure_sink(xruns, output_tx),
+            crate::app::stream_failure_sink(input_tx),
+            crate::app::stream_failure_sink(output_tx),
         )
         .expect("the fake backend opens unless it was told to fail");
         running.play().unwrap();
@@ -1928,7 +1924,7 @@ mod tests {
         let mut output_cb = backend.output_data.lock().unwrap().take().unwrap();
         let mut out = [0.0f32; BLOCK * 2];
         for _ in 0..4 {
-            output_cb(&mut out);
+            output_cb(&mut out, crate::audio_io::CallbackStatus::default());
         }
         assert_eq!(
             backend.output_stream.stops(),
@@ -2006,8 +2002,8 @@ mod tests {
             crate::stream::fake_duplex_setup(&backend, BLOCK),
             crate::stream::default_test_engine(BLOCK),
             Arc::clone(&xruns),
-            crate::app::stream_failure_sink(Arc::clone(&xruns), input_tx),
-            crate::app::stream_failure_sink(xruns, output_tx),
+            crate::app::stream_failure_sink(input_tx),
+            crate::app::stream_failure_sink(output_tx),
         );
         let error = opened.err().expect("the output open was told to fail");
 
