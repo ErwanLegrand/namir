@@ -302,6 +302,44 @@ pub fn supported_sample_rates(
     rates
 }
 
+/// FR-IO-090's selector range: the largest channel count `configs` reports at `sample_rate_hz`,
+/// i.e. how many hardware input channels the device *has* to choose from.
+///
+/// Deliberately not [`negotiate_channels`]' answer. That one picks the smallest count that
+/// suffices for the engine (one channel for a mono capture), which is the right thing to *open*
+/// and the wrong thing to *offer*: an 8-in interface would present a one-entry selector. The
+/// count a stream then opens with follows from the choice, through `negotiate_channels`' own
+/// `minimum` argument.
+pub fn max_channels_at_rate(configs: &[SupportedConfigRange], sample_rate_hz: u32) -> Option<u16> {
+    configs_at_rate(configs, sample_rate_hz)
+        .map(|c| c.channels)
+        .max()
+}
+
+/// The subset of `configs` covering exactly `channels` interleaved channels — the configs a
+/// stream settled on that count can actually open with.
+///
+/// [`accepts_buffer_size`] is an `.any()`, so anything that reduces a direction to a flat list
+/// of [`BufferSizeRange`]s accepts a size *some* config allows. Narrowing to the settled channel
+/// count first is what makes "accepted" mean "accepted by the config being opened" (PR #212);
+/// falls back to the whole list if nothing reports that count, which leaves the previous,
+/// looser answer rather than no answer at all.
+pub fn configs_with_channels(
+    configs: &[SupportedConfigRange],
+    channels: u16,
+) -> Vec<SupportedConfigRange> {
+    let narrowed: Vec<SupportedConfigRange> = configs
+        .iter()
+        .filter(|c| c.channels == channels)
+        .copied()
+        .collect();
+    if narrowed.is_empty() {
+        configs.to_vec()
+    } else {
+        narrowed
+    }
+}
+
 /// Returns all standard buffer sizes supported by both `input_configs` and `output_configs`
 /// at `sample_rate_hz`.
 pub fn supported_buffer_sizes(

@@ -23,9 +23,13 @@ use crate::error_codes;
 /// numbers them) feeds engine input 0, or receives engine output 0/1. `None` means "use the
 /// device's own first channel(s)" — the FR-IO-080 default that needs no prior configuration.
 ///
-/// FR-IO-090 (Should) is the requirement this exists for; it is deliberately a thin, inert record
-/// here — [`crate::stream`] is what would actually honour a non-default mapping, and doing so is
-/// this crate's own manual-test-documented gap (see `docs/manual-tests/fr-io-090-channel-mapping.md`).
+/// FR-IO-090 (Should) is the requirement this exists for. [`crate::stream`] honours every field,
+/// and `input_channel` is now *set* interactively: the audio settings panel's input-channel
+/// selector writes it through `namir_ui::UiIntent::SelectInputChannel`, the stream is negotiated
+/// wide enough to carry the chosen index, and a remembered channel the current device does not
+/// have is clamped and reported ([`error_codes::INPUT_CHANNEL_DECLINED`]). The two output fields
+/// remain settings-file-only — that half is the requirement's live gap, with the rest of the
+/// residue, in `docs/manual-tests/fr-io-090-channel-mapping.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ChannelMapping {

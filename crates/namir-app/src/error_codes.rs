@@ -118,6 +118,18 @@ pub const BUFFER_SIZE_DECLINED: ErrorCode = ErrorCode::new(
     "Choose a supported buffer size in audio settings, or edit buffer_size_frames in \
      audio-settings.json.",
 );
+/// FR-IO-090: the remembered input channel is not one the opened stream has -- the settings file
+/// remembers channel 6 of an eight-in interface and a two-in one is plugged in now -- so a
+/// channel that exists is in use instead. **`Warning`, not `Error`:** audio still runs, from a
+/// different physical input than the one asked for, which is precisely what needs saying: the
+/// alternative is capturing whichever channel exists with nothing on screen to explain it.
+pub const INPUT_CHANNEL_DECLINED: ErrorCode = ErrorCode::new(
+    "app.audio_io.input_channel_declined",
+    Severity::Warning,
+    "The remembered input channel is not available on this device, so a different one is in use \
+     ({detail}).",
+    "Choose an available input channel in audio settings.",
+);
 
 /// FR-IO-080: the settings file on disk could not be parsed (corrupted, from an incompatible
 /// future version). Degrades to [`crate::settings::AppSettings::default`] (P8) rather than
@@ -155,6 +167,7 @@ const ALL: &[ErrorCode] = &[
     NO_AUDIO_DEVICE,
     REMEMBERED_DEVICE_UNAVAILABLE,
     BUFFER_SIZE_DECLINED,
+    INPUT_CHANNEL_DECLINED,
     SETTINGS_UNREADABLE,
     SETTINGS_UNWRITABLE,
 ];

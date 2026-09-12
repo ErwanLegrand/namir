@@ -229,6 +229,9 @@ pub struct RunningStreams {
     input: Option<Box<dyn AudioStream>>,
     output: Option<Box<dyn AudioStream>>,
     thread_priority: Arc<ThreadPriorityReport>,
+    /// FR-IO-090: the interleaved channel `build_input` is reading out of each frame, kept so a
+    /// caller can report and a test can assert which physical input this path actually captures.
+    input_channel_index: u16,
 }
 
 impl Drop for RunningStreams {
@@ -308,6 +311,14 @@ impl RunningStreams {
     #[must_use]
     pub fn thread_priority(&self) -> Arc<ThreadPriorityReport> {
         Arc::clone(&self.thread_priority)
+    }
+
+    /// FR-IO-090: which interleaved input channel this path is capturing — the index `open` was
+    /// handed, so what a caller asserts here is what `build_input` reads, not a second copy of
+    /// the decision.
+    #[must_use]
+    pub fn input_channel_index(&self) -> u16 {
+        self.input_channel_index
     }
 }
 
@@ -392,6 +403,7 @@ pub fn open(
     Ok(RunningStreams {
         input: Some(input_stream),
         output: Some(output_stream),
+        input_channel_index: setup.input_channel_index,
         thread_priority,
     })
 }
@@ -723,6 +735,16 @@ pub(crate) struct FakeBackend {
     /// sequence. [`FakeBackend::asked_share_modes`] is its counterpart for the stream open.
     enumerated_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
     input_devices: Vec<DeviceInfo>,
+    /// What this backend reports when asked for **shared** input configs, or `None` for the
+    /// one-channel default. See [`FakeBackend::reporting_input_configs`].
+    shared_input_configs: Option<Vec<SupportedConfigRange>>,
+    /// [`FakeBackend::shared_input_configs`]' playback counterpart, or `None` for the
+    /// two-channel default. See [`FakeBackend::reporting_output_configs`].
+    shared_output_configs: Option<Vec<SupportedConfigRange>>,
+    /// The [`StreamParams`] the capture direction was last opened with — the observable for how
+    /// *wide* a stream FR-IO-090's channel choice asked for, which the share-mode log does not
+    /// carry.
+    pub(crate) opened_input_params: std::sync::Mutex<Option<StreamParams>>,
     output_devices: Vec<DeviceInfo>,
 }
 
@@ -736,8 +758,11 @@ impl FakeBackend {
             output_data: std::sync::Mutex::new(None),
             input_error: std::sync::Mutex::new(None),
             output_error: std::sync::Mutex::new(None),
+            opened_input_params: std::sync::Mutex::new(None),
             input_stream,
             exclusive_input_configs: None,
+            shared_input_configs: None,
+            shared_output_configs: None,
             exclusive_output_configs: None,
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream,
@@ -787,6 +812,23 @@ impl FakeBackend {
     ) -> Self {
         self.input_devices = input_devices;
         self.output_devices = output_devices;
+        self
+    }
+
+    /// Makes this backend report `ranges` when asked for **shared** input configs, instead of the
+    /// one-channel default — how a test says "the interface has eight inputs", which is
+    /// FR-IO-090's whole subject. An **empty** `ranges` means what it says, a device enumerating
+    /// nothing, which is the only way to reach the `is_empty()` arms in `negotiate_channels`,
+    /// `max_channels_at_rate` and `negotiate_shared_buffer_size`.
+    pub(crate) fn reporting_input_configs(mut self, ranges: Vec<SupportedConfigRange>) -> Self {
+        self.shared_input_configs = Some(ranges);
+        self
+    }
+
+    /// [`FakeBackend::reporting_input_configs`]' playback counterpart — how a test says "the
+    /// output device's channel configs carry different buffer limits from each other".
+    pub(crate) fn reporting_output_configs(mut self, ranges: Vec<SupportedConfigRange>) -> Self {
+        self.shared_output_configs = Some(ranges);
         self
     }
 
@@ -980,12 +1022,14 @@ impl AudioBackend for FakeBackend {
         }
         Ok(crate::audio_io::EnumeratedConfigs {
             share_mode: ShareMode::Shared,
-            ranges: vec![SupportedConfigRange {
-                channels: 1,
-                min_sample_rate_hz: 48_000,
-                max_sample_rate_hz: 48_000,
-                buffer_size: BufferSizeRange::Unknown,
-            }],
+            ranges: self.shared_input_configs.clone().unwrap_or_else(|| {
+                vec![SupportedConfigRange {
+                    channels: 1,
+                    min_sample_rate_hz: 48_000,
+                    max_sample_rate_hz: 48_000,
+                    buffer_size: BufferSizeRange::Unknown,
+                }]
+            }),
         })
     }
     fn output_configs(
@@ -1006,12 +1050,14 @@ impl AudioBackend for FakeBackend {
         }
         Ok(crate::audio_io::EnumeratedConfigs {
             share_mode: ShareMode::Shared,
-            ranges: vec![SupportedConfigRange {
-                channels: 2,
-                min_sample_rate_hz: 48_000,
-                max_sample_rate_hz: 48_000,
-                buffer_size: BufferSizeRange::Unknown,
-            }],
+            ranges: self.shared_output_configs.clone().unwrap_or_else(|| {
+                vec![SupportedConfigRange {
+                    channels: 2,
+                    min_sample_rate_hz: 48_000,
+                    max_sample_rate_hz: 48_000,
+                    buffer_size: BufferSizeRange::Unknown,
+                }]
+            }),
         })
     }
     fn supports_exclusive(
@@ -1039,6 +1085,7 @@ impl AudioBackend for FakeBackend {
             .lock()
             .unwrap()
             .push((Direction::Input, params.share_mode));
+        *self.opened_input_params.lock().unwrap() = Some(params);
         // Before the callbacks are stored: a real backend that refuses the open never received
         // them either, and a test asserting the teardown must not find a live callback behind a
         // failed open.
