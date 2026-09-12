@@ -168,6 +168,12 @@ pub struct AudioDevicePanelSnapshot {
     pub supported_buffer_sizes: Vec<u32>,
     /// Currently active buffer size in frames.
     pub current_buffer_size: u32,
+    /// Number of hardware input channels the current input device offers, so the view can list
+    /// them (FR-IO-090). `0` when no input stream is open, which renders the selector disabled.
+    pub supported_input_channels: u16,
+    /// Zero-based index of the hardware input channel currently feeding the engine (FR-IO-090),
+    /// already clamped by the host to `supported_input_channels`.
+    pub current_input_channel: u16,
 }
 
 /// Everything [`crate::render`] needs to draw one frame of FR-UI-020's screen -- a single,
@@ -345,6 +351,11 @@ pub enum UiIntent {
     SelectBufferSize {
         /// The selected buffer size in frames.
         buffer_size: u32,
+    },
+    /// FR-IO-090: select which hardware input channel feeds the engine.
+    SelectInputChannel {
+        /// The selected channel's zero-based index, as the settings field stores it.
+        channel: u16,
     },
 }
 

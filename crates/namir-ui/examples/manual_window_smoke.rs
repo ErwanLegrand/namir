@@ -121,6 +121,22 @@ impl UiHost for SmokeHost {
                         .to_string(),
                 },
             ],
+            // FR-IO-010/040/090's device panel, open, with a multi-input interface's shape: the
+            // headless-window CI job then paints the device/rate/buffer/channel selectors too,
+            // rather than only the chain, and a human running this can see them.
+            audio_panel_open: true,
+            audio_panel: Some(namir_ui::AudioDevicePanelSnapshot {
+                input_devices: vec!["8-in interface (sample)".to_string()],
+                output_devices: vec!["8-in interface (sample)".to_string()],
+                current_input_device: Some("8-in interface (sample)".to_string()),
+                current_output_device: Some("8-in interface (sample)".to_string()),
+                supported_sample_rates: vec![44_100, 48_000, 96_000],
+                current_sample_rate: 48_000,
+                supported_buffer_sizes: vec![128, 256, 512],
+                current_buffer_size: 256,
+                supported_input_channels: 8,
+                current_input_channel: 5,
+            }),
             ..UiSnapshot::default()
         }
     }

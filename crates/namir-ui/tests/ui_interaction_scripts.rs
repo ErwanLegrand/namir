@@ -877,3 +877,52 @@ fn notice_dismiss_button_dispatches_dismiss_intent() {
         "clicking Dismiss on notice must dispatch DismissNotice with its id"
     );
 }
+
+/// One audio panel with `supported_input_channels` input channels on offer and channel 0 selected.
+fn panel(supported_input_channels: u16) -> UiSnapshot {
+    UiSnapshot {
+        audio_panel_open: true,
+        audio_panel: Some(namir_ui::AudioDevicePanelSnapshot {
+            input_devices: vec!["Interface In".to_string()],
+            output_devices: vec!["Interface Out".to_string()],
+            current_input_device: Some("Interface In".to_string()),
+            current_output_device: Some("Interface Out".to_string()),
+            supported_sample_rates: vec![48_000],
+            current_sample_rate: 48_000,
+            supported_buffer_sizes: vec![256],
+            current_buffer_size: 256,
+            supported_input_channels,
+            current_input_channel: 0,
+        }),
+        ..Default::default()
+    }
+}
+
+/// FR-IO-090: the audio panel's input-channel combo lists one entry per channel the device
+/// offers, numbered the way a musician reads their interface (1-based), and picking one
+/// dispatches the zero-based index the settings field stores -- so "Input 3" means channel 2.
+/// A host with no input stream reports zero channels, where naming any channel would name one
+/// that does not exist.
+#[test]
+fn input_channel_combo_dispatches_the_zero_based_index_of_the_chosen_channel() {
+    let mut driver = HeadlessUiDriver::new(panel(0));
+    let (selected, _) = driver.locate_value_for_control("Input Channel:");
+    assert_eq!(
+        selected, "None",
+        "with no input stream there is no channel 1 to name"
+    );
+
+    let mut driver = HeadlessUiDriver::new(panel(4));
+    let (selected, combo) = driver.locate_value_for_control("Input Channel:");
+    assert_eq!(selected, "Input 1", "channel 0 reads as the first input");
+    driver.click_at(combo.center());
+
+    let entry = driver.locate("Input 3");
+    driver.click_at(entry.center());
+
+    assert_eq!(
+        driver.dispatched_intents(),
+        vec![UiIntent::SelectInputChannel { channel: 2 }],
+        "choosing the third listed channel must ask for index 2"
+    );
+}

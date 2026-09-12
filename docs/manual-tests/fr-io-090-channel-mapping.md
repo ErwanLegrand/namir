@@ -50,3 +50,55 @@ whenever the negotiated output channel count is 2, which is every case this sess
 tested. Genuine independent-stereo-input (`ChannelConfig::Stereo`) is not built. Neither has an
 interactive UI. All three gaps are structural (recorded in code comments) rather than silently
 absent.
+
+## Note appended 2026-09-11 (input-channel selector)
+
+The "No UI to set these interactively" bullet above now overstates the gap for the **input**
+channel only, and the recorded PARTIAL verdict is unchanged. `namir-ui`'s audio settings panel
+carries an "Input Channel:" combo beside the sample-rate and buffer-size selectors, listing one
+entry per channel the open input stream offers, labelled 1-based ("Input 1", "Input 2", …) over the
+0-based index `ChannelMapping::input_channel` stores. Choosing one dispatches
+`UiIntent::SelectInputChannel`, which `namir-app`'s `AppHost` persists and then reopens the stream
+through, the same path `SelectSampleRate` takes. A persisted index the current device does not have
+is clamped to the last channel it does offer (`clamp_input_channel`, used by both the selector and
+the stream setup), so switching from an 8-in interface to a 2-in one no longer captures silence out
+of a channel that is not there.
+
+What that automates of the script above: step 3's *control* half for the input channel, verified in
+`crates/namir-ui/tests/ui_interaction_scripts.rs`
+(`input_channel_combo_dispatches_the_zero_based_index_of_the_chosen_channel`) and
+`crates/namir-app/src/host.rs`
+(`a_remembered_input_channel_the_device_lacks_is_clamped_and_explained`, corrected in place from a
+name that no longer exists — see the amendment below). What still needs a
+human with hardware, and so keeps this file's `Verify: M` unpromoted: that the remapped physical
+channel is the one actually heard, the output-channel half (no UI for it), and
+`ChannelConfig::Stereo`, which remains unbuilt.
+
+### Amendment, same day (review of the note above)
+
+Two things the note as first written did not say, both found in review and now built. **The
+selector's range is the device's own reported channel count**, not the count one stream opened
+with: `negotiate_channels` prefers the smallest config that suffices for the engine, so a snapshot
+fed from the opened stream showed a single entry on an eight-in interface and made every channel
+but the first unreachable. The range now comes from `device_state::max_channels_at_rate`, and the
+chosen index is passed into `negotiate_channels`' `minimum`, so the stream is opened wide enough
+to carry it (`crates/namir-app/src/host.rs`,
+`an_eight_input_device_offers_every_channel_and_opens_a_stream_containing_the_chosen_one`).
+**A clamped channel is now reported**, as `app.audio_io.input_channel_declined`, rather than
+silently substituted — the same treatment a declined buffer size gets.
+
+Still unautomated, and still the reason this file's `Verify: M` is unpromoted: that the channel
+selected is the one physically heard needs a signal fed into one input of a real multi-input
+interface. No hardware of that shape was available in this session; the eight-input device above
+is a fake backend reporting eight configs, which proves the plumbing and not the wiring.
+
+Two records from the same review. The note above cited
+`a_persisted_input_channel_past_the_device_end_is_clamped_to_an_existing_one`, a test that was
+replaced by the end-to-end pair named above; the dead name was corrected in place rather than
+left pointing nowhere in the one document D-18.6 makes this requirement's evidence record. And
+`crates/namir-ui/examples/manual_window_smoke.rs` — what the `headless window smoke (FR-UI-010)`
+CI job drives — now opens with the audio panel visible and an eight-input device's shape, so that
+job paints these selectors rather than only the chain, and a human running the example by hand
+sees them. A hand-editable settings file naming `u16::MAX` as the input channel degrades to a
+channel the device has instead of panicking the session
+(`a_settings_file_naming_the_largest_possible_channel_degrades_instead_of_panicking`).
