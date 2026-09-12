@@ -2967,6 +2967,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The empty-enumeration arms — `negotiate_channels`, `max_channels_at_rate` and
+    /// `negotiate_shared_buffer_size` each return `None` when a direction reports no config at
+    /// the rate, and `assemble_stream_config` absorbs that with `.unwrap_or(*input_channels)`.
+    /// Nothing could reach them through `FakeBackend` until `reporting_input_configs` stopped
+    /// reading an empty vec as "use the default": a test asking for a device that enumerates
+    /// nothing was silently handed a one-channel 48 kHz device instead.
+    #[test]
+    fn a_device_that_enumerates_no_configs_degrades_instead_of_offering_anything() {
+        let dir = temp_dir("input_channel_no_configs");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_input_configs(vec![]),
+        );
+        let (mut host, _engine) =
+            host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
+
+        host.dispatch(UiIntent::SelectSampleRate { rate: 48_000 });
+        let (panel, opened_index) = await_reopened_stream(&mut host);
+
+        assert!(
+            panel.supported_sample_rates.is_empty(),
+            "a device reporting nothing supports nothing: {:?}",
+            panel.supported_sample_rates
+        );
+        assert!(
+            panel.supported_buffer_sizes.is_empty(),
+            "and offers no buffer sizes: {:?}",
+            panel.supported_buffer_sizes
+        );
+        assert_eq!(
+            panel.supported_input_channels, 1,
+            "the selector falls back to the settled count rather than vanishing"
+        );
+        assert_eq!(opened_index, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Spins until the reopen `dispatch` started has opened a stream, then hands back the panel
     /// and the stream it opened. The reopen is asynchronous (worker rebuild, then
     /// `AudioStreamReady`), so every assertion about it has to wait for it.

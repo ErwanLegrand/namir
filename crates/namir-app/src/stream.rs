@@ -769,16 +769,18 @@ impl FakeBackend {
 
     /// Makes this backend report `ranges` when asked for **shared** input configs, instead of the
     /// one-channel default — how a test says "the interface has eight inputs", which is
-    /// FR-IO-090's whole subject.
+    /// FR-IO-090's whole subject. An **empty** `ranges` means what it says, a device enumerating
+    /// nothing, which is the only way to reach the `is_empty()` arms in `negotiate_channels`,
+    /// `max_channels_at_rate` and `negotiate_shared_buffer_size`.
     pub(crate) fn reporting_input_configs(mut self, ranges: Vec<SupportedConfigRange>) -> Self {
-        self.shared_input_configs = Some(ranges).filter(|r: &Vec<_>| !r.is_empty());
+        self.shared_input_configs = Some(ranges);
         self
     }
 
     /// [`FakeBackend::reporting_input_configs`]' playback counterpart — how a test says "the
     /// output device's channel configs carry different buffer limits from each other".
     pub(crate) fn reporting_output_configs(mut self, ranges: Vec<SupportedConfigRange>) -> Self {
-        self.shared_output_configs = Some(ranges).filter(|r: &Vec<_>| !r.is_empty());
+        self.shared_output_configs = Some(ranges);
         self
     }
 
