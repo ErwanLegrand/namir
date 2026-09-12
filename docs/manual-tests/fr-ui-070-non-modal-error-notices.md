@@ -202,7 +202,7 @@ catalogue of FR-ERR-020**", so which entries went unexercised is part of the res
 
 - **`app.host.state_save_failed`, `app.host.state_load_failed`, `app.host.reference_missing`
   (standalone).** Not inducible by any user gesture today. `AppHost::save_state`/`load_state`
-  (`crates/namir-app/src/host.rs:459`/`:464`) are public but wired to no control — that function's
+  (`crates/namir-app/src/host.rs:485`/`:490`) are public but wired to no control — that function's
   own doc comment says so: "not a `UiIntent` today (`namir-ui`'s FR-UI-020 screen has no save/load
   control yet)". `reference_missing` is reached only from `apply_recall_summary`, i.e. only from a
   state load, so it is behind the same gap. Step 15 exercises the equivalent path in the plugin,
@@ -314,7 +314,7 @@ catalogue entry.
   "none of the rates/buffer sizes **a device** reports could be negotiated"; here there is no
   device, so `{device}` is not merely unsubstituted but unsubstitutable. Two lines earlier the same
   function passes `None` for the share-mode indicator rather than a "truthful-looking Shared, which
-  would claim a device this window does not have" (`crates/namir-app/src/app.rs:528`) — the same
+  would claim a device this window does not have" (`crates/namir-app/src/app.rs:575`) — the same
   judgement, made correctly, one call apart. This is a missing catalogue entry, not carelessness.
 - `app.audio_io.device_lost` for a failure cpal classified as `Other` (step 8), because
   `stream_failure_code(direction)` maps on direction alone. Right by accident here; the same path
@@ -322,7 +322,7 @@ catalogue entry.
 
 **4. A Rust `Debug` rendering reaches the screen.** Step 8's detail is
 `Other("OS Error -2004287450 (FormatMessageW() returned error 317) …")` — the enum variant name
-included — because `crates/namir-app/src/app.rs:409` builds it with `format!("{other:?}")`.
+included — because `crates/namir-app/src/app.rs:455` builds it with `format!("{other:?}")`.
 
 **5. One event, several identical notices.** Step 8 produced two indistinguishable `device_lost`
 notices (one per direction, indistinguishable precisely because `{direction}` is not rendered).
@@ -352,7 +352,7 @@ right-to-left layout or draw it before the label, and/or let the text wrap.
 ### Observations outside FR-UI-070's own clauses
 
 - **A corrupt `audio-settings.json` is replaced at shutdown.** Step 9's file survives while the app
-  runs and is then overwritten by `crates/namir-app/src/app.rs:482`, which unconditionally persists
+  runs and is then overwritten by `crates/namir-app/src/app.rs:528`, which unconditionally persists
   the negotiated settings — FR-IO-080's intent, applied to a file the user may have been in the
   middle of hand-editing. The notice says "using defaults"; it does not say the file will be
   overwritten. That save is also the one report in the program that cannot become a notice, by

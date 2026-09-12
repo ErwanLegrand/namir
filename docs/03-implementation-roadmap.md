@@ -1901,7 +1901,7 @@ form, so the ledger and the source agree.
 
 - **4 CFG — 1 / 2 / 0.** *Done:* FR-CFG-010, one workspace building both products
   (`Cargo.toml:4-7`) and CI producing both on every push (`.github/workflows/ci.yml:88-89`, `:291-292`),
-  over one shared engine (`crates/namir-app/src/app.rs:160`, `crates/namir-clap/src/audio.rs:151`).
+  over one shared engine (`crates/namir-app/src/app.rs:164`, `crates/namir-clap/src/audio.rs:151`).
   *Partial:* FR-CFG-020 — the shared engine is real at those same two call sites, but the `Verify: G`
   apparatus is wholly absent: no golden vector exists anywhere in the tree and nothing runs one
   through both configurations. FR-CFG-030 — `xtask layering`'s dependency-edge lint
@@ -2043,7 +2043,7 @@ form, so the ledger and the source agree.
   `crates/namir-fixtures/src/library.rs:590` was generated for exactly this trio and has no consumer.
 - **5.11 IO — 2 / 6 / 0** (FR-IO-020's cell was moved at M11, 2026-08-11; every other cell in this
   bullet is M9a's and untouched)**.** *Done:* FR-IO-080 — all four enumerated members round-tripped
-  (`crates/namir-app/src/settings.rs:168`) plus the graceful-degrade clause
+  (`crates/namir-app/src/settings.rs:171`) plus the graceful-degrade clause
   (`crates/namir-app/src/device_state.rs:226`), with an executed PASS across all six steps
   (`docs/manual-tests/fr-io-080-settings-persistence.md`). FR-IO-020 — `Verify: M`, so under D-18.6
   the manual document **is** the named artifact rather than a stand-in for one, and
@@ -2060,7 +2060,7 @@ form, so the ledger and the source agree.
   neither a clause of FR-IO-020's text:** the `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` retry path has
   never executed anywhere, this endpoint's device period being a whole 144 frames at 48 kHz; and
   shared-mode `I24` is unreachable from this product, `namir-app` restricting shared mode to `F32`
-  (`crates/namir-app/src/audio_io.rs:449`), so the fork's container-justification fix rests there on
+  (`crates/namir-app/src/audio_io.rs:469`), so the fork's container-justification fix rests there on
   the format contract rather than on measurement. At M9a this cell read a documented **FAIL** —
   exclusive mode unreachable through cpal 0.18.1 as pinned by D-13.1, and `exclusive_mode` read by
   nothing — and D-13.4's fork, built at M11 (§18's status), is what changed it. *Partial:* FR-IO-010
@@ -2072,10 +2072,10 @@ form, so the ledger and the source agree.
   opened, the evidence being structural only. FR-IO-040 — the
   negotiation logic is unit-tested (`crates/namir-app/src/device_state.rs`) but neither selection
   clause is built and "always displayed" is served by an `eprintln!`
-  (`crates/namir-app/src/app.rs:283`). FR-IO-050 — recorded **PARTIAL** by its own document; the
+  (`crates/namir-app/src/app.rs:290`). FR-IO-050 — recorded **PARTIAL** by its own document; the
   measured-latency clause is unbuilt (`crates/namir-app/src/latency.rs:23-24`, `:43` hardcodes
   `measured: false`) and the display is that same `eprintln!`, milliseconds only. FR-IO-060 —
-  induction is covered (`crates/namir-app/src/stream.rs:519`); "resettable by the user" has no path,
+  induction is covered (`crates/namir-app/src/stream.rs:531`); "resettable by the user" has no path,
   `XrunCounter::reset` having no caller outside its own tests. FR-IO-070 — the method's named
   apparatus, a virtual device that can be made to fail on demand, does not exist, and the tagged test
   opens no device (`crates/namir-app/src/device_state.rs:247`).
@@ -2146,7 +2146,7 @@ form, so the ledger and the source agree.
   runtime resolver consumed by no installer, and is deliberately not counted as scaffolding.
 - **6.1 RT — 0 / 4 / 0.** *Partial:* NFR-RT-010 — the three-axis stress test passes
   (`crates/namir-worker/tests/rt_stress.rs:187-194`) but the allocation harness reaches neither crate
-  that owns a real audio callback; `crates/namir-app/src/stream.rs:268-272` builds a `Vec` inside the
+  that owns a real audio callback; `crates/namir-app/src/stream.rs:271-275` builds a `Vec` inside the
   cpal callback, which is the class of thing the missing harness would catch. NFR-RT-020 — the sole
   artifact (`crates/namir-engine/src/ring.rs:174-192`) asserts non-allocation, which is not
   wait-freedom, and spans one of the audio thread's communication paths;
@@ -2165,8 +2165,8 @@ form, so the ledger and the source agree.
   (`crates/namir-engine/src/stages/mod.rs:116-129`); no test compares actual group delay against a
   nonzero `latency_samples()`. NFR-PERF-030 — the behaviour exists and ships: `namir-app` opens its
   devices, negotiates a rate and a buffer, builds the engine and starts the stream on one path from
-  `run()` (`crates/namir-app/src/app.rs:74`, `:92-135`, `:160-174`), loading the default state at
-  `:183` and reaching an audible state at `:256`'s `play()`, with a real 90-frame run recorded
+  `run()` (`crates/namir-app/src/app.rs:74`, `:92-135`, `:164-178`), loading the default state at
+  `:187` and reaching an audible state at `:263`'s `play()`, with a real 90-frame run recorded
   (`docs/manual-tests/fr-ui-010-standalone-window-renders.md`). What is absent is the whole of the
   `Verify: B` half: no start-up harness exists, the identifier appears in no `.rs`, `.toml` or `.yml`
   under `crates/`, `xtask/` or `.github/`, and **the 3 s bound has never been measured** on the §2
@@ -2942,7 +2942,7 @@ that happens to depend on them first.
     **Resolved 2026-09-08, answered by construction: the panel shipped in PR #159 (merge `11cdf11`,
     2026-09-07), and issue #26 is closed.** Four new `UiIntent`s (`SelectInputDevice`,
     `SelectOutputDevice`, `SelectSampleRate`, `SelectBufferSize`) call `initiate_audio_reopen()` in
-    `crates/namir-app/src/host.rs:1421-1443`, reopening the audio stream in-session rather than only
+    `crates/namir-app/src/host.rs:1486-1513`, reopening the audio stream in-session rather than only
     across an application restart. `UiSnapshot` carries `audio_panel_open: bool` and
     `audio_panel: Option<AudioDevicePanelSnapshot>` (`crates/namir-ui/src/host.rs`). What it does
     and does not cover:
@@ -3427,8 +3427,8 @@ a later session can find it, rather than by buying a permanent three-runner matr
 
 *One scope change, so it is not reopened later:* **NFR-PERF-030 moves to M13** (§20 below, where a
 dated scope note records it). It cannot run on any CI runner — a machine with no audio device
-diverts `namir-app` to `open_window_without_audio` (`crates/namir-app/src/app.rs:116`, `:148`,
-`:155`, `:164`, `:309`) and never becomes audible — and measuring "time to an audible state" needs a
+diverts `namir-app` to `open_window_without_audio` (`crates/namir-app/src/app.rs:120`, `:152`,
+`:159`, `:168`, `:309`) and never becomes audible — and measuring "time to an audible state" needs a
 seam in `namir-app`'s entry path that exists solely to enable the measurement. M13's release
 pipeline already touches that launch path with a real machine in the loop, so that is where the
 harness costs least and means most. It is `**UNRESOLVED**` in the checked-in plan today, which is
@@ -5094,7 +5094,7 @@ hand-edited JSON key is as the only mechanism a user has, not a sixth requiremen
   hardware. The reference machine's device period is 3 ms = 144 frames at 48 kHz, a whole number, so
   the error never arose; step 8 records that as the expected non-event it is, not as a pass.
 - **Shared-mode `I24` is unexercised and unreachable from this product.** `namir-app` restricts
-  shared mode to `F32` (`crates/namir-app/src/audio_io.rs:449`), so step 9 exercised the fork's
+  shared mode to `F32` (`crates/namir-app/src/audio_io.rs:469`), so step 9 exercised the fork's
   container-justification path returning a **zero** shift for a full container. The fix is correct
   for shared-mode `I24` by the format contract, not by measurement.
 - **Packed 24-bit (a 3-byte container) cannot be expressed by `cpal` at all** — `SampleFormat::I24`'s
@@ -5393,7 +5393,7 @@ deliverables above, per this document's convention.
 **NFR-PERF-030 moves from M9 into this milestone.** The requirement measures the standalone
 application reaching an audible state within 3 seconds on the reference machine with a warm library
 index (FRS §6.2). It cannot run on any CI runner: a machine with no audio device diverts `namir-app`
-to `open_window_without_audio` (`crates/namir-app/src/app.rs:116`, `:148`, `:155`, `:164`, `:309`)
+to `open_window_without_audio` (`crates/namir-app/src/app.rs:120`, `:152`, `:159`, `:168`, `:309`)
 and never becomes audible, so the measurement needs both a real machine and a seam in `namir-app`'s
 entry path that exists solely to enable it. M13's release pipeline already touches that launch path
 with a real machine in the loop, which is why the harness costs least here. It is `**UNRESOLVED**`
@@ -6687,7 +6687,7 @@ This addendum supersedes in place the earlier M14 planning and scoping passages 
   input and output device lists, `current_output_device`, `supported_sample_rates`,
   `current_sample_rate`, `supported_buffer_sizes`, and `current_buffer_size`. New intents
   `UiIntent::SelectInputDevice`, `SelectOutputDevice`, `SelectSampleRate`, and `SelectBufferSize`.
-- `crates/namir-app/src/host.rs:1421-1443`: each of the four intents invokes
+- `crates/namir-app/src/host.rs:1486-1513`: each of the four intents invokes
   `initiate_audio_reopen()`, so device, rate, and buffer changes now occur dynamically in-session
   rather than only across a restart.
 
