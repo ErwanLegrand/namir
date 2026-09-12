@@ -2073,7 +2073,7 @@ form, so the ledger and the source agree.
   negotiation logic is unit-tested (`crates/namir-app/src/device_state.rs`) but neither selection
   clause is built and "always displayed" is served by an `eprintln!`
   (`crates/namir-app/src/app.rs:290`). FR-IO-050 — recorded **PARTIAL** by its own document; the
-  measured-latency clause is unbuilt (`crates/namir-app/src/latency.rs:23-24`, `:43` hardcodes
+  measured-latency clause is unbuilt (`crates/namir-app/src/latency.rs:26-28`, `:62` hardcodes
   `measured: false`) and the display is that same `eprintln!`, milliseconds only. FR-IO-060 —
   induction is covered (`crates/namir-app/src/stream.rs:531`); "resettable by the user" has no path,
   `XrunCounter::reset` having no caller outside its own tests. FR-IO-070 — the method's named
@@ -6695,7 +6695,7 @@ This addendum supersedes in place the earlier M14 planning and scoping passages 
 - The panel carries no latency field and no xrun field.
 - **FR-IO-050:** measured round-trip latency still requires both a measurement mechanism and a
   display (`docs/manual-tests/fr-io-050-round-trip-latency.md` stays PARTIAL). Its M9a reason in
-  §14's 5.11 IO bullet (`:2053-2055`) holds verbatim: `crates/namir-app/src/latency.rs:43` hardcodes
+  §14's 5.11 IO bullet (`:2053-2055`) holds verbatim: `crates/namir-app/src/latency.rs:62` hardcodes
   `measured: false` and the panel carries no latency field.
 - **FR-IO-060:** the "resettable by the user" clause remains unreachable; `XrunCounter::reset` has
   no caller outside unit tests and no `UiIntent` reaches it.
