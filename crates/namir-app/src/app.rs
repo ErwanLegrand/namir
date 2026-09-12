@@ -451,18 +451,14 @@ pub(crate) const STREAM_FAILURE_RING_SLOTS: usize = 16;
 /// is the only RT-legal answer and costs nothing real: [`crate::host::AppHost`] deduplicates
 /// identical notices anyway.
 ///
-/// `Xrun` is counted rather than pushed, exactly as before — [`crate::xrun::XrunCounter::record`]
-/// is a single relaxed atomic increment and belongs on the callback thread, and routing it through
-/// the ring would let a burst of dropouts evict the device-loss report behind it.
+/// Every failure is pushed; nothing is classified here. Until issue #200 item 6 this closure also
+/// counted `StreamFailure::Xrun`, a variant `cpal` 0.19 stopped producing — dropouts now arrive
+/// per data callback as [`crate::audio_io::CallbackStatus::xrun`] and are counted in
+/// [`crate::stream`], beside the bridge under/overruns they have to stay commensurable with.
 pub(crate) fn stream_failure_sink(
-    xruns: Arc<XrunCounter>,
     mut failures: rtrb::Producer<StreamFailure>,
 ) -> impl FnMut(StreamFailure) + Send + 'static {
     move |failure| {
-        if matches!(failure, StreamFailure::Xrun) {
-            xruns.record();
-            return;
-        }
         // `StreamFailure` is `Copy` and owns no heap, so the value handed back by a full ring is
         // dropped without a deallocation -- which is why the payload had to stop being a `String`.
         let _ = failures.push(failure);
@@ -740,8 +736,8 @@ pub fn run() {
         stream_setup,
         engine,
         Arc::clone(&xruns),
-        stream_failure_sink(Arc::clone(&xruns), input_failure_tx),
-        stream_failure_sink(Arc::clone(&xruns), output_failure_tx),
+        stream_failure_sink(input_failure_tx),
+        stream_failure_sink(output_failure_tx),
     );
     host.watch_stream_failures(crate::host::StreamFailureWatch::new(
         input_failure_rx,
@@ -1228,31 +1224,27 @@ mod tests {
     /// `format!` a notice detail and `mpsc::Sender::send` it — two heap allocations on an audio
     /// thread, which NFR-RT-010 and FR-ERR-030 both forbid.
     ///
-    /// Driven under D-7.5's `assert_no_alloc` harness with both shapes it has to handle: an `Xrun`
-    /// (counted on the spot) and an `Other` carrying a real backend message (pushed to the ring).
+    /// Driven under D-7.5's `assert_no_alloc` harness with a real backend message, which is the
+    /// only shape left: `cpal` 0.19 stopped producing xruns through this path (issue #200 item 6).
     /// The failure is built *outside* the section, because building it is `crate::audio_io`'s job
     /// and has its own test above.
     #[test]
     fn the_stream_failure_sink_allocates_nothing_on_the_callback_thread() {
-        let xruns = Arc::new(XrunCounter::new());
         let (producer, mut consumer) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
-        let mut sink = stream_failure_sink(Arc::clone(&xruns), producer);
+        let mut sink = stream_failure_sink(producer);
 
         let lost = StreamFailure::Other(crate::audio_io::InlineDetail::from(
             "OS Error -2004287450 (FormatMessageW() returned error 317)",
         ));
         crate::rt_harness::audio_section(|| {
-            sink(StreamFailure::Xrun);
             sink(lost);
         });
 
-        assert_eq!(xruns.count(), 1, "an Xrun is counted, not queued");
         assert_eq!(
             consumer.pop().ok(),
             Some(lost),
-            "a non-xrun failure reaches the ring intact"
+            "a failure reaches the ring intact"
         );
-        assert!(consumer.pop().is_err(), "the Xrun must not also be queued");
     }
 
     /// A ring that has filled up must drop the report, not block, grow, or free anything: the
@@ -1261,9 +1253,8 @@ mod tests {
     /// inside the harness.
     #[test]
     fn a_full_stream_failure_ring_drops_reports_rather_than_allocating() {
-        let xruns = Arc::new(XrunCounter::new());
         let (producer, mut consumer) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
-        let mut sink = stream_failure_sink(Arc::clone(&xruns), producer);
+        let mut sink = stream_failure_sink(producer);
 
         let failure = StreamFailure::DeviceLost;
         crate::rt_harness::audio_section(|| {

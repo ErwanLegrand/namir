@@ -413,10 +413,10 @@ impl From<&str> for InlineDetail {
 
 /// A Namir-owned classification of a stream failure, replacing `cpal::ErrorKind` at this crate's
 /// boundary (D-13.1). Under `cpal` 0.19, xrun delivery moved from error callbacks to
-/// `CallbackInfo::xrun()`, which Namir's current [`AudioBackend`] stream callback signature does
-/// not yet read or propagate (see [`crate::xrun`]; bridge under- and overruns are currently
-/// FR-IO-060's only live source). `Xrun` is retained here for when that backend seam is extended.
-/// `DeviceLost` is FR-IO-070's device-removal case.
+/// `CallbackInfo::xrun()`, so an xrun is no longer a failure at all: it reaches this crate through
+/// [`CallbackStatus::xrun`] on the [`AudioBackend`] data callbacks and is counted into
+/// [`crate::xrun::XrunCounter`] by [`crate::stream`] (issue #200 item 6). `DeviceLost` is
+/// FR-IO-070's device-removal case.
 ///
 /// **`Copy`, and every byte of it inline (issue #88).** This value is constructed on `cpal`'s
 /// error-callback thread and travels to the UI thread through a pre-allocated ring; both ends of
@@ -427,9 +427,6 @@ pub enum StreamFailure {
     /// The device was disconnected or otherwise stopped being reachable (`cpal`'s
     /// `ErrorKind::DeviceNotAvailable`/`HostUnavailable`).
     DeviceLost,
-    /// `cpal` detected a buffer underrun/overrun (in `cpal` 0.19 delivered via `CallbackInfo::xrun()`,
-    /// retained here for when the backend callback seam is extended to carry it).
-    Xrun,
     /// Anything else, carrying `cpal`'s own message for diagnostics (FR-ERR-050).
     Other(InlineDetail),
 }
@@ -443,7 +440,6 @@ impl std::fmt::Display for StreamFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DeviceLost => f.write_str("the device is no longer available"),
-            Self::Xrun => f.write_str("the audio buffer under- or overran"),
             Self::Other(message) => f.write_str(message.as_str()),
         }
     }
@@ -578,6 +574,67 @@ pub trait AudioStream: Send {
     fn pause(&self) -> Result<(), AudioIoError>;
 }
 
+/// What the backend reports about one data callback, alongside the samples themselves.
+///
+/// Two fields: the dropout bit FR-IO-060 needs (`cpal` 0.19 moved xrun delivery from the error
+/// callback to `CallbackInfo::xrun()`), and the device-callback boundary that makes "one xrun
+/// per callback" expressible at all — see [`Self::first_of_callback`]. A Namir-owned `Copy`
+/// struct rather than a re-exported `cpal::CallbackInfo` keeps D-13.1's boundary intact (the
+/// fake backend in [`crate::stream`] constructs one with no hardware behind it), and named
+/// fields rather than bare `bool`s so a call site reads as `status.xrun` and not as `true`.
+///
+/// **`#[non_exhaustive]` deliberately (PR #209 review).** Out of crate, no struct expression
+/// reaches this type at all — a partial literal *and* functional-update syntax are both E0639
+/// (verified: `CallbackStatus { xrun: true, ..Default::default() }` in a `namir-clap` test does
+/// not compile) — so an external backend builds one by taking [`Default`] and assigning the
+/// fields it means:
+///
+/// ```ignore
+/// let mut status = CallbackStatus::default();
+/// status.xrun = true;
+/// ```
+///
+/// which cannot leave a later-added field at an unsafe value. The field that makes this worth an
+/// attribute is [`Self::first_of_callback`]: [`crate::stream`]'s latch is persistent state, and a
+/// producer spelling `first_of_callback: false` on a genuine first callback would leave a stale
+/// latch set and *swallow* a dropout — silent under-counting, the direction FR-IO-060 can least
+/// afford and the exact defect this type was added to fix.
+///
+/// Inside `namir-app` the attribute does nothing, so the literals that actually set the flag
+/// today — the four `cpal` call sites and the converters' two continuation-slice literals — are
+/// held by the ordinary in-crate rule instead: a new field is a compile error at each of them,
+/// which is the outcome wanted and is not something the attribute buys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CallbackStatus {
+    /// The backend detected a dropout for this callback: samples lost by the device, as opposed
+    /// to the ones [`crate::bridge`]'s ring loses. Counted into [`crate::xrun::XrunCounter`] by
+    /// [`crate::stream`], which collapses this and its own bridge losses into **at most one
+    /// xrun per device callback**.
+    pub xrun: bool,
+    /// Whether this call begins a new device callback.
+    ///
+    /// `true` on every call from a path that hands the device buffer straight through (the
+    /// `f32` streams, and the fake backend). The integer-converting path
+    /// (`crate::audio_io`'s `convert`) splits one device callback into scratch-length slices,
+    /// and sets this on the first slice only — the same place it stops carrying
+    /// [`Self::xrun`] — so [`crate::stream`]'s per-callback latch spans the whole device
+    /// callback rather than resetting once per slice, and a 480-frame integer callback that
+    /// starves twice still counts one dropout.
+    pub first_of_callback: bool,
+}
+
+/// A fresh device callback with nothing wrong: `first_of_callback` is `true`, because a status
+/// built from nothing describes the start of one, not a continuation slice of one.
+impl Default for CallbackStatus {
+    fn default() -> Self {
+        Self {
+            xrun: false,
+            first_of_callback: true,
+        }
+    }
+}
+
 /// D-13.1's Namir-owned trait over `cpal`. Every method is deliberately synchronous and may
 /// block briefly (device enumeration and stream construction are not RT-safe operations and are
 /// never called from the audio thread) — see [`crate::worker`] for where these calls actually run.
@@ -639,7 +696,8 @@ pub trait AudioBackend: Send + Sync {
     ) -> ExclusiveModeOutcome;
 
     /// Opens an input stream. `on_data` receives interleaved f32 samples, `channels` per frame per
-    /// `params`; `on_error` receives every post-open failure until the stream is dropped.
+    /// `params`, plus the [`CallbackStatus`] the backend reported for that callback; `on_error`
+    /// receives every post-open failure until the stream is dropped.
     /// Returned paused — the caller must call [`AudioStream::play`].
     #[allow(clippy::type_complexity)]
     fn build_input_stream(
@@ -647,20 +705,21 @@ pub trait AudioBackend: Send + Sync {
         host: &HostInfo,
         device: &DeviceInfo,
         params: StreamParams,
-        on_data: Box<dyn FnMut(&[f32]) + Send>,
+        on_data: Box<dyn FnMut(&[f32], CallbackStatus) + Send>,
         on_error: Box<dyn FnMut(StreamFailure) + Send>,
         activation_timeout: Duration,
     ) -> Result<Box<dyn AudioStream>, AudioIoError>;
 
     /// Opens an output stream. `on_data` fills the interleaved f32 buffer it is handed (`channels`
-    /// per frame per `params`) every callback. Returned paused.
+    /// per frame per `params`) every callback, and is told that callback's [`CallbackStatus`].
+    /// Returned paused.
     #[allow(clippy::type_complexity)]
     fn build_output_stream(
         &self,
         host: &HostInfo,
         device: &DeviceInfo,
         params: StreamParams,
-        on_data: Box<dyn FnMut(&mut [f32]) + Send>,
+        on_data: Box<dyn FnMut(&mut [f32], CallbackStatus) + Send>,
         on_error: Box<dyn FnMut(StreamFailure) + Send>,
         activation_timeout: Duration,
     ) -> Result<Box<dyn AudioStream>, AudioIoError>;
@@ -692,9 +751,9 @@ mod cpal_impl {
 
     use super::convert;
     use super::{
-        AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CpalBackend, DeviceInfo,
-        EnumeratedConfigs, ExclusiveModeOutcome, HostInfo, InlineDetail, ShareMode, StreamFailure,
-        StreamParams, SupportedConfigRange,
+        AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CallbackStatus, CpalBackend,
+        DeviceInfo, EnumeratedConfigs, ExclusiveModeOutcome, HostInfo, InlineDetail, ShareMode,
+        StreamFailure, StreamParams, SupportedConfigRange,
     };
 
     /// Resolves `host`'s name to a live `cpal::Host`. `cpal::available_hosts`/`host_from_id`
@@ -1247,7 +1306,7 @@ mod cpal_impl {
             host: &HostInfo,
             device: &DeviceInfo,
             params: StreamParams,
-            mut on_data: Box<dyn FnMut(&[f32]) + Send>,
+            mut on_data: Box<dyn FnMut(&[f32], CallbackStatus) + Send>,
             mut on_error: Box<dyn FnMut(StreamFailure) + Send>,
             activation_timeout: Duration,
         ) -> Result<Box<dyn AudioStream>, AudioIoError> {
@@ -1265,7 +1324,15 @@ mod cpal_impl {
                         .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
                     configured.build_input_stream::<f32, _, _>(
                         stream_config(params),
-                        move |data: &[f32], _info| on_data(data),
+                        move |data: &[f32], info| {
+                            on_data(
+                                data,
+                                CallbackStatus {
+                                    xrun: info.xrun(),
+                                    first_of_callback: true,
+                                },
+                            )
+                        },
                         move |err| on_error(to_stream_failure(err)),
                         Some(activation_timeout),
                     )
@@ -1297,7 +1364,7 @@ mod cpal_impl {
             host: &HostInfo,
             device: &DeviceInfo,
             params: StreamParams,
-            mut on_data: Box<dyn FnMut(&mut [f32]) + Send>,
+            mut on_data: Box<dyn FnMut(&mut [f32], CallbackStatus) + Send>,
             mut on_error: Box<dyn FnMut(StreamFailure) + Send>,
             activation_timeout: Duration,
         ) -> Result<Box<dyn AudioStream>, AudioIoError> {
@@ -1315,7 +1382,15 @@ mod cpal_impl {
                         .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
                     configured.build_output_stream::<f32, _, _>(
                         stream_config(params),
-                        move |data: &mut [f32], _info| on_data(data),
+                        move |data: &mut [f32], info| {
+                            on_data(
+                                data,
+                                CallbackStatus {
+                                    xrun: info.xrun(),
+                                    first_of_callback: true,
+                                },
+                            )
+                        },
                         move |err| on_error(to_stream_failure(err)),
                         Some(activation_timeout),
                     )
@@ -1374,14 +1449,22 @@ mod cpal_impl {
         configured.build_input_stream_raw(
             stream_config(params),
             T::FORMAT,
-            move |data: &cpal::Data, _info| {
-                if let Some(codes) = data.as_slice::<T>() {
-                    converter.drain(codes);
+            move |data: &cpal::Data, info| {
+                let status = CallbackStatus {
+                    xrun: info.xrun(),
+                    first_of_callback: true,
+                };
+                match data.as_slice::<T>() {
+                    Some(codes) => converter.drain(codes, status),
+                    // `cpal`'s own typed builder `expect()`s on the `None` here. A host handing
+                    // back a different format than it was asked for is a bug, but an audio
+                    // callback is the worst place in the process to panic from, so this drops the
+                    // block instead: the stream stays alive, the bridge underruns, and
+                    // FR-IO-060's xrun counter says so. The device's own report still crosses —
+                    // a callback that both glitched and arrived mis-typed lost samples twice
+                    // over, and counting it nowhere is the bug this seam was widened to fix.
+                    None => converter.report(status),
                 }
-                // `cpal`'s own typed builder `expect()`s on the `None` here. A host handing back a
-                // different format than it was asked for is a bug, but an audio callback is the
-                // worst place in the process to panic from, so this drops the block instead: the
-                // stream stays alive, the bridge underruns, and FR-IO-060's xrun counter says so.
             },
             move |err| on_error(to_stream_failure(err)),
             Some(activation_timeout),
@@ -1405,13 +1488,22 @@ mod cpal_impl {
         configured.build_output_stream_raw(
             stream_config(params),
             T::FORMAT,
-            move |data: &mut cpal::Data, _info| match data.as_slice_mut::<T>() {
-                Some(codes) => converter.fill(codes),
-                // As `build_converting_input`, except that an output callback must leave *something*
-                // in the buffer: an all-zero byte pattern is silence in every signed integer and
-                // IEEE float format `cpal` can hand back here, so this is silence rather than
-                // whatever the device buffer happened to hold.
-                None => data.bytes_mut().fill(0),
+            move |data: &mut cpal::Data, info| {
+                let status = CallbackStatus {
+                    xrun: info.xrun(),
+                    first_of_callback: true,
+                };
+                match data.as_slice_mut::<T>() {
+                    Some(codes) => converter.fill(codes, status),
+                    // As `build_converting_input`, except that an output callback must leave
+                    // *something* in the buffer: an all-zero byte pattern is silence in every
+                    // signed integer and IEEE float format `cpal` can hand back here, so this is
+                    // silence rather than whatever the device buffer happened to hold.
+                    None => {
+                        data.bytes_mut().fill(0);
+                        converter.report(status);
+                    }
+                }
             },
             move |err| on_error(to_stream_failure(err)),
             Some(activation_timeout),
