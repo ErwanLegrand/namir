@@ -100,8 +100,8 @@ mod host_ext {
     use clack_extensions::state::PluginState;
 
     use namir_app::audio_io::{
-        AudioBackend, AudioIoError, AudioStream, BufferSizeRange, DeviceInfo, EnumeratedConfigs,
-        ExclusiveModeOutcome, HostInfo, ShareMode, StreamFailure, StreamParams,
+        AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CallbackStatus, DeviceInfo,
+        EnumeratedConfigs, ExclusiveModeOutcome, HostInfo, ShareMode, StreamFailure, StreamParams,
         SupportedConfigRange,
     };
     use namir_app::instance::SharedInstance;
@@ -600,9 +600,9 @@ mod host_ext {
     /// deliberately minimal and exists only to reach [`stream::open`], which is the real code
     /// under test.
     /// The capture callback `namir_app::stream::open` hands its input stream.
-    type InputCallback = Box<dyn FnMut(&[f32]) + Send>;
+    type InputCallback = Box<dyn FnMut(&[f32], CallbackStatus) + Send>;
     /// The render callback `namir_app::stream::open` hands its output stream.
-    type OutputCallback = Box<dyn FnMut(&mut [f32]) + Send>;
+    type OutputCallback = Box<dyn FnMut(&mut [f32], CallbackStatus) + Send>;
 
     struct HarnessBackend {
         input: Mutex<Option<InputCallback>>,
@@ -697,7 +697,7 @@ mod host_ext {
             _host: &HostInfo,
             _device: &DeviceInfo,
             _params: StreamParams,
-            on_data: Box<dyn FnMut(&[f32]) + Send>,
+            on_data: Box<dyn FnMut(&[f32], CallbackStatus) + Send>,
             _on_error: Box<dyn FnMut(StreamFailure) + Send>,
             _timeout: Duration,
         ) -> Result<Box<dyn AudioStream>, AudioIoError> {
@@ -709,7 +709,7 @@ mod host_ext {
             _host: &HostInfo,
             _device: &DeviceInfo,
             _params: StreamParams,
-            on_data: Box<dyn FnMut(&mut [f32]) + Send>,
+            on_data: Box<dyn FnMut(&mut [f32], CallbackStatus) + Send>,
             _on_error: Box<dyn FnMut(StreamFailure) + Send>,
             _timeout: Duration,
         ) -> Result<Box<dyn AudioStream>, AudioIoError> {
@@ -862,8 +862,8 @@ mod host_ext {
         let silence = vec![0.0f32; frames];
         let mut device_buffer = vec![0.0f32; frames * 2];
         for _ in 0..settle_blocks(block) {
-            input_cb(&silence);
-            output_cb(&mut device_buffer);
+            input_cb(&silence, CallbackStatus::default());
+            output_cb(&mut device_buffer, CallbackStatus::default());
         }
 
         // `stream::open` prefills the bridge ring with `MAX_BLOCK` frames of silence to absorb
@@ -883,9 +883,9 @@ mod host_ext {
             Vec::with_capacity(full_input.len()),
         ];
         for chunk in full_input.chunks_exact(frames) {
-            input_cb(chunk);
+            input_cb(chunk, CallbackStatus::default());
             device_buffer.fill(f32::NAN);
-            output_cb(&mut device_buffer);
+            output_cb(&mut device_buffer, CallbackStatus::default());
             let (frames_out, _) = device_buffer.as_chunks::<2>();
             raw_out[0].extend(frames_out.iter().map(|f| f[0]));
             raw_out[1].extend(frames_out.iter().map(|f| f[1]));

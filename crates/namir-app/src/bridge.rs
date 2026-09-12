@@ -9,9 +9,10 @@
 //! This module is that something: a wait-free SPSC ring ([`bridge`], built on the same `rtrb`
 //! primitive `namir-engine`'s own command/return rings use — see that crate's `ring.rs` for the
 //! full adoption argument, reused rather than re-litigated here) carrying raw captured `f32`
-//! samples, plus the underrun accounting that *is* currently FR-IO-060's only live xrun source
-//! (since `cpal` 0.19 moved xrun delivery to `CallbackInfo::xrun()`, which Namir's
-//! [`crate::audio_io::AudioBackend`] trait seam does not yet carry).
+//! samples, plus the underrun accounting that is one of FR-IO-060's two live xrun sources — the
+//! other being the backend's own per-callback report, which `cpal` 0.19 delivers through
+//! `CallbackInfo::xrun()` and which [`crate::audio_io::AudioBackend`]'s seam has carried since
+//! issue #200 item 6.
 //!
 //! **Not RT-unsafe by construction, but written to be RT-cheap in practice:** `rtrb` in this
 //! workspace's pinned version (0.3.4) has no bulk chunk-transfer API, so [`BridgeProducer`]/

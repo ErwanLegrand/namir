@@ -104,7 +104,7 @@ severity assessment.
 
 **A direct data point for R-5, and it is the one R-5 predicted.** `CpalBackend`'s
 `to_stream_failure` maps `cpal`'s `DeviceNotAvailable`/`HostUnavailable` to
-`StreamFailure::DeviceLost` (`crates/namir-app/src/audio_io.rs:527`). **This unplug did not produce
+`StreamFailure::DeviceLost` (`crates/namir-app/src/audio_io.rs:522`). **This unplug did not produce
 either.** It produced `StreamFailure::Other`, carrying an unmapped OS error whose own message
 formatting had failed (`FormatMessageW() returned error 317`). R-5's wording is that "FR-IO-070
 device-removal handling is weak in any cross-platform audio library"; this is that weakness

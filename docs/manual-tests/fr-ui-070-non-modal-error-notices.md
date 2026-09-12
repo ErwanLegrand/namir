@@ -25,7 +25,7 @@ not be renamed.
 - **Never interrupts audio, by construction.** `namir-ui` cannot depend on `namir-engine` or
   `namir-worker` at all (D-5.1, enforced by `xtask layering`), so no code path in the view layer can
   name an audio thread, let alone block one. Notices are pushed on the worker/main side
-  (`AppHost::push_notice`, `crates/namir-app/src/host.rs:193`) and only ever *read* by the view.
+  (`AppHost::push_notice`, `crates/namir-app/src/host.rs:189`) and only ever *read* by the view.
 - **Catalogue-backed.** Every notice carries a `namir_core::ErrorCode` — a stable id, a severity and
   a message template (FR-ERR-020) — never a free-formatted string; `notice_text` renders
   `{code.id}: {message_template} ({detail})`.
@@ -202,7 +202,7 @@ catalogue of FR-ERR-020**", so which entries went unexercised is part of the res
 
 - **`app.host.state_save_failed`, `app.host.state_load_failed`, `app.host.reference_missing`
   (standalone).** Not inducible by any user gesture today. `AppHost::save_state`/`load_state`
-  (`crates/namir-app/src/host.rs:463`/`:468`) are public but wired to no control — that function's
+  (`crates/namir-app/src/host.rs:459`/`:464`) are public but wired to no control — that function's
   own doc comment says so: "not a `UiIntent` today (`namir-ui`'s FR-UI-020 screen has no save/load
   control yet)". `reference_missing` is reached only from `apply_recall_summary`, i.e. only from a
   state load, so it is behind the same gap. Step 15 exercises the equivalent path in the plugin,
@@ -314,7 +314,7 @@ catalogue entry.
   "none of the rates/buffer sizes **a device** reports could be negotiated"; here there is no
   device, so `{device}` is not merely unsubstituted but unsubstitutable. Two lines earlier the same
   function passes `None` for the share-mode indicator rather than a "truthful-looking Shared, which
-  would claim a device this window does not have" (`crates/namir-app/src/app.rs:532`) — the same
+  would claim a device this window does not have" (`crates/namir-app/src/app.rs:528`) — the same
   judgement, made correctly, one call apart. This is a missing catalogue entry, not carelessness.
 - `app.audio_io.device_lost` for a failure cpal classified as `Other` (step 8), because
   `stream_failure_code(direction)` maps on direction alone. Right by accident here; the same path
@@ -333,7 +333,7 @@ but each pushes its own notice (`worker_jobs.rs:139`) and nothing deduplicates. 
 idempotent does not make its reporting idempotent.
 
 **6. Notices never expire, and the list is unbounded.** `push_notice` appends to a plain `Vec` in
-both shells (`crates/namir-app/src/host.rs:209`, `crates/namir-clap/src/shared.rs:213`) and
+both shells (`crates/namir-app/src/host.rs:205`, `crates/namir-clap/src/shared.rs:213`) and
 `Dismiss` is the only removal path (`:457` / `:221`). No expiry, no severity-based timeout, no cap.
 
 **7. And therefore, in the plugin, notices that can never be removed — step 14's failure.** Four
@@ -352,7 +352,7 @@ right-to-left layout or draw it before the label, and/or let the text wrap.
 ### Observations outside FR-UI-070's own clauses
 
 - **A corrupt `audio-settings.json` is replaced at shutdown.** Step 9's file survives while the app
-  runs and is then overwritten by `crates/namir-app/src/app.rs:486`, which unconditionally persists
+  runs and is then overwritten by `crates/namir-app/src/app.rs:482`, which unconditionally persists
   the negotiated settings — FR-IO-080's intent, applied to a file the user may have been in the
   middle of hand-editing. The notice says "using defaults"; it does not say the file will be
   overwritten. That save is also the one report in the program that cannot become a notice, by

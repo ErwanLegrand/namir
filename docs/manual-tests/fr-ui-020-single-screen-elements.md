@@ -218,7 +218,7 @@ FR-CLAP-110. Neither D-13.x, `gui.rs`'s own comment, nor FR-CLAP-110's text note
   the display"; the display half remains unbuilt, and it closes at M8.
 - **Notices never expire, and in the plugin that compounds the fixed editor.** A notice occupies
   the top panel until the user clicks `Dismiss`: `push_notice` appends to an unbounded `Vec` in
-  both shells (`crates/namir-app/src/host.rs:209`, `crates/namir-clap/src/shared.rs:213`) and
+  both shells (`crates/namir-app/src/host.rs:205`, `crates/namir-clap/src/shared.rs:213`) and
   dismissal is the only removal path (`:457` / `:221`). There is no expiry, no severity-based
   timeout and no cap on how many can accumulate. No requirement asks for auto-dismissal, so this is
   a design gap rather than a violation — but the standalone escapes it only by being resizable, and

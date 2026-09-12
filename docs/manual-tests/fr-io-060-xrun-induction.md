@@ -77,3 +77,63 @@ Two things above are now out of date, recorded here rather than rewritten.
 
 Still **PARTIAL**, and for the same reason: no real-hardware xrun has been induced. This note
 changes the baseline, not the verdict.
+
+## Note added 2026-09-11 (issue #200 item 6)
+
+The parenthetical in "What real-hardware execution would add" is now out of date, recorded here
+rather than rewritten. `AudioBackend`'s data-callback seam was widened to carry
+`audio_io::CallbackStatus`, whose `xrun` field is `cpal` 0.19's `CallbackInfo::xrun()`, and
+`crate::stream`'s input and output callbacks record it into the same `XrunCounter` the bridge
+under/overrun detector increments — one xrun per reporting callback, counted unconditionally
+(the activation settling window gates bridge pads only). So backend-detected dropouts are no
+longer counted nowhere: bridge under/overruns are one of **two** live sources, not the only one.
+`StreamFailure::Xrun`, which had no constructor left, was deleted with that change.
+
+What this does **not** change is this document's verdict or its script. The new path is proven
+only by a fake backend — `stream::tests::a_backend_reported_xrun_reaches_the_session_count_from_either_direction`
+drives a callback carrying `CallbackStatus { xrun: true }` and asserts the count — and no real
+interface was made to xrun for it, which is precisely the remainder recorded above. Step 2 of
+the script now has a second, cheaper form worth trying first on real hardware: a backend-reported
+xrun needs no `sleep` injected into the callback, only a device that actually drops samples.
+
+Still **PARTIAL**, unchanged.
+
+### Amendment, same day (PR #209 review)
+
+Two corrections to the note above, appended rather than edited into it.
+
+1. **"One xrun per reporting callback" was a claim, not yet a property.** The bridge detectors
+   recorded per *chunk* — `build_input` inside its `data.chunks(..)` loop, `build_output` inside
+   its pull loop — so a host buffer several blocks long counted several times, and a callback
+   the device reported was typically also the callback whose bridge transfer lost something, so
+   one physical dropout could count twice. Both callbacks now carry a per-callback `recorded`
+   latch, which makes the claim true: **at most one xrun per data callback**, from all sources
+   together. On the integer-converting path a "callback" is one scratch-length slice of the
+   device callback, and the device's own report crosses on the first slice only.
+2. **Step 0's baseline is unaffected**, but note for whoever executes this script that a count
+   of 1 on a callback is now the ceiling for that callback, so a real induction that produces
+   *n* glitching callbacks should read *n*, not some multiple of it that depends on the host's
+   buffer length.
+
+The verdict is still **PARTIAL** for the same unchanged reason: no real-hardware xrun has been
+induced, and whether a driver raises `CallbackInfo::xrun()` on the callbacks bracketing a stop
+is still unknown here (`crate::stream`'s teardown test records the choice made in its absence).
+
+### Correction, same day (PR #209 follow-up review)
+
+Amendment item 1 above said the per-callback latch made "at most one xrun per data callback"
+true. It did so only on the `f32` path. The latch was a local, and the integer-converting path
+(`crate::audio_io`'s `convert`, which is where exclusive mode's formats are handled) calls the
+stream callbacks once per scratch-length slice of a device callback — so each slice got a fresh
+latch and a device callback longer than the negotiated block that starved on several slices
+still counted several dropouts. Item 2's instruction to whoever executes this script — *n*
+glitching callbacks should read *n* — was therefore wrong on exactly those devices.
+
+Closed rather than scoped: `CallbackStatus` gained a `first_of_callback` flag, set by the
+converters on the first slice only (where they already stop carrying `xrun`) and `true` on every
+call from the passthrough paths, and the latch became closure state reset on that flag. Item 2's
+instruction now reads true on every format: *n* glitching device callbacks read *n*. Pinned by
+`audio_io::convert::tests::one_device_callback_split_across_slices_counts_one_xrun`, which
+starves ten slices of one device callback and asserts a delta of 1.
+
+Verdict unchanged: still **PARTIAL**, still no real-hardware induction.
