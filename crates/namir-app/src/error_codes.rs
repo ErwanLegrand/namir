@@ -31,15 +31,18 @@ pub const DEVICE_OPEN_FAILED: ErrorCode = ErrorCode::new(
 /// next to [`DEVICE_OPEN_FAILED`], which means no audio at all. Reported once, at start-up, rather
 /// than silently — roadmap §18 asks for "the user told which mode they actually got", and the
 /// notice is the half of that a mode indicator alone cannot give (it says *why*). **The remedy
-/// no longer names `audio-settings.json`** (issue #193): the audio settings panel's Share Mode
-/// control is the way to retry or to stop asking, and a restart is not required in either
-/// direction — the toggle rides the same reopen machinery this notice's caller already runs.
+/// no longer names `audio-settings.json`** (issue #193): the panel's Share Mode control offers
+/// Shared in every state, so "stop asking for it" is always available, and Exclusive re-enables
+/// once a device selection re-runs the probe — the remedy names only actions the control
+/// actually permits, in the state this notice posts. No restart is required in either direction;
+/// the toggle rides the same reopen machinery this notice's caller already runs.
 pub const EXCLUSIVE_MODE_UNAVAILABLE: ErrorCode = ErrorCode::new(
     "app.audio_io.exclusive_mode_unavailable",
     Severity::Warning,
     "Exclusive mode is not available, so the device was opened in shared mode ({detail}).",
-    "Close whatever else is using the device and choose Exclusive again under Share Mode in \
-     the Audio Settings panel, or choose Shared there to stop asking for it.",
+    "Close whatever else is using the device, then reselect it under Input/Output Device in the \
+     Audio Settings panel — choosing a device re-runs the probe — and choose Exclusive again \
+     under Share Mode, or choose Shared there to stop asking for it.",
 );
 
 /// FR-IO-070: a device that was open and in use disappeared (unplugged, disabled, reclaimed by

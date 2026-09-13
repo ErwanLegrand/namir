@@ -427,10 +427,16 @@ pub(crate) fn negotiate_share_mode(
 ) -> ShareModeDecision {
     // Asked in every session now, requested or not: the audio settings panel's share-mode
     // control (issue #193) has to know whether exclusive mode is even possible, so it can
-    // disable itself with a reason instead of failing after the fact — and by the time the
-    // panel is drawn, the negotiation that can ask the question has long finished. The probe is
-    // one config query per direction, the same class of work as the enumeration
-    // `negotiate_audio` has just done, and it runs where that does: off the audio thread.
+    // refuse the Exclusive choice before the fact instead of failing after it — and by the
+    // time the panel is drawn, the negotiation that can ask the question has long finished.
+    // This is real device I/O, not one cheap query: on WASAPI the fork answers the probe by
+    // walking every rate × acceptable format with `IsFormatSupported`, measured 2026-09-13 on
+    // the §2 reference machine's AudioBox 22VSL endpoints at ~21 ms per direction, ~43 ms
+    // added to one shared-mode negotiation (`negotiate_audio` with the probe 217 ms, with the
+    // probe stubbed out 174 ms). That is the recorded trade for the panel's capability; it
+    // runs where the enumeration already does, off the audio thread, and M11's requested-only
+    // gating can be restored from this comment's history if a slower endpoint breaks the ~50 ms
+    // budget the measurement was taken against.
     let ask = |device: &DeviceInfo, params: StreamParams| {
         backend.supports_exclusive(
             host,

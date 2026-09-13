@@ -1014,9 +1014,11 @@ fn share_mode_combo_dispatches_the_requested_mode() {
     );
 }
 
-/// FR-IO-020: where the devices cannot provide exclusive mode, the control is disabled -- a
-/// click on it dispatches nothing -- and the reason is stated beside it, not left for the user
-/// to guess at a greyed-out widget.
+/// FR-IO-020: where the devices cannot provide exclusive mode, it is the **Exclusive entry**
+/// that is disabled -- clicking it dispatches nothing, while Shared stays selectable -- and the
+/// reason is stated beside the control, not left for the user to guess at a greyed-out entry.
+/// The last half pins the refused-request recovery: the request stays requested and only Shared
+/// is reachable, which is exactly the state the `EXCLUSIVE_MODE_UNAVAILABLE` notice posts in.
 #[test]
 fn share_mode_control_is_disabled_with_a_stated_reason_where_exclusive_is_unsupported() {
     let mut snapshot = panel(2);
@@ -1027,11 +1029,16 @@ fn share_mode_control_is_disabled_with_a_stated_reason_where_exclusive_is_unsupp
         .exclusive_supported = false;
     let mut driver = HeadlessUiDriver::new(snapshot);
 
+    // The observable that the capability guard actually guards: the popup still opens and the
+    // Exclusive entry is still painted (greyed), but clicking it dispatches nothing. A closed
+    // combo dispatches nothing whether disabled or enabled, so only this click can fail.
     let (_, combo) = driver.locate_value_for_control("Share Mode:");
     driver.click_at(combo.center());
+    let entry = driver.locate("Exclusive");
+    driver.click_at(entry.center());
     assert!(
         driver.dispatched_intents().is_empty(),
-        "a disabled control must dispatch nothing"
+        "the unsupported Exclusive entry must dispatch nothing"
     );
 
     driver.frame(Vec::new());
@@ -1045,5 +1052,25 @@ fn share_mode_control_is_disabled_with_a_stated_reason_where_exclusive_is_unsupp
             .into_iter()
             .map(|(text, _)| text)
             .collect::<Vec<_>>()
+    );
+
+    // And the refused-request state the EXCLUSIVE_MODE_UNAVAILABLE notice posts in: the request
+    // stays requested, the Exclusive entry stays unreachable, but **Shared stays selectable** --
+    // the remedy's "stop asking for it" must be available precisely when that notice shows.
+    let mut refused = panel(2);
+    {
+        let p = refused.audio_panel.as_mut().expect("panel");
+        p.exclusive_supported = false;
+        p.exclusive_requested = true;
+    }
+    let mut driver = HeadlessUiDriver::new(refused);
+    let (_, combo) = driver.locate_value_for_control("Share Mode:");
+    driver.click_at(combo.center());
+    let entry = driver.locate("Shared");
+    driver.click_at(entry.center());
+    assert_eq!(
+        driver.dispatched_intents(),
+        vec![UiIntent::SelectShareMode { exclusive: false }],
+        "a refused request must still be able to reach Shared"
     );
 }

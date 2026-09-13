@@ -246,31 +246,35 @@ fn audio_settings_panel(
             // Share Mode selector (FR-IO-020). The position is what was *requested*; what was
             // granted is the mode indicator, and a refused request stays requested here with its
             // notice explaining -- the same separation the snapshot's field pair documents.
-            // Disabled where the devices cannot provide exclusive mode, with the reason on the
-            // record below: the capability was settled during negotiation and carried in the
-            // snapshot, so this control never probes a device from the UI thread.
+            // Shared stays selectable in every state: a refused Exclusive request must not trap
+            // the user, so "stop asking for it" has to be offered precisely when the refusal
+            // notice is showing. It is the **Exclusive entry** the capability gates, disabled
+            // with the reason stated below; the capability was settled during negotiation and
+            // carried in the snapshot, so this control never probes a device from the UI
+            // thread. Reselecting a device re-negotiates and re-probes, which is what re-enables
+            // Exclusive.
             ui.horizontal(|ui| {
                 ui.label("Share Mode:");
                 let exclusive = panel.exclusive_requested;
-                ui.add_enabled_ui(panel.exclusive_supported, |ui| {
-                    egui::ComboBox::from_id_salt("namir_audio_share_mode")
-                        .selected_text(if exclusive { "Exclusive" } else { "Shared" })
-                        .show_ui(ui, |ui| {
-                            let mut chosen: Option<bool> = None;
-                            if ui.selectable_label(!exclusive, "Shared").clicked() {
-                                chosen = Some(false);
-                            }
+                egui::ComboBox::from_id_salt("namir_audio_share_mode")
+                    .selected_text(if exclusive { "Exclusive" } else { "Shared" })
+                    .show_ui(ui, |ui| {
+                        let mut chosen: Option<bool> = None;
+                        if ui.selectable_label(!exclusive, "Shared").clicked() {
+                            chosen = Some(false);
+                        }
+                        ui.add_enabled_ui(panel.exclusive_supported, |ui| {
                             if ui.selectable_label(exclusive, "Exclusive").clicked() {
                                 chosen = Some(true);
                             }
-                            if let Some(exclusive) = chosen {
-                                intents.push(UiIntent::SelectShareMode { exclusive });
-                            }
                         });
-                });
+                        if let Some(exclusive) = chosen {
+                            intents.push(UiIntent::SelectShareMode { exclusive });
+                        }
+                    });
             });
-            // The stated reason the control above is disabled: written out rather than hidden
-            // behind a hover tooltip, so it is readable (and testable) without a pointer.
+            // The stated reason the Exclusive entry above is disabled: written out rather than
+            // hidden behind a hover tooltip, so it is readable (and testable) without a pointer.
             if !panel.exclusive_supported {
                 ui.add(
                     egui::Label::new(egui::RichText::new(EXCLUSIVE_UNSUPPORTED_REASON).weak())
