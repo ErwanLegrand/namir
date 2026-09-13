@@ -160,7 +160,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 [[package]]
 name = "baseview"
 version = "0.3.3"
-source = "git+https://github.com/ErwanLegrand/baseview.git?branch=accesskit-design#c0870cb5b5279e4fff174ea8b407f19671e4fd5e"
+source = "git+https://github.com/ErwanLegrand/baseview.git?rev=c0870cb5b5279e4fff174ea8b407f19671e4fd5e#c0870cb5b5279e4fff174ea8b407f19671e4fd5e"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -648,7 +648,7 @@ dependencies = [
 [[package]]
 name = "egui-baseview"
 version = "0.7.0"
-source = "git+https://github.com/ErwanLegrand/egui-baseview?rev=675273126d2cac39905a2733a7e0e123c2ff4b09#675273126d2cac39905a2733a7e0e123c2ff4b09"
+source = "git+https://github.com/ErwanLegrand/egui-baseview?rev=4a46c0a22575655ca11588ef584131a8f6cb0136#4a46c0a22575655ca11588ef584131a8f6cb0136"
 dependencies = [
  "baseview",
  "copypasta",
