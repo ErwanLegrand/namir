@@ -202,10 +202,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     /// The gate as CI runs it, against the real repository.
-    /// Fails until #214's branch-pinned `baseview` is resolved —
-    /// run with `cargo test -p xtask -- --include-ignored` to assert the fix.
     #[test]
-    #[ignore]
     fn the_real_lockfile_pins_every_git_source_by_rev() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let violations = scan_git_sources(root);
