@@ -433,7 +433,9 @@ pub struct AppHost {
     supported_sample_rates: Vec<u32>,
     current_sample_rate: u32,
     supported_buffer_sizes: Vec<u32>,
-    current_buffer_size: u32,
+    /// Current buffer size in frames, or `None` if no device is open or the
+    /// device reported no preference.
+    current_buffer_size: Option<u32>,
     settings: AppSettings,
     /// Bumped on every `initiate_audio_reopen` and carried through the command/event round
     /// trip, so an `AppEvent::AudioStreamReady` overtaken by a newer reopen is ignored.
@@ -487,7 +489,7 @@ impl AppHost {
             supported_sample_rates: Vec::new(),
             current_sample_rate: 48_000,
             supported_buffer_sizes: Vec::new(),
-            current_buffer_size: 256,
+            current_buffer_size: None,
             settings: AppSettings::default(),
             reopen_generation: 0,
             audio_reopen: None,
@@ -742,7 +744,7 @@ impl AppHost {
                         self.current_input_device = Some(input_name.clone());
                         self.current_output_device = Some(output_name.clone());
                         self.current_sample_rate = pending.sample_rate_hz;
-                        self.current_buffer_size = pending.buffer_frames.unwrap_or(256);
+                        self.current_buffer_size = pending.buffer_frames;
                         self.supported_sample_rates = pending.supported_sample_rates;
                         self.supported_buffer_sizes = pending.supported_buffer_sizes;
                         self.hold_streams(running);
@@ -851,7 +853,7 @@ impl AppHost {
         supported_sample_rates: Vec<u32>,
         current_sample_rate: u32,
         supported_buffer_sizes: Vec<u32>,
-        current_buffer_size: u32,
+        current_buffer_size: Option<u32>,
     ) {
         self.config_dir = config_dir;
         self.settings = settings;
@@ -1417,7 +1419,7 @@ impl UiHost for AppHost {
                 self.initiate_audio_reopen();
             }
             UiIntent::SelectBufferSize { buffer_size } => {
-                self.current_buffer_size = buffer_size;
+                self.current_buffer_size = Some(buffer_size);
                 self.settings.buffer_size_frames = Some(buffer_size);
                 self.persist_settings();
                 self.initiate_audio_reopen();
@@ -2628,7 +2630,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![128, 256, 512],
-            256,
+            Some(256),
         );
         assert_eq!(
             host.snapshot()
@@ -2694,7 +2696,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectOutputDevice {
@@ -2786,7 +2788,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectOutputDevice {
@@ -2850,7 +2852,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectOutputDevice {
@@ -2875,7 +2877,7 @@ mod tests {
             vec![44_100, 48_000, 96_000],
             48_000,
             vec![128, 256, 512],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectSampleRate { rate: 96_000 });
@@ -2883,7 +2885,7 @@ mod tests {
         let snapshot = host.snapshot();
         let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
         assert_eq!(panel.current_sample_rate, 96_000);
-        assert_eq!(panel.current_buffer_size, 512);
+        assert_eq!(panel.current_buffer_size, Some(512));
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.sample_rate_hz, Some(96_000));
         assert_eq!(loaded.buffer_size_frames, Some(512));
@@ -2934,7 +2936,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         // Changing input device re-opens stream; spin-wait for async engine rebuild.
@@ -3043,7 +3045,7 @@ mod tests {
             vec![48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectBufferSize { buffer_size: 512 });

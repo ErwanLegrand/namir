@@ -676,7 +676,7 @@ pub fn run() {
         supported_sample_rates,
         sample_rate_hz,
         supported_buffer_sizes,
-        buffer_frames.unwrap_or(256),
+        buffer_frames,
     );
     // FR-STATE-030: `<config_dir>/Presets` (`namir_platform::presets` owns preset location and
     // naming rules). `resolve_config_dir`'s answer, not `namir_platform::config_dir`'s directly,
@@ -919,7 +919,7 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
         Vec::new(),
         48_000,
         Vec::new(),
-        256,
+        None,
     );
     // recall presets, and refusing to would be a second degradation the missing device does not
     // imply.

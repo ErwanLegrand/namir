@@ -12,6 +12,9 @@ mod cargo_meta;
 mod ci_commands;
 mod error_catalogue;
 mod feature_guard;
+// M15: R-10's "never by branch" enforced at the lockfile level -- every git source
+// in Cargo.lock must carry a `?rev=` query parameter.
+mod git_sources;
 mod identity;
 mod layering;
 mod milestones;
@@ -343,6 +346,25 @@ fn run_feature_guard(root: &Path) -> bool {
     } else {
         println!(
             "feature-guard: {} violation(s) found (R-17):",
+            violations.len()
+        );
+        for v in &violations {
+            println!("  - {v}");
+        }
+        false
+    }
+}
+
+/// M15's R-10 Mitigation gate: every git source in `Cargo.lock` must carry a
+/// `?rev=` parameter rather than a branch. See `git_sources.rs`'s module doc.
+fn run_git_sources(root: &Path) -> bool {
+    let violations = git_sources::scan_git_sources(root);
+    if violations.is_empty() {
+        println!("git-sources: clean (every git source in Cargo.lock is pinned by rev)");
+        true
+    } else {
+        println!(
+            "git-sources: {} violation(s) found (R-10):",
             violations.len()
         );
         for v in &violations {
@@ -1085,7 +1107,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
 
 fn print_usage() {
     println!(
-        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|network-free|error-catalogue|ci-commands|schema [path...]|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
+        "usage: cargo run -p xtask -- <layering|rt-logging|feature-guard|git-sources|network-free|error-catalogue|ci-commands|schema [path...]|params-lock [--write]|attribution [--write]|assets [--write]|identity [--write]|traceability [--write] [--allow-uncovered]|preset [output-path]|preset --verify <path>|nam-parity --model <path> --input <path> --reference <path>|bundle [--target <windows|macos|linux>] [--check|--plan|--inspect <dir>]>"
     );
 }
 
@@ -1097,6 +1119,7 @@ fn main() {
         Some("layering") => run_layering(&root),
         Some("rt-logging") => run_rt_logging(&root),
         Some("feature-guard") => run_feature_guard(&root),
+        Some("git-sources") => run_git_sources(&root),
         Some("network-free") => run_network_free(&root),
         Some("error-catalogue") => run_error_catalogue(&root),
         Some("ci-commands") => run_ci_commands(&root),
