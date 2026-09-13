@@ -290,21 +290,29 @@ Steps continue the executed run's numbering.
     indicator reads shared, and audio continues. No step so far has required quitting Namir;
     with Namir running, `%APPDATA%\Namir\audio-settings.json` already carries the current
     `"exclusive_mode"` value, because the toggle persists it the moment it is chosen.
-13. **The refusal path, met before the fact.** Switch the input device to one that refuses
-    exclusive mode — the Trust webcam microphone of the executed run's step 7 (copy the name
-    verbatim; `cargo run --example list_devices -p namir-app` prints it) — then choose
-    **Exclusive**. Expect: the Share Mode control disables itself and states beside itself that
-    exclusive mode is not available at the current configuration; the notice
-    `app.audio_io.exclusive_mode_unavailable` appears; the indicator reads **shared**; audio
-    keeps running. The control stays at **Exclusive** while disabled — the request is what it
-    shows, and the request was not withdrawn.
-14. **Restart-free recovery.** Close whatever else used the device (for the webcam: unplug or
-    reselect the AudioBox as input), re-select it, and choose **Exclusive** again. Expect
-    exclusive to engage with no restart in between — the remedy in
-    `crates/namir-app/src/error_codes.rs` promises exactly this, so this step is what keeps that
-    promise honest. Then toggle back to **Shared** and confirm the indicator follows.
+13. **The refusal path, met while running.** Choose **Exclusive** again — step 12 left the
+    session shared with the AudioBox selected, and the re-probe answered yes, so the entry is
+    enabled — and wait for the indicator to read **exclusive**. Then switch the input device to
+    one that refuses exclusive mode: the Trust webcam microphone of the executed run's step 7
+    (copy the name verbatim; `cargo run --example list_devices -p namir-app` prints it).
+    Expect: the notice `app.audio_io.exclusive_mode_unavailable` appears; the indicator reads
+    **shared**; audio keeps running; the control still reads **Exclusive** (the request is what
+    it shows, and the request was not withdrawn), but the Exclusive **entry** is now disabled,
+    with the reason stated beside the control — and **Shared remains selectable**, so the user
+    is never trapped by a refusal.
+14. **The gate with no request — and, honestly, no notice.** Still on the webcam, choose
+    **Shared**. Expect no refusal notice: nothing was requested, so there is nothing to refuse —
+    `negotiate_share_mode` explains itself only when exclusive mode was asked for. The Exclusive
+    entry stays disabled with the reason: the probe ran anyway and answered no for this
+    configuration, which is the gate met before the fact rather than a failure after it.
+15. **Restart-free recovery, in both directions.** Reselect the AudioBox as input. The
+    re-selection re-negotiates and re-runs the probe, so the Exclusive entry re-enables with no
+    restart; choose **Exclusive** and confirm the indicator follows. Then choose **Shared** and
+    confirm it follows back. The remedy in `crates/namir-app/src/error_codes.rs` promises
+    exactly this sequence, so this step is what keeps that promise honest.
 
-**Result: NOT EXECUTED.** Steps 10-14 were written 2026-09-13 with the control and await a human
+**Result: NOT EXECUTED.** Steps 10-15 were written 2026-09-13 with the control and await a human
 run on the §2 reference machine. The executed 2026-08-11 run above predates the control and
 remains the evidence for the steps it covered; under this document's worse-of convention the
 gate reads this section's verdict until those steps record a run.
+

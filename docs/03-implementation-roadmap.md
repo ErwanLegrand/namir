@@ -6805,7 +6805,7 @@ direction, which is what closes the gap issue #193 names.
 that run's evidence still holds: the exclusive-mode path it exercised (probe, open, exclusivity,
 converter, fallback) is behaviourally unchanged by this work. What changed is the traced
 document: `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` now carries a ready-to-run
-section for the control (steps 10-14) whose own verdict is NOT EXECUTED, so `xtask
+section for the control (steps 10-15) whose own verdict is NOT EXECUTED, so `xtask
 traceability`'s worse-of rule reads FR-IO-020 as uncovered until a human executes those steps on
 the §2 reference machine. That is the honest state and is recorded rather than gamed: the cell
 keeps the evidence it cites, the ledger disagrees until the new steps record a run, and the
