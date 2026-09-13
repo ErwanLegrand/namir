@@ -2403,10 +2403,10 @@ of limitation D-16.3 records for "the audio thread does not panic".
 *Consequence — how an engine-detected fault reaches the log instead.* By the route that already
 exists, unchanged: the audio thread pushes a numeric fault code through the telemetry ring
 (`crates/namir-engine/src/telemetry_ring.rs`), the UI side drains it
-(`crates/namir-app/src/host.rs`'s `read_meters` at `:294`, `crates/namir-clap/src/ui_host.rs`), maps
+(`crates/namir-app/src/host.rs`'s `read_meters` at `:1278`, `crates/namir-clap/src/ui_host.rs`), maps
 it to an `ErrorCode` and pushes an FR-UI-070 notice — and `AppHost::push_notice`
-(`crates/namir-app/src/host.rs:168`) / `SharedInner::push_notice`
-(`crates/namir-clap/src/shared.rs:202`) are the log's call site, one line each, so a notice and a
+(`crates/namir-app/src/host.rs:1106`) / `SharedInner::push_notice`
+(`crates/namir-clap/src/shared.rs:400`) are the log's call site, one line each, so a notice and a
 log record cannot drift apart. Worker-side faults never touch telemetry: `namir-worker` may depend
 on `namir-platform` and logs at the job boundary where `catch_unwind` already yields
 `worker.job.panicked` (FR-ERR-040). `namir-ui` logs nothing at all — D-5.1 forbids it from depending
@@ -4123,7 +4123,7 @@ shapes it actually admits in this tree are three: a **TOML table header or key l
 `:83`'s `deny = [`); a **Rust inner attribute** `#![…]` (the three fuzz targets' `#![no_main]`); and
 a **plain Rust item declaration**, where the tag is file- or item-level rather than test-level —
 `use` (`xtask/src/attribution.rs:16`, `params_lock.rs:10`, `traceability.rs:47`), `pub mod`
-(`crates/namir-fixtures/src/lib.rs:18`), `pub struct` (`crates/namir-ui/src/app.rs:135`) and `const`
+(`crates/namir-fixtures/src/lib.rs:18`), `pub struct` (`crates/namir-ui/src/app.rs:489`) and `const`
 (`xtask/src/layering.rs:42`).
 
 *Why the literal reading could not ship.* Enumerated over the scanned set rather than argued: the
@@ -4134,7 +4134,7 @@ thirteen are `Cargo.toml:1` and `:37`; `deny.toml:15` and `:82`; the three fuzz 
 `crates/namir-ir/fuzz/fuzz_targets/probe_wav.rs:13`,
 `crates/namir-nam/fuzz/fuzz_targets/load_nam.rs:9` and
 `crates/namir-state/fuzz/fuzz_targets/read_state.rs:16`; `crates/namir-fixtures/src/lib.rs:16`;
-`crates/namir-ui/src/app.rs:134`; and `xtask/src/attribution.rs:14`, `layering.rs:40`,
+`crates/namir-ui/src/app.rs:488`; and `xtask/src/attribution.rs:14`, `layering.rs:40`,
 `params_lock.rs:8` and `traceability.rs:45`. The eighteen ids are FR-CFG-010, FR-CFG-030,
 FR-ERR-060, FR-ERR-070, FR-PARAM-020, FR-UI-010, NFR-BUILD-010, NFR-DOC-020, NFR-LIC-010,
 NFR-LIC-020, NFR-LIC-030, NFR-LIC-040, NFR-LIC-050, NFR-PORT-020, NFR-QUAL-010, NFR-QUAL-040,

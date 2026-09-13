@@ -1901,7 +1901,7 @@ form, so the ledger and the source agree.
 
 - **4 CFG — 1 / 2 / 0.** *Done:* FR-CFG-010, one workspace building both products
   (`Cargo.toml:4-7`) and CI producing both on every push (`.github/workflows/ci.yml:88-89`, `:291-292`),
-  over one shared engine (`crates/namir-app/src/app.rs:164`, `crates/namir-clap/src/audio.rs:151`).
+  over one shared engine (`crates/namir-app/src/app.rs:622`, `crates/namir-clap/src/audio.rs:325`).
   *Partial:* FR-CFG-020 — the shared engine is real at those same two call sites, but the `Verify: G`
   apparatus is wholly absent: no golden vector exists anywhere in the tree and nothing runs one
   through both configurations. FR-CFG-030 — `xtask layering`'s dependency-edge lint
@@ -1928,7 +1928,7 @@ form, so the ledger and the source agree.
   no document and no UI field (`namir_ui::MeterReading` carries no peak-hold). FR-IN-030 — the latch
   is asserted (`crates/namir-dsp/src/meter.rs:140-158`) but "resettable by the user" is unbuilt:
   `Meter::reset_clip` has no caller outside its own test and `UiIntent`
-  (`crates/namir-ui/src/host.rs:148-179`) has no reset variant.
+  (`crates/namir-ui/src/host.rs`) has no reset variant.
 - **5.3 GATE — 1 / 2 / 0.** *Done:* FR-GATE-020, the method executed literally — a decaying envelope
   producing exactly one close event (`crates/namir-dsp/src/gate.rs:264-297`), hysteresis at `:140`.
   *Partial:* FR-GATE-010 — of the five controls "U per control" names, Attack and Release are
@@ -1991,8 +1991,8 @@ form, so the ledger and the source agree.
   (`crates/namir-params/src/stages/out.rs:14-18`) and asserted nowhere — no test reads either back,
   and `params.lock` records no bounds at all, its columns being key, id, kind and live/tombstoned
   state — so an edit to either passes every gate in this workspace. Named evidence for the cell is
-  the `// trace-partial:` pair at `crates/namir-engine/src/stages/out.rs:287-291`. FR-OUT-020 — the clip latch is asserted
-  (`crates/namir-engine/src/stages/out.rs:397-431`); of the four characteristics imported from
+  the `// trace-partial:` pair at `crates/namir-engine/src/stages/out.rs:531-540`. FR-OUT-020 — the clip latch is asserted
+  (`crates/namir-engine/src/stages/out.rs:631-661`); of the four characteristics imported from
   FR-IN-020/-030, the published `peak_db`, `average_db` and `peak_hold_db` telemetry is read by no
   test and the indicator has no user reset path.
 - **5.8 PARAM — 0 / 5 / 0.** *Partial:* FR-PARAM-010 and FR-PARAM-050 — both tagged tests assert
@@ -2067,13 +2067,13 @@ form, so the ledger and the source agree.
   — enumeration and a real opened stream PASS
   (`docs/manual-tests/fr-io-010-device-enumeration.md`), but "the user shall be able to select" has
   no interactive surface at all; selection happens once at start-up
-  (`crates/namir-app/src/app.rs:95-133`). FR-IO-030 — **NOT EXECUTED**
+  (`crates/namir-app/src/app.rs`'s `negotiate_audio` path). FR-IO-030 — **NOT EXECUTED**
   (`docs/manual-tests/fr-io-030-alsa-coreaudio.md`); no ALSA or CoreAudio stream has ever been
   opened, the evidence being structural only. FR-IO-040 — the
   negotiation logic is unit-tested (`crates/namir-app/src/device_state.rs`) but neither selection
   clause is built and "always displayed" is served by an `eprintln!`
-  (`crates/namir-app/src/app.rs:290`). FR-IO-050 — recorded **PARTIAL** by its own document; the
-  measured-latency clause is unbuilt (`crates/namir-app/src/latency.rs:23-24`, `:43` hardcodes
+  (`crates/namir-app/src/app.rs:887`). FR-IO-050 — recorded **PARTIAL** by its own document; the
+  measured-latency clause is unbuilt (`crates/namir-app/src/latency.rs:26-28`, `:62` hardcodes
   `measured: false`) and the display is that same `eprintln!`, milliseconds only. FR-IO-060 —
   induction is covered (`crates/namir-app/src/stream.rs:531`); "resettable by the user" has no path,
   `XrunCounter::reset` having no caller outside its own tests. FR-IO-070 — the method's named
@@ -2105,11 +2105,11 @@ form, so the ledger and the source agree.
   FR-CLAP-130 — neither half of "S plus I" reaches this crate: `AllocDisabler` is installed in five
   crates, none of which owns a real audio callback, and no static check for blocking exists.
 - **5.13 UI — 1 / 6 / 0.** *Done:* FR-UI-010 — one widget type
-  (`crates/namir-ui/src/app.rs:134`) rendered by both shells through one `render` (`:33`), with the
+  (`crates/namir-ui/src/app.rs:488`) rendered by both shells through one `render` (`:51`), with the
   manifest fact that neither shell depends on `egui` directly, corroborated by an executed run
   (`docs/manual-tests/fr-ui-010-standalone-window-renders.md` steps 1-2 PASS, 90 real frames).
   *Partial:* FR-UI-020 — the single screen exists and renders
-  (`crates/namir-ui/src/app.rs:33-94`) but there is **no** `docs/manual-tests/fr-ui-020-*.md`, and
+  (`crates/namir-ui/src/app.rs:51-133`) but there is **no** `docs/manual-tests/fr-ui-020-*.md`, and
   the one executed document records its visual-confirmation step as NOT EXECUTED. FR-UI-030 — **NOT
   EXECUTED** (`docs/manual-tests/fr-ui-030-accessibility-script.md`), and the document names a second
   gap: `egui-baseview` 0.6.0 wires no accesskit adapter, so accessible names exist at the data level
@@ -2165,9 +2165,9 @@ form, so the ledger and the source agree.
   (`crates/namir-engine/src/stages/mod.rs:116-129`); no test compares actual group delay against a
   nonzero `latency_samples()`. NFR-PERF-030 — the behaviour exists and ships: `namir-app` opens its
   devices, negotiates a rate and a buffer, builds the engine and starts the stream on one path from
-  `run()` (`crates/namir-app/src/app.rs:74`, `:92-135`, `:164-178`), loading the default state at
-  `:187` and reaching an audible state at `:263`'s `play()`, with a real 90-frame run recorded
-  (`docs/manual-tests/fr-ui-010-standalone-window-renders.md`). What is absent is the whole of the
+  `run()` (`crates/namir-app/src/app.rs`, through `negotiate_audio` and `stream::open`), loading the
+  default state and reaching an audible state at that function's `play()` call, with a real 90-frame
+  run recorded (`docs/manual-tests/fr-ui-010-standalone-window-renders.md`). What is absent is the whole of the
   `Verify: B` half: no start-up harness exists, the identifier appears in no `.rs`, `.toml` or `.yml`
   under `crates/`, `xtask/` or `.github/`, and **the 3 s bound has never been measured** on the §2
   machine or anywhere else. NFR-PERF-040 — same shape and the same named gap: the plugin demonstrably
@@ -2910,9 +2910,9 @@ that happens to depend on them first.
 16. **Whether 1.0 ships an audio-device panel in `namir-ui`, and if not, what FR-IO-010/-040/-050
     mean.** Raised 2026-08-09 by M9a's sweep, which found the surface absent rather than untested —
     `UiSnapshot` carries no host, device, sample-rate, buffer-size, latency or xrun field and
-    `UiIntent` no device variant (`crates/namir-ui/src/host.rs:100-123`, `:148-176`), device
-    selection happening once at start-up from remembered settings
-    (`crates/namir-app/src/app.rs:95-133`). Five Musts lean on a panel existing; the table in §16's
+    `UiIntent` no device variant (`crates/namir-ui/src/host.rs`'s `UiSnapshot` and `UiIntent`, as of
+    that date), device selection happening once at start-up from remembered settings
+    (`crates/namir-app/src/app.rs`'s `negotiate_audio` path). Five Musts lean on a panel existing; the table in §16's
     2026-08-09 status names them and the clause each one loses. This is a scope decision with no
     current owner: **FR-IO-060's and FR-IO-070's partials book their UI halves to M9b**, which is a
     verification-infrastructure phase and a poor home for building a settings surface, and no
@@ -3427,8 +3427,8 @@ a later session can find it, rather than by buying a permanent three-runner matr
 
 *One scope change, so it is not reopened later:* **NFR-PERF-030 moves to M13** (§20 below, where a
 dated scope note records it). It cannot run on any CI runner — a machine with no audio device
-diverts `namir-app` to `open_window_without_audio` (`crates/namir-app/src/app.rs:120`, `:152`,
-`:159`, `:168`, `:309`) and never becomes audible — and measuring "time to an audible state" needs a
+diverts `namir-app` to `open_window_without_audio` (`crates/namir-app/src/app.rs`, the diversions in
+`run()`) and never becomes audible — and measuring "time to an audible state" needs a
 seam in `namir-app`'s entry path that exists solely to enable the measurement. M13's release
 pipeline already touches that launch path with a real machine in the loop, so that is where the
 harness costs least and means most. It is `**UNRESOLVED**` in the checked-in plan today, which is
@@ -3879,12 +3879,12 @@ two plus a conforming test signal, and §17 should be read with that in mind.
 **A product-scope discovery the sweep was not looking for: there is no audio-device panel, and five
 Musts lean on one existing.** `namir-ui` has seven modules (`app`, `controls`, `format`, `host`,
 `library_view`, `meter`, `notices`) and none of them is a device or settings surface. `UiSnapshot`
-(`crates/namir-ui/src/host.rs:100-123`) carries exactly eight fields — `params`, `input_meter`,
+(`crates/namir-ui/src/host.rs`) carries exactly eight fields — `params`, `input_meter`,
 `output_meter`, `loaded_model_name`, `loaded_ir_name`, `library`, `unsaved_changes`, `notices` — and
 **no host, device, sample-rate, buffer-size, latency or xrun field of any kind**. `UiIntent`
-(`:148-176`) has seven variants, all parameter, library or notice actions; none names a device.
+(same file) has seven variants, all parameter, library or notice actions; none names a device.
 Device selection happens once at start-up from remembered settings, non-interactively
-(`crates/namir-app/src/app.rs:95-133`, through `device_state::select_device` and the three
+(`crates/namir-app/src/app.rs`, through `device_state::select_device` and the three
 `negotiate_*` helpers), and the xrun count surfaces through an `eprintln!`. The five:
 
 | Requirement | Verify | The clause with no surface |
@@ -4000,6 +4000,23 @@ holds after the correction where it did not before. The two Not-started→Partia
 internal inconsistency: **FR-CFG-020 was already Partial on exactly this reasoning**, its behaviour
 built and its `Verify: G` apparatus wholly absent, and a performance Must with the same shape was
 being read the other way.
+
+**Correction (added 2026-09-13, issue #219) — the corroborating argument in the paragraph above is
+false, and the two verdicts stand without it.** Neither FR-STATE-050 nor FR-OUT-010 carries a
+`// trace-partial:` anywhere in the tree, at the cited lines or elsewhere; both carry plain
+`// trace:` tags — FR-OUT-010's at `crates/namir-engine/src/stages/out.rs:341` and `:387`,
+FR-STATE-050's at `crates/namir-worker/tests/recall_continuity.rs:277`. The only `trace-partial:` in
+`out.rs` is FR-OUT-**020**'s, a different requirement (`:531`), and the cited
+`crates/namir-worker/src/recall.rs:294-299` is a doc comment recording that FR-STATE-050's tag was
+*removed* here at M14, not one asserting a partial. The claim was false when written, not aged out.
+What survives is the adjudication itself: both cells rest on the table's own "Why the correction was
+accepted" column — FR-STATE-050's artifact processes no audio, FR-OUT-010's +12 dB maximum and 0 dB
+default are asserted nowhere — which is the requirement-text reasoning D-23.2 asks for and is
+independent of any tag. **The verdicts do not change.** What the plain tags actually show is the
+stronger point: a plain tag over-claiming is precisely the condition a Partial records under D-23.1,
+so the tags are what the correction asserts *against*, not evidence for it. The follow-on
+cross-check sentence — "no requirement carrying a partial was adjudicated Done" — is therefore not
+repaired by these two cells; they were never instances of it.
 
 **The rejected correction, recorded with its reasoning because it becomes an open item rather than a
 cell.** The spot-check argued **NFR-PORT-030** to Partial: the requirement's text enumerates five
@@ -5157,6 +5174,14 @@ requirement and by REUSE compliance respectively.
   executable icon, rather than being the half of FR-UI-110 that lands here. §17's register row for
   `baseview` said `0.3.0` when this was written and the tree has always pinned 0.2.2; that row is
   corrected in the same pass, and whether 0.3.0 gained an icon field is unchecked.
+
+  *Correction (added 2026-09-13, issue #224 item 3):* **the opening sentence's present tense no
+  longer holds — the mark was built.** `crates/namir-ui/src/app.rs` renders it through
+  `brand::render(ui, &mut view.brand)` inside `render`'s top panel; the only occurrence of
+  `ui.heading("Namir")` left in that file is the comment above that call, reading "FR-UI-110's brand
+  mark, replacing `ui.heading("Namir")`". So the cited `:41` is not a moved pointer: the placeholder
+  it named no longer exists, and no line number is offered in its place. The deliverable text is
+  left as written, being the record of what this milestone set out to do.
 - **The Windows `.exe` icon**, which needs a build script to embed the resource. Flagged rather
   than waved through: build scripts sit awkwardly with this project's dependency-adoption bar, and
   `libc` is already on record as the one knowing exception to it. Decide this one deliberately,
@@ -5393,7 +5418,7 @@ deliverables above, per this document's convention.
 **NFR-PERF-030 moves from M9 into this milestone.** The requirement measures the standalone
 application reaching an audible state within 3 seconds on the reference machine with a warm library
 index (FRS §6.2). It cannot run on any CI runner: a machine with no audio device diverts `namir-app`
-to `open_window_without_audio` (`crates/namir-app/src/app.rs:120`, `:152`, `:159`, `:168`, `:309`)
+to `open_window_without_audio` (`crates/namir-app/src/app.rs`, the diversions in `run()`)
 and never becomes audible, so the measurement needs both a real machine and a seam in `namir-app`'s
 entry path that exists solely to enable it. M13's release pipeline already touches that launch path
 with a real machine in the loop, which is why the harness costs least here. It is `**UNRESOLVED**`
@@ -6658,26 +6683,26 @@ issue #26 is closed.
 This addendum supersedes in place the earlier M14 planning and scoping passages that described item
 16 as unanswered, overdue, or gating M14 device work:
 
-1. **§21 "Why this milestone exists"** (`:5887`): "§15 item 16 — whether 1.0 ships an audio-device
+1. **§21 "Why this milestone exists"**: "§15 item 16 — whether 1.0 ships an audio-device
    panel — was due before M9b's start, has not been taken, and is upstream of five Musts'
    user-facing clauses."
-2. **§21 "Phase 0 — Decisions, before any of it is built"** (`:5908`): "§15 item 16 — the
+2. **§21 "Phase 0 — Decisions, before any of it is built"**: "§15 item 16 — the
    audio-device panel. Overdue. Answer 1 (build it) makes Phase 1 materially larger... Answer 3
    (silence) is not available at a 1.0 gate. This is the single decision with the largest effect on
    this milestone's size, and it must be first."
-3. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5948`): "The nine Musts whose mechanism does not
+3. **§21 "Phase 1 — The unbuilt user surfaces"**: "The nine Musts whose mechanism does not
    exist. Scope depends on Phase 0's item 16 answer."
-4. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5968`): "FR-IO-060, FR-IO-070 — xrun count and
+4. **§21 "Phase 1 — The unbuilt user surfaces"**: "FR-IO-060, FR-IO-070 — xrun count and
    device re-selection. The xrun counter surfaces only through `eprintln!`. Gated on item 16."
-5. **§21 "What was deliberately left open"** (`:6260`): "§15 item 16 — the audio-device panel. §21
+5. **§21 "What was deliberately left open"**: "§15 item 16 — the audio-device panel. §21
    called this 'the single decision with the largest effect on this milestone's size, and it must be
    first', and it is nonetheless not taken... Consequence for this milestone, stated as scope: M14
    does no device work of any kind, and FR-IO-060 and FR-IO-070 stay Partial through it."
-6. **§21 "What the automated half of M14 will and will not attempt"** (`:6292`): "All of §21 Phase 1
+6. **§21 "What the automated half of M14 will and will not attempt"**: "All of §21 Phase 1
    is deferred... several of them are gated on item 16, which is unanswered."
-7. **§21 "What the automated half of M14 will and will not attempt"** (`:6296`): "No device work.
+7. **§21 "What the automated half of M14 will and will not attempt"**: "No device work.
    Per item 16, above."
-8. **§21 "M14 status — Category B"** (`:6397`): "§15 item 16 / issue #26, the audio-device panel:
+8. **§21 "M14 status — Category B"**: "§15 item 16 / issue #26, the audio-device panel:
    FR-IO-060, FR-IO-070. Overdue before M9b started, and M14 scoped itself around it rather than
    deciding it to suit a measurement."
 
@@ -6695,7 +6720,7 @@ This addendum supersedes in place the earlier M14 planning and scoping passages 
 - The panel carries no latency field and no xrun field.
 - **FR-IO-050:** measured round-trip latency still requires both a measurement mechanism and a
   display (`docs/manual-tests/fr-io-050-round-trip-latency.md` stays PARTIAL). Its M9a reason in
-  §14's 5.11 IO bullet (`:2053-2055`) holds verbatim: `crates/namir-app/src/latency.rs:43` hardcodes
+  §14's `5.11 IO` bullet holds verbatim: `crates/namir-app/src/latency.rs:62` hardcodes
   `measured: false` and the panel carries no latency field.
 - **FR-IO-060:** the "resettable by the user" clause remains unreachable; `XrunCounter::reset` has
   no caller outside unit tests and no `UiIntent` reaches it.
@@ -6712,14 +6737,14 @@ This addendum supersedes in place the earlier M14 planning and scoping passages 
   `**UNRESOLVED**` in `docs/03-test-plan.md`, bringing the uncovered set to six: FR-IN-020,
   FR-IO-010, FR-IO-030, FR-IO-040, FR-IO-050, FR-UI-030 (42 trace-partials; §14's denominator check
   still passes at 24 rows / 130 Musts).
-- **No §14 cell moves for this:** §14's `5.11 IO — 2 / 6 / 0` bullet (`:2022`) already counted
+- **No §14 cell moves for this:** §14's `5.11 IO — 2 / 6 / 0` bullet already counted
   FR-IO-010 and FR-IO-040 as **Partial** (the two Done being FR-IO-080 and FR-IO-020). The ledger
   was already stricter than the gate.
 - **Stale M9a reason text in §14:** while the verdicts in §14's 5.11 IO bullet stand, two M9a reason
   texts are now factually stale: FR-IO-010's text stating "'the user shall be able to select' has no
-  interactive surface at all; selection happens once at start-up" (`:2046-2048`) and FR-IO-040's
-  stating "neither selection clause is built and 'always displayed' is served by an `eprintln!`"
-  (`:2051-2053`). PR #159 built both selection surfaces; both cells stay Partial because their
+  interactive surface at all; selection happens once at start-up" and FR-IO-040's
+  stating "neither selection clause is built and 'always displayed' is served by an `eprintln!`".
+  PR #159 built both selection surfaces; both cells stay Partial because their
   dedicated manual test scripts are unexecuted rather than because the surface is absent, and
   FR-IO-040's "always displayed" clause needs re-checking against the panel (the panel displays
   `current_sample_rate` and `current_buffer_size`).
