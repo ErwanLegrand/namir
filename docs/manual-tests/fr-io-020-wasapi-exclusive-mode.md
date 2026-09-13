@@ -28,18 +28,22 @@ the absence is gone. The reasoning survives in D-13.4 and in `docs/03-implementa
 
 ## Before you start
 
-**There is no user interface control for exclusive mode.** M11 added a mode *indicator*, not a
-switch. This is a real limitation, not an oversight of this script: FR-IO-020 does not require a
-chooser the way FR-IO-010 does ("the user shall be able to select"), so a persisted setting
-satisfies its literal text — but resting on a hand-edited JSON key is thin, and it is one more
-instance of the absent device panel that roadmap §15 item 16 carries as an open scope decision.
+**The audio settings panel now carries a Share Mode control** (issue #193, added 2026-09-13): a
+Shared/Exclusive selector that persists the request, re-enumerates in the requested mode and
+reopens the stream, with no restart in either direction. Choosing Exclusive there is the ordinary
+way to do what the steps below once needed a hand edit for.
 
-To enable it:
+The hand-edit path is kept because the executed run of 2026-08-11 used it — the control did not
+exist then — and because it still works identically:
 
 1. Launch Namir once and quit, so the settings file exists.
 2. With Namir **closed** — it rewrites this file on exit — edit
    `%APPDATA%\Namir\audio-settings.json` and set `"exclusive_mode": true`.
 3. Relaunch.
+
+The control is disabled, with the reason stated beside it, wherever the current devices answer
+`Unsupported` to the exclusive-mode probe at the current configuration — the same refusal step 7
+below drives, met before the toggle is thrown rather than after.
 
 ## What is under test, and what is genuinely unproven
 
@@ -256,3 +260,60 @@ ASIO is the requirement's Should and is not built (see the scope note at the top
 - **One machine, one third-party interface.** The two defects this run found were both invisible on
   the Microsoft HD Audio endpoints of the same machine; a second interface from a different vendor
   would be worth more than a second run on this one.
+
+## The Share Mode control (issue #193) — written 2026-09-13, not yet executed
+
+Issue #193 added the fifth audio-settings control: a Share Mode selector in the Audio Settings
+panel. Toggling it persists the request, re-enumerates rates and buffer sizes in the requested
+mode (the two modes report different ones — #190 measured 480/480 shared against 144..240000
+exclusive on this same endpoint), and reopens the stream through the same machinery every other
+selector uses. Every step below is written ready-to-run for a human on the §2 reference machine;
+**none of them has been executed**, and the Result line at the foot of this section records that
+rather than letting this document's earlier executed PASS speak for work that has not happened.
+The 2026-08-11 run above is untouched by this section and still stands for the steps it covered.
+
+Steps continue the executed run's numbering.
+
+10. **The control exists and agrees with the indicator on a default run.** Launch Namir with the
+    settings file as the executed run left it (`"exclusive_mode": false`), open the Audio
+    Settings panel. A **Share Mode** selector is present, reads **Shared**, and is enabled. The
+    top-panel indicator reads shared and names the device. Request and grant agree.
+11. **Toggle on — the defining observable, reached through the product's own interface.** Choose
+    **Exclusive**. Expect: no restart, no dialog; the stream reopens (a brief gap is normal);
+    the indicator switches to **exclusive** naming the device; the notice list gains nothing.
+    While exclusive, start playback from another application on the same endpoint — Windows
+    must refuse it, exactly as the executed run's step 4 required. If the other application
+    plays, the stream is shared no matter what either control says, and that is a failure here.
+12. **Re-enumeration is visible.** With the session still exclusive, open the Buffer Size
+    selector: its contents are the exclusive range's (144..240000 on this endpoint), not the
+    shared set. Toggle back to **Shared** and open it again: the shared set returns, the
+    indicator reads shared, and audio continues. No step so far has required quitting Namir;
+    with Namir running, `%APPDATA%\Namir\audio-settings.json` already carries the current
+    `"exclusive_mode"` value, because the toggle persists it the moment it is chosen.
+13. **The refusal path, met while running.** Choose **Exclusive** again — step 12 left the
+    session shared with the AudioBox selected, and the re-probe answered yes, so the entry is
+    enabled — and wait for the indicator to read **exclusive**. Then switch the input device to
+    one that refuses exclusive mode: the Trust webcam microphone of the executed run's step 7
+    (copy the name verbatim; `cargo run --example list_devices -p namir-app` prints it).
+    Expect: the notice `app.audio_io.exclusive_mode_unavailable` appears; the indicator reads
+    **shared**; audio keeps running; the control still reads **Exclusive** (the request is what
+    it shows, and the request was not withdrawn), but the Exclusive **entry** is now disabled,
+    with the reason stated beside the control — and **Shared remains selectable**, so the user
+    is never trapped by a refusal.
+14. **The gate with no request — and, honestly, no new notice.** Still on the webcam, choose
+    **Shared**. Expect **no new** refusal notice — step 13's is still on the list, and its
+    lingering there is not a failure — because nothing was requested, so there is nothing to
+    refuse: `negotiate_share_mode` explains itself only when exclusive mode was asked for. The
+    Exclusive entry stays disabled with the reason: the probe ran anyway and answered no for
+    this configuration, which is the gate met before the fact rather than a failure after it.
+15. **Restart-free recovery, in both directions.** Reselect the AudioBox as input. The
+    re-selection re-negotiates and re-runs the probe, so the Exclusive entry re-enables with no
+    restart; choose **Exclusive** and confirm the indicator follows. Then choose **Shared** and
+    confirm it follows back. The remedy in `crates/namir-app/src/error_codes.rs` promises
+    exactly this sequence, so this step is what keeps that promise honest.
+
+**Result: NOT EXECUTED.** Steps 10-15 were written 2026-09-13 with the control and await a human
+run on the §2 reference machine. The executed 2026-08-11 run above predates the control and
+remains the evidence for the steps it covered; under this document's worse-of convention the
+gate reads this section's verdict until those steps record a run.
+

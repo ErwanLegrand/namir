@@ -132,6 +132,13 @@ pub fn render(
     }
 }
 
+/// Why the share-mode control is disabled when the snapshot says the devices cannot provide
+/// exclusive mode: one honest sentence covering every shape of "no" the host's probe can get --
+/// no WASAPI endpoint, a device whose exclusive formats do not cover the current configuration,
+/// or no device open at all. Stated beside the control rather than left for the user to guess.
+const EXCLUSIVE_UNSUPPORTED_REASON: &str = "Exclusive mode is not available: the current audio \
+     devices report no exclusive-mode support at the current configuration.";
+
 /// Audio device configuration panel (FR-IO-010/040/070/080/090).
 /// Renders device selectors for input and output, sample rate, buffer size, input channel, and a
 /// close button.
@@ -235,6 +242,45 @@ fn audio_settings_panel(
                         });
                 });
             });
+
+            // Share Mode selector (FR-IO-020). The position is what was *requested*; what was
+            // granted is the mode indicator, and a refused request stays requested here with its
+            // notice explaining -- the same separation the snapshot's field pair documents.
+            // Shared stays selectable in every state: a refused Exclusive request must not trap
+            // the user, so "stop asking for it" has to be offered precisely when the refusal
+            // notice is showing. It is the **Exclusive entry** the capability gates, disabled
+            // with the reason stated below; the capability was settled during negotiation and
+            // carried in the snapshot, so this control never probes a device from the UI
+            // thread. Reselecting a device re-negotiates and re-probes, which is what re-enables
+            // Exclusive.
+            ui.horizontal(|ui| {
+                ui.label("Share Mode:");
+                let exclusive = panel.exclusive_requested;
+                egui::ComboBox::from_id_salt("namir_audio_share_mode")
+                    .selected_text(if exclusive { "Exclusive" } else { "Shared" })
+                    .show_ui(ui, |ui| {
+                        let mut chosen: Option<bool> = None;
+                        if ui.selectable_label(!exclusive, "Shared").clicked() {
+                            chosen = Some(false);
+                        }
+                        ui.add_enabled_ui(panel.exclusive_supported, |ui| {
+                            if ui.selectable_label(exclusive, "Exclusive").clicked() {
+                                chosen = Some(true);
+                            }
+                        });
+                        if let Some(exclusive) = chosen {
+                            intents.push(UiIntent::SelectShareMode { exclusive });
+                        }
+                    });
+            });
+            // The stated reason the Exclusive entry above is disabled: written out rather than
+            // hidden behind a hover tooltip, so it is readable (and testable) without a pointer.
+            if !panel.exclusive_supported {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(EXCLUSIVE_UNSUPPORTED_REASON).weak())
+                        .wrap(),
+                );
+            }
 
             // Input Channel selector (FR-IO-090). The snapshot's indices are zero-based, as the
             // host's settings field stores them; `input_channel_label` is the only place the
@@ -1508,6 +1554,8 @@ mod tests {
                 current_buffer_size: Some(256),
                 supported_input_channels: 2,
                 current_input_channel: 0,
+                exclusive_supported: true,
+                exclusive_requested: false,
             }),
             ..Default::default()
         };

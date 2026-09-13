@@ -6789,3 +6789,25 @@ credits them — a human's written record of a run on one machine, unreproducibl
 construction. `xtask traceability` confirms the mechanical half only: the uncovered-Must count falls
 from 8 to 4 (FR-IN-020, FR-IO-030, FR-IO-050, FR-UI-030 remain), and the generated
 `docs/03-test-plan.md` was regenerated rather than hand-edited.
+
+### The share-mode control lands; FR-IO-020's gate verdict reopens, 2026-09-13
+
+Appended per this document's convention; nothing above is edited. Issue #193 added the fifth
+audio-settings control — a Share Mode (shared/exclusive) selector in the audio settings panel
+(`crates/namir-ui`'s `UiIntent::SelectShareMode` and the `AudioDevicePanelSnapshot`
+`exclusive_supported`/`exclusive_requested` pair, bridged in `crates/namir-app/src/host.rs`) —
+riding the existing reopen machinery, re-enumerating in the requested mode per issue #190, with
+the `EXCLUSIVE_MODE_UNAVAILABLE` remedy repointed from hand-editing `audio-settings.json` to the
+toggle (`crates/namir-app/src/error_codes.rs`). A restart is no longer required in either
+direction, which is what closes the gap issue #193 names.
+
+**No §14 cell moves, deliberately.** FR-IO-020's Done rests on the 2026-08-11 executed run, and
+that run's evidence still holds: the exclusive-mode path it exercised (probe, open, exclusivity,
+converter, fallback) is behaviourally unchanged by this work. What changed is the traced
+document: `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md` now carries a ready-to-run
+section for the control (steps 10-15) whose own verdict is NOT EXECUTED, so `xtask
+traceability`'s worse-of rule reads FR-IO-020 as uncovered until a human executes those steps on
+the §2 reference machine. That is the honest state and is recorded rather than gamed: the cell
+keeps the evidence it cites, the ledger disagrees until the new steps record a run, and the
+divergence is this note. The 2026-09-08 note above is the precedent for reconciling the two —
+it took a human session.
