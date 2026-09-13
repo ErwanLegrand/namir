@@ -41,15 +41,15 @@ pub fn scan_git_sources(root: &Path) -> Vec<String> {
     let mut pkg_source: Option<&str> = None;
 
     let mut flush_package = |name: Option<&str>, source: Option<&str>| {
-        if let Some(source) = source {
-            if let Some(name) = name {
-                if source.starts_with("git+") && !has_rev_param(source) {
-                    violations.push(format!(
-                        "{name}: git source `{source}` has no `?rev=` pin — every git dependency \
-                         must be pinned by commit hash (R-10), never by branch"
-                    ));
-                }
-            }
+        if let Some(source) = source
+            && let Some(name) = name
+            && source.starts_with("git+")
+            && !has_rev_param(source)
+        {
+            violations.push(format!(
+                "{name}: git source `{source}` has no `?rev=` pin — every git dependency \
+                 must be pinned by commit hash (R-10), never by branch"
+            ));
         }
     };
 
@@ -74,14 +74,16 @@ pub fn scan_git_sources(root: &Path) -> Vec<String> {
         }
 
         // `name = "…"` or `source = "…"`
-        if let Some(val) = trimmed.strip_prefix("name = ").map(|s| s.trim()) {
-            if val.starts_with('"') && val.ends_with('"') {
-                pkg_name = Some(&val[1..val.len() - 1]);
-            }
-        } else if let Some(val) = trimmed.strip_prefix("source = ").map(|s| s.trim()) {
-            if val.starts_with('"') && val.ends_with('"') {
-                pkg_source = Some(&val[1..val.len() - 1]);
-            }
+        if let Some(val) = trimmed.strip_prefix("name = ").map(|s| s.trim())
+            && val.starts_with('"')
+            && val.ends_with('"')
+        {
+            pkg_name = Some(&val[1..val.len() - 1]);
+        } else if let Some(val) = trimmed.strip_prefix("source = ").map(|s| s.trim())
+            && val.starts_with('"')
+            && val.ends_with('"')
+        {
+            pkg_source = Some(&val[1..val.len() - 1]);
         }
     }
 

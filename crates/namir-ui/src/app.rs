@@ -20,7 +20,8 @@ use crate::library_view::{self, LibraryViewState};
 use crate::notices;
 use crate::{UiIntent, meter};
 
-/// Re-exported `baseview::Window` type from `egui-baseview` for embedding shells (such as `namir-clap`).
+/// Re-exported `baseview::Window` type from `egui-baseview` for embedding shells (such as
+/// `namir-clap`).
 pub type Window = egui_baseview::baseview::Window;
 
 /// Per-window state carried across frames -- everything that is *this crate's own* UI state
@@ -131,8 +132,9 @@ pub fn render(
     }
 }
 
-/// Audio device configuration panel (FR-IO-010/040/070/080).
-/// Renders device selectors for input and output, sample rate, buffer size, and a close button.
+/// Audio device configuration panel (FR-IO-010/040/070/080/090).
+/// Renders device selectors for input and output, sample rate, buffer size, input channel, and a
+/// close button.
 fn audio_settings_panel(
     ctx: &egui::Context,
     panel: &AudioDevicePanelSnapshot,
@@ -234,6 +236,38 @@ fn audio_settings_panel(
                 });
             });
 
+            // Input Channel selector (FR-IO-090). The snapshot's indices are zero-based, as the
+            // host's settings field stores them; `input_channel_label` is the only place the
+            // 1-based numbering a musician reads off the interface's front panel is produced, so
+            // the closed combo and its entries cannot disagree about what channel 2 is called.
+            ui.horizontal(|ui| {
+                ui.label("Input Channel:");
+                let has_channels = panel.supported_input_channels > 0;
+                // No input stream, no channels to name: "Input 1" here would name a channel that
+                // does not exist (`namir-app` opens its window with no audio at all when no
+                // device could be opened, and that panel reports zero).
+                let current_ch = if has_channels {
+                    input_channel_label(panel.current_input_channel)
+                } else {
+                    "None".to_string()
+                };
+                ui.add_enabled_ui(has_channels, |ui| {
+                    egui::ComboBox::from_id_salt("namir_audio_input_channel")
+                        .selected_text(current_ch)
+                        .show_ui(ui, |ui| {
+                            for channel in 0..panel.supported_input_channels {
+                                let selected = panel.current_input_channel == channel;
+                                if ui
+                                    .selectable_label(selected, input_channel_label(channel))
+                                    .clicked()
+                                {
+                                    intents.push(UiIntent::SelectInputChannel { channel });
+                                }
+                            }
+                        });
+                });
+            });
+
             ui.add_space(8.0);
             ui.separator();
             if ui.button("Close").clicked() {
@@ -244,6 +278,13 @@ fn audio_settings_panel(
     if !is_open || close_clicked {
         intents.push(UiIntent::ToggleAudioSettings);
     }
+}
+
+/// FR-IO-090's one conversion from a stored zero-based channel index to what the front panel of
+/// an interface calls it. Every label in the input-channel combo -- the closed one and each
+/// entry -- comes from here, so the two cannot drift apart by one.
+fn input_channel_label(channel: u16) -> String {
+    format!("Input {}", channel.saturating_add(1))
 }
 
 /// The two ends of the chain, side by side at the top of the screen: each is a level control with
@@ -510,11 +551,11 @@ fn default_window_size() -> egui_baseview::baseview::dpi::Size {
 /// diagnosis): GLX is merely the call that comes back empty. Retrying without the flag opens the
 /// window on the very same display.
 ///
-/// Dropping the flag costs nothing visually on this stack, because nothing was using it: `egui_glow`
-/// (0.35, the renderer `egui-baseview` 0.6 drives) calls `gl.disable(FRAMEBUFFER_SRGB)` in
-/// `prepare_painting` on every frame it can, since egui's shader already emits gamma-encoded
-/// colour and must not have the driver convert it again. So `srgb: true` only ever selected a
-/// framebuffer *capable* of a conversion that egui then switched off.
+/// Dropping the flag costs nothing visually on this stack, because nothing was using it:
+/// `egui_glow` (0.35, the renderer `egui-baseview` 0.6 drives) calls
+/// `gl.disable(FRAMEBUFFER_SRGB)` in `prepare_painting` on every frame it can, since egui's shader
+/// already emits gamma-encoded colour and must not have the driver convert it again. So `srgb:
+/// true` only ever selected a framebuffer *capable* of a conversion that egui then switched off.
 ///
 /// Measured as far as one machine can measure it: a frame rendered through the fallback and read
 /// back off the X server (`xwd`) paints `egui::Visuals::dark()`'s `panel_fill` as exactly
@@ -525,12 +566,21 @@ fn default_window_size() -> egui_baseview::baseview::dpi::Size {
 ///
 /// # Why a caught panic is the failure signal
 ///
-/// `baseview` 0.2.2 has no fallible open: both `Window::open_blocking` and `Window::open_parented`
-/// end in `rx.recv().unwrap().unwrap()`, so a window thread that dies during setup reaches the
-/// calling thread as a panic and as nothing else. A retry therefore has to catch one. The catch is
-/// narrower than it looks: a panic raised by a *frame* runs on `baseview`'s own window thread,
-/// which `open_blocking` absorbs in its `thread.join().unwrap_or_else(..)`, so what arrives here is
-/// a window that failed to open.
+/// `baseview` has no *infallible* failure report from the path this works around:
+/// `find_best_visual_config_for_gl` ends in its own `.expect("Could not fetch framebuffer
+/// config")`, so a display that offers no sRGB-capable config reaches the calling thread as a
+/// panic and as nothing else. A retry therefore has to catch one, and `open`'s `Err` is folded
+/// into the same path deliberately: both mean "this attempt did not produce a window", and the
+/// caller's `expect` sits inside the closure for exactly that reason.
+///
+/// **What must stay outside it is the event loop.** `egui_baseview::EguiWindow::create` returns a
+/// window without driving frames; `baseview::Window::run_until_closed` drives them on the
+/// *calling* thread. Running it inside the closure would put every frame of an entire session
+/// inside this `catch_unwind`, so any later panic — a poisoned `Mutex`, an `egui` assertion, a
+/// slice index in `render` — would print the sRGB notice and silently reopen the window hours in,
+/// turning a crash into a reopen (issue #200, item 1). So `open` must return the window and its
+/// caller must run it; [`open_blocking`] does, and [`open_parented`]'s `show()` returns rather
+/// than driving frames.
 ///
 /// A real display is unaffected -- its first attempt succeeds and `open` is called exactly once.
 /// If the second attempt fails too, the failure was never about sRGB (no `DISPLAY` at all, say)
@@ -542,10 +592,13 @@ pub fn open_with_srgb_fallback<T>(
     settings: egui_baseview::EguiWindowSettings,
     mut open: impl FnMut(egui_baseview::EguiWindowSettings) -> T,
 ) -> T {
-    // `AssertUnwindSafe` because nothing observable survives a failed attempt: `open` moves its own
-    // window state into `baseview`'s window thread, which drops it while unwinding, and the only
-    // value this function itself carries across the two attempts is `settings`, which it clones
-    // rather than mutates.
+    // `AssertUnwindSafe` because nothing observable survives a *failed* attempt: `open` moves its
+    // own window state into `baseview`'s window thread, which drops it while unwinding, and the
+    // only value this function itself carries across the two attempts is `settings`, which it
+    // clones rather than mutates. The success path is the other case, and is deliberately not
+    // covered by that argument: since issue #200 item 1 the closure *returns* a live window that
+    // outlives it, and the caller drives its frames — but a closure that returns never unwinds,
+    // so no state crosses a `catch_unwind` boundary there.
     let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(settings.clone())));
     match first {
         Ok(opened) => opened,
@@ -596,12 +649,14 @@ impl<H: UiHost> UiHost for SharedHost<H> {
 
 /// Opens `host` in a standalone, blocking window -- `namir-app`'s use of FR-UI-010's one shared
 /// UI implementation. Blocks the calling thread until the window is closed (matching
-/// `egui_baseview::EguiWindow::open_blocking`'s own contract); `namir-app` is expected to call
-/// this from whatever thread it dedicates to the GUI.
+/// `baseview::Window::run_until_closed`'s own contract); `namir-app` is expected to call this
+/// from whatever thread it dedicates to the GUI.
 ///
 /// Goes through [`open_with_srgb_fallback`], so this opens a window under a headless X server too;
 /// `host` is shared with the retry through a [`SharedHost`] rather than consumed by the first
-/// attempt.
+/// attempt. Only *creation* runs inside that fallback: the event loop is driven here, after it
+/// returns, so a frame that panics mid-session is not read as a failed sRGB negotiation and
+/// answered with a fresh window (issue #200).
 pub fn open_blocking<H>(title: impl Into<String>, host: H)
 where
     H: UiHost + 'static,
@@ -613,15 +668,11 @@ where
     };
     let host = Arc::new(Mutex::new(host));
     open_with_srgb_fallback(settings, |settings| {
-        let window = egui_baseview::EguiWindow::create(
-            settings,
-            NamirUi::new(SharedHost(Arc::clone(&host))),
-        )
-        .expect("could not create egui-baseview window");
-        window
-            .run_until_closed()
-            .expect("egui-baseview event loop failed");
-    });
+        egui_baseview::EguiWindow::create(settings, NamirUi::new(SharedHost(Arc::clone(&host))))
+            .expect("could not create egui-baseview window")
+    })
+    .run_until_closed()
+    .expect("egui-baseview event loop failed");
 }
 
 /// Opens `host` embedded in `parent`'s window -- `namir-clap`'s use of FR-UI-010's one shared UI
@@ -872,11 +923,11 @@ mod tests {
         matches[0]
     }
 
-    /// **The glue `NamirUi::frame` is: snapshot → [`render`] → collect intents → `UiHost::dispatch`.**
-    /// Driven end to end here by dragging a real control in a real frame, rather than by calling
-    /// `dispatch` directly -- which is what this test used to do, and which only re-tested
-    /// `RecordingHost`'s own `Vec::push` while leaving the one path it claimed to cover untested
-    /// (issue #102).
+    /// **The glue `NamirUi::frame` is: snapshot → [`render`] → collect intents →
+    /// `UiHost::dispatch`.** Driven end to end here by dragging a real control in a real frame,
+    /// rather than by calling `dispatch` directly -- which is what this test used to do, and which
+    /// only re-tested `RecordingHost`'s own `Vec::push` while leaving the one path it claimed to
+    /// cover untested (issue #102).
     ///
     /// The control is located by the text it actually paints (`unique_text_rect`), so nothing here
     /// depends on a layout constant or a widget id this module would have to expose: the pointer
@@ -1455,6 +1506,8 @@ mod tests {
                 current_sample_rate: 48_000,
                 supported_buffer_sizes: vec![64, 128, 256, 512],
                 current_buffer_size: Some(256),
+                supported_input_channels: 2,
+                current_input_channel: 0,
             }),
             ..Default::default()
         };

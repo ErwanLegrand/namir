@@ -111,6 +111,33 @@ impl HeadlessUiDriver {
         output
     }
 
+    /// One frame whose first pass calls `Context::request_discard`, so `egui`'s multi-pass loop
+    /// (`Context::run_dyn`) re-runs the entire UI a second time *within the same frame*.
+    fn frame_with_discard(&mut self, events: Vec<Event>) -> FullOutput {
+        self.time += 0.1;
+        let time = self.time;
+        let ui = &mut self.ui;
+        let mut pass = 0_u32;
+        let mut output = self.ctx.run_ui(
+            RawInput {
+                time: Some(time),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(960.0, 640.0))),
+                events,
+                ..Default::default()
+            },
+            |u| {
+                pass += 1;
+                if pass == 1 {
+                    u.ctx().request_discard("test: force a second pass");
+                }
+                ui.frame(u);
+            },
+        );
+        assert_eq!(pass, 2, "request_discard must have produced a second pass");
+        output.textures_delta.clear();
+        output
+    }
+
     fn painted_texts(output: &FullOutput) -> Vec<(String, Rect)> {
         fn walk(shape: &Shape, out: &mut Vec<(String, Rect)>) {
             match shape {
@@ -513,7 +540,8 @@ fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
     let (text, _) = driver.locate_value_for_control("Input Level");
     assert_eq!(text, "6.0");
 
-    // Advance additional frames to verify no late commit occurs on lost focus (e.g. frame after Escape)
+    // Advance additional frames to verify no late commit occurs on lost focus (e.g. frame after
+    // Escape)
     driver.frame(vec![]);
     driver.frame(vec![]);
 
@@ -530,6 +558,57 @@ fn numeric_value_entry_escape_key_cancels_in_progress_edit() {
     assert!(
         intents.is_empty(),
         "no SetParam intent with aborted value must be dispatched, got: {intents:?}"
+    );
+}
+
+/// The Escape frame is allowed to run more than one `egui` pass (anything in the UI may call
+/// `Context::request_discard`), and `param_control`'s cancellation stamp is scoped to a *pass*,
+/// not a frame. This pins the observed pairing that makes that correct: with two passes on the
+/// Escape frame, `DragValue`'s focus-loss re-commit lands on pass N+1 of the *same* frame, which
+/// is exactly the pass the stamp suppresses. A frame-scoped stamp would miss it and dispatch the
+/// cancelled 12.0.
+#[test]
+fn escape_cancellation_survives_a_multi_pass_frame() {
+    let mut params = ParamValues::defaults();
+    params.set(trim::GAIN_DB.key, 6.0).unwrap();
+    let mut driver = HeadlessUiDriver::new(UiSnapshot {
+        params,
+        ..Default::default()
+    });
+
+    let (_, rect) = driver.locate_value_for_control("Input Level");
+    driver.click_at(rect.center());
+    driver.frame(vec![
+        Event::Key {
+            key: Key::A,
+            pressed: true,
+            modifiers: Modifiers::COMMAND,
+            repeat: false,
+            physical_key: None,
+        },
+        Event::Text("12.0".to_string()),
+    ]);
+
+    // Escape, on a frame that egui re-runs a second time.
+    driver.frame_with_discard(vec![Event::Key {
+        key: Key::Escape,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+        physical_key: None,
+    }]);
+    driver.frame(vec![]);
+    driver.frame(vec![]);
+
+    assert_eq!(
+        driver.current_param(trim::GAIN_DB.key),
+        6.0,
+        "a discarded pass on the Escape frame must not let the cancelled edit commit"
+    );
+    let intents = driver.dispatched_intents();
+    assert!(
+        intents.is_empty(),
+        "no intent must be dispatched for a cancelled edit, got: {intents:?}"
     );
 }
 
@@ -569,7 +648,8 @@ fn escape_cancellation_in_one_control_preserves_staged_edit_in_another() {
         "escaped control must remain at its initial value"
     );
 
-    // Control A was not cancelled: clicking back into it and pressing Enter should commit its 12.0 edit
+    // Control A was not cancelled: clicking back into it and pressing Enter should commit its 12.0
+    // edit
     let (_, rect_a_again) = driver.locate_value_for_control("Input Level");
     driver.click_at(rect_a_again.center());
     driver.frame(vec![Event::Key {
@@ -844,5 +924,54 @@ fn notice_dismiss_button_dispatches_dismiss_intent() {
         driver.dispatched_intents(),
         vec![UiIntent::DismissNotice { id: 42 }],
         "clicking Dismiss on notice must dispatch DismissNotice with its id"
+    );
+}
+
+/// One audio panel with `supported_input_channels` input channels on offer and channel 0 selected.
+fn panel(supported_input_channels: u16) -> UiSnapshot {
+    UiSnapshot {
+        audio_panel_open: true,
+        audio_panel: Some(namir_ui::AudioDevicePanelSnapshot {
+            input_devices: vec!["Interface In".to_string()],
+            output_devices: vec!["Interface Out".to_string()],
+            current_input_device: Some("Interface In".to_string()),
+            current_output_device: Some("Interface Out".to_string()),
+            supported_sample_rates: vec![48_000],
+            current_sample_rate: 48_000,
+            supported_buffer_sizes: vec![256],
+            current_buffer_size: Some(256),
+            supported_input_channels,
+            current_input_channel: 0,
+        }),
+        ..Default::default()
+    }
+}
+
+/// FR-IO-090: the audio panel's input-channel combo lists one entry per channel the device
+/// offers, numbered the way a musician reads their interface (1-based), and picking one
+/// dispatches the zero-based index the settings field stores -- so "Input 3" means channel 2.
+/// A host with no input stream reports zero channels, where naming any channel would name one
+/// that does not exist.
+#[test]
+fn input_channel_combo_dispatches_the_zero_based_index_of_the_chosen_channel() {
+    let mut driver = HeadlessUiDriver::new(panel(0));
+    let (selected, _) = driver.locate_value_for_control("Input Channel:");
+    assert_eq!(
+        selected, "None",
+        "with no input stream there is no channel 1 to name"
+    );
+
+    let mut driver = HeadlessUiDriver::new(panel(4));
+    let (selected, combo) = driver.locate_value_for_control("Input Channel:");
+    assert_eq!(selected, "Input 1", "channel 0 reads as the first input");
+    driver.click_at(combo.center());
+
+    let entry = driver.locate("Input 3");
+    driver.click_at(entry.center());
+
+    assert_eq!(
+        driver.dispatched_intents(),
+        vec![UiIntent::SelectInputChannel { channel: 2 }],
+        "choosing the third listed channel must ask for index 2"
     );
 }

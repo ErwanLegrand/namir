@@ -44,8 +44,8 @@
 //! ```
 //!
 //! Every field is a whitespace-delimited `key=value` pair except `detail`, which is always **last**
-//! and runs to the end of the line, because it carries an error message with spaces in it. [`field`]
-//! reads the former, [`detail`] the latter.
+//! and runs to the end of the line, because it carries an error message with spaces in it.
+//! [`field`] reads the former, [`detail`] the latter.
 //!
 //! The fields are the seam's whole reason for reporting anything beyond the instant itself:
 //!

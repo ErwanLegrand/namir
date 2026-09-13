@@ -72,9 +72,9 @@
 //! - **Arms A and B**: the estimator is meaningful and D-2.4's contamination check applies as
 //!   written (arm B swaps only NAM slots; the IR runs continuously, so the schedule keeps its
 //!   phase).
-//! - **Arms C, D and E**: the estimator is **not** a valid validity check. Use arm A's, measured in the
-//!   same run, to decide whether the run as a whole was contaminated, and read arms C and D's raw
-//!   percentiles on that basis. Do not quote their `est` column as if it bounded anything.
+//! - **Arms C, D and E**: the estimator is **not** a valid validity check. Use arm A's, measured
+//!   in the same run, to decide whether the run as a whole was contaminated, and read arms C and
+//!   D's raw percentiles on that basis. Do not quote their `est` column as if it bounded anything.
 //!
 //! This is a limitation of applying the estimator to a deliberately aperiodic workload, not a
 //! defect in the estimator — which is exactly what D-2.4 promotes it for: telling you when a

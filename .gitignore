@@ -32,3 +32,8 @@ staging/
 
 # Written by the headless-window smoke step (.github/workflows/ci.yml) when run by hand.
 smoke.log
+
+# Local analysis-tool output (graphifyy): a report, an HTML graph, a hash-named cache and saved
+# query sessions, all regenerable and all naming absolute paths from the machine that ran it.
+# It was staged into a PR branch once (#203 review); ignoring it means the next run cannot.
+graphify-out/

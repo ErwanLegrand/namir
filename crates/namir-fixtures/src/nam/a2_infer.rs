@@ -15,8 +15,9 @@
 //! - The dilated conv and mixin now write to `bottleneck` channels, not `channels` — A1 never
 //!   distinguished the two.
 //! - There is no separate "residual conv" module. The single `layer1x1` projection (`bottleneck ->
-//!   channels`) *is* the residual path: `trunk_next = trunk_in + layer1x1(activated z)`, structurally
-//!   identical to A1's `residual` step (`infer.rs`'s `run_array`), just narrower on the way in.
+//!   channels`) *is* the residual path: `trunk_next = trunk_in + layer1x1(activated z)`,
+//!   structurally identical to A1's `residual` step (`infer.rs`'s `run_array`), just narrower on
+//!   the way in.
 //! - The per-layer head contribution is the *activated* `z` itself (bottleneck width), summed
 //!   across every layer in the array — exactly like A1's `head_sum += z` — but unlike A1, that sum
 //!   is *not* the array's final head output. It is fed through a genuine k-tap, dilated causal

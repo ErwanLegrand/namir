@@ -65,6 +65,8 @@ const SHELF_Q_UNUSED: f64 = 0.707;
 /// cookbook's own standard second-order default rather than an arbitrary pick.
 const HIGH_PASS_LOW_PASS_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
+// Short local names for this stage's descriptor ids, for `apply`'s comparison chain.
+// Aliases only: every `apply` use site is an `==`, not a `match` arm.
 const ENABLED_ID: ParamId = ENABLED.id;
 const LOW_SHELF_FREQ_HZ_ID: ParamId = LOW_SHELF_FREQ_HZ.id;
 const LOW_SHELF_GAIN_DB_ID: ParamId = LOW_SHELF_GAIN_DB.id;

@@ -32,10 +32,11 @@
 //!
 //! 1. Zero allocations in every `audio_section` (the whole point).
 //! 2. No dropout -- every block's peak stays above [`DROPOUT_PEAK_THRESHOLD`], the same numeric
-//!    threshold `namir-engine`'s `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout`
-//!    test uses, reused rather than re-invented. Achievable as a hard zero here (not "mostly")
-//!    because FR-CHAIN-040 makes an unloaded stage a dry *passthrough*, not silence -- the test's
-//!    sine keeps reaching the output even at the instant both stages are being swapped.
+//!    threshold `namir-engine`'s
+//!    `fr_nam_070_swapping_models_under_a_sine_has_no_discontinuity_or_dropout` test uses, reused
+//!    rather than re-invented. Achievable as a hard zero here (not "mostly") because FR-CHAIN-040
+//!    makes an unloaded stage a dry *passthrough*, not silence -- the test's sine keeps reaching
+//!    the output even at the instant both stages are being swapped.
 //! 3. No panic, and every error either axis produced is catalogue-coded (`ErrorCode`-backed, not
 //!    an ad-hoc string) -- checked by inspecting every `JobResult`/`RecallOutcome` this test
 //!    collects, not merely by the absence of a panic.

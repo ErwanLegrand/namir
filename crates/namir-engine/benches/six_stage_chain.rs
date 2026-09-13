@@ -273,8 +273,8 @@ impl Rep {
     /// either — that is the whole reason this benchmark can carry an absolute threshold without
     /// becoming a coin flip on a shared desktop.
     ///
-    /// Assumes a steady-state driving signal; see `docs/02-architecture.md` D-2.4 for why non-steady
-    /// signals cause p99.9 to exceed the estimator.
+    /// Assumes a steady-state driving signal; see `docs/02-architecture.md` D-2.4 for why
+    /// non-steady signals cause p99.9 to exceed the estimator.
     fn is_quotable(&self) -> bool {
         self.p999 - self.estimator <= VALIDITY_MARGIN_PCT
     }

@@ -12,13 +12,13 @@ use crate::telemetry::{TelemetryEntry, TelemetrySink};
 /// never added to `namir_params::REGISTRY` and `params.lock` is unaffected.
 const TELEMETRY_FAULT_COUNT: u32 = namir_params::ParamId::from_key("telemetry.chain.fault_count").0;
 
-/// D-10.4: this chain's own RT-facing `ParamId`s for FR-CHAIN-030's global bypass and
-/// FR-CHAIN-090's output ceiling — the identical per-stage convention `stages/trim.rs`'s
-/// `GAIN_DB_ID` documents, applied here to the two chain-level (not stage-owned) descriptors
-/// `namir_params::global` declares. [`Chain::apply`] matches on these the same way a stage's own
-/// `apply` matches on its ids.
+// D-10.4's convention: short local names for the two chain-level descriptor ids `Chain::apply`'s
+// comparison chain tests against — FR-CHAIN-030's global bypass and FR-CHAIN-090's output
+// ceiling, the two `namir_params::global` declares. Aliases only: every `apply` use site is an
+// `==`, not a `match` arm, so nothing forces them to be consts beyond `apply` reading better
+// against short names (issue #199; #187 deleted the two-`ParamId` rationale that first
+// justified them).
 const GLOBAL_BYPASS_ID: ParamId = GLOBAL_BYPASS.id;
-/// See [`GLOBAL_BYPASS_ID`].
 const OUTPUT_CEILING_DB_ID: ParamId = OUTPUT_CEILING_DB.id;
 
 /// D-6.1: "the chain is `Vec<Box<dyn Stage>>` built once during preparation." Building that

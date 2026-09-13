@@ -2,11 +2,11 @@
 //! count for the session, resettable by the user."
 //!
 //! Under `cpal` 0.19, xrun delivery moved from stream error callbacks to `CallbackInfo::xrun()`.
-//! Namir's audio backend seam ([`crate::audio_io::AudioBackend`]) does not currently carry
-//! per-callback xrun information across the trait boundary, so Namir does not yet read it.
-//! Consequently, this crate's own [`crate::bridge`] ring under- and overrun detector is
-//! currently FR-IO-060's only live source ("a running count for the session, resettable by the
-//! user").
+//! Since issue #200 item 6 the audio backend seam ([`crate::audio_io::AudioBackend`]) carries
+//! that per-callback report across the trait boundary as
+//! [`crate::audio_io::CallbackStatus::xrun`], and [`crate::stream`] records it into this counter
+//! alongside its own [`crate::bridge`] ring under- and overruns — two sources, one count, one
+//! xrun per callback that lost anything.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,7 +23,8 @@ impl XrunCounter {
         Self::default()
     }
 
-    /// Records one xrun. RT-safe: a single relaxed atomic increment, callable from an audio callback.
+    /// Records one xrun. RT-safe: a single relaxed atomic increment, callable from an audio
+    /// callback.
     #[inline]
     pub fn record(&self) {
         self.0.fetch_add(1, Ordering::Relaxed);
@@ -35,7 +36,7 @@ impl XrunCounter {
         self.0.load(Ordering::Relaxed)
     }
 
-    /// Resets the counter to zero.
+    /// FR-IO-060's "resettable by the user" clause.
     #[inline]
     pub fn reset(&self) {
         self.0.store(0, Ordering::Relaxed);

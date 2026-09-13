@@ -11,6 +11,9 @@
 
 name: Fuzz
 
+# This trigger block is identical to ci.yml's and carries the identical retarget gap (#175): a base
+# change to `trunk` fires `edited`, which is not in `pull_request`'s default type set, so nothing
+# runs until the branch is pushed. See ci.yml's comment for why `edited` was not added.
 on:
   push:
     branches: [trunk]

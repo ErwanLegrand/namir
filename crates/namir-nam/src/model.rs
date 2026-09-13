@@ -523,10 +523,10 @@ mod tests {
         assert_eq!(prepared.sample_rate().hz(), 48_000);
     }
 
-    /// FR-NAM-090: `loudness_lufs()` forwards through `PreparedNam`'s architecture dispatch (D-8.2's
-    /// enum-wrapping shape) for both Must architectures, and reports `None` when the source file
-    /// never declared a value (this fixture's `minimal_wavenet_json`/`minimal_lstm_json` omit
-    /// `metadata` entirely).
+    /// FR-NAM-090: `loudness_lufs()` forwards through `PreparedNam`'s architecture dispatch
+    /// (D-8.2's enum-wrapping shape) for both Must architectures, and reports `None` when the
+    /// source file never declared a value (this fixture's
+    /// `minimal_wavenet_json`/`minimal_lstm_json` omit `metadata` entirely).
     #[test]
     fn loudness_lufs_forwards_through_both_architectures() {
         let wavenet = load(&minimal_wavenet_json()).unwrap();
@@ -638,8 +638,8 @@ mod tests {
     /// `activation` — those cases moved out of this table (they no longer belong in an "unsupported
     /// features" test; `wavenet.rs`'s own unit tests cover them loading successfully instead) — and
     /// narrowed `layer1x1`'s case from "any present object" to "present and inactive or grouped"
-    /// (a present, active, `groups: 1` `layer1x1` is core A2's ordinary, supported shape). Each case
-    /// asserts both halves the requirement's own `Verify: U` method names (D-23.1's second
+    /// (a present, active, `groups: 1` `layer1x1` is core A2's ordinary, supported shape). Each
+    /// case asserts both halves the requirement's own `Verify: U` method names (D-23.1's second
     /// question): the error id differs from `MALFORMED_JSON`'s **and** `detail` names the offending
     /// key — asserting only the first would leave "names the unsupported feature" untested and this
     /// tag would be a `trace-partial`, not a plain one.

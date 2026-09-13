@@ -84,11 +84,11 @@ pub const NO_SUPPORTED_CONFIG: ErrorCode = ErrorCode::new(
 /// before a configuration was ever negotiated. A window still opens and parameters stay editable
 /// (`crate::app::open_window_without_audio`), which is what this entry has to say.
 ///
-/// Added M14 (issue #40). [`NO_SUPPORTED_CONFIG`] was reported here, and its own text is FR-IO-040's
-/// "none of the rates **a device** reports could be negotiated" — with no device present that
-/// sentence has no subject, and the notice named a device the window did not have. Two lines away,
-/// the same function already passes `None` for the share-mode indicator rather than a
-/// "truthful-looking Shared"; this entry is that judgement applied to the notice as well.
+/// Added M14 (issue #40). [`NO_SUPPORTED_CONFIG`] was reported here, and its own text is
+/// FR-IO-040's "none of the rates **a device** reports could be negotiated" — with no device
+/// present that sentence has no subject, and the notice named a device the window did not have.
+/// Two lines away, the same function already passes `None` for the share-mode indicator rather
+/// than a "truthful-looking Shared"; this entry is that judgement applied to the notice as well.
 pub const NO_AUDIO_DEVICE: ErrorCode = ErrorCode::new(
     "app.audio_io.no_device",
     Severity::Error,
@@ -117,6 +117,18 @@ pub const BUFFER_SIZE_DECLINED: ErrorCode = ErrorCode::new(
     "The requested buffer size is not supported by the audio device ({detail}).",
     "Choose a supported buffer size in audio settings, or edit buffer_size_frames in \
      audio-settings.json.",
+);
+/// FR-IO-090: the remembered input channel is not one the opened stream has -- the settings file
+/// remembers channel 6 of an eight-in interface and a two-in one is plugged in now -- so a
+/// channel that exists is in use instead. **`Warning`, not `Error`:** audio still runs, from a
+/// different physical input than the one asked for, which is precisely what needs saying: the
+/// alternative is capturing whichever channel exists with nothing on screen to explain it.
+pub const INPUT_CHANNEL_DECLINED: ErrorCode = ErrorCode::new(
+    "app.audio_io.input_channel_declined",
+    Severity::Warning,
+    "The remembered input channel is not available on this device, so a different one is in use \
+     ({detail}).",
+    "Choose an available input channel in audio settings.",
 );
 
 /// FR-IO-080: the settings file on disk could not be parsed (corrupted, from an incompatible
@@ -155,6 +167,7 @@ const ALL: &[ErrorCode] = &[
     NO_AUDIO_DEVICE,
     REMEMBERED_DEVICE_UNAVAILABLE,
     BUFFER_SIZE_DECLINED,
+    INPUT_CHANNEL_DECLINED,
     SETTINGS_UNREADABLE,
     SETTINGS_UNWRITABLE,
 ];

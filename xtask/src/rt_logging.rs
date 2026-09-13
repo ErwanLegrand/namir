@@ -12,28 +12,28 @@
 //! build on the edge that would change that. `crates/namir-platform/src/logging.rs`'s own module
 //! doc comment states the residue in as many words: `namir-app` and `namir-clap` depend on
 //! everything *and* own the audio callbacks, so those two crates could emit a record from inside
-//! `cpal`'s data callback or CLAP's `process()`, and "nothing mechanical stops them". This module is
-//! the mechanism that now does.
+//! `cpal`'s data callback or CLAP's `process()`, and "nothing mechanical stops them". This module
+//! is the mechanism that now does.
 //!
 //! **Module-scoped, not crate-scoped.** A crate-wide ban would be wrong, not merely strict: the
 //! logger's legitimate callers live in exactly these two crates — `namir-app`'s `AppHost::
 //! push_notice` (`crates/namir-app/src/host.rs`), `namir-clap`'s `SharedInner::push_notice` and
 //! `log_worker_warning` (`crates/namir-clap/src/shared.rs`), and each shell's `logging::init` call.
-//! Every one of those is on the UI or main thread, and FR-ERR-010's log would have no records at all
-//! if they were forbidden. So the unit of the ban is the module, and [`AUDIO_THREAD_MODULES`] is the
-//! hand-maintained list of the ones that carry audio-thread code — the same "manually-maintained
-//! mirror, kept in sync by hand" device [`crate::layering::LAYERING_TABLE`] uses for D-5.1's table,
-//! and for the same reason: there is no machine-readable statement of which function runs on which
-//! thread to derive it from.
+//! Every one of those is on the UI or main thread, and FR-ERR-010's log would have no records at
+//! all if they were forbidden. So the unit of the ban is the module, and [`AUDIO_THREAD_MODULES`]
+//! is the hand-maintained list of the ones that carry audio-thread code — the same
+//! "manually-maintained mirror, kept in sync by hand" device [`crate::layering::LAYERING_TABLE`]
+//! uses for D-5.1's table, and for the same reason: there is no machine-readable statement of
+//! which function runs on which thread to derive it from.
 //!
 //! # File granularity, deliberately, and why that is honest
 //!
-//! Two of the listed modules mix threads. `namir-clap`'s `audio.rs` holds `process()`, `reset()` and
-//! `apply_direct_and_mirror()` — audio thread — beside `activate()`/`deactivate()`, which CLAP
+//! Two of the listed modules mix threads. `namir-clap`'s `audio.rs` holds `process()`, `reset()`
+//! and `apply_direct_and_mirror()` — audio thread — beside `activate()`/`deactivate()`, which CLAP
 //! declares `[main-thread]`; `params_ext.rs` holds `PluginAudioProcessorParams::flush` (audio
 //! thread) beside the whole `PluginMainThreadParams` impl. A line-based scanner cannot tell which
-//! function a line belongs to without a Rust parser this project has no other use for, so the ban is
-//! applied to the whole file.
+//! function a line belongs to without a Rust parser this project has no other use for, so the ban
+//! is applied to the whole file.
 //!
 //! That is an **over**-approximation, and the direction matters: it can raise a false alarm on a
 //! main-thread function, and can never let an audio-thread call through. A check that erred the
@@ -57,11 +57,11 @@
 //!
 //! # Residual blind spots, stated rather than pretended closed
 //!
-//! 1. **Not transitive.** This forbids *naming* the logger in an audio-thread module, not *reaching*
-//!    it. A helper defined elsewhere that logs internally can still be called from a listed module,
-//!    and today one is: `activate()` calls `push_notice`, which logs. That call is legitimate
-//!    (`activate` is `[main-thread]`), but the check would not have objected if it were not. Only
-//!    review, and D-7.5's allocation harness, cover that.
+//! 1. **Not transitive.** This forbids *naming* the logger in an audio-thread module, not
+//!    *reaching* it. A helper defined elsewhere that logs internally can still be called from a
+//!    listed module, and today one is: `activate()` calls `push_notice`, which logs. That call is
+//!    legitimate (`activate` is `[main-thread]`), but the check would not have objected if it were
+//!    not. Only review, and D-7.5's allocation harness, cover that.
 //! 2. **The list is hand-maintained.** New audio-callback code in a module not listed here is
 //!    unchecked. Mitigated as far as a static check can be: [`crate::main`] treats an unreadable or
 //!    missing listed file as a violation, so a rename or a move fails the gate loudly instead of
@@ -70,13 +70,13 @@
 //!    a third crate, called as `that_crate::record(..)`, names nothing on the list. So does a glob
 //!    (`use crate::prelude::*`) that re-exports it.
 //! 4. **Line-based, like `layering`'s and `traceability`'s scanners.** Lines whose trimmed form
-//!    begins `//` are skipped, so prose about the logger — including this file's own — does not trip
-//!    it; a name inside a `/* */` block comment or a string literal would be a false positive, and a
-//!    name assembled at run time (a `macro_rules!` expansion, a function pointer taken elsewhere and
-//!    called here) is invisible.
-//! 5. **Only these two crates matter, and only because of D-5.1.** If the layering table ever grants
-//!    another crate an edge to `namir-platform`, this list must grow with it; nothing links the two
-//!    tables mechanically.
+//!    begins `//` are skipped, so prose about the logger — including this file's own — does not
+//!    trip it; a name inside a `/* */` block comment or a string literal would be a false
+//!    positive, and a name assembled at run time (a `macro_rules!` expansion, a function pointer
+//!    taken elsewhere and called here) is invisible.
+//! 5. **Only these two crates matter, and only because of D-5.1.** If the layering table ever
+//!    grants another crate an edge to `namir-platform`, this list must grow with it; nothing links
+//!    the two tables mechanically.
 
 /// The modules that carry code executing on the audio thread, in the two crates D-5.1 permits to
 /// depend on `namir-platform`, each with the reason it is on the list. Paths are repo-root-relative

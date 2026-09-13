@@ -8,9 +8,10 @@
 //! > local build.
 //!
 //! Three clauses, checked by three separate functions ([`clause_1_triggered_by_a_tag`],
-//! [`clause_2_every_tier_1_and_tier_2_platform`], [`clause_3_every_distribution_is_this_workflows`])
-//! so that a failure names which one broke rather than "the workflow is wrong". Each returns a
-//! violations list in the same shape as `bundle::check` and `identity::check`.
+//! [`clause_2_every_tier_1_and_tier_2_platform`],
+//! [`clause_3_every_distribution_is_this_workflows`]) so that a failure names which one broke
+//! rather than "the workflow is wrong". Each returns a violations list in the same shape as
+//! `bundle::check` and `identity::check`.
 //!
 //! # Why a test here and not a `# trace:` in the workflow
 //!
@@ -240,8 +241,8 @@ fn parse_map(lines: &[Line], cursor: &mut usize, indent: usize) -> Result<Yaml, 
         let key_line = *cursor;
         *cursor += 1;
 
-        let value = if let Some(chomp) = block_scalar_indicator(&rest) {
-            parse_block_scalar(lines, cursor, indent, chomp)
+        let value = if let Some(fold) = block_scalar_indicator(&rest) {
+            parse_block_scalar(lines, cursor, indent, fold)
         } else if rest.is_empty() {
             parse_child(lines, cursor, indent)?
         } else if rest.starts_with('[') {
@@ -361,8 +362,15 @@ fn parse_seq(lines: &[Line], cursor: &mut usize, indent: usize) -> Result<Yaml, 
     Ok(Yaml::Seq(items))
 }
 
-/// `|` or `>`, with optional chomping or indentation indicators (`|-`, `>+`, `|1`..`|9`, `>1`..`>9`).
-/// Returns `Some(true)` for folded (`>`), `Some(false)` for literal (`|`), or `None` for anything else.
+/// `|` or `>`, with at most one chomping and at most one indentation indicator (`|-`, `>+`,
+/// `|1`..`|9`, `>1`..`>9`, and pairs like `|2-`). Returns `Some(true)` for folded (`>`),
+/// `Some(false)` for literal (`|`), or `None` for anything else.
+///
+/// Both indicators are validated for shape and then discarded: only the fold flag reaches
+/// [`parse_block_scalar`], which always strips trailing blank lines and never emits a trailing
+/// newline, whatever `+` or `-` asked for, and always infers block indentation from the first
+/// content line. Accepting and documenting the surplus matches how the rest of this parser
+/// handles YAML it does not implement; nothing in `release.yml` carries an indicator today.
 fn block_scalar_indicator(rest: &str) -> Option<bool> {
     let rest = rest.trim();
     let fold = match rest.chars().next()? {
@@ -1201,7 +1209,18 @@ mod tests {
         ] {
             let yaml = format!("run: {indicator}\n  cargo run\n  -p xtask\n");
             let doc = parse(&yaml).unwrap_or_else(|e| panic!("failed for {indicator}: {e}"));
-            assert!(doc.str_at("run").is_some(), "missing run for {indicator}");
+            // The indicators are discarded, so the value is decided by `|` vs `>` alone: the
+            // literal form keeps the newline, the folded one joins with a space.
+            let expected = if indicator.starts_with('>') {
+                "cargo run -p xtask"
+            } else {
+                "cargo run\n-p xtask"
+            };
+            assert_eq!(
+                doc.str_at("run"),
+                Some(expected),
+                "wrong value for {indicator}"
+            );
         }
     }
 

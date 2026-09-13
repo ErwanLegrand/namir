@@ -140,10 +140,11 @@ impl ParamDescriptor {
     }
 
     /// Checks the invariants a descriptor's own fields have to satisfy to mean anything, and
-    /// which nothing enforced until `params.lock` grew shape columns (issue #119): [`ParamDescriptor::new`] is a `const fn`
-    /// that accepts every one of these, and `format_value` merely *clamps* a bad stepped index
-    /// rather than reporting it, so a typo'd `StepIndex(5)` on a two-value list used to reach
-    /// consumers — where a direct index into `values` panics instead of clamping.
+    /// which nothing enforced until `params.lock` grew shape columns (issue #119):
+    /// [`ParamDescriptor::new`] is a `const fn` that accepts every one of these, and
+    /// `format_value` merely *clamps* a bad stepped index rather than reporting it, so a typo'd
+    /// `StepIndex(5)` on a two-value list used to reach consumers — where a direct index into
+    /// `values` panics instead of clamping.
     ///
     /// Four invariants, one message each:
     ///

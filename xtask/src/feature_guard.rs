@@ -10,7 +10,8 @@
 //! of the manifest: one `--all-features` in a release step turns the feature on for the `cdylib`
 //! too, and the shipped plugin then links a host library while `THIRD-PARTY-NOTICES.md` — generated
 //! from the default-feature resolve — no longer describes the artifact. R-17's error direction is a
-//! real dependency entering a shipped binary, which is why it is guarded rather than merely watched.
+//! real dependency entering a shipped binary, which is why it is guarded rather than merely
+//! watched.
 //!
 //! The only thing standing between the repository and that outcome was a written discipline
 //! ("`--all-features` never appears in a build or release command in this repository") and a *late*
@@ -22,8 +23,8 @@
 //!
 //! 1. **[`scan_for_all_features`]** — no `cargo` invocation in any of the repository's
 //!    command-carrying files may pass `--all-features`. Blanket rather than restricted to
-//!    `cargo build`, because that is the discipline R-17 states, and because the alternative reading
-//!    ("only a *shipping* build matters") requires a line-based scanner to know which cargo
+//!    `cargo build`, because that is the discipline R-17 states, and because the alternative
+//!    reading ("only a *shipping* build matters") requires a line-based scanner to know which cargo
 //!    subcommand a wrapped YAML `run:` block is invoking. The named alternative already exists and
 //!    is already used: `--features host-ext-tests`.
 //! 2. **[`NON_DEFAULT_FEATURES`] / [`check_feature_stays_non_default`]** — the manifest half. A

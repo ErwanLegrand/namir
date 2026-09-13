@@ -16,9 +16,9 @@
 //! `LayerArrayConfig` are widened **in place** to also accept A2's fields, rather than gaining a
 //! sibling type the way LSTM did — a sibling here would need its own dispatch key, and A2 has none
 //! (see this module doc's "Two file shapes" section above, which is why LSTM *does* get one). Every
-//! field A2 adds is `Option<_>`/`Vec<_>` with `#[serde(default)]`, so a file that parses today keeps
-//! parsing unchanged; `wavenet::PreparedWaveNet::from_file` is where the A1/A2 semantic branch
-//! actually happens, not here.
+//! field A2 adds is `Option<_>`/`Vec<_>` with `#[serde(default)]`, so a file that parses today
+//! keeps parsing unchanged; `wavenet::PreparedWaveNet::from_file` is where the A1/A2 semantic
+//! branch actually happens, not here.
 //!
 //! **Two rules keep this widening from becoming the mirror-image of the bug FR-NAM-140 exists to
 //! fix** (a well-formed-but-unsupported file misreported as malformed, or a genuinely malformed one
@@ -33,8 +33,9 @@
 //!    naming a feature it had switched off (issue #37). Reading a value far enough to tell "off"
 //!    from "on" is not the same as implementing it, and it is what the reference's own shape
 //!    detector does with these same fields. Every field that
-//!    *is* consumed (`kernel_sizes`, `bottleneck`, `head.*`, activation parameters) keeps a concrete
-//!    type, so a wrong-typed value still fails at `serde` and is still reported as malformed.
+//!    *is* consumed (`kernel_sizes`, `bottleneck`, `head.*`, activation parameters) keeps a
+//!    concrete type, so a wrong-typed value still fails at `serde` and is still reported as
+//!    malformed.
 //! 2. **No untagged enum below gets a catch-all variant.** An `Other(serde_json::Value)` arm on
 //!    [`ActivationEntry`], for instance, would turn every activation *type* error (a bad
 //!    `negative_slope`, say) into a false "unsupported feature" claim instead of "malformed". This
@@ -84,8 +85,8 @@ pub struct NamFile {
     pub architecture: String,
     /// The WaveNet topology and weights layout, unvalidated beyond JSON shape.
     pub config: WaveNetConfig,
-    /// The flat weight vector, in the order `wavenet::PreparedWaveNet::from_file` expects to consume
-    /// it. Not shape-checked here.
+    /// The flat weight vector, in the order `wavenet::PreparedWaveNet::from_file` expects to
+    /// consume it. Not shape-checked here.
     pub weights: Vec<f32>,
     /// Real files may omit this; FR §2's definitions note the model sample rate is "typically 48
     /// kHz", which `wavenet::PreparedWaveNet::from_file` uses as the fallback when absent.
@@ -426,9 +427,10 @@ impl NamMetadata {
 /// Treats a present-but-`null` JSON value the same as an absent key: both become `T::default()`.
 /// Combined with `#[serde(default)]` (which only handles the absent-key case on its own), this is
 /// the standard serde pattern for "optional in practice, but not typed `Option<T>`, because the
-/// field is always logically present, just sometimes empty" — matching `NamMetadata`'s own FR-NAM-080
-/// framing ("display the model's metadata where present"), rather than making every reader of this
-/// struct unwrap an `Option` for a value that is always meaningfully either "text" or "no text".
+/// field is always logically present, just sometimes empty" — matching `NamMetadata`'s own
+/// FR-NAM-080 framing ("display the model's metadata where present"), rather than making every
+/// reader of this struct unwrap an `Option` for a value that is always meaningfully either "text"
+/// or "no text".
 fn null_or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     T: Default + serde::Deserialize<'de>,
