@@ -95,6 +95,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --no-fail-fast
 cargo run -p xtask -- layering        # crate dependency-graph and platform-cfg lint
 cargo run -p xtask -- rt-logging      # no audio-thread module names the logger
+cargo run -p xtask -- git-sources     # R-10: every git source in Cargo.lock must be rev-pinned
 cargo run -p xtask -- network-free    # no first-party crate names a socket API
 cargo run -p xtask -- error-catalogue # every error code is a named entry in a catalogue
 cargo run -p xtask -- feature-guard   # no --all-features; host-ext-tests stays non-default

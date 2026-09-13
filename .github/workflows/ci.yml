@@ -165,6 +165,12 @@ jobs:
       - name: xtask rt-logging (FR-ERR-030)
         run: cargo run -p xtask -- rt-logging
 
+      # R-10: every git source in Cargo.lock must be rev-pinned. The test
+      # `the_real_lockfile_pins_every_git_source_by_rev` under `cargo test` enforces the same rule,
+      # but this subcommand surfaces which entries are unpinned as a direct report.
+      - name: xtask git-sources (R-10)
+        run: cargo run -p xtask -- git-sources
+
       # M15 review, finding 3. Five `xtask` subcommands were wired into `xtask/src/main.rs` and
       # into no CI step at all: the three steps that follow this comment, `assets` (below
       # `params-lock`, beside the other generate-and-diff checks) and `schema` (below `identity`).

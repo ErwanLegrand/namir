@@ -79,10 +79,13 @@ pub fn param_control(
         //    was cancelled. In egui 0.36, `DragValue`'s staged text lives in a private `EditState`
         //    inside `data`, which cannot be selectively cleared by widget id without wiping
         //    the entire temp memory store. Instead, when this control loses focus due to Escape,
-        //    we flag its `Id` in `data` as cancelled for the following frame so the late commit
-        //    is suppressed, leaving all other widgets' temporary state intact. This suppression
-        //    flag is scoped by consumption rather than time, surviving until the control's next
-        //    render (which in the current always-rendered layout is the next frame).
+        //    we flag its `Id` in `data` by the current frame number so the late commit on the
+        //    following frame is suppressed. The flag is scoped by frame rather than consumed
+        //    unconditionally: it expires when a frame older than the current one is encountered
+        //    (removed from temp storage), and a flag whose frame is the immediate previous frame
+        //    or the current frame (multi-pass layout can produce multiple passes within one frame)
+        //    suppresses the commit. Within a single frame's passes the flag stays alive, so the
+        //    suppression survives the late commit without being spent by an intermediate pass.
         // 3. `value as f32 != current` is **not** a defensive extra: (1) makes `DragValue` report
         //    `changed()` once with the value unmoved, and without this guard three unrelated
         //    numeric-entry tests see a spurious leading `SetParam` carrying the pre-edit value.
@@ -101,10 +104,14 @@ pub fn param_control(
             .labelled_by(label.id);
 
         let cancelled_id = response.id.with("__namir_cancelled_escape");
-        let this_frame = ui.ctx().cumulative_pass_nr();
-        let was_cancelled = ui
-            .data_mut(|d| d.remove_temp::<u64>(cancelled_id))
-            .is_some_and(|frame| frame + 1 == this_frame);
+        let this_frame = ui.ctx().cumulative_frame_nr();
+        let stored = ui.data_mut(|d| d.get_temp::<u64>(cancelled_id));
+        // Expire the flag rather than consume it, so an extra pass in the same frame
+        // (multi-pass layout) does not spend the suppression before the late commit.
+        if stored.is_some_and(|f| f < this_frame) {
+            ui.data_mut(|d| d.remove_temp::<u64>(cancelled_id));
+        }
+        let was_cancelled = stored.is_some_and(|f| f + 1 >= this_frame);
 
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             ui.data_mut(|d| d.insert_temp(cancelled_id, this_frame));

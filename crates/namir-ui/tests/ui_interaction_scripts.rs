@@ -588,6 +588,53 @@ fn escape_cancellation_in_one_control_preserves_staged_edit_in_another() {
     );
 }
 
+#[test]
+fn escape_suppression_expires_and_does_not_block_new_edit() {
+    let mut params = ParamValues::defaults();
+    params.set(trim::GAIN_DB.key, 6.0).unwrap();
+    let mut driver = HeadlessUiDriver::new(UiSnapshot {
+        params,
+        ..Default::default()
+    });
+
+    // Escape-cancel a typed edit on Input Level — suppression flag is set.
+    driver.type_and_escape_control_value("Input Level", "12.0");
+
+    // Verify the escape worked: param unchanged, no intents leaked.
+    assert_eq!(
+        driver.current_param(trim::GAIN_DB.key),
+        6.0,
+        "escape must cancel the edit; param must remain 6.0"
+    );
+    let intents = driver.dispatched_intents();
+    assert!(
+        intents.is_empty(),
+        "no SetParam from escaped edit must be dispatched, got: {intents:?}"
+    );
+
+    // Render a frame with no events: advances to frame N+2 where the
+    // suppression flag expires (f + 1 < this_frame → flag is removed).
+    driver.frame(vec![]);
+
+    // Now a legitimate new edit on the same control must dispatch SetParam.
+    driver.type_into_control_value("Input Level", "8.0");
+
+    assert_eq!(
+        driver.current_param(trim::GAIN_DB.key),
+        8.0,
+        "new edit after expired suppression must set the parameter to 8.0"
+    );
+
+    assert_eq!(
+        driver.dispatched_intents(),
+        vec![UiIntent::SetParam {
+            key: trim::GAIN_DB.key,
+            value: 8.0,
+        }],
+        "a SetParam for the new value 8.0 must be dispatched after suppression expires"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // FR-UI-050: Reset and fine adjust gestures
 // ---------------------------------------------------------------------------
