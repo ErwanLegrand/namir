@@ -1901,7 +1901,7 @@ form, so the ledger and the source agree.
 
 - **4 CFG — 1 / 2 / 0.** *Done:* FR-CFG-010, one workspace building both products
   (`Cargo.toml:4-7`) and CI producing both on every push (`.github/workflows/ci.yml:88-89`, `:291-292`),
-  over one shared engine (`crates/namir-app/src/app.rs:164`, `crates/namir-clap/src/audio.rs:151`).
+  over one shared engine (`crates/namir-app/src/app.rs:622`, `crates/namir-clap/src/audio.rs:325`).
   *Partial:* FR-CFG-020 — the shared engine is real at those same two call sites, but the `Verify: G`
   apparatus is wholly absent: no golden vector exists anywhere in the tree and nothing runs one
   through both configurations. FR-CFG-030 — `xtask layering`'s dependency-edge lint
@@ -5174,6 +5174,14 @@ requirement and by REUSE compliance respectively.
   executable icon, rather than being the half of FR-UI-110 that lands here. §17's register row for
   `baseview` said `0.3.0` when this was written and the tree has always pinned 0.2.2; that row is
   corrected in the same pass, and whether 0.3.0 gained an icon field is unchecked.
+
+  *Correction (added 2026-09-13, issue #224 item 3):* **the opening sentence's present tense no
+  longer holds — the mark was built.** `crates/namir-ui/src/app.rs` renders it through
+  `brand::render(ui, &mut view.brand)` inside `render`'s top panel; the only occurrence of
+  `ui.heading("Namir")` left in that file is the comment above that call, reading "FR-UI-110's brand
+  mark, replacing `ui.heading("Namir")`". So the cited `:41` is not a moved pointer: the placeholder
+  it named no longer exists, and no line number is offered in its place. The deliverable text is
+  left as written, being the record of what this milestone set out to do.
 - **The Windows `.exe` icon**, which needs a build script to embed the resource. Flagged rather
   than waved through: build scripts sit awkwardly with this project's dependency-adoption bar, and
   `libc` is already on record as the one knowing exception to it. Decide this one deliberately,
@@ -6675,26 +6683,26 @@ issue #26 is closed.
 This addendum supersedes in place the earlier M14 planning and scoping passages that described item
 16 as unanswered, overdue, or gating M14 device work:
 
-1. **§21 "Why this milestone exists"** (`:5926`): "§15 item 16 — whether 1.0 ships an audio-device
+1. **§21 "Why this milestone exists"**: "§15 item 16 — whether 1.0 ships an audio-device
    panel — was due before M9b's start, has not been taken, and is upstream of five Musts'
    user-facing clauses."
-2. **§21 "Phase 0 — Decisions, before any of it is built"** (`:5947`): "§15 item 16 — the
+2. **§21 "Phase 0 — Decisions, before any of it is built"**: "§15 item 16 — the
    audio-device panel. Overdue. Answer 1 (build it) makes Phase 1 materially larger... Answer 3
    (silence) is not available at a 1.0 gate. This is the single decision with the largest effect on
    this milestone's size, and it must be first."
-3. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5987`): "The nine Musts whose mechanism does not
+3. **§21 "Phase 1 — The unbuilt user surfaces"**: "The nine Musts whose mechanism does not
    exist. Scope depends on Phase 0's item 16 answer."
-4. **§21 "Phase 1 — The unbuilt user surfaces"** (`:6006`): "FR-IO-060, FR-IO-070 — xrun count and
+4. **§21 "Phase 1 — The unbuilt user surfaces"**: "FR-IO-060, FR-IO-070 — xrun count and
    device re-selection. The xrun counter surfaces only through `eprintln!`. Gated on item 16."
-5. **§21 "What was deliberately left open"** (`:6302`): "§15 item 16 — the audio-device panel. §21
+5. **§21 "What was deliberately left open"**: "§15 item 16 — the audio-device panel. §21
    called this 'the single decision with the largest effect on this milestone's size, and it must be
    first', and it is nonetheless not taken... Consequence for this milestone, stated as scope: M14
    does no device work of any kind, and FR-IO-060 and FR-IO-070 stay Partial through it."
-6. **§21 "What the automated half of M14 will and will not attempt"** (`:6330`): "All of §21 Phase 1
+6. **§21 "What the automated half of M14 will and will not attempt"**: "All of §21 Phase 1
    is deferred... several of them are gated on item 16, which is unanswered."
-7. **§21 "What the automated half of M14 will and will not attempt"** (`:6338`): "No device work.
+7. **§21 "What the automated half of M14 will and will not attempt"**: "No device work.
    Per item 16, above."
-8. **§21 "M14 status — Category B"** (`:6439`): "§15 item 16 / issue #26, the audio-device panel:
+8. **§21 "M14 status — Category B"**: "§15 item 16 / issue #26, the audio-device panel:
    FR-IO-060, FR-IO-070. Overdue before M9b started, and M14 scoped itself around it rather than
    deciding it to suit a measurement."
 
@@ -6729,14 +6737,14 @@ This addendum supersedes in place the earlier M14 planning and scoping passages 
   `**UNRESOLVED**` in `docs/03-test-plan.md`, bringing the uncovered set to six: FR-IN-020,
   FR-IO-010, FR-IO-030, FR-IO-040, FR-IO-050, FR-UI-030 (42 trace-partials; §14's denominator check
   still passes at 24 rows / 130 Musts).
-- **No §14 cell moves for this:** §14's `5.11 IO — 2 / 6 / 0` bullet (`:2022`) already counted
+- **No §14 cell moves for this:** §14's `5.11 IO — 2 / 6 / 0` bullet already counted
   FR-IO-010 and FR-IO-040 as **Partial** (the two Done being FR-IO-080 and FR-IO-020). The ledger
   was already stricter than the gate.
 - **Stale M9a reason text in §14:** while the verdicts in §14's 5.11 IO bullet stand, two M9a reason
   texts are now factually stale: FR-IO-010's text stating "'the user shall be able to select' has no
-  interactive surface at all; selection happens once at start-up" (`:2046-2048`) and FR-IO-040's
-  stating "neither selection clause is built and 'always displayed' is served by an `eprintln!`"
-  (`:2051-2053`). PR #159 built both selection surfaces; both cells stay Partial because their
+  interactive surface at all; selection happens once at start-up" and FR-IO-040's
+  stating "neither selection clause is built and 'always displayed' is served by an `eprintln!`".
+  PR #159 built both selection surfaces; both cells stay Partial because their
   dedicated manual test scripts are unexecuted rather than because the surface is absent, and
   FR-IO-040's "always displayed" clause needs re-checking against the panel (the panel displays
   `current_sample_rate` and `current_buffer_size`).
