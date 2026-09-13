@@ -133,7 +133,7 @@ impl UiHost for SmokeHost {
                 supported_sample_rates: vec![44_100, 48_000, 96_000],
                 current_sample_rate: 48_000,
                 supported_buffer_sizes: vec![128, 256, 512],
-                current_buffer_size: 256,
+                current_buffer_size: Some(256),
                 supported_input_channels: 8,
                 current_input_channel: 5,
             }),

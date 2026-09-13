@@ -79,22 +79,24 @@ pub fn param_control(
         //    was cancelled. In egui 0.36, `DragValue`'s staged text lives in a private `EditState`
         //    inside `data`, which cannot be selectively cleared by widget id without wiping
         //    the entire temp memory store. Instead, when this control loses focus due to Escape,
-        //    we stamp its `Id` in `data` with the pass number of the frame that cancelled, and
-        //    suppress the late commit only on the pass immediately after it, leaving all other
-        //    widgets' temporary state intact. The expiry is carried by the flag rather than by
-        //    the layout: a control that stops rendering every frame (a collapsed section, a tab,
-        //    a virtualised list) leaves a stamp behind, and a stale one is ignored instead of
-        //    swallowing the first legitimate `SetParam` when the control returns (issue #200).
-        //    "Pass", not "frame", is deliberate and matches what the late commit itself is
-        //    scoped to. If the Escape frame runs a second pass (`Context::request_discard`
-        //    anywhere in the UI), the re-run pass carries no events — `run_dyn` takes the
-        //    `RawInput` for the first pass only — so `key_pressed(Escape)` is false there and
-        //    the stamp is *not* rewritten. It does not need to be: `DragValue`'s focus-loss
-        //    re-commit moves up to that same pass, so stamp-pass + 1 still names it exactly.
-        //    Observed on a two-pass Escape frame: pass N has `lost_focus && Escape` and stamps;
-        //    pass N+1 (same frame) has `lost_focus` but no Escape, and is where the re-commit
-        //    is suppressed. A frame-scoped stamp would miss it — see
-        //    `escape_cancellation_survives_a_multi_pass_frame`.
+        //    the entire temp memory store. Instead, when this control loses focus due to Escape,
+        //    we stamp its `Id` in `data` with the frame number, so the late commit on the
+        //    following frame is suppressed. The flag is scoped by frame rather than consumed
+        //    unconditionally: it expires when a frame older than the current one is encountered
+        //    (removed from temp storage), and a flag whose frame is the immediate previous frame
+        //    or the current frame (`f + 1 >= this_frame`) suppresses the commit. "Frame", not
+        //    "pass", is deliberate: `cumulative_frame_nr` is incremented once per `run_ui` call
+        //    while `cumulative_pass_nr` counts passes within a frame, and a two-pass Escape
+        //    frame (a `Context::request_discard` anywhere in the UI) re-runs the second pass
+        //    with the first pass's events — `run_dyn` takes the `RawInput` for the first pass
+        //    only — so `key_pressed(Escape)` is false there while `lost_focus` is still true,
+        //    and DragValue's focus-loss re-commit moves up to that same frame. The `>=` covers
+        //    it: a stamp from the current frame (later pass) or the immediate previous frame
+        //    (next real frame) both suppress. A stale stamp from an older frame is ignored
+        //    instead of swallowing the first legitimate `SetParam` when a control stops
+        //    rendering and comes back (#200). Both the same-frame re-commit and the next-frame
+        //    late commit are covered by `escape_cancellation_survives_a_multi_pass_frame` and
+        //    `escape_suppression_expires_and_does_not_block_new_edit`.
         // 3. `value as f32 != current` is **not** a defensive extra: (1) makes `DragValue` report
         //    `changed()` once with the value unmoved, and without this guard three unrelated
         //    numeric-entry tests see a spurious leading `SetParam` carrying the pre-edit value.
@@ -114,13 +116,17 @@ pub fn param_control(
             .labelled_by(label.id);
 
         let cancelled_id = response.id.with("__namir_cancelled_escape");
-        let this_pass = ui.ctx().cumulative_pass_nr();
-        let was_cancelled = ui
-            .data_mut(|d| d.remove_temp::<u64>(cancelled_id))
-            .is_some_and(|cancelled_pass| cancelled_pass + 1 == this_pass);
+        let this_frame = ui.ctx().cumulative_frame_nr();
+        let stored = ui.data_mut(|d| d.get_temp::<u64>(cancelled_id));
+        // Expire the flag rather than consume it, so an extra pass in the same frame
+        // (multi-pass layout) does not spend the suppression before the late commit.
+        if stored.is_some_and(|f| f < this_frame) {
+            ui.data_mut(|d| d.remove_temp::<u64>(cancelled_id));
+        }
+        let was_cancelled = stored.is_some_and(|f| f + 1 >= this_frame);
 
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ui.data_mut(|d| d.insert_temp(cancelled_id, this_pass));
+            ui.data_mut(|d| d.insert_temp(cancelled_id, this_frame));
         }
 
         if response.changed() && value as f32 != current && !was_cancelled {

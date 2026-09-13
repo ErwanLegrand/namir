@@ -216,7 +216,10 @@ fn audio_settings_panel(
             // Buffer Size selector
             ui.horizontal(|ui| {
                 ui.label("Buffer Size:");
-                let current_bs = format!("{} frames", panel.current_buffer_size);
+                let current_bs = match panel.current_buffer_size {
+                    Some(frames) => format!("{frames} frames"),
+                    None => "Device default".to_string(),
+                };
                 let has_bufs = !panel.supported_buffer_sizes.is_empty();
                 ui.add_enabled_ui(has_bufs, |ui| {
                     egui::ComboBox::from_id_salt("namir_audio_buffer_size")
@@ -224,7 +227,7 @@ fn audio_settings_panel(
                         .show_ui(ui, |ui| {
                             for &buf in &panel.supported_buffer_sizes {
                                 let label = format!("{buf} frames");
-                                let selected = panel.current_buffer_size == buf;
+                                let selected = panel.current_buffer_size == Some(buf);
                                 if ui.selectable_label(selected, label).clicked() {
                                     intents.push(UiIntent::SelectBufferSize { buffer_size: buf });
                                 }
@@ -1502,7 +1505,7 @@ mod tests {
                 supported_sample_rates: vec![44_100, 48_000, 96_000],
                 current_sample_rate: 48_000,
                 supported_buffer_sizes: vec![64, 128, 256, 512],
-                current_buffer_size: 256,
+                current_buffer_size: Some(256),
                 supported_input_channels: 2,
                 current_input_channel: 0,
             }),

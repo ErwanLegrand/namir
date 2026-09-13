@@ -720,7 +720,7 @@ pub fn run() {
         supported_sample_rates,
         sample_rate_hz,
         supported_buffer_sizes,
-        crate::audio_io::block_frames(buffer_frames) as u32,
+        Some(crate::audio_io::block_frames(buffer_frames) as u32),
     );
     // FR-IO-090: the index this stream opens with is the host's own settled answer, so the
     // selector and the capture below read the same channel (the reopen path settles its own in
@@ -974,7 +974,7 @@ fn open_window_without_audio(config_dir: Option<PathBuf>) {
         Vec::new(),
         48_000,
         Vec::new(),
-        256,
+        None,
     );
     // recall presets, and refusing to would be a second degradation the missing device does not
     // imply.

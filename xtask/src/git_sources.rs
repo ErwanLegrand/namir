@@ -1,0 +1,271 @@
+//! R-10 Mitigation / M15: every git source in `Cargo.lock` must be pinned by
+//! `?rev=` query parameter, never by branch. Parses the lockfile — which the
+//! repo already commits — and checks each `source = "git+…"` entry contains a
+//! `rev=` parameter.  No network access needed, no `toml` dependency.
+//!
+//! # Why this exists
+//!
+//! `cargo deny check sources` allows the repository, not a revision, so a git
+//! dependency specified by branch passes every other gate.  This check catches
+//! that at the lockfile level: the lock always resolves a branch to a commit
+//! hash, but the `?branch=` specifier in the source string means the next
+//! `cargo update` moves it (AGENTS.md § R-10).  A source with `?rev=` stays
+//! put regardless of a `cargo update`.
+//!
+//! # What it cannot see
+//!
+//! Only the lockfile.  A dependency absent from the lock (workspace member,
+//! path dep) has no source string and is not checked.  A published crate that
+//! carries a git dependency pinned by branch in its own manifest is invisible
+//! unless that crate itself resolves through the workspace lock — which it
+//! does for every indirect git dep in this tree.
+
+use std::path::Path;
+
+/// Returns violation strings for every git source in `Cargo.lock` under
+/// `root` whose source string lacks a `?rev=` query parameter.
+///
+/// Uses simple line-by-line parsing: walks `[[package]]` sections tracking
+/// `name =` and `source =` entries, reporting any `source = "git+…"` that
+/// lacks `?rev=` in its value.
+pub fn scan_git_sources(root: &Path) -> Vec<String> {
+    let lock_path = root.join("Cargo.lock");
+    let content = match std::fs::read_to_string(&lock_path) {
+        Ok(c) => c,
+        Err(e) => return vec![format!("Cargo.lock: could not read: {e}")],
+    };
+
+    let mut violations: Vec<String> = Vec::new();
+    let mut in_package = false;
+    let mut pkg_name: Option<&str> = None;
+    let mut pkg_source: Option<&str> = None;
+
+    let mut flush_package = |name: Option<&str>, source: Option<&str>| {
+        if let Some(source) = source
+            && let Some(name) = name
+            && source.starts_with("git+")
+            && !has_rev_param(source)
+        {
+            violations.push(format!(
+                "{name}: git source `{source}` has no `?rev=` pin — every git dependency \
+                 must be pinned by commit hash (R-10), never by branch or tag"
+            ));
+        }
+    };
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[[package]]" {
+            flush_package(pkg_name, pkg_source);
+            pkg_name = None;
+            pkg_source = None;
+            in_package = true;
+            continue;
+        }
+
+        if !in_package {
+            continue;
+        }
+
+        // End of this package section (next top-level key or section header)
+        if trimmed.starts_with('[') || trimmed.is_empty() {
+            in_package = false;
+            continue;
+        }
+
+        // `name = "…"` or `source = "…"`
+        if let Some(val) = trimmed.strip_prefix("name = ").map(|s| s.trim())
+            && val.starts_with('"')
+            && val.ends_with('"')
+        {
+            pkg_name = Some(&val[1..val.len() - 1]);
+        } else if let Some(val) = trimmed.strip_prefix("source = ").map(|s| s.trim())
+            && val.starts_with('"')
+            && val.ends_with('"')
+        {
+            pkg_source = Some(&val[1..val.len() - 1]);
+        }
+    }
+
+    flush_package(pkg_name, pkg_source);
+
+    violations
+}
+
+/// Returns `true` if `source` (a `git+…` string) has a `rev=` query parameter,
+/// meaning it is pinned by commit hash and safe from branch movement.
+///
+/// Parses the query string portion of a Cargo git source URL of the form
+/// `git+<url>?<params>#<hash>`. Returns `true` only when the params contain
+/// a `rev=` parameter (either as the first param `?rev=` or a subsequent
+/// `&rev=`).  Sources with `?tag=`, `?branch=`, or no params at all return
+/// `false` — none of those pin the source to an immutable revision.
+fn has_rev_param(source: &str) -> bool {
+    // The source format is: git+<url>?<params>#<hash>
+    // Extract everything between ? and # (or end of string)
+    if let Some(query_part) = source.split('?').nth(1) {
+        let query = query_part.split('#').next().unwrap_or(query_part);
+        query.split('&').any(|param| param.starts_with("rev="))
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("xtask-git-sources-{pid}-{name}"))
+    }
+
+    #[test]
+    fn a_clean_lockfile_produces_no_violations() {
+        let dir = scratch_dir("clean");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lock = std::fs::File::create(dir.join("Cargo.lock")).unwrap();
+        write!(
+            lock,
+            r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 3
+
+[[package]]
+name = "cpal"
+version = "0.19.0"
+source = "git+https://github.com/ErwanLegrand/cpal?rev=381cf1d32e5593fef2fadbbaaf439c05f6055877#381cf1d32e5593fef2fadbbaaf439c05f6055877"
+"#
+        )
+        .unwrap();
+        drop(lock);
+        let v = scan_git_sources(&dir);
+        assert!(v.is_empty(), "{v:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_tag_pinned_source_is_a_violation() {
+        let dir = scratch_dir("tag");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lock = std::fs::File::create(dir.join("Cargo.lock")).unwrap();
+        write!(
+            lock,
+            r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 3
+
+[[package]]
+name = "some-crate"
+version = "0.1.0"
+source = "git+https://github.com/user/repo?tag=v0.3.3#abc123def456"
+"#
+        )
+        .unwrap();
+        drop(lock);
+        let v = scan_git_sources(&dir);
+        assert_eq!(v.len(), 1, "expected one violation, got {v:?}");
+        assert!(v[0].contains("some-crate"), "{v:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_source_with_both_branch_and_rev_is_not_a_violation() {
+        let dir = scratch_dir("branch-and-rev");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lock = std::fs::File::create(dir.join("Cargo.lock")).unwrap();
+        write!(
+            lock,
+            r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 3
+
+[[package]]
+name = "hybrid"
+version = "0.1.0"
+source = "git+https://github.com/user/repo?branch=main&rev=abc123def456#abc123def456"
+"#
+        )
+        .unwrap();
+        drop(lock);
+        let v = scan_git_sources(&dir);
+        assert!(
+            v.is_empty(),
+            "expected no violation for ?branch= + ?rev=, got {v:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_branch_pinned_source_is_a_violation() {
+        let dir = scratch_dir("branch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lock = std::fs::File::create(dir.join("Cargo.lock")).unwrap();
+        write!(
+            lock,
+            r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 3
+
+[[package]]
+name = "baseview"
+version = "0.3.3"
+source = "git+https://github.com/ErwanLegrand/baseview.git?branch=accesskit-design#c0870cb5b5279e4fff174ea8b407f19671e4fd5e"
+"#
+        )
+        .unwrap();
+        drop(lock);
+        let v = scan_git_sources(&dir);
+        assert_eq!(v.len(), 1, "expected one violation, got {v:?}");
+        assert!(v[0].contains("baseview"), "{v:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_registry_source_is_not_a_violation() {
+        let dir = scratch_dir("registry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lock = std::fs::File::create(dir.join("Cargo.lock")).unwrap();
+        write!(
+            lock,
+            r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 3
+
+[[package]]
+name = "egui"
+version = "0.36.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#
+        )
+        .unwrap();
+        drop(lock);
+        let v = scan_git_sources(&dir);
+        assert!(v.is_empty(), "{v:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_lockfile_is_a_violation() {
+        let dir = scratch_dir("missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let v = scan_git_sources(&dir);
+        assert!(!v.is_empty(), "expected a violation for missing lockfile");
+        assert!(v[0].contains("could not read"), "{v:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The gate as CI runs it, against the real repository.
+    #[test]
+    fn the_real_lockfile_pins_every_git_source_by_rev() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let violations = scan_git_sources(root);
+        assert!(
+            violations.is_empty(),
+            "git sources not pinned by rev:\n{}",
+            violations.join("\n")
+        );
+    }
+}

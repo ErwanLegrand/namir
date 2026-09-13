@@ -182,6 +182,12 @@ jobs:
       - name: xtask rt-logging (FR-ERR-030)
         run: cargo run -p xtask -- rt-logging
 
+# R-10: every git source in Cargo.lock must be rev-pinned. The test
+      # `the_real_lockfile_pins_every_git_source_by_rev` under `cargo test` enforces the same rule,
+      # but this subcommand surfaces which entries are unpinned as a direct report.
+      - name: xtask git-sources (R-10)
+        run: cargo run -p xtask -- git-sources
+
       # Issue #176: the 100-column convention for comment prose, which `cargo fmt` cannot see --
       # `rustfmt`'s `wrap_comments` is nightly-only, so 154 over-width comment lines accumulated
       # across 71 files with a green format gate. Same class as the two steps above: a line-based

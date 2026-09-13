@@ -448,7 +448,9 @@ pub struct AppHost {
     supported_sample_rates: Vec<u32>,
     current_sample_rate: u32,
     supported_buffer_sizes: Vec<u32>,
-    current_buffer_size: u32,
+    /// Current buffer size in frames, or `None` if no device is open or the
+    /// device reported no preference.
+    current_buffer_size: Option<u32>,
     /// FR-IO-090's selector range: how many input channels the current device reports, which is
     /// not how many the stream opened with. `0` until a stream opens, and on the
     /// `open_window_without_audio` path, where the selector renders empty.
@@ -511,7 +513,7 @@ impl AppHost {
             supported_sample_rates: Vec::new(),
             current_sample_rate: 48_000,
             supported_buffer_sizes: Vec::new(),
-            current_buffer_size: 256,
+            current_buffer_size: None,
             input_channel_count: 0,
             current_input_channel: 0,
             settings: AppSettings::default(),
@@ -778,8 +780,13 @@ impl AppHost {
                         self.current_input_device = Some(input_name.clone());
                         self.current_output_device = Some(output_name.clone());
                         self.current_sample_rate = pending.sample_rate_hz;
+                        // A stream is open, so the panel reports the block size the engine
+                        // actually runs at: `block_frames` owns both the floor and the
+                        // None -> DEFAULT_BLOCK_FRAMES resolution (issue #213). `None` in
+                        // this field means "no device open" (#223), which the reopen path
+                        // cannot produce.
                         self.current_buffer_size =
-                            crate::audio_io::block_frames(pending.buffer_frames) as u32;
+                            Some(crate::audio_io::block_frames(pending.buffer_frames) as u32);
                         self.input_channel_count = pending.input_channel_count;
                         self.current_input_channel = input_channel;
                         if let Some(requested) = self.settings.channel_mapping.input_channel
@@ -899,7 +906,7 @@ impl AppHost {
         supported_sample_rates: Vec<u32>,
         current_sample_rate: u32,
         supported_buffer_sizes: Vec<u32>,
-        current_buffer_size: u32,
+        current_buffer_size: Option<u32>,
     ) {
         self.config_dir = config_dir;
         self.settings = settings;
@@ -1482,7 +1489,7 @@ impl UiHost for AppHost {
                 self.initiate_audio_reopen();
             }
             UiIntent::SelectBufferSize { buffer_size } => {
-                self.current_buffer_size = buffer_size;
+                self.current_buffer_size = Some(buffer_size);
                 self.settings.buffer_size_frames = Some(buffer_size);
                 self.persist_settings();
                 self.initiate_audio_reopen();
@@ -2699,7 +2706,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![128, 256, 512],
-            256,
+            Some(256),
         );
         assert_eq!(
             host.snapshot()
@@ -2765,7 +2772,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectOutputDevice {
@@ -2821,7 +2828,7 @@ mod tests {
             vec![48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
         (host, engine)
     }
@@ -2957,7 +2964,8 @@ mod tests {
 
         assert_eq!(opened_index, 0, "no channel was selected");
         assert_ne!(
-            host.current_buffer_size, 64,
+            host.current_buffer_size,
+            Some(64),
             "the 2-channel output config refuses 64 frames"
         );
         assert!(
@@ -3230,7 +3238,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectOutputDevice {
@@ -3295,7 +3303,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectOutputDevice {
@@ -3320,7 +3328,7 @@ mod tests {
             vec![44_100, 48_000, 96_000],
             48_000,
             vec![128, 256, 512],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectSampleRate { rate: 96_000 });
@@ -3328,7 +3336,7 @@ mod tests {
         let snapshot = host.snapshot();
         let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
         assert_eq!(panel.current_sample_rate, 96_000);
-        assert_eq!(panel.current_buffer_size, 512);
+        assert_eq!(panel.current_buffer_size, Some(512));
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.sample_rate_hz, Some(96_000));
         assert_eq!(loaded.buffer_size_frames, Some(512));
@@ -3379,7 +3387,7 @@ mod tests {
             vec![44_100, 48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         // Changing input device re-opens stream; spin-wait for async engine rebuild.
@@ -3473,7 +3481,7 @@ mod tests {
             vec![48_000],
             48_000,
             vec![512, 1024],
-            64,
+            Some(64),
         );
 
         host.dispatch(UiIntent::SelectInputDevice {
@@ -3494,16 +3502,16 @@ mod tests {
         let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
         assert_eq!(
             panel.current_buffer_size,
-            crate::audio_io::DEFAULT_BLOCK_FRAMES,
+            Some(crate::audio_io::DEFAULT_BLOCK_FRAMES),
             "the panel must report the block size the engine runs at when the negotiation \
              produced none"
         );
         assert!(
             panel
-                .supported_buffer_sizes
-                .contains(&panel.current_buffer_size),
+                .current_buffer_size
+                .is_some_and(|f| panel.supported_buffer_sizes.contains(&f)),
             "the closed combo must not display a size its own list does not offer: list {:?}, \
-             displayed {}",
+             displayed {:?}",
             panel.supported_buffer_sizes,
             panel.current_buffer_size
         );
@@ -3555,7 +3563,7 @@ mod tests {
             vec![48_000],
             48_000,
             vec![512, 1024],
-            0,
+            Some(0),
         );
 
         host.dispatch(UiIntent::SelectInputDevice {
@@ -3575,7 +3583,8 @@ mod tests {
         };
         let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
         assert_eq!(
-            panel.current_buffer_size, 1,
+            panel.current_buffer_size,
+            Some(1),
             "the panel must report the block size the engine runs at, which `block_frames` \
              floors at one frame"
         );
@@ -3639,7 +3648,7 @@ mod tests {
             vec![48_000],
             48_000,
             vec![256],
-            256,
+            Some(256),
         );
 
         host.dispatch(UiIntent::SelectBufferSize { buffer_size: 512 });

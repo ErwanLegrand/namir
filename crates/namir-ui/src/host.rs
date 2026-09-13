@@ -166,8 +166,9 @@ pub struct AudioDevicePanelSnapshot {
     pub current_sample_rate: u32,
     /// Supported buffer sizes in frames for the current configuration.
     pub supported_buffer_sizes: Vec<u32>,
-    /// Currently active buffer size in frames.
-    pub current_buffer_size: u32,
+    /// Currently active buffer size in frames, or `None` if no device is open
+    /// or the device reported no preference.
+    pub current_buffer_size: Option<u32>,
     /// Number of hardware input channels the current input device offers, so the view can list
     /// them (FR-IO-090). `0` when no input stream is open, which renders the selector disabled.
     pub supported_input_channels: u16,
