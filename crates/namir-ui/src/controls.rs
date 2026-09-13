@@ -101,12 +101,13 @@ pub fn param_control(
             .labelled_by(label.id);
 
         let cancelled_id = response.id.with("__namir_cancelled_escape");
+        let this_frame = ui.ctx().cumulative_pass_nr();
         let was_cancelled = ui
-            .data_mut(|d| d.remove_temp::<bool>(cancelled_id))
-            .unwrap_or(false);
+            .data_mut(|d| d.remove_temp::<u64>(cancelled_id))
+            .is_some_and(|frame| frame + 1 == this_frame);
 
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ui.data_mut(|d| d.insert_temp(cancelled_id, true));
+            ui.data_mut(|d| d.insert_temp(cancelled_id, this_frame));
         }
 
         if response.changed() && value as f32 != current && !was_cancelled {
