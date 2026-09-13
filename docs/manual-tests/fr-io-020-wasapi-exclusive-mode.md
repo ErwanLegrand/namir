@@ -300,11 +300,12 @@ Steps continue the executed run's numbering.
     it shows, and the request was not withdrawn), but the Exclusive **entry** is now disabled,
     with the reason stated beside the control — and **Shared remains selectable**, so the user
     is never trapped by a refusal.
-14. **The gate with no request — and, honestly, no notice.** Still on the webcam, choose
-    **Shared**. Expect no refusal notice: nothing was requested, so there is nothing to refuse —
-    `negotiate_share_mode` explains itself only when exclusive mode was asked for. The Exclusive
-    entry stays disabled with the reason: the probe ran anyway and answered no for this
-    configuration, which is the gate met before the fact rather than a failure after it.
+14. **The gate with no request — and, honestly, no new notice.** Still on the webcam, choose
+    **Shared**. Expect **no new** refusal notice — step 13's is still on the list, and its
+    lingering there is not a failure — because nothing was requested, so there is nothing to
+    refuse: `negotiate_share_mode` explains itself only when exclusive mode was asked for. The
+    Exclusive entry stays disabled with the reason: the probe ran anyway and answered no for
+    this configuration, which is the gate met before the fact rather than a failure after it.
 15. **Restart-free recovery, in both directions.** Reselect the AudioBox as input. The
     re-selection re-negotiates and re-runs the probe, so the Exclusive entry re-enables with no
     restart; choose **Exclusive** and confirm the indicator follows. Then choose **Shared** and

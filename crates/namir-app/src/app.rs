@@ -434,9 +434,12 @@ pub(crate) fn negotiate_share_mode(
     // the §2 reference machine's AudioBox 22VSL endpoints at ~21 ms per direction, ~43 ms
     // added to one shared-mode negotiation (`negotiate_audio` with the probe 217 ms, with the
     // probe stubbed out 174 ms). That is the recorded trade for the panel's capability; it
-    // runs where the enumeration already does, off the audio thread, and M11's requested-only
-    // gating can be restored from this comment's history if a slower endpoint breaks the ~50 ms
-    // budget the measurement was taken against.
+    // runs where the enumeration already does, off the audio thread. If a slower endpoint ever
+    // breaks the ~50 ms budget and M11's requested-only gating is restored, restore it together
+    // with a re-probe on device selection: a fallback that skips the probe when nothing was
+    // requested also skips it when a device is reselected after a refusal, leaving
+    // `exclusive_supported == false` permanently — re-creating exactly the trapped control the
+    // `EXCLUSIVE_MODE_UNAVAILABLE` remedy and FR-IO-020's manual step 15 promise to escape.
     let ask = |device: &DeviceInfo, params: StreamParams| {
         backend.supports_exclusive(
             host,
