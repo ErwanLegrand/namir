@@ -73,7 +73,7 @@ up after the fact.
 ## Common commands
 
 ```bash
-# Full local gate: **`README.md`'s "Testing" section is the canonical enumeration** — thirteen
+# Full local gate: **`README.md`'s "Testing" section is the canonical enumeration** — fourteen
 # `xtask` subcommands plus fmt/clippy/test/`cargo deny check`. Run every command in that block; do
 # not maintain a second list here. What keeps it honest is `xtask ci-commands`
 # (`xtask/src/ci_commands.rs`), which checks in both directions that every `cargo` line in *any*
@@ -224,8 +224,9 @@ bench *could* carry `#![allow(unsafe_code)]` — it may not, and nothing mechani
 `nam-parity` (added M10), `identity` (added M12), `bundle` (added M13), `rt-logging` (added
 M9b — FR-ERR-030's static half; it reads for the *logger's* name in the modules that carry
 audio-thread code, not for `unsafe`), `comment-width` (added from issue #176 — the 100-column
-convention for comment prose), and `network-free`, `error-catalogue`, `feature-guard`,
-`assets`, `schema` and `ci-commands` — sixteen in all, the dispatch at
+convention for comment prose), `git-sources` (added M15 — R-10's `?rev=` lockfile gate), and
+`network-free`, `error-catalogue`, `feature-guard`,
+`assets`, `schema` and `ci-commands` — seventeen in all, the dispatch at
 the `match` in `main` (`xtask/src/main.rs`) — none of which reads for `unsafe`; the only
 mention of the word
 under `xtask/src/` is a prose aside in `network_free.rs`. When a harness looks like it needs

@@ -780,7 +780,13 @@ impl AppHost {
                         self.current_input_device = Some(input_name.clone());
                         self.current_output_device = Some(output_name.clone());
                         self.current_sample_rate = pending.sample_rate_hz;
-                        self.current_buffer_size = pending.buffer_frames.map(|f| f.max(1));
+                        // A stream is open, so the panel reports the block size the engine
+                        // actually runs at: `block_frames` owns both the floor and the
+                        // None -> DEFAULT_BLOCK_FRAMES resolution (issue #213). `None` in
+                        // this field means "no device open" (#223), which the reopen path
+                        // cannot produce.
+                        self.current_buffer_size =
+                            Some(crate::audio_io::block_frames(pending.buffer_frames) as u32);
                         self.input_channel_count = pending.input_channel_count;
                         self.current_input_channel = input_channel;
                         if let Some(requested) = self.settings.channel_mapping.input_channel
@@ -911,7 +917,7 @@ impl AppHost {
         self.supported_sample_rates = supported_sample_rates;
         self.current_sample_rate = current_sample_rate;
         self.supported_buffer_sizes = supported_buffer_sizes;
-        self.current_buffer_size = current_buffer_size.map(|f| f.max(1));
+        self.current_buffer_size = current_buffer_size;
     }
 
     /// Settles FR-IO-090's input channel for the stream start-up is about to open, records the
@@ -3495,18 +3501,15 @@ mod tests {
         };
         let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
         assert_eq!(
-            panel.current_buffer_size, None,
-            "the panel must not invent a block size when the negotiation produced none — None \
-             renders as 'Device default' (#223)"
+            panel.current_buffer_size,
+            Some(crate::audio_io::DEFAULT_BLOCK_FRAMES),
+            "the panel must report the block size the engine runs at when the negotiation \
+             produced none"
         );
         assert!(
-            panel.current_buffer_size.is_none()
-                || panel.supported_buffer_sizes.contains(
-                    panel
-                        .current_buffer_size
-                        .as_ref()
-                        .expect("Some checked above")
-                ),
+            panel
+                .current_buffer_size
+                .is_some_and(|f| panel.supported_buffer_sizes.contains(&f)),
             "the closed combo must not display a size its own list does not offer: list {:?}, \
              displayed {:?}",
             panel.supported_buffer_sizes,

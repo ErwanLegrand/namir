@@ -48,7 +48,7 @@ pub fn scan_git_sources(root: &Path) -> Vec<String> {
         {
             violations.push(format!(
                 "{name}: git source `{source}` has no `?rev=` pin — every git dependency \
-                 must be pinned by commit hash (R-10), never by branch"
+                 must be pinned by commit hash (R-10), never by branch or tag"
             ));
         }
     };
