@@ -307,7 +307,8 @@ impl UiHost for ClapUiHost {
             | UiIntent::SelectOutputDevice { .. }
             | UiIntent::SelectSampleRate { .. }
             | UiIntent::SelectBufferSize { .. }
-            | UiIntent::SelectInputChannel { .. } => return,
+            | UiIntent::SelectInputChannel { .. }
+            | UiIntent::SelectShareMode { .. } => return,
         }
         self.inner.mark_dirty();
     }

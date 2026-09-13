@@ -942,6 +942,8 @@ fn panel(supported_input_channels: u16) -> UiSnapshot {
             current_buffer_size: Some(256),
             supported_input_channels,
             current_input_channel: 0,
+            exclusive_supported: true,
+            exclusive_requested: false,
         }),
         ..Default::default()
     }
@@ -973,5 +975,75 @@ fn input_channel_combo_dispatches_the_zero_based_index_of_the_chosen_channel() {
         driver.dispatched_intents(),
         vec![UiIntent::SelectInputChannel { channel: 2 }],
         "choosing the third listed channel must ask for index 2"
+    );
+}
+
+/// FR-IO-020: the share-mode combo shows what was *requested*, offers the two WASAPI modes, and
+/// dispatches the requested direction -- either way, not just exclusive.
+#[test]
+fn share_mode_combo_dispatches_the_requested_mode() {
+    let mut driver = HeadlessUiDriver::new(panel(2));
+    let (selected, combo) = driver.locate_value_for_control("Share Mode:");
+    assert_eq!(selected, "Shared", "the default request is shared mode");
+    driver.click_at(combo.center());
+    let entry = driver.locate("Exclusive");
+    driver.click_at(entry.center());
+    assert_eq!(
+        driver.dispatched_intents(),
+        vec![UiIntent::SelectShareMode { exclusive: true }],
+        "choosing Exclusive must ask for exclusive mode"
+    );
+
+    // And back: a host already running exclusive gets a Shared entry to choose.
+    let mut snapshot = panel(2);
+    snapshot
+        .audio_panel
+        .as_mut()
+        .expect("panel")
+        .exclusive_requested = true;
+    let mut driver = HeadlessUiDriver::new(snapshot);
+    let (selected, combo) = driver.locate_value_for_control("Share Mode:");
+    assert_eq!(selected, "Exclusive");
+    driver.click_at(combo.center());
+    let entry = driver.locate("Shared");
+    driver.click_at(entry.center());
+    assert_eq!(
+        driver.dispatched_intents(),
+        vec![UiIntent::SelectShareMode { exclusive: false }],
+        "choosing Shared must ask for shared mode"
+    );
+}
+
+/// FR-IO-020: where the devices cannot provide exclusive mode, the control is disabled -- a
+/// click on it dispatches nothing -- and the reason is stated beside it, not left for the user
+/// to guess at a greyed-out widget.
+#[test]
+fn share_mode_control_is_disabled_with_a_stated_reason_where_exclusive_is_unsupported() {
+    let mut snapshot = panel(2);
+    snapshot
+        .audio_panel
+        .as_mut()
+        .expect("panel")
+        .exclusive_supported = false;
+    let mut driver = HeadlessUiDriver::new(snapshot);
+
+    let (_, combo) = driver.locate_value_for_control("Share Mode:");
+    driver.click_at(combo.center());
+    assert!(
+        driver.dispatched_intents().is_empty(),
+        "a disabled control must dispatch nothing"
+    );
+
+    driver.frame(Vec::new());
+    let output = driver.frame(Vec::new());
+    assert!(
+        HeadlessUiDriver::painted_texts(&output)
+            .iter()
+            .any(|(text, _)| text.starts_with("Exclusive mode is not available")),
+        "the reason must be stated on screen: {:?}",
+        HeadlessUiDriver::painted_texts(&output)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>()
     );
 }

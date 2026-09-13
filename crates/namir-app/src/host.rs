@@ -459,6 +459,11 @@ pub struct AppHost {
     /// the moment that stream opened, never recomputed per frame, so the selector cannot show one
     /// channel while the capture reads another.
     current_input_channel: u16,
+    /// FR-IO-020: whether the current devices can provide exclusive mode at the configuration
+    /// the last negotiation settled — `negotiate_share_mode`'s answer, recorded at start-up and
+    /// on every reopen, so the panel's share-mode control reads a settled capability rather
+    /// than ever probing a device itself. `false` until the first negotiation runs.
+    exclusive_supported: bool,
     settings: AppSettings,
     /// Bumped on every `initiate_audio_reopen` and carried through the command/event round
     /// trip, so an `AppEvent::AudioStreamReady` overtaken by a newer reopen is ignored.
@@ -516,6 +521,7 @@ impl AppHost {
             current_buffer_size: None,
             input_channel_count: 0,
             current_input_channel: 0,
+            exclusive_supported: false,
             settings: AppSettings::default(),
             reopen_generation: 0,
             audio_reopen: None,
@@ -629,6 +635,9 @@ impl AppHost {
             share_mode,
             ..
         } = negotiated;
+        // FR-IO-020: the same probe that settled this session's mode also answered whether the
+        // devices could do exclusive at all, and the panel's control reads that answer.
+        self.exclusive_supported = share_mode.supported;
 
         if sample_rate.is_none() {
             self.audio_mode = None;
@@ -638,7 +647,6 @@ impl AppHost {
             );
             return;
         }
-
         // FR-IO-020: the same explanation `app::run` gives at start-up. Without it a selector
         // change on a device that refuses exclusive mode flips the mode indicator to shared and
         // says nothing about why -- and per issue #189's triage, every buffer-size or device
@@ -933,6 +941,14 @@ impl AppHost {
         self.current_input_channel =
             clamp_input_channel(self.settings.channel_mapping.input_channel, stream_channels);
         self.current_input_channel
+    }
+
+    /// Records `negotiate_share_mode`'s capability answer for the devices start-up just
+    /// negotiated (issue #193). The reopen path updates the same field from its own
+    /// negotiation in `initiate_audio_reopen`; nothing else writes it, so the panel's control
+    /// cannot disagree with the negotiation that is actually running.
+    pub(crate) fn set_exclusive_supported(&mut self, supported: bool) {
+        self.exclusive_supported = supported;
     }
 
     /// Persists current `AppSettings` to `<config_dir>/audio-settings.json`.
@@ -1370,6 +1386,8 @@ impl UiHost for AppHost {
                 current_buffer_size: self.current_buffer_size,
                 supported_input_channels: self.input_channel_count,
                 current_input_channel: self.current_input_channel,
+                exclusive_supported: self.exclusive_supported,
+                exclusive_requested: self.settings.exclusive_mode,
             }),
         }
     }
@@ -1496,6 +1514,11 @@ impl UiHost for AppHost {
             }
             UiIntent::SelectInputChannel { channel } => {
                 self.settings.channel_mapping.input_channel = Some(channel);
+                self.persist_settings();
+                self.initiate_audio_reopen();
+            }
+            UiIntent::SelectShareMode { exclusive } => {
+                self.settings.exclusive_mode = exclusive;
                 self.persist_settings();
                 self.initiate_audio_reopen();
             }
@@ -3340,6 +3363,189 @@ mod tests {
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert_eq!(loaded.sample_rate_hz, Some(96_000));
         assert_eq!(loaded.buffer_size_frames, Some(512));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A two-range fake in the WASAPI shape (issue #190): the exclusive config set is its own,
+    /// not the shared one, so a share-mode change really does re-enumerate something different.
+    fn exclusive_range(channels: u16) -> Vec<crate::audio_io::SupportedConfigRange> {
+        vec![crate::audio_io::SupportedConfigRange {
+            channels,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }]
+    }
+
+    /// **Issue #193.** Toggling exclusive mode on persists the request, enumerates in the
+    /// requested mode, opens the stream exclusively, and shows the granted mode -- no restart,
+    /// because the toggle rides the same reopen machinery every other selector uses.
+    #[test]
+    fn select_share_mode_persists_reopens_exclusive_and_reports_the_granted_mode() {
+        let dir = temp_dir("share_mode_toggle_on");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2)))
+                .granting_exclusive_to("Mic")
+                .granting_exclusive_to("Speakers"),
+        );
+        let (mut host, _engine) =
+            host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
+
+        host.dispatch(UiIntent::SelectShareMode { exclusive: true });
+        let (panel, _) = await_reopened_stream(&mut host);
+
+        // Enumerated in the requested mode, and the stream was asked to open in it.
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, crate::audio_io::ShareMode::Exclusive),
+                (Direction::Output, crate::audio_io::ShareMode::Exclusive),
+            ],
+            "the toggle re-enumerates in exclusive mode"
+        );
+        assert_eq!(
+            backend.share_mode_asked_for(Direction::Output),
+            Some(crate::audio_io::ShareMode::Exclusive)
+        );
+
+        // The indicator shows what was granted; the panel shows the request and the capability
+        // the probe settled alongside it.
+        let snapshot = host.snapshot();
+        assert_eq!(
+            snapshot.audio_mode.map(|m| m.share_mode),
+            Some(AudioShareMode::Exclusive)
+        );
+        assert!(panel.exclusive_requested);
+        assert!(panel.exclusive_supported);
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert!(loaded.exclusive_mode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Issue #193.** A device that answers `Unsupported` to the probe: the request degrades to
+    /// shared (the two-pass re-enumeration issue #190 built), the refusal is posted, and the
+    /// panel shows shared as granted while the control disables itself -- the request itself
+    /// stays requested, exactly as a hand-edited settings file would.
+    #[test]
+    fn a_share_mode_request_the_device_cannot_serve_degrades_to_shared_and_posts_the_notice() {
+        let dir = temp_dir("share_mode_refused");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        // Exclusive ranges on offer, but no `granting_exclusive_to`: the probe refuses both
+        // devices even though the exclusive enumeration succeeded.
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2))),
+        );
+        let (mut host, _engine) =
+            host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
+
+        host.dispatch(UiIntent::SelectShareMode { exclusive: true });
+        let (panel, _) = await_reopened_stream(&mut host);
+
+        // Two passes: the exclusive request, then the shared re-enumeration the refusal forces
+        // (the two modes report different ranges, so the exclusive ones do not apply).
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, crate::audio_io::ShareMode::Exclusive),
+                (Direction::Output, crate::audio_io::ShareMode::Exclusive),
+                (Direction::Input, crate::audio_io::ShareMode::Shared),
+                (Direction::Output, crate::audio_io::ShareMode::Shared),
+            ]
+        );
+        assert_eq!(
+            backend.share_mode_asked_for(Direction::Output),
+            Some(crate::audio_io::ShareMode::Shared),
+            "the session must actually run shared, not merely be renegotiated shared"
+        );
+
+        let snapshot = host.snapshot();
+        assert_eq!(
+            snapshot.audio_mode.map(|m| m.share_mode),
+            Some(AudioShareMode::Shared),
+            "the panel shows shared as granted"
+        );
+        assert!(
+            snapshot
+                .notices
+                .iter()
+                .any(|n| n.code.id == crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE.id),
+            "the refusal must be posted: {:?}",
+            snapshot.notices
+        );
+        assert!(!panel.exclusive_supported, "the control disables itself");
+        assert!(
+            panel.exclusive_requested,
+            "a refused request stays requested"
+        );
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert!(loaded.exclusive_mode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Issue #193.** Toggling back off: re-enumerates in shared mode and reopens shared, and
+    /// the capability answer stays with the devices rather than with the request -- a device
+    /// that can do exclusive still can when the session is not asking for it.
+    #[test]
+    fn selecting_shared_mode_after_exclusive_re_enumerates_in_shared_mode() {
+        let dir = temp_dir("share_mode_toggle_off");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2)))
+                .granting_exclusive_to("Mic")
+                .granting_exclusive_to("Speakers"),
+        );
+        let settings = AppSettings {
+            exclusive_mode: true,
+            ..AppSettings::default()
+        };
+        let (mut host, _engine) = host_with_reopen(&dir, Arc::clone(&backend), settings);
+
+        host.dispatch(UiIntent::SelectShareMode { exclusive: false });
+        let (panel, _) = await_reopened_stream(&mut host);
+
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, crate::audio_io::ShareMode::Shared),
+                (Direction::Output, crate::audio_io::ShareMode::Shared),
+            ],
+            "toggling off re-enumerates in shared mode"
+        );
+        assert_eq!(
+            backend.share_mode_asked_for(Direction::Output),
+            Some(crate::audio_io::ShareMode::Shared)
+        );
+        let snapshot = host.snapshot();
+        assert_eq!(
+            snapshot.audio_mode.map(|m| m.share_mode),
+            Some(AudioShareMode::Shared)
+        );
+        assert!(!panel.exclusive_requested);
+        assert!(panel.exclusive_supported);
+
+        let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
+        assert!(!loaded.exclusive_mode);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
