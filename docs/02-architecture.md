@@ -4134,7 +4134,7 @@ thirteen are `Cargo.toml:1` and `:37`; `deny.toml:15` and `:82`; the three fuzz 
 `crates/namir-ir/fuzz/fuzz_targets/probe_wav.rs:13`,
 `crates/namir-nam/fuzz/fuzz_targets/load_nam.rs:9` and
 `crates/namir-state/fuzz/fuzz_targets/read_state.rs:16`; `crates/namir-fixtures/src/lib.rs:16`;
-`crates/namir-ui/src/app.rs:134`; and `xtask/src/attribution.rs:14`, `layering.rs:40`,
+`crates/namir-ui/src/app.rs:488`; and `xtask/src/attribution.rs:14`, `layering.rs:40`,
 `params_lock.rs:8` and `traceability.rs:45`. The eighteen ids are FR-CFG-010, FR-CFG-030,
 FR-ERR-060, FR-ERR-070, FR-PARAM-020, FR-UI-010, NFR-BUILD-010, NFR-DOC-020, NFR-LIC-010,
 NFR-LIC-020, NFR-LIC-030, NFR-LIC-040, NFR-LIC-050, NFR-PORT-020, NFR-QUAL-010, NFR-QUAL-040,

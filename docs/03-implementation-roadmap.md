@@ -1992,7 +1992,7 @@ form, so the ledger and the source agree.
   and `params.lock` records no bounds at all, its columns being key, id, kind and live/tombstoned
   state — so an edit to either passes every gate in this workspace. Named evidence for the cell is
   the `// trace-partial:` pair at `crates/namir-engine/src/stages/out.rs:531-540`. FR-OUT-020 — the clip latch is asserted
-  (`crates/namir-engine/src/stages/out.rs:397-431`); of the four characteristics imported from
+  (`crates/namir-engine/src/stages/out.rs:631-661`); of the four characteristics imported from
   FR-IN-020/-030, the published `peak_db`, `average_db` and `peak_hold_db` telemetry is read by no
   test and the indicator has no user reset path.
 - **5.8 PARAM — 0 / 5 / 0.** *Partial:* FR-PARAM-010 and FR-PARAM-050 — both tagged tests assert
@@ -2105,11 +2105,11 @@ form, so the ledger and the source agree.
   FR-CLAP-130 — neither half of "S plus I" reaches this crate: `AllocDisabler` is installed in five
   crates, none of which owns a real audio callback, and no static check for blocking exists.
 - **5.13 UI — 1 / 6 / 0.** *Done:* FR-UI-010 — one widget type
-  (`crates/namir-ui/src/app.rs:134`) rendered by both shells through one `render` (`:33`), with the
+  (`crates/namir-ui/src/app.rs:488`) rendered by both shells through one `render` (`:51`), with the
   manifest fact that neither shell depends on `egui` directly, corroborated by an executed run
   (`docs/manual-tests/fr-ui-010-standalone-window-renders.md` steps 1-2 PASS, 90 real frames).
   *Partial:* FR-UI-020 — the single screen exists and renders
-  (`crates/namir-ui/src/app.rs:33-94`) but there is **no** `docs/manual-tests/fr-ui-020-*.md`, and
+  (`crates/namir-ui/src/app.rs:51-133`) but there is **no** `docs/manual-tests/fr-ui-020-*.md`, and
   the one executed document records its visual-confirmation step as NOT EXECUTED. FR-UI-030 — **NOT
   EXECUTED** (`docs/manual-tests/fr-ui-030-accessibility-script.md`), and the document names a second
   gap: `egui-baseview` 0.6.0 wires no accesskit adapter, so accessible names exist at the data level
@@ -4007,7 +4007,7 @@ false, and the two verdicts stand without it.** Neither FR-STATE-050 nor FR-OUT-
 `// trace:` tags — FR-OUT-010's at `crates/namir-engine/src/stages/out.rs:341` and `:387`,
 FR-STATE-050's at `crates/namir-worker/tests/recall_continuity.rs:277`. The only `trace-partial:` in
 `out.rs` is FR-OUT-**020**'s, a different requirement (`:531`), and the cited
-`crates/namir-worker/src/recall.rs:294-300` is a doc comment recording that FR-STATE-050's tag was
+`crates/namir-worker/src/recall.rs:294-299` is a doc comment recording that FR-STATE-050's tag was
 *removed* here at M14, not one asserting a partial. The claim was false when written, not aged out.
 What survives is the adjudication itself: both cells rest on the table's own "Why the correction was
 accepted" column — FR-STATE-050's artifact processes no audio, FR-OUT-010's +12 dB maximum and 0 dB
@@ -6675,26 +6675,26 @@ issue #26 is closed.
 This addendum supersedes in place the earlier M14 planning and scoping passages that described item
 16 as unanswered, overdue, or gating M14 device work:
 
-1. **§21 "Why this milestone exists"** (`:5887`): "§15 item 16 — whether 1.0 ships an audio-device
+1. **§21 "Why this milestone exists"** (`:5926`): "§15 item 16 — whether 1.0 ships an audio-device
    panel — was due before M9b's start, has not been taken, and is upstream of five Musts'
    user-facing clauses."
-2. **§21 "Phase 0 — Decisions, before any of it is built"** (`:5908`): "§15 item 16 — the
+2. **§21 "Phase 0 — Decisions, before any of it is built"** (`:5947`): "§15 item 16 — the
    audio-device panel. Overdue. Answer 1 (build it) makes Phase 1 materially larger... Answer 3
    (silence) is not available at a 1.0 gate. This is the single decision with the largest effect on
    this milestone's size, and it must be first."
-3. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5948`): "The nine Musts whose mechanism does not
+3. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5987`): "The nine Musts whose mechanism does not
    exist. Scope depends on Phase 0's item 16 answer."
-4. **§21 "Phase 1 — The unbuilt user surfaces"** (`:5968`): "FR-IO-060, FR-IO-070 — xrun count and
+4. **§21 "Phase 1 — The unbuilt user surfaces"** (`:6006`): "FR-IO-060, FR-IO-070 — xrun count and
    device re-selection. The xrun counter surfaces only through `eprintln!`. Gated on item 16."
-5. **§21 "What was deliberately left open"** (`:6260`): "§15 item 16 — the audio-device panel. §21
+5. **§21 "What was deliberately left open"** (`:6302`): "§15 item 16 — the audio-device panel. §21
    called this 'the single decision with the largest effect on this milestone's size, and it must be
    first', and it is nonetheless not taken... Consequence for this milestone, stated as scope: M14
    does no device work of any kind, and FR-IO-060 and FR-IO-070 stay Partial through it."
-6. **§21 "What the automated half of M14 will and will not attempt"** (`:6292`): "All of §21 Phase 1
+6. **§21 "What the automated half of M14 will and will not attempt"** (`:6330`): "All of §21 Phase 1
    is deferred... several of them are gated on item 16, which is unanswered."
-7. **§21 "What the automated half of M14 will and will not attempt"** (`:6296`): "No device work.
+7. **§21 "What the automated half of M14 will and will not attempt"** (`:6338`): "No device work.
    Per item 16, above."
-8. **§21 "M14 status — Category B"** (`:6397`): "§15 item 16 / issue #26, the audio-device panel:
+8. **§21 "M14 status — Category B"** (`:6439`): "§15 item 16 / issue #26, the audio-device panel:
    FR-IO-060, FR-IO-070. Overdue before M9b started, and M14 scoped itself around it rather than
    deciding it to suit a measurement."
 
