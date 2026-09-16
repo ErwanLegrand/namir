@@ -712,6 +712,12 @@ pub(crate) struct FakeBackend {
     /// Directions whose `build_*_stream` fails outright rather than returning a stream — the
     /// open-failure half of FR-IO-070's fault injection. See [`FakeBackend::failing_to_open`].
     open_failures: Vec<Direction>,
+    /// Directions whose `input_devices`/`output_devices` answer `Err` — the enumeration
+    /// counterpart of [`FakeBackend::open_failures`], for tests that need `negotiate_audio`'s
+    /// "no device found" path (`NO_AUDIO_DEVICE`). Interior-mutable so a test can fail a
+    /// direction's enumeration *after* an earlier successful pass, which is the only way to
+    /// reach the reappearance-and-disappearance shape the no-device reopen arm exists for.
+    enumeration_failures: std::sync::Mutex<Vec<Direction>>,
     /// Which device names answer [`ExclusiveModeOutcome::Engaged`] to
     /// `supports_exclusive`. Every other name answers `Unsupported` — what the real
     /// [`crate::audio_io::CpalBackend`] answers for any device with no exclusive-capable WASAPI
@@ -767,6 +773,7 @@ impl FakeBackend {
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream,
             open_failures: Vec::new(),
+            enumeration_failures: std::sync::Mutex::new(Vec::new()),
             exclusive_devices: Vec::new(),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
             input_devices: Vec::new(),
@@ -837,6 +844,16 @@ impl FakeBackend {
     /// user can be shown, carried on [`AudioIoError::OpenFailed`].
     pub(crate) fn failing_to_open(mut self, direction: Direction) -> Self {
         self.open_failures.push(direction);
+        self
+    }
+
+    /// Makes `direction`'s device enumeration answer `Err` — FR-IO-070's "no device found or
+    /// openable", the shape that sends `negotiate_audio` down its `None` path. Interior-mutable
+    /// (`&self`, not `mut self`) so a test can arm it after an already-successful pass; the
+    /// failure is reported as [`AudioIoError::OpenFailed`], the same family a real enumeration
+    /// error is carried in.
+    pub(crate) fn failing_enumeration(&self, direction: Direction) -> &Self {
+        self.enumeration_failures.lock().unwrap().push(direction);
         self
     }
 
@@ -999,9 +1016,29 @@ impl AudioBackend for FakeBackend {
         }
     }
     fn input_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
+        if self
+            .enumeration_failures
+            .lock()
+            .unwrap()
+            .contains(&Direction::Input)
+        {
+            return Err(AudioIoError::OpenFailed(
+                "the fake input device enumeration was told to fail on demand".to_string(),
+            ));
+        }
         Ok(self.input_devices.clone())
     }
     fn output_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
+        if self
+            .enumeration_failures
+            .lock()
+            .unwrap()
+            .contains(&Direction::Output)
+        {
+            return Err(AudioIoError::OpenFailed(
+                "the fake output device enumeration was told to fail on demand".to_string(),
+            ));
+        }
         Ok(self.output_devices.clone())
     }
     fn input_configs(

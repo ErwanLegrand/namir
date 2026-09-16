@@ -175,6 +175,18 @@ pub struct AudioDevicePanelSnapshot {
     /// Zero-based index of the hardware input channel currently feeding the engine (FR-IO-090),
     /// already clamped by the host to `supported_input_channels`.
     pub current_input_channel: u16,
+    /// Whether the current devices can provide WASAPI exclusive mode at the configuration the
+    /// last negotiation settled (FR-IO-020). Settled by the host during negotiation -- never
+    /// probed per frame -- and `false` whenever no negotiation has run *or the last one found
+    /// no usable device*, which disables the panel's share-mode control with a stated reason
+    /// rather than letting it fail after the fact.
+    pub exclusive_supported: bool,
+    /// Whether exclusive mode is currently *requested* -- the persisted
+    /// `AppSettings::exclusive_mode`, and the share-mode control's position. What was actually
+    /// **granted** is [`UiSnapshot::audio_mode`], never this: a request that was refused stays
+    /// requested here, with the refusal arriving as a [`UiNotice`] and the indicator showing
+    /// shared.
+    pub exclusive_requested: bool,
 }
 
 /// Everything [`crate::render`] needs to draw one frame of FR-UI-020's screen -- a single,
@@ -347,6 +359,16 @@ pub enum UiIntent {
     SelectSampleRate {
         /// The selected sample rate in Hz.
         rate: u32,
+    },
+    /// FR-IO-020: request WASAPI shared or exclusive mode for the whole audio session. The host
+    /// persists the request, re-enumerates in the requested mode (the two modes report different
+    /// rates and buffer sizes, issue #190) and reopens the stream; a device that cannot provide
+    /// exclusive mode degrades to shared and says so through a [`UiNotice`]. Whether the control
+    /// that emits this is enabled at all is the snapshot's `exclusive_supported`, so a device
+    /// that cannot do it is refused before the fact rather than after.
+    SelectShareMode {
+        /// `true` requests exclusive mode, `false` returns to shared.
+        exclusive: bool,
     },
     /// Select an audio buffer size in frames.
     SelectBufferSize {

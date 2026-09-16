@@ -30,13 +30,30 @@ pub const DEVICE_OPEN_FAILED: ErrorCode = ErrorCode::new(
 /// rather than leave the app with no audio"); reporting it at `Error` would put a working session
 /// next to [`DEVICE_OPEN_FAILED`], which means no audio at all. Reported once, at start-up, rather
 /// than silently — roadmap §18 asks for "the user told which mode they actually got", and the
-/// notice is the half of that a mode indicator alone cannot give (it says *why*).
+/// notice is the half of that a mode indicator alone cannot give (it says *why*). **The remedy
+/// no longer names `audio-settings.json`** (issue #193): the panel's Share Mode control offers
+/// Shared in every state, so "stop asking for it" is always available, and Exclusive becomes
+/// selectable again only when a device *or configuration* change makes the probe answer yes.
+/// The probe answers for the configuration the session settled, so reselecting the same device
+/// at the same settings refuses again (the limitation `CpalBackend::supports_exclusive`
+/// records); the remedy's promise of recovery was narrowed after PR #226's review from "a
+/// device selection re-runs the probe" — true, but the same selection re-answers no — to the
+/// conditions above. The remedy names only actions that actually change that answer: picking
+/// Shared, or changing the selected devices or the settled configuration (sample rate or
+/// channel count — both are probe inputs, so both re-run it with different params). Closing
+/// other applications is *not* one of them — this notice posts on a format-capability walk
+/// (`IsFormatSupported`), which nothing about another process's hold on the endpoint changes.
+/// No restart is required in either direction; the toggle rides the same reopen machinery this
+/// notice's caller already runs.
 pub const EXCLUSIVE_MODE_UNAVAILABLE: ErrorCode = ErrorCode::new(
     "app.audio_io.exclusive_mode_unavailable",
     Severity::Warning,
     "Exclusive mode is not available, so the device was opened in shared mode ({detail}).",
-    "Close whatever else is using the device and restart Namir to try again, or set \
-     \"exclusive_mode\": false in audio-settings.json to stop asking for it.",
+    "Choose Shared under Share Mode in the Audio Settings panel to run shared and stop asking \
+     for exclusive mode — it is selectable in every state, with no restart. Exclusive mode \
+     becomes available again only when a change of device or of the settled configuration \
+     (sample rate or channel count) makes the probe answer yes; the same selection will refuse \
+     again.",
 );
 
 /// FR-IO-070: a device that was open and in use disappeared (unplugged, disabled, reclaimed by
