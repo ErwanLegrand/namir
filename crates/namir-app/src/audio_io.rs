@@ -1285,14 +1285,20 @@ mod cpal_impl {
         ///
         /// # What it probes against
         ///
-        /// `params` is the configuration [`crate::device_state`] already negotiated against the
-        /// device's **shared-mode** config set (FR-IO-040 runs before FR-IO-020's share mode is
-        /// settled, since the rate and buffer size are what the user picks and persists). A device
-        /// whose exclusive-mode format list does not happen to include that settled rate therefore
-        /// answers `Unsupported` and the session runs shared, even though some *other* rate would
-        /// have opened exclusively. Re-negotiating rate and buffer per share mode is a larger
-        /// change to the settings path than M11 takes on; recorded here so it is not mistaken for
-        /// a bug in the probe.
+        /// `params` is the configuration [`crate::device_state`] already settled for this
+        /// session — from the **exclusive-enumerated** ranges when exclusive mode was
+        /// requested (issue #190), and from the **shared-enumerated** ones when no exclusive
+        /// request was made (FR-IO-040 settles before FR-IO-020's share mode, since the rate
+        /// and buffer size are what the user picks and persists). A device whose exclusive-mode
+        /// format list does not happen to include that settled rate or channel count therefore
+        /// answers `Unsupported` and the session runs shared, even though some *other* rate or
+        /// channel count would have opened exclusively. Re-negotiating rate and buffer per
+        /// share mode is a larger change to the settings path than M11 takes on; recorded here
+        /// so it is not mistaken for a bug in the probe. The audio settings panel's share-mode
+        /// control (issue #193) reads this same answer as its capability gate: its reason text
+        /// ("at the current configuration") and the `EXCLUSIVE_MODE_UNAVAILABLE` remedy carry
+        /// the same qualifier, pointing the user at the device, sample-rate or channel-count
+        /// change that re-runs the probe with different params.
         fn supports_exclusive(
             &self,
             host: &HostInfo,

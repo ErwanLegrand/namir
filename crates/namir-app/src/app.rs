@@ -398,8 +398,12 @@ pub(crate) struct ShareModeDecision {
     /// capability the audio settings panel's share-mode control reads (issue #193). Implied by
     /// [`Self::mode`] being [`ShareMode::Exclusive`]; probed explicitly whenever the session
     /// runs shared, because that is the state whose control needs to know whether switching is
-    /// possible. Carried out of the negotiation so no caller ever has to probe a device from a
-    /// render or snapshot path.
+    /// possible. When the session runs shared **without an exclusive request**, "settled" is the
+    /// shared-settled configuration: a device whose exclusive-mode formats do not cover that
+    /// exact rate and channel count answers `false` even though a neighbouring configuration
+    /// would open exclusively (the limitation `CpalBackend::supports_exclusive` records). A
+    /// refused request probes the exclusive-settled configuration instead. Carried out of the
+    /// negotiation so no caller ever has to probe a device from a render or snapshot path.
     pub(crate) supported: bool,
 }
 
@@ -426,9 +430,19 @@ pub(crate) fn negotiate_share_mode(
     requested: bool,
 ) -> ShareModeDecision {
     // Asked in every session now, requested or not: the audio settings panel's share-mode
-    // control (issue #193) has to know whether exclusive mode is even possible, so it can
-    // refuse the Exclusive choice before the fact instead of failing after it — and by the
-    // time the panel is drawn, the negotiation that can ask the question has long finished.
+    // control (issue #193) has to know whether exclusive mode is possible *at the configuration
+    // this session settles*, so it can refuse the Exclusive choice before the fact instead of
+    // failing after it — and by the time the panel is drawn, the negotiation that can ask the
+    // question has long finished. The qualifier is load-bearing (the narrowing PR #226's review
+    // asked for): exclusive never being possible *at all* is not what `supported` asserts. When
+    // the session runs shared **and nothing was requested**, the probe is asked against the
+    // **shared-settled** rate and channel count (see `CpalBackend::supports_exclusive`'s note);
+    // a refused exclusive request probes the exclusive-settled ones instead, because the shared
+    // re-enumeration happens after this decision. So a device whose exclusive-mode format list
+    // does not cover the settled configuration answers `Unsupported` even though a neighbouring
+    // rate or channel count would open exclusively; the panel's reason text and the
+    // `EXCLUSIVE_MODE_UNAVAILABLE` remedy both say that a change of device or configuration is
+    // what re-runs the probe with different params.
     // This is real device I/O, not one cheap query: on WASAPI the fork answers the probe by
     // walking every rate × acceptable format with `IsFormatSupported`, measured 2026-09-13 on
     // the §2 reference machine's AudioBox 22VSL endpoints at ~21 ms per direction, ~43 ms
@@ -438,8 +452,10 @@ pub(crate) fn negotiate_share_mode(
     // breaks the ~50 ms budget and M11's requested-only gating is restored, restore it together
     // with a re-probe on device selection: a fallback that skips the probe when nothing was
     // requested also skips it when a device is reselected after a refusal, leaving
-    // `exclusive_supported == false` permanently — re-creating exactly the trapped control the
-    // `EXCLUSIVE_MODE_UNAVAILABLE` remedy and FR-IO-020's manual step 15 promise to escape.
+    // `exclusive_supported == false` permanently even when a device or configuration change
+    // would have made the probe answer yes — re-creating exactly the trap the narrowed
+    // `EXCLUSIVE_MODE_UNAVAILABLE` remedy (a device or configuration change re-runs the probe)
+    // and FR-IO-020's manual step 15 (re-selecting the AudioBox re-probes to yes) point out of.
     let ask = |device: &DeviceInfo, params: StreamParams| {
         backend.supports_exclusive(
             host,

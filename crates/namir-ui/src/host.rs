@@ -177,9 +177,9 @@ pub struct AudioDevicePanelSnapshot {
     pub current_input_channel: u16,
     /// Whether the current devices can provide WASAPI exclusive mode at the configuration the
     /// last negotiation settled (FR-IO-020). Settled by the host during negotiation -- never
-    /// probed per frame -- and `false` whenever no negotiation has run, which disables the
-    /// panel's share-mode control with a stated reason rather than letting it fail after the
-    /// fact.
+    /// probed per frame -- and `false` whenever no negotiation has run *or the last one found
+    /// no usable device*, which disables the panel's share-mode control with a stated reason
+    /// rather than letting it fail after the fact.
     pub exclusive_supported: bool,
     /// Whether exclusive mode is currently *requested* -- the persisted
     /// `AppSettings::exclusive_mode`, and the share-mode control's position. What was actually

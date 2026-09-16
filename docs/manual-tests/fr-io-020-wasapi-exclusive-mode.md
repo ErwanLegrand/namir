@@ -43,7 +43,14 @@ exist then — and because it still works identically:
 
 The control is disabled, with the reason stated beside it, wherever the current devices answer
 `Unsupported` to the exclusive-mode probe at the current configuration — the same refusal step 7
-below drives, met before the toggle is thrown rather than after.
+below drives, met before the toggle is thrown rather than after. The qualifier is the honest
+half and was tightened after PR #226's review: the probe is asked against the configuration the
+session settled (the shared-settled rate and channel count when no exclusive request was made),
+so a device whose exclusive-mode format list does not cover that exact configuration reports
+`Unsupported` even when a neighbouring rate or channel count — step 12's 48000 Hz on this
+endpoint, say — would open exclusively. The reason text beside the control and the
+`EXCLUSIVE_MODE_UNAVAILABLE` remedy both name the change of device, sample rate or channel
+count that re-runs the probe; the entry re-enables only when a re-run answers yes.
 
 ## What is under test, and what is genuinely unproven
 
@@ -263,6 +270,12 @@ ASIO is the requirement's Should and is not built (see the scope note at the top
 
 ## The Share Mode control (issue #193) — written 2026-09-13, not yet executed
 
+Amended 2026-09-16 after PR #226's review: the probe's configuration qualifier is now stated
+before the steps (the "control is disabled" paragraph above), step 15's remedy reference matches
+the rewritten remedy text in `crates/namir-app/src/error_codes.rs`, and no step changed shape —
+the amendment is wording, not procedure, so the section still awaits its first execution as
+written.
+
 Issue #193 added the fifth audio-settings control: a Share Mode selector in the Audio Settings
 panel. Toggling it persists the request, re-enumerates rates and buffer sizes in the requested
 mode (the two modes report different ones — #190 measured 480/480 shared against 144..240000
@@ -310,7 +323,10 @@ Steps continue the executed run's numbering.
     re-selection re-negotiates and re-runs the probe, so the Exclusive entry re-enables with no
     restart; choose **Exclusive** and confirm the indicator follows. Then choose **Shared** and
     confirm it follows back. The remedy in `crates/namir-app/src/error_codes.rs` promises
-    exactly this sequence, so this step is what keeps that promise honest.
+    exactly this — a changed device selection re-runs the probe, and the entry re-enables when
+    the new probe answers yes, which is what makes a webcam-to-AudioBox reselect different from
+    the same-device re-probe the remedy no longer promises — so this step is what keeps that
+    promise honest.
 
 **Result: NOT EXECUTED.** Steps 10-15 were written 2026-09-13 with the control and await a human
 run on the §2 reference machine. The executed 2026-08-11 run above predates the control and
