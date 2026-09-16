@@ -1101,6 +1101,7 @@ impl AudioBackend for FakeBackend {
         &self,
         _host: &HostInfo,
         device: &DeviceInfo,
+        _direction: crate::audio_io::Direction,
         _params: StreamParams,
     ) -> ExclusiveModeOutcome {
         if self.exclusive_devices.contains(&device.name) {

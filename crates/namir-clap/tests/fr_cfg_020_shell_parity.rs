@@ -101,8 +101,8 @@ mod host_ext {
 
     use namir_app::audio_io::{
         AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CallbackStatus, DeviceInfo,
-        EnumeratedConfigs, ExclusiveModeOutcome, HostInfo, ShareMode, StreamFailure, StreamParams,
-        SupportedConfigRange,
+        Direction, EnumeratedConfigs, ExclusiveModeOutcome, HostInfo, ShareMode, StreamFailure,
+        StreamParams, SupportedConfigRange,
     };
     use namir_app::instance::SharedInstance;
     use namir_app::stream::{self, StreamSetup};
@@ -688,6 +688,7 @@ mod host_ext {
             &self,
             _host: &HostInfo,
             _device: &DeviceInfo,
+            _direction: Direction,
             _params: StreamParams,
         ) -> ExclusiveModeOutcome {
             ExclusiveModeOutcome::Unsupported

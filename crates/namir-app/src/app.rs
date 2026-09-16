@@ -456,18 +456,27 @@ pub(crate) fn negotiate_share_mode(
     // would have made the probe answer yes — re-creating exactly the trap the narrowed
     // `EXCLUSIVE_MODE_UNAVAILABLE` remedy (a device or configuration change re-runs the probe)
     // and FR-IO-020's manual step 15 (re-selecting the AudioBox re-probes to yes) point out of.
-    let ask = |device: &DeviceInfo, params: StreamParams| {
+    let ask = |device: &DeviceInfo, params: StreamParams, direction: crate::audio_io::Direction| {
         backend.supports_exclusive(
             host,
             device,
+            direction,
             StreamParams {
                 share_mode: ShareMode::Exclusive,
                 ..params
             },
         )
     };
-    let input = ask(input_device, input_params);
-    let output = ask(output_device, output_params);
+    let input = ask(
+        input_device,
+        input_params,
+        crate::audio_io::Direction::Input,
+    );
+    let output = ask(
+        output_device,
+        output_params,
+        crate::audio_io::Direction::Output,
+    );
     let supported =
         input == ExclusiveModeOutcome::Engaged && output == ExclusiveModeOutcome::Engaged;
 
