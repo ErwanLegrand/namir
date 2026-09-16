@@ -608,6 +608,12 @@ impl AppHost {
         // posting a notice for the failed configuration attempt.
         let Some(negotiated) = negotiated else {
             self.audio_mode = None;
+            // The negotiation found no device, so its previous capability answer is void: the
+            // contract on `namir_ui::AudioDevicePanelSnapshot::exclusive_supported` calls for
+            // `false` whenever no device is open, and leaving a stale `true` would keep the
+            // share-mode control enabled — able to dispatch a request against a configuration
+            // with no device (PR #226 review).
+            self.exclusive_supported = false;
             self.push_notice(
                 crate::error_codes::NO_AUDIO_DEVICE,
                 "no audio device was found or could be opened",
@@ -3546,6 +3552,65 @@ mod tests {
 
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert!(!loaded.exclusive_mode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **PR #226 review.** A reopen that finds no device must clear the exclusive capability
+    /// answer: the stale `true` from the last successful negotiation would otherwise leave the
+    /// share-mode control enabled against a configuration with no device — exactly the state
+    /// `namir_ui::AudioDevicePanelSnapshot::exclusive_supported`'s contract names as `false`
+    /// ("or no device open at all").
+    #[test]
+    fn a_reopen_that_finds_no_device_clears_the_exclusive_capability_answer() {
+        let dir = temp_dir("reopen_no_device");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2)))
+                .granting_exclusive_to("Mic")
+                .granting_exclusive_to("Speakers"),
+        );
+        let (mut host, _engine) =
+            host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
+
+        // A successful negotiation first: exclusive granted, the capability answer true.
+        host.dispatch(UiIntent::SelectShareMode { exclusive: true });
+        let (panel, _) = await_reopened_stream(&mut host);
+        assert!(panel.exclusive_supported);
+
+        // The devices disappear: arm the enumeration fault on the shared backend handle and
+        // reopen for any reason. The negotiation fails, and the capability answer must fall
+        // back to `false` beside the NO_AUDIO_DEVICE notice.
+        backend.failing_enumeration(Direction::Input);
+        host.dispatch(UiIntent::SelectInputDevice {
+            name: "Mic".to_string(),
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let snapshot = loop {
+            let snapshot = host.snapshot();
+            if snapshot
+                .notices
+                .iter()
+                .any(|n| n.code.id == crate::error_codes::NO_AUDIO_DEVICE.id)
+            {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the no-device reopen never posted its notice"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let panel = snapshot.audio_panel.as_ref().expect("audio panel snapshot");
+        assert_eq!(snapshot.audio_mode, None);
+        assert!(
+            !panel.exclusive_supported,
+            "no device open, no capability claim"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
