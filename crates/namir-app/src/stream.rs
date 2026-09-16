@@ -718,22 +718,16 @@ pub(crate) struct FakeBackend {
     /// direction's enumeration *after* an earlier successful pass, which is the only way to
     /// reach the reappearance-and-disappearance shape the no-device reopen arm exists for.
     enumeration_failures: std::sync::Mutex<Vec<Direction>>,
-    /// Which device names answer [`ExclusiveModeOutcome::Engaged`] to
-    /// `supports_exclusive`. Every other name answers `Unsupported` — what the real
-    /// [`crate::audio_io::CpalBackend`] answers for any device with no exclusive-capable WASAPI
-    /// endpoint behind it, so a test that says nothing about exclusive mode gets the conservative
-    /// answer rather than an optimistic one.
-    exclusive_devices: Vec<String>,
     /// The [`ShareMode`] each direction's `build_*_stream` was actually handed —
     /// the observable that distinguishes "the session settled on exclusive" from "the session
     /// settled on exclusive and then opened shared anyway".
     asked_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
     /// What this backend reports when asked for **exclusive** configs, per direction. `None`
     /// means "the same ranges as shared", which is what a backend with no WASAPI endpoint behind
-    /// it does. Per direction rather than per backend for the same reason
-    /// [`FakeBackend::granting_exclusive_to`] is per device: a single shared answer cannot catch
-    /// a direction mix-up in the code it exercises, and picking the wrong direction is precisely
-    /// the class of bug issue #190 was.
+    /// it does. Per direction rather than per backend for the same reason the probe is per
+    /// direction (issue #228): a single shared answer cannot catch a direction mix-up in the
+    /// code it exercises, and picking the wrong direction is precisely the class of bug issue
+    /// #190 was.
     exclusive_input_configs: Option<Vec<SupportedConfigRange>>,
     exclusive_output_configs: Option<Vec<SupportedConfigRange>>,
     /// Every `(direction, share_mode)` a config query was made with, in call order — the
@@ -774,7 +768,6 @@ impl FakeBackend {
             output_stream,
             open_failures: Vec::new(),
             enumeration_failures: std::sync::Mutex::new(Vec::new()),
-            exclusive_devices: Vec::new(),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
             input_devices: Vec::new(),
             output_devices: Vec::new(),
@@ -801,13 +794,6 @@ impl FakeBackend {
     ) -> Self {
         self.exclusive_input_configs = input.filter(|ranges| !ranges.is_empty());
         self.exclusive_output_configs = output.filter(|ranges| !ranges.is_empty());
-        self
-    }
-
-    /// Makes `device_name` answer `Engaged` to `supports_exclusive`. Per device, not per backend,
-    /// so a test can grant exclusive mode to one direction and refuse it on the other.
-    pub(crate) fn granting_exclusive_to(mut self, device_name: &str) -> Self {
-        self.exclusive_devices.push(device_name.to_string());
         self
     }
 
@@ -1100,14 +1086,23 @@ impl AudioBackend for FakeBackend {
     fn supports_exclusive(
         &self,
         _host: &HostInfo,
-        device: &DeviceInfo,
-        _direction: crate::audio_io::Direction,
-        _params: StreamParams,
+        _device: &DeviceInfo,
+        direction: crate::audio_io::Direction,
+        params: StreamParams,
     ) -> ExclusiveModeOutcome {
-        if self.exclusive_devices.contains(&device.name) {
-            ExclusiveModeOutcome::Engaged
-        } else {
-            ExclusiveModeOutcome::Unsupported
+        // The probe derives from the same per-direction exclusive ranges the enumeration
+        // reports — the real backend's probe and enumeration are one device walk, so the fake's
+        // two answers cannot disagree. `None` for a direction means "no exclusive endpoint at
+        // all", the same fact the configs query reports as a shared answer. `device` is
+        // deliberately unused: `reporting_exclusive_configs` is per backend, and every device
+        // behind it shares its ranges, which is the granularity the negotiation actually needs.
+        let ranges = match direction {
+            crate::audio_io::Direction::Input => self.exclusive_input_configs.as_ref(),
+            crate::audio_io::Direction::Output => self.exclusive_output_configs.as_ref(),
+        };
+        match ranges {
+            Some(ranges) => crate::audio_io::exclusive_outcome(Ok(ranges.clone()), params),
+            None => ExclusiveModeOutcome::Unsupported,
         }
     }
     fn build_input_stream(

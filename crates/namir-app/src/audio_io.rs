@@ -1127,7 +1127,7 @@ mod cpal_impl {
     /// device's own refusal), an empty set, and a set whose ranges are all for some other rate or
     /// channel count. Erring towards `Unsupported` is the direction that cannot produce a mode
     /// indicator that lies.
-    pub(super) fn exclusive_outcome(
+    pub(crate) fn exclusive_outcome(
         probed: Result<Vec<SupportedConfigRange>, AudioIoError>,
         params: StreamParams,
     ) -> ExclusiveModeOutcome {
@@ -1530,6 +1530,13 @@ mod cpal_impl {
         )
     }
 }
+
+/// Re-exported for `stream::FakeBackend`, whose probe must apply the real backend's own
+/// decision rule rather than a copy of it (two copies of the covering test is the pair that
+/// drifts — `cpal_impl`'s doc comment says so about the probe and the open). `cfg(test)`-gated
+/// like the fake itself: no non-test code names this path.
+#[cfg(test)]
+pub(crate) use cpal_impl::exclusive_outcome;
 
 #[cfg(test)]
 mod tests {

@@ -3242,9 +3242,7 @@ mod tests {
                     vec![device("Mic", true)],
                     vec![device("Speakers", true), device("Headphones", false)],
                 )
-                .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
-                .granting_exclusive_to("Mic")
-                .granting_exclusive_to("Headphones"),
+                .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2))),
         );
         let host_info = HostInfo {
             name: "fake".to_string(),
@@ -3399,9 +3397,7 @@ mod tests {
         let backend = Arc::new(
             crate::stream::FakeBackend::new()
                 .with_devices(vec![device("Mic")], vec![device("Speakers")])
-                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2)))
-                .granting_exclusive_to("Mic")
-                .granting_exclusive_to("Speakers"),
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2))),
         );
         let (mut host, _engine) =
             host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
@@ -3449,12 +3445,11 @@ mod tests {
             name: name.to_string(),
             is_default: true,
         };
-        // Exclusive ranges on offer, but no `granting_exclusive_to`: the probe refuses both
-        // devices even though the exclusive enumeration succeeded.
+        // No exclusive endpoint at all, like the executed run's webcam: the exclusive request is
+        // answered with the shared ranges, and the probe refuses.
         let backend = Arc::new(
             crate::stream::FakeBackend::new()
-                .with_devices(vec![device("Mic")], vec![device("Speakers")])
-                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2))),
+                .with_devices(vec![device("Mic")], vec![device("Speakers")]),
         );
         let (mut host, _engine) =
             host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
@@ -3462,16 +3457,13 @@ mod tests {
         host.dispatch(UiIntent::SelectShareMode { exclusive: true });
         let (panel, _) = await_reopened_stream(&mut host);
 
-        // Two passes: the exclusive request, then the shared re-enumeration the refusal forces
-        // (the two modes report different ranges, so the exclusive ones do not apply).
         assert_eq!(
             backend.enumerations(),
             vec![
                 (Direction::Input, crate::audio_io::ShareMode::Exclusive),
                 (Direction::Output, crate::audio_io::ShareMode::Exclusive),
-                (Direction::Input, crate::audio_io::ShareMode::Shared),
-                (Direction::Output, crate::audio_io::ShareMode::Shared),
-            ]
+            ],
+            "no endpoint means no second pass: the first enumeration already answered shared"
         );
         assert_eq!(
             backend.share_mode_asked_for(Direction::Output),
@@ -3517,9 +3509,7 @@ mod tests {
         let backend = Arc::new(
             crate::stream::FakeBackend::new()
                 .with_devices(vec![device("Mic")], vec![device("Speakers")])
-                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2)))
-                .granting_exclusive_to("Mic")
-                .granting_exclusive_to("Speakers"),
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2))),
         );
         let settings = AppSettings {
             exclusive_mode: true,
@@ -3570,9 +3560,7 @@ mod tests {
         let backend = Arc::new(
             crate::stream::FakeBackend::new()
                 .with_devices(vec![device("Mic")], vec![device("Speakers")])
-                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2)))
-                .granting_exclusive_to("Mic")
-                .granting_exclusive_to("Speakers"),
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2))),
         );
         let (mut host, _engine) =
             host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
@@ -3883,8 +3871,10 @@ mod tests {
                 },
             }]
         };
-        // Answers the exclusive query for real, and refuses the mode: the case that genuinely
-        // needs a second pass, because pass 1's ranges belong to a session that will not run.
+        // Only the input answers the exclusive query; the output has no exclusive endpoint (a
+        // capture device with a WASAPI exclusive path beside a render device without one), so
+        // pass 1's exclusive ranges belong to a session that will not run: this refusal
+        // genuinely needs the second pass, and it is the only remaining shape that does.
         let backend = Arc::new(
             crate::stream::FakeBackend::new()
                 .with_devices(
@@ -3897,7 +3887,7 @@ mod tests {
                         is_default: true,
                     }],
                 )
-                .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2))),
+                .reporting_exclusive_configs(Some(exclusive(1)), None),
         );
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
