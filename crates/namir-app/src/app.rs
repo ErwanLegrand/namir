@@ -812,6 +812,19 @@ pub fn run() {
     if let Some(detail) = share_mode.refusal_detail {
         host.report(crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE, detail);
     }
+    // Issue #227: same disclosure as the reopen path's (`AppHost`'s stream-ready handler posts
+    // its own copy, after the refusal notice there). The rate the settings file asked for may
+    // not be coverable in exclusive mode; the notice says which rate the session actually
+    // opened at. `None` means no rate was ever asked for.
+    if share_mode.mode == ShareMode::Exclusive
+        && let Some(requested) = settings.sample_rate_hz
+        && requested != sample_rate_hz
+    {
+        host.report(
+            crate::error_codes::EXCLUSIVE_MODE_SAMPLE_RATE_CHANGED,
+            format!("{sample_rate_hz} Hz; {requested} Hz is not available in exclusive mode on this device"),
+        );
+    }
     if let Some(requested) = settings.buffer_size_frames
         && let Some(detail) = crate::audio_io::buffer_decline_detail(requested, buffer_frames)
     {

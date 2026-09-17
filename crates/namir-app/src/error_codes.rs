@@ -56,6 +56,21 @@ pub const EXCLUSIVE_MODE_UNAVAILABLE: ErrorCode = ErrorCode::new(
      again.",
 );
 
+/// FR-IO-020, issue #227: exclusive mode was granted, but at a sample rate the settings did
+/// not request — the devices' exclusive-mode format lists do not cover the requested rate, so
+/// the negotiation moved to one they do cover. **`Info`, not `Warning`, deliberately**: the
+/// session is exactly the exclusive one the user asked for; what the notice discloses is the
+/// rate move, which is worse discovered silently than told. Posted after the reopen, by the
+/// same call sites that post [`EXCLUSIVE_MODE_UNAVAILABLE`].
+pub const EXCLUSIVE_MODE_SAMPLE_RATE_CHANGED: ErrorCode = ErrorCode::new(
+    "app.audio_io.exclusive_mode_sample_rate_changed",
+    Severity::Info,
+    "Opened in exclusive mode at {detail}.",
+    "The sample rate moved because the device's exclusive-mode formats do not cover the \
+     requested rate. To return to a different rate, choose it under Sample Rate in the Audio \
+     Settings panel — the list shows the rates the current share mode offers.",
+);
+
 /// FR-IO-070: a device that was open and in use disappeared (unplugged, disabled, reclaimed by
 /// the OS). The stream is stopped cleanly and the user is told which side (input/output) was
 /// lost — in the `detail`, which [`crate::app`]'s stream-error callback builds from the direction
@@ -178,6 +193,7 @@ pub const SETTINGS_UNWRITABLE: ErrorCode = ErrorCode::new(
 const ALL: &[ErrorCode] = &[
     DEVICE_OPEN_FAILED,
     EXCLUSIVE_MODE_UNAVAILABLE,
+    EXCLUSIVE_MODE_SAMPLE_RATE_CHANGED,
     DEVICE_LOST,
     STREAM_FAILED,
     NO_SUPPORTED_CONFIG,
