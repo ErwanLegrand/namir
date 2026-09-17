@@ -28,7 +28,7 @@ use namir_worker::pool::ThreadPool;
 use namir_worker::{EngineConfig, Instance, ResourceCache};
 
 use crate::audio_io::{
-    AudioBackend, AudioIoError, CpalBackend, DeviceInfo, ExclusiveModeOutcome, HostInfo, ShareMode,
+    AudioBackend, CpalBackend, DeviceInfo, ExclusiveModeOutcome, HostInfo, ShareMode,
     StreamFailure, StreamParams,
 };
 use crate::host::AppHost;
@@ -407,6 +407,19 @@ pub(crate) struct ShareModeDecision {
     pub(crate) possible: bool,
 }
 
+/// The seam can now tell the two refusal shapes apart (issue #227): a device whose exclusive
+/// formats miss the settled configuration, but exist elsewhere, is a different sentence from a
+/// device with no exclusive format at all. The old single reason was written back when every
+/// non-`Engaged` answer meant `Unsupported`.
+fn refusal_reason(outcome: ExclusiveModeOutcome) -> &'static str {
+    match outcome {
+        ExclusiveModeOutcome::PossibleAtAnotherConfiguration => {
+            "it reports exclusive-mode formats at another rate or channel count"
+        }
+        _ => "the audio backend reports no exclusive-mode support for this device and format",
+    }
+}
+
 /// FR-IO-020: asks both devices whether they can provide exclusive mode and **ANDs the answers**,
 /// so a session runs exclusive on both directions or on neither.
 ///
@@ -504,24 +517,26 @@ pub(crate) fn negotiate_share_mode(
 
     let mut refused = Vec::new();
     if input != ExclusiveModeOutcome::Engaged {
-        refused.push(format!("input \"{}\"", input_device.name));
+        refused.push(format!(
+            "exclusive mode is unavailable for input \"{}\": {}",
+            input_device.name,
+            refusal_reason(input),
+        ));
     }
     if output != ExclusiveModeOutcome::Engaged {
-        refused.push(format!("output \"{}\"", output_device.name));
+        refused.push(format!(
+            "exclusive mode is unavailable for output \"{}\": {}",
+            output_device.name,
+            refusal_reason(output),
+        ));
     }
-    // `ExclusiveModeOutcome::Unsupported` carries no diagnostic of its own, so this is as specific
-    // a reason as the seam can honestly give -- said once, here, rather than paraphrased at each
-    // call site.
-    let reason = AudioIoError::ExclusiveModeUnavailable(
-        "the audio backend reports no exclusive-mode support for this device and format"
-            .to_string(),
-    );
+    // `refusal_reason` per outcome, not per device — the seam can now tell the two shapes apart
+    // (issue #227): a device whose exclusive formats exist at another rate or channel count
+    // must not be denied support it actually reports elsewhere. Said once, here, rather than
+    // paraphrased at each call site.
     ShareModeDecision {
         mode: ShareMode::Shared,
-        refusal_detail: Some(format!(
-            "{}; {reason}; continuing in shared mode",
-            refused.join(", ")
-        )),
+        refusal_detail: Some(format!("{}; continuing in shared mode", refused.join("; "),)),
         possible,
     }
 }
@@ -1404,6 +1419,47 @@ mod tests {
                 (Direction::Output, ShareMode::Shared),
             ],
             "a real exclusive answer with no common rate forces the second pass"
+        );
+        let share_mode = &negotiated.share_mode;
+        assert!(
+            share_mode.possible,
+            "the gate stays open: exclusive is possible at another rate"
+        );
+        let detail = share_mode
+            .refusal_detail
+            .as_ref()
+            .expect("a refusal explains itself");
+        assert!(detail.contains("another rate or channel count"), "{detail}");
+    }
+
+    /// **PR #230 review.** The refusal reason must not deny support to a device whose exclusive
+    /// formats exist elsewhere — the seam can now distinguish the two shapes, so the sentence
+    /// does too.
+    #[test]
+    fn a_refusal_at_a_missed_configuration_says_so_rather_than_denying_support() {
+        let exclusive_44_1k = vec![crate::audio_io::SupportedConfigRange {
+            channels: 2,
+            min_sample_rate_hz: 44_100,
+            max_sample_rate_hz: 44_100,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }];
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive_44_1k));
+
+        let decision = negotiate(&backend, true);
+        let detail = decision
+            .refusal_detail
+            .expect("a refused request must explain itself");
+
+        assert!(detail.contains("another rate or channel count"), "{detail}");
+        assert!(!detail.contains("no exclusive-mode support"), "{detail}");
+        assert!(
+            decision.possible,
+            "the gate stays open for a possible-elsewhere device"
         );
     }
 
