@@ -642,8 +642,9 @@ impl AppHost {
             ..
         } = negotiated;
         // FR-IO-020: the same probe that settled this session's mode also answered whether the
-        // devices could do exclusive at all, and the panel's control reads that answer.
-        self.exclusive_supported = share_mode.supported;
+        // devices could do exclusive at all — at some rate and channel count they report, not
+        // necessarily the settled one (issue #227) — and the panel's control reads that answer.
+        self.exclusive_supported = share_mode.possible;
 
         if sample_rate.is_none() {
             self.audio_mode = None;
@@ -661,6 +662,21 @@ impl AppHost {
             self.push_notice(
                 crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE,
                 detail.clone(),
+            );
+        }
+        // FR-IO-020 / issue #227: an exclusive reopen can move the sample rate the settings
+        // file asked for — the requested rate could not be settled in exclusive mode across
+        // the devices, so the exclusive pass landed on one that could. Disclosed as a notice
+        // rather than left to be discovered: a silent rate move is worse than a greyed entry.
+        // Mirrors `crate::app::run`'s start-up posting; keep the pair in step. `None` means the
+        // user never asked for a rate, so there is nothing to have moved.
+        if let (crate::audio_io::ShareMode::Exclusive, Some(requested)) =
+            (share_mode.mode, self.settings.sample_rate_hz)
+            && requested != sample_rate_hz
+        {
+            self.push_notice(
+                crate::error_codes::EXCLUSIVE_MODE_SAMPLE_RATE_CHANGED,
+                format!("{sample_rate_hz} Hz; the requested {requested} Hz could not be settled in exclusive mode on these devices"),
             );
         }
 
@@ -950,11 +966,13 @@ impl AppHost {
     }
 
     /// Records `negotiate_share_mode`'s capability answer for the devices start-up just
-    /// negotiated (issue #193). The reopen path updates the same field from its own
-    /// negotiation in `initiate_audio_reopen`; nothing else writes it, so the panel's control
-    /// cannot disagree with the negotiation that is actually running.
-    pub(crate) fn set_exclusive_supported(&mut self, supported: bool) {
-        self.exclusive_supported = supported;
+    /// negotiated (issues #193, #227): the negotiation's possibility answer, not the point
+    /// answer — see [`crate::app::ShareModeDecision::possible`]. The reopen path updates the
+    /// same field from its own negotiation in `initiate_audio_reopen`; nothing else writes
+    /// it, so the panel's control cannot disagree with the negotiation that is actually
+    /// running.
+    pub(crate) fn set_exclusive_supported(&mut self, possible: bool) {
+        self.exclusive_supported = possible;
     }
 
     /// Persists current `AppSettings` to `<config_dir>/audio-settings.json`.
@@ -3493,6 +3511,46 @@ mod tests {
 
         let (loaded, _) = crate::settings::load(&crate::settings::settings_path(&dir));
         assert!(loaded.exclusive_mode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Issue #227.** Choosing Exclusive on a device whose exclusive list misses the requested
+    /// rate reopens at a rate the device supports exclusively, and a notice discloses the move
+    /// instead of leaving it to be discovered.
+    #[test]
+    fn exclusive_mode_opened_at_a_moved_rate_posts_the_disclosure_notice() {
+        let dir = temp_dir("share_mode_rate_move");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        // 48 kHz is the only exclusive rate; the settings ask for 44 100 Hz.
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .reporting_exclusive_configs(Some(exclusive_range(1)), Some(exclusive_range(2))),
+        );
+        let settings = AppSettings {
+            sample_rate_hz: Some(44_100),
+            ..AppSettings::default()
+        };
+        let (mut host, _engine) = host_with_reopen(&dir, Arc::clone(&backend), settings);
+
+        host.dispatch(UiIntent::SelectShareMode { exclusive: true });
+        let (panel, _) = await_reopened_stream(&mut host);
+
+        assert_eq!(
+            panel.current_sample_rate, 48_000,
+            "the reopen moved the rate to one the device supports exclusively"
+        );
+        assert!(
+            host.snapshot()
+                .notices
+                .iter()
+                .any(|n| n.code.id == crate::error_codes::EXCLUSIVE_MODE_SAMPLE_RATE_CHANGED.id),
+            "the rate move is disclosed, not silent: {:?}",
+            host.snapshot().notices,
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

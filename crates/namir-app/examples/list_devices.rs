@@ -160,6 +160,9 @@ fn report(
             probe_params(rate, channels),
         ) {
             ExclusiveModeOutcome::Engaged => "exclusive ok",
+            ExclusiveModeOutcome::PossibleAtAnotherConfiguration => {
+                "exclusive at another rate or channel count"
+            }
             ExclusiveModeOutcome::Unsupported => "shared-only",
         };
         println!(

@@ -132,17 +132,13 @@ pub fn render(
     }
 }
 
-/// Why the share-mode control is disabled when the snapshot says the devices cannot provide
-/// exclusive mode: one honest sentence covering every shape of "no" the host's probe can get --
-/// no WASAPI endpoint, a device whose exclusive formats do not cover the current configuration,
-/// or no device open at all. Stated beside the control rather than left for the user to guess.
-/// The trailing sentence is the honest half of the capability gate (PR #226 review): the probe
-/// answers for the settled configuration only, so a device-exclusive format change — typically
-/// a different sample rate — is what can re-enable the entry; naming it here keeps the shared
-/// session from looking like a dead end.
+/// Shown beside the Share Mode control when the last negotiation's probe answered `false`.
+/// Since #227 the gate names possibility, not the point answer: the only reasons left are "no
+/// exclusive endpoint at all" and "no exclusive-mode format Namir can open" — both device
+/// facts, so only a device change is promised.
 const EXCLUSIVE_UNSUPPORTED_REASON: &str = "Exclusive mode is not available: the current audio \
-     devices report no exclusive-mode support at the current configuration. Changing the sample \
-     rate or the input/output device in this panel may re-enable it.";
+     devices report no exclusive-mode format Namir can open. Changing the input or output \
+     device in this panel may re-enable it.";
 
 /// Audio device configuration panel (FR-IO-010/040/070/080/090).
 /// Renders device selectors for input and output, sample rate, buffer size, input channel, and a

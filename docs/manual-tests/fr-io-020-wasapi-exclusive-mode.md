@@ -41,16 +41,15 @@ exist then — and because it still works identically:
    `%APPDATA%\Namir\audio-settings.json` and set `"exclusive_mode": true`.
 3. Relaunch.
 
-The control is disabled, with the reason stated beside it, wherever the current devices answer
-`Unsupported` to the exclusive-mode probe at the current configuration — the same refusal step 7
-below drives, met before the toggle is thrown rather than after. The qualifier is the honest
-half and was tightened after PR #226's review: the probe is asked against the configuration the
-session settled (the shared-settled rate and channel count when no exclusive request was made),
-so a device whose exclusive-mode format list does not cover that exact configuration reports
-`Unsupported` even when a neighbouring rate or channel count — step 12's 48000 Hz on this
-endpoint, say — would open exclusively. The reason text beside the control and the
-`EXCLUSIVE_MODE_UNAVAILABLE` remedy both name the change of device, sample rate or channel
-count that re-runs the probe; the entry re-enables only when a re-run answers yes.
+The control is disabled, with the reason stated beside it, only where the current devices
+report **no exclusive-mode format at all** — no WASAPI exclusive endpoint, or an exclusive
+list Namir cannot open (issue #227). A device whose exclusive-mode list simply misses the
+configuration the shared session settled is **enabled**: choosing Exclusive renegotiates
+through the exclusive-enumerated pass and settles a rate and channel count the device opens
+exclusively, and the notice `app.audio_io.exclusive_mode_sample_rate_changed` discloses the
+move when the reopened rate differs from the one the settings asked for — step 16 exercises
+that path. The qualifier "at the current configuration", which PR #226's narrowing introduced
+because the gate then answered the point question, is gone along with the narrowing.
 
 ## What is under test, and what is genuinely unproven
 
@@ -326,8 +325,9 @@ Steps continue the executed run's numbering.
     **Shared**. Expect **no new** refusal notice — step 13's is still on the list, and its
     lingering there is not a failure — because nothing was requested, so there is nothing to
     refuse: `negotiate_share_mode` explains itself only when exclusive mode was asked for. The
-    Exclusive entry stays disabled with the reason: the probe ran anyway and answered no for
-    this configuration, which is the gate met before the fact rather than a failure after it.
+    Exclusive entry stays disabled with the reason: the probe ran anyway and answered no
+    because the webcam has no exclusive endpoint at all — the gate met before the fact rather
+    than a failure after it.
 15. **Restart-free recovery, in both directions.** Reselect the AudioBox as input. The
     re-selection re-negotiates and re-runs the probe, so the Exclusive entry re-enables with no
     restart; choose **Exclusive** and confirm the indicator follows. Then choose **Shared** and
@@ -337,8 +337,20 @@ Steps continue the executed run's numbering.
     the same-device re-probe the remedy no longer promises — so this step is what keeps that
     promise honest.
 
-**Result: NOT EXECUTED.** Steps 10-15 were written 2026-09-13 with the control and await a human
-run on the §2 reference machine. The executed 2026-08-11 run above predates the control and
+16. **A rate the device refuses to open exclusively, reached through the panel — the issue
+    #227 observable.** With the AudioBox selected and the session **shared**, choose 44 100 Hz
+    under Sample Rate (the AudioBox's *shared* list offers it; its *exclusive* list is 48
+    000-only — the executed run's baseline). The Share Mode control must still offer
+    **Exclusive** — before #227 this is precisely the state in which it was greyed, because
+    the probe answered no at 44 100. Choose Exclusive. Expect: the stream reopens
+    **exclusive at 48 000 Hz**, and the notice
+    `app.audio_io.exclusive_mode_sample_rate_changed` appears stating the move. If the
+    selected device's shared list offers no rate outside its exclusive list, this step cannot
+    be demonstrated on that device and is recorded as not run with that reason rather than as
+    a pass.
+
+**Result: NOT EXECUTED.** Steps 10-15 were written 2026-09-13 with the control; step 16 was
+added 2026-09-17 (issue #227). All await a human run on the §2 reference machine. The executed 2026-08-11 run above predates the control and
 remains the evidence for the steps it covered; under this document's worse-of convention the
 gate reads this section's verdict until those steps record a run.
 

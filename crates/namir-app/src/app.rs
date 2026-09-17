@@ -28,7 +28,7 @@ use namir_worker::pool::ThreadPool;
 use namir_worker::{EngineConfig, Instance, ResourceCache};
 
 use crate::audio_io::{
-    AudioBackend, AudioIoError, CpalBackend, DeviceInfo, ExclusiveModeOutcome, HostInfo, ShareMode,
+    AudioBackend, CpalBackend, DeviceInfo, ExclusiveModeOutcome, HostInfo, ShareMode,
     StreamFailure, StreamParams,
 };
 use crate::host::AppHost;
@@ -394,17 +394,30 @@ pub(crate) struct ShareModeDecision {
     /// `None` whenever the answer needs no explanation: exclusive was never requested, or it was
     /// requested and granted.
     pub(crate) refusal_detail: Option<String>,
-    /// Whether both devices can provide exclusive mode at the settled configuration — the
-    /// capability the audio settings panel's share-mode control reads (issue #193). Implied by
-    /// [`Self::mode`] being [`ShareMode::Exclusive`]; probed explicitly whenever the session
-    /// runs shared, because that is the state whose control needs to know whether switching is
-    /// possible. When the session runs shared **without an exclusive request**, "settled" is the
-    /// shared-settled configuration: a device whose exclusive-mode formats do not cover that
-    /// exact rate and channel count answers `false` even though a neighbouring configuration
-    /// would open exclusively (the limitation `CpalBackend::supports_exclusive` records). A
-    /// refused request probes the exclusive-settled configuration instead. Carried out of the
-    /// negotiation so no caller ever has to probe a device from a render or snapshot path.
-    pub(crate) supported: bool,
+    /// Whether both devices can provide exclusive mode **at all** — at any rate and channel
+    /// count they report, in a format Namir can open — the capability the audio settings
+    /// panel's share-mode control reads (issues #193, #227). Implied by [`Self::mode`] being
+    /// [`ShareMode::Exclusive`]; probed explicitly whenever the session runs shared, because
+    /// that is the state whose control needs to know whether switching is possible. `false`
+    /// only when at least one direction reports no exclusive format whatsoever (no WASAPI
+    /// endpoint, or an empty exclusive list); a device whose exclusive formats miss the
+    /// shared-settled configuration answers `true`, because choosing Exclusive re-negotiates
+    /// at a configuration the device *can* open exclusively. Carried out of the negotiation so
+    /// no caller ever has to probe a device from a render or snapshot path.
+    pub(crate) possible: bool,
+}
+
+/// The seam can now tell the two refusal shapes apart (issue #227): a device whose exclusive
+/// formats miss the settled configuration, but exist elsewhere, is a different sentence from a
+/// device with no exclusive format at all. The old single reason was written back when every
+/// non-`Engaged` answer meant `Unsupported`.
+fn refusal_reason(outcome: ExclusiveModeOutcome) -> &'static str {
+    match outcome {
+        ExclusiveModeOutcome::PossibleAtAnotherConfiguration => {
+            "it reports exclusive-mode formats at another rate or channel count"
+        }
+        _ => "the audio backend reports no exclusive-mode support for this device and format",
+    }
 }
 
 /// FR-IO-020: asks both devices whether they can provide exclusive mode and **ANDs the answers**,
@@ -430,32 +443,34 @@ pub(crate) fn negotiate_share_mode(
     requested: bool,
 ) -> ShareModeDecision {
     // Asked in every session now, requested or not: the audio settings panel's share-mode
-    // control (issue #193) has to know whether exclusive mode is possible *at the configuration
-    // this session settles*, so it can refuse the Exclusive choice before the fact instead of
-    // failing after it — and by the time the panel is drawn, the negotiation that can ask the
-    // question has long finished. The qualifier is load-bearing (the narrowing PR #226's review
-    // asked for): exclusive never being possible *at all* is not what `supported` asserts. When
-    // the session runs shared **and nothing was requested**, the probe is asked against the
-    // **shared-settled** rate and channel count (see `CpalBackend::supports_exclusive`'s note);
-    // a refused exclusive request probes the exclusive-settled ones instead, because the shared
-    // re-enumeration happens after this decision. So a device whose exclusive-mode format list
-    // does not cover the settled configuration answers `Unsupported` even though a neighbouring
-    // rate or channel count would open exclusively; the panel's reason text and the
-    // `EXCLUSIVE_MODE_UNAVAILABLE` remedy both say that a change of device or configuration is
-    // what re-runs the probe with different params.
+    // control (issues #193, #227) has to know whether exclusive mode is possible at all — not
+    // merely at the configuration this session settles — before the fact, instead of failing
+    // after it; and by the time the panel is drawn, the negotiation that can ask the question
+    // has long finished. When the session runs shared **and nothing was requested**, the probe
+    // is asked against the **shared-settled** rate and channel count; a refused exclusive
+    // request probes the exclusive-settled ones instead, because the shared re-enumeration
+    // happens after this decision. The two answers are different questions (issue #227):
+    // `engaged` is the mode decision — the session runs exclusive only if both directions'
+    // lists cover the settled configuration — while `possible` is the capability gate, and it
+    // answers "some configuration", not "this configuration". A device whose exclusive-mode
+    // format list misses the settled configuration therefore keeps the Exclusive entry
+    // enabled; choosing it re-negotiates through the exclusive-enumerated pass and lands on a
+    // configuration the device opens exclusively.
     // This is real device I/O, not one cheap query: on WASAPI the fork answers the probe by
     // walking every rate × acceptable format with `IsFormatSupported`, measured 2026-09-13 on
     // the §2 reference machine's AudioBox 22VSL endpoints at ~21 ms per direction, ~43 ms
     // added to one shared-mode negotiation (`negotiate_audio` with the probe 217 ms, with the
     // probe stubbed out 174 ms). That is the recorded trade for the panel's capability; it
-    // runs where the enumeration already does, off the audio thread. If a slower endpoint ever
-    // breaks the ~50 ms budget and M11's requested-only gating is restored, restore it together
-    // with a re-probe on device selection: a fallback that skips the probe when nothing was
-    // requested also skips it when a device is reselected after a refusal, leaving
-    // `exclusive_supported == false` permanently even when a device or configuration change
-    // would have made the probe answer yes — re-creating exactly the trap the narrowed
-    // `EXCLUSIVE_MODE_UNAVAILABLE` remedy (a device or configuration change re-runs the probe)
-    // and FR-IO-020's manual step 15 (re-selecting the AudioBox re-probes to yes) point out of.
+    // runs where the enumeration already does, off the audio thread. The possibility answer
+    // costs nothing extra — `exclusive_outcome` derives it from the same device walk as the
+    // point answer. If a slower endpoint ever breaks the ~50 ms budget and M11's
+    // requested-only gating is restored, restore it together with a re-probe on device
+    // selection: a fallback that skips the probe when nothing was requested also skips it when
+    // a device is reselected after a refusal, leaving `exclusive_supported == false`
+    // permanently even when a device or configuration change would have made the probe answer
+    // yes — re-creating exactly the trap the narrowed `EXCLUSIVE_MODE_UNAVAILABLE` remedy (a
+    // device or configuration change re-runs the probe) and FR-IO-020's manual step 15
+    // (re-selecting the AudioBox re-probes to yes) point out of.
     let ask = |device: &DeviceInfo, params: StreamParams, direction: crate::audio_io::Direction| {
         backend.supports_exclusive(
             host,
@@ -477,8 +492,9 @@ pub(crate) fn negotiate_share_mode(
         output_params,
         crate::audio_io::Direction::Output,
     );
-    let supported =
-        input == ExclusiveModeOutcome::Engaged && output == ExclusiveModeOutcome::Engaged;
+    let engaged = input == ExclusiveModeOutcome::Engaged && output == ExclusiveModeOutcome::Engaged;
+    let possible =
+        input != ExclusiveModeOutcome::Unsupported && output != ExclusiveModeOutcome::Unsupported;
 
     if !requested {
         // An untouched settings file (`AppSettings::default().exclusive_mode == false`) settles
@@ -487,39 +503,41 @@ pub(crate) fn negotiate_share_mode(
         return ShareModeDecision {
             mode: ShareMode::Shared,
             refusal_detail: None,
-            supported,
+            possible,
         };
     }
 
-    if supported {
+    if engaged {
         return ShareModeDecision {
             mode: ShareMode::Exclusive,
             refusal_detail: None,
-            supported,
+            possible,
         };
     }
 
     let mut refused = Vec::new();
     if input != ExclusiveModeOutcome::Engaged {
-        refused.push(format!("input \"{}\"", input_device.name));
+        refused.push(format!(
+            "exclusive mode is unavailable for input \"{}\": {}",
+            input_device.name,
+            refusal_reason(input),
+        ));
     }
     if output != ExclusiveModeOutcome::Engaged {
-        refused.push(format!("output \"{}\"", output_device.name));
+        refused.push(format!(
+            "exclusive mode is unavailable for output \"{}\": {}",
+            output_device.name,
+            refusal_reason(output),
+        ));
     }
-    // `ExclusiveModeOutcome::Unsupported` carries no diagnostic of its own, so this is as specific
-    // a reason as the seam can honestly give -- said once, here, rather than paraphrased at each
-    // call site.
-    let reason = AudioIoError::ExclusiveModeUnavailable(
-        "the audio backend reports no exclusive-mode support for this device and format"
-            .to_string(),
-    );
+    // `refusal_reason` per outcome, not per device — the seam can now tell the two shapes apart
+    // (issue #227): a device whose exclusive formats exist at another rate or channel count
+    // must not be denied support it actually reports elsewhere. Said once, here, rather than
+    // paraphrased at each call site.
     ShareModeDecision {
         mode: ShareMode::Shared,
-        refusal_detail: Some(format!(
-            "{}; {reason}; continuing in shared mode",
-            refused.join(", ")
-        )),
-        supported,
+        refusal_detail: Some(format!("{}; continuing in shared mode", refused.join("; "),)),
+        possible,
     }
 }
 
@@ -776,7 +794,7 @@ pub fn run() {
     );
     // FR-IO-020: what the negotiation's probe settled about this session's devices, for the
     // panel's share-mode control. The reopen path records its own in `initiate_audio_reopen`.
-    host.set_exclusive_supported(share_mode.supported);
+    host.set_exclusive_supported(share_mode.possible);
     // FR-IO-090: the index this stream opens with is the host's own settled answer, so the
     // selector and the capture below read the same channel (the reopen path settles its own in
     // `AppHost::apply_audio_reopen`, through the same `clamp_input_channel`).
@@ -808,6 +826,20 @@ pub fn run() {
     }
     if let Some(detail) = share_mode.refusal_detail {
         host.report(crate::error_codes::EXCLUSIVE_MODE_UNAVAILABLE, detail);
+    }
+    // Issue #227: same disclosure as the reopen path's (`AppHost`'s stream-ready handler posts
+    // its own copy, after the refusal notice there). An exclusive open can move the sample
+    // rate the settings file asked for — the requested rate could not be settled in exclusive
+    // mode across the devices, so the exclusive pass landed on one that could. The notice says
+    // which rate the session actually opened at. `None` means no rate was ever asked for.
+    if share_mode.mode == ShareMode::Exclusive
+        && let Some(requested) = settings.sample_rate_hz
+        && requested != sample_rate_hz
+    {
+        host.report(
+            crate::error_codes::EXCLUSIVE_MODE_SAMPLE_RATE_CHANGED,
+            format!("{sample_rate_hz} Hz; the requested {requested} Hz could not be settled in exclusive mode on these devices"),
+        );
     }
     if let Some(requested) = settings.buffer_size_frames
         && let Some(detail) = crate::audio_io::buffer_decline_detail(requested, buffer_frames)
@@ -1184,6 +1216,76 @@ mod tests {
         );
     }
 
+    /// **Issue #227.** The panel gate answers possibility, not the point: a device whose
+    /// exclusive-mode list misses the shared-settled configuration keeps the Exclusive entry
+    /// enabled, because choosing it re-negotiates at a rate the device supports exclusively.
+    /// This is the exact scenario the #226 narrowing documented as a limitation: shared settled
+    /// at 48 kHz, exclusive list 96 kHz-only.
+    #[test]
+    fn exclusive_mode_possible_elsewhere_keeps_the_gate_open_and_the_session_shared() {
+        let exclusive_96k = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 96_000,
+                max_sample_rate_hz: 96_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive_96k(1)), Some(exclusive_96k(2)));
+
+        let decision = negotiate(&backend, false);
+
+        assert_eq!(decision.mode, ShareMode::Shared);
+        assert!(
+            decision.possible,
+            "the gate answers possibility, not the point answer"
+        );
+    }
+
+    /// **Issue #227.** Choosing Exclusive on that same device re-negotiates through the
+    /// exclusive-enumerated pass and lands on a configuration the device supports exclusively —
+    /// the rate moves from the shared-settled 48 kHz to the exclusive list's 96 kHz.
+    #[test]
+    fn choosing_exclusive_on_a_device_that_needs_a_different_rate_lands_on_a_working_rate() {
+        let exclusive_96k = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 96_000,
+                max_sample_rate_hz: 96_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive_96k(1)), Some(exclusive_96k(2)));
+
+        let negotiated = negotiated(&backend, true);
+
+        assert_eq!(negotiated.share_mode.mode, ShareMode::Exclusive);
+        assert_eq!(negotiated.sample_rate_hz, 96_000);
+        assert_eq!(negotiated.buffer_frames, Some(256));
+    }
+
+    /// A device with no exclusive endpoint at all still greys the control — the webcam shape
+    /// of the executed run — and the reason text beside it promises only a device change now.
+    #[test]
+    fn a_device_with_no_exclusive_endpoint_at_all_keeps_the_gate_closed() {
+        let backend = FakeBackend::new().with_devices(vec![device(IN)], vec![device(OUT)]);
+
+        let decision = negotiate(&backend, false);
+
+        assert_eq!(decision.mode, ShareMode::Shared);
+        assert!(!decision.possible);
+    }
+
     fn negotiated(backend: &FakeBackend, exclusive_mode: bool) -> AudioNegotiation {
         negotiate_audio(
             backend,
@@ -1317,6 +1419,47 @@ mod tests {
                 (Direction::Output, ShareMode::Shared),
             ],
             "a real exclusive answer with no common rate forces the second pass"
+        );
+        let share_mode = &negotiated.share_mode;
+        assert!(
+            share_mode.possible,
+            "the gate stays open: exclusive is possible at another rate"
+        );
+        let detail = share_mode
+            .refusal_detail
+            .as_ref()
+            .expect("a refusal explains itself");
+        assert!(detail.contains("another rate or channel count"), "{detail}");
+    }
+
+    /// **PR #230 review.** The refusal reason must not deny support to a device whose exclusive
+    /// formats exist elsewhere — the seam can now distinguish the two shapes, so the sentence
+    /// does too.
+    #[test]
+    fn a_refusal_at_a_missed_configuration_says_so_rather_than_denying_support() {
+        let exclusive_44_1k = vec![crate::audio_io::SupportedConfigRange {
+            channels: 2,
+            min_sample_rate_hz: 44_100,
+            max_sample_rate_hz: 44_100,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }];
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive_44_1k));
+
+        let decision = negotiate(&backend, true);
+        let detail = decision
+            .refusal_detail
+            .expect("a refused request must explain itself");
+
+        assert!(detail.contains("another rate or channel count"), "{detail}");
+        assert!(!detail.contains("no exclusive-mode support"), "{detail}");
+        assert!(
+            decision.possible,
+            "the gate stays open for a possible-elsewhere device"
         );
     }
 
