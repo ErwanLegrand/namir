@@ -307,6 +307,11 @@ pub enum ShareMode {
 pub enum ExclusiveModeOutcome {
     /// The stream was opened in exclusive mode.
     Engaged,
+    /// The device reports an exclusive-mode range Namir can open, but none covering the probed
+    /// rate and channel count — exclusive mode is possible, just not at this configuration
+    /// (issue #227). Choosing it re-negotiates through the exclusive-enumerated pass, which
+    /// settles a configuration the device *can* open exclusively.
+    PossibleAtAnotherConfiguration,
     /// Exclusive mode was requested but is not available through this build's audio backend; the
     /// stream is opened in shared mode instead (a working default, per FR-IO-080's "degrade
     /// gracefully" spirit applied to a capability rather than a device).
@@ -721,9 +726,10 @@ pub trait AudioBackend: Send + Sync {
     /// direction and keeps the whole retry problem from arising.
     ///
     /// `params.share_mode` is ignored by implementations of this method — the question *is* whether
-    /// exclusive mode is possible, so the caller ([`crate::app`]) passes the rest of the
-    /// configuration (rate, buffer, channels) that an exclusive open would have to satisfy
-    /// natively.
+    /// exclusive mode is possible — **at the probed configuration for the mode decision, at any
+    /// configuration for the panel's capability gate** (issue #227), so the caller ([`crate::app`])
+    /// passes the rest of the configuration (rate, buffer, channels) that an exclusive open would
+    /// have to satisfy natively.
     ///
     /// `direction` is the endpoint direction the caller is asking about; implementations answer
     /// from that direction's exclusive capability only (see [`CpalBackend::supports_exclusive`]
@@ -1127,25 +1133,30 @@ mod cpal_impl {
     /// from the device access above so the decision is testable with no device present.
     ///
     /// [`ExclusiveModeOutcome::Engaged`] needs a **positive** answer: an exclusive-mode range that
-    /// actually covers the channel count and sample rate the caller has already settled on. Every
-    /// other shape of answer is [`ExclusiveModeOutcome::Unsupported`] and the session runs shared —
-    /// an `Err` (`ErrorKind::UnsupportedOperation` from a device with no WASAPI endpoint, or the
-    /// device's own refusal), an empty set, and a set whose ranges are all for some other rate or
-    /// channel count. Erring towards `Unsupported` is the direction that cannot produce a mode
-    /// indicator that lies.
+    /// actually covers the channel count and sample rate the caller has already settled on.
+    /// [`ExclusiveModeOutcome::PossibleAtAnotherConfiguration`] is a non-empty answer that covers
+    /// neither: the device opened exclusively in some format Namir accepts, at a rate or channel
+    /// count this configuration does not use. Everything else — an `Err` (the device refused the
+    /// exclusive query itself, `ErrorKind::UnsupportedOperation` from a device with no WASAPI
+    /// endpoint), or an empty set — is [`ExclusiveModeOutcome::Unsupported`]: no exclusive format
+    /// at all. Only `Unsupported` may never be asked again; the other two answers are the two
+    /// facts the mode decision and the panel's capability gate need (issue #227).
     pub(crate) fn exclusive_outcome(
         probed: Result<Vec<SupportedConfigRange>, AudioIoError>,
         params: StreamParams,
     ) -> ExclusiveModeOutcome {
-        let covered = probed.is_ok_and(|configs| {
-            configs
-                .iter()
-                .any(|c| c.channels == params.channels && c.covers_rate(params.sample_rate_hz))
-        });
-        if covered {
-            ExclusiveModeOutcome::Engaged
-        } else {
-            ExclusiveModeOutcome::Unsupported
+        match probed {
+            Ok(configs)
+                if configs.iter().any(|c| {
+                    c.channels == params.channels && c.covers_rate(params.sample_rate_hz)
+                }) =>
+            {
+                ExclusiveModeOutcome::Engaged
+            }
+            Ok(configs) if !configs.is_empty() => {
+                ExclusiveModeOutcome::PossibleAtAnotherConfiguration
+            }
+            _ => ExclusiveModeOutcome::Unsupported,
         }
     }
 
@@ -1304,10 +1315,12 @@ mod cpal_impl {
         /// requested (issue #190), and from the **shared-enumerated** ones when no exclusive
         /// request was made (FR-IO-040 settles before FR-IO-020's share mode, since the rate
         /// and buffer size are what the user picks and persists). A device whose exclusive-mode
-        /// format list does not happen to include that settled rate or channel count therefore
-        /// answers `Unsupported` and the session runs shared, even though some *other* rate or
-        /// channel count would have opened exclusively — that limitation is issue #227's fix,
-        /// not this one.
+/// format list does not happen to include that settled rate or channel count answers
+        /// [`ExclusiveModeOutcome::PossibleAtAnotherConfiguration`] rather than a refusal
+        /// (issue #227) — the mode decision still settles on shared, but the panel's share-mode
+        /// control gates on possibility, so choosing Exclusive re-negotiates through the
+        /// exclusive-enumerated pass and settles a configuration the device *can* open
+        /// exclusively.
         ///
         /// The audio settings panel's share-mode control (issues #193, #227) reads this same
         /// answer as its capability gate, and `EXCLUSIVE_MODE_UNAVAILABLE`'s remedy is written
@@ -1929,15 +1942,24 @@ mod tests {
         );
     }
 
-    /// Every other shape of answer is `Unsupported` and the session runs shared. The channel-count
-    /// case is the one worth spelling out: exclusive mode does no channel or format conversion, so
-    /// a range at the right rate but the wrong channel count is not a configuration Namir can open.
+    /// The two short-of-covering shapes now answer differently (issue #227): a non-empty list
+    /// at the wrong rate or channel count is exclusive mode **possible elsewhere** — the panel
+    /// gate must stay open — while an empty list or a device that refused the query is no
+    /// exclusive mode at all.
     #[test]
-    fn the_exclusive_probe_refuses_anything_short_of_a_covering_range() {
+    fn the_probe_distinguishes_possible_elsewhere_from_unsupported() {
         for (case, probed) in [
             ("rate below the range", Ok(vec![range(2, 88_200, 192_000)])),
             ("rate above the range", Ok(vec![range(2, 22_050, 44_100)])),
             ("wrong channel count", Ok(vec![range(1, 48_000, 48_000)])),
+        ] {
+            assert_eq!(
+                exclusive_outcome(probed, params()),
+                ExclusiveModeOutcome::PossibleAtAnotherConfiguration,
+                "{case}",
+            );
+        }
+        for (case, probed) in [
             ("no ranges at all", Ok(vec![])),
             (
                 "the device refused, or has no WASAPI endpoint",

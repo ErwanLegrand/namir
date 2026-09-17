@@ -642,8 +642,9 @@ impl AppHost {
             ..
         } = negotiated;
         // FR-IO-020: the same probe that settled this session's mode also answered whether the
-        // devices could do exclusive at all, and the panel's control reads that answer.
-        self.exclusive_supported = share_mode.supported;
+        // devices could do exclusive at all — at some rate and channel count they report, not
+        // necessarily the settled one (issue #227) — and the panel's control reads that answer.
+        self.exclusive_supported = share_mode.possible;
 
         if sample_rate.is_none() {
             self.audio_mode = None;
@@ -950,11 +951,13 @@ impl AppHost {
     }
 
     /// Records `negotiate_share_mode`'s capability answer for the devices start-up just
-    /// negotiated (issue #193). The reopen path updates the same field from its own
-    /// negotiation in `initiate_audio_reopen`; nothing else writes it, so the panel's control
-    /// cannot disagree with the negotiation that is actually running.
-    pub(crate) fn set_exclusive_supported(&mut self, supported: bool) {
-        self.exclusive_supported = supported;
+    /// negotiated (issues #193, #227): the negotiation's possibility answer, not the point
+    /// answer — see [`crate::app::ShareModeDecision::possible`]. The reopen path updates the
+    /// same field from its own negotiation in `initiate_audio_reopen`; nothing else writes
+    /// it, so the panel's control cannot disagree with the negotiation that is actually
+    /// running.
+    pub(crate) fn set_exclusive_supported(&mut self, possible: bool) {
+        self.exclusive_supported = possible;
     }
 
     /// Persists current `AppSettings` to `<config_dir>/audio-settings.json`.
