@@ -1187,6 +1187,76 @@ mod tests {
         );
     }
 
+    /// **Issue #227.** The panel gate answers possibility, not the point: a device whose
+    /// exclusive-mode list misses the shared-settled configuration keeps the Exclusive entry
+    /// enabled, because choosing it re-negotiates at a rate the device supports exclusively.
+    /// This is the exact scenario the #226 narrowing documented as a limitation: shared settled
+    /// at 48 kHz, exclusive list 96 kHz-only.
+    #[test]
+    fn exclusive_mode_possible_elsewhere_keeps_the_gate_open_and_the_session_shared() {
+        let exclusive_96k = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 96_000,
+                max_sample_rate_hz: 96_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive_96k(1)), Some(exclusive_96k(2)));
+
+        let decision = negotiate(&backend, false);
+
+        assert_eq!(decision.mode, ShareMode::Shared);
+        assert!(
+            decision.possible,
+            "the gate answers possibility, not the point answer"
+        );
+    }
+
+    /// **Issue #227.** Choosing Exclusive on that same device re-negotiates through the
+    /// exclusive-enumerated pass and lands on a configuration the device supports exclusively —
+    /// the rate moves from the shared-settled 48 kHz to the exclusive list's 96 kHz.
+    #[test]
+    fn choosing_exclusive_on_a_device_that_needs_a_different_rate_lands_on_a_working_rate() {
+        let exclusive_96k = |channels: u16| {
+            vec![crate::audio_io::SupportedConfigRange {
+                channels,
+                min_sample_rate_hz: 96_000,
+                max_sample_rate_hz: 96_000,
+                buffer_size: crate::audio_io::BufferSizeRange::Range {
+                    min: 144,
+                    max: 240_000,
+                },
+            }]
+        };
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive_96k(1)), Some(exclusive_96k(2)));
+
+        let negotiated = negotiated(&backend, true);
+
+        assert_eq!(negotiated.share_mode.mode, ShareMode::Exclusive);
+        assert_eq!(negotiated.sample_rate_hz, 96_000);
+        assert_eq!(negotiated.buffer_frames, Some(256));
+    }
+
+    /// A device with no exclusive endpoint at all still greys the control — the webcam shape
+    /// of the executed run — and the reason text beside it promises only a device change now.
+    #[test]
+    fn a_device_with_no_exclusive_endpoint_at_all_keeps_the_gate_closed() {
+        let backend = FakeBackend::new().with_devices(vec![device(IN)], vec![device(OUT)]);
+
+        let decision = negotiate(&backend, false);
+
+        assert_eq!(decision.mode, ShareMode::Shared);
+        assert!(!decision.possible);
+    }
+
     fn negotiated(backend: &FakeBackend, exclusive_mode: bool) -> AudioNegotiation {
         negotiate_audio(
             backend,
