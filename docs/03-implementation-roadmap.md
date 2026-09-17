@@ -6811,3 +6811,21 @@ the §2 reference machine. That is the honest state and is recorded rather than 
 keeps the evidence it cites, the ledger disagrees until the new steps record a run, and the
 divergence is this note. The 2026-09-08 note above is the precedent for reconciling the two —
 it took a human session.
+
+### The share-mode probe is directional; asymmetric duplex interfaces keep exclusive mode (issue #228), 2026-09-17
+
+Appended per this document's convention; nothing above is edited. Issue #228 closed the
+cross-direction defect the share-mode control's always-on probe inherited from M11:
+`CpalBackend::supports_exclusive` walked *both* directions for one probe and demanded every
+answering direction engage at the caller's channel count, so a duplex interface whose
+directions enumerate under one name with different channel counts was refused exclusive mode
+on a check that could not succeed. The probe now takes its direction from the caller
+(`AudioBackend::supports_exclusive` gained a `Direction`), and `FakeBackend`'s probe derives
+from the same per-direction exclusive ranges its enumeration reports — one walk, as in the real
+backend — which is how the asymmetric case is tested with no hardware
+(`an_asymmetric_duplex_grants_exclusive_mode_to_both_directions`).
+
+**No §14 cell moves.** FR-IO-020's cell still rests on the 2026-08-11 executed run, and the
+share-mode steps 10-15 remain NOT EXECUTED per the 2026-09-13 note's worse-of rule; nothing
+here changes what that run exercised. #227 — the other gap the same gate had — is the next
+PR in the stack.

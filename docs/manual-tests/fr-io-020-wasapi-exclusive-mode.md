@@ -276,6 +276,15 @@ the rewritten remedy text in `crates/namir-app/src/error_codes.rs`, and no step 
 the amendment is wording, not procedure, so the section still awaits its first execution as
 written.
 
+Amended 2026-09-17 (issue #228): the exclusive-mode probe is **directional** — each direction's
+answer comes from that direction's own exclusive ranges, never ANDed across directions. An
+asymmetric duplex interface (one name in both lists, different channel counts per direction)
+is therefore granted exclusive mode in both directions instead of being refused by a
+cross-check that compared one direction's channel count against the other's list. This class
+is verified by the in-process regression test `an_asymmetric_duplex_grants_exclusive_mode_to_both_directions`
+(`crates/namir-app/src/app.rs`), not by hardware: the reference machine's AudioBox is 2-channel
+in both directions, so no step on this script can observe the failure the fix removes.
+
 Issue #193 added the fifth audio-settings control: a Share Mode selector in the Audio Settings
 panel. Toggling it persists the request, re-enumerates rates and buffer sizes in the requested
 mode (the two modes report different ones — #190 measured 480/480 shared against 144..240000
