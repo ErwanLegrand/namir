@@ -303,7 +303,7 @@ pub enum ShareMode {
 /// the real backend: [`CpalBackend::supports_exclusive`] asks the device through D-13.4's fork
 /// rather than answering from a constant. [`Unsupported`](Self::Unsupported) means "no exclusive
 /// format at all" — no WASAPI endpoint or an exclusive list Namir cannot open; a list that
-/// misses only the probed configuration is [`PossibleAtAnotherConfiguration`] — a different
+/// misses only the probed configuration is [`PossibleAtAnotherConfiguration`](Self::PossibleAtAnotherConfiguration) — a different
 /// rate or channel count, in a format Namir can open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExclusiveModeOutcome {
