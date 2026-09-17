@@ -42,8 +42,8 @@
 //! settings of `--verbose`, and the hyphenated file is gone.
 
 use namir_app::audio_io::{
-    AudioBackend, BufferSizeRange, CpalBackend, DeviceInfo, ExclusiveModeOutcome, HostInfo,
-    ShareMode, StreamParams, SupportedConfigRange,
+    AudioBackend, BufferSizeRange, CpalBackend, DeviceInfo, Direction, ExclusiveModeOutcome,
+    HostInfo, ShareMode, StreamParams, SupportedConfigRange,
 };
 
 /// Rates to ask each device about under `--verbose`. Exclusive mode negotiates against the
@@ -148,8 +148,17 @@ fn report(
             }
         };
         let channels = app_channel_count(direction, &configs, rate);
-        let exclusive = match backend.supports_exclusive(host, device, probe_params(rate, channels))
-        {
+        // issue #228: the probe consults exactly the direction this device list enumerates.
+        let probe_direction = match direction {
+            "input" => Direction::Input,
+            _ => Direction::Output,
+        };
+        let exclusive = match backend.supports_exclusive(
+            host,
+            device,
+            probe_direction,
+            probe_params(rate, channels),
+        ) {
             ExclusiveModeOutcome::Engaged => "exclusive ok",
             ExclusiveModeOutcome::Unsupported => "shared-only",
         };
@@ -164,7 +173,7 @@ fn report(
         for c in &configs {
             print_config(c);
         }
-        print_exclusive_sweep(backend, host, device, &configs);
+        print_exclusive_sweep(backend, host, device, probe_direction, &configs);
     }
 }
 
@@ -218,6 +227,7 @@ fn print_exclusive_sweep(
     backend: &CpalBackend,
     host: &HostInfo,
     device: &DeviceInfo,
+    probe_direction: Direction,
     configs: &[SupportedConfigRange],
 ) {
     let mut channel_counts: Vec<u16> = configs.iter().map(|c| c.channels).collect();
@@ -233,8 +243,12 @@ fn print_exclusive_sweep(
             .iter()
             .copied()
             .filter(|&sample_rate_hz| {
-                backend.supports_exclusive(host, device, probe_params(sample_rate_hz, channels))
-                    == ExclusiveModeOutcome::Engaged
+                backend.supports_exclusive(
+                    host,
+                    device,
+                    probe_direction,
+                    probe_params(sample_rate_hz, channels),
+                ) == ExclusiveModeOutcome::Engaged
             })
             .collect();
         if engaged.is_empty() {

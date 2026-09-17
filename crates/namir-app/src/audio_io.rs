@@ -261,6 +261,21 @@ pub struct StreamParams {
     pub share_mode: ShareMode,
 }
 
+/// The two stream directions. Owned here — not `crate::stream`'s `Direction` — because the
+/// `cpal` boundary must not depend on the open machinery: `stream` already depends on
+/// `audio_io` (it imports `StreamParams`, `ExclusiveModeOutcome` and the trait itself), so the
+/// edge cannot go the other way. `pub` rather
+/// than `pub(crate)` because callers outside this module name it — this crate's `app`, the test
+/// `FakeBackend`, the `list_devices` example, and `namir-clap`'s harness backend — while
+/// `cpal_impl` uses it through `use super::Direction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// The input (capture) side of the endpoint.
+    Input,
+    /// The output (playback) side of the endpoint.
+    Output,
+}
+
 /// FR-IO-020's two WASAPI share modes. An enum rather than a `bool` so a call site reads as
 /// `ShareMode::Exclusive` rather than `true`, matching this module's habit ([`BufferSizeRange`],
 /// [`crate::stream::Direction`], [`crate::settings::ChannelMapping`]) of naming a choice instead of
@@ -709,10 +724,15 @@ pub trait AudioBackend: Send + Sync {
     /// exclusive mode is possible, so the caller ([`crate::app`]) passes the rest of the
     /// configuration (rate, buffer, channels) that an exclusive open would have to satisfy
     /// natively.
+    ///
+    /// `direction` is the endpoint direction the caller is asking about; implementations answer
+    /// from that direction's exclusive capability only (see [`CpalBackend::supports_exclusive`]
+    /// for why consulting both directions is a trap).
     fn supports_exclusive(
         &self,
         host: &HostInfo,
         device: &DeviceInfo,
+        direction: Direction,
         params: StreamParams,
     ) -> ExclusiveModeOutcome;
 
@@ -770,6 +790,7 @@ mod cpal_impl {
     use cpal::platform::wasapi_ext::{WasapiDeviceExt, WasapiStreamOptions};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+    use super::Direction;
     use super::convert;
     use super::{
         AudioBackend, AudioIoError, AudioStream, BufferSizeRange, CallbackStatus, CpalBackend,
@@ -1003,14 +1024,6 @@ mod cpal_impl {
         }
     }
 
-    /// The two stream directions, for the one query that has to try both — see
-    /// [`CpalBackend::supports_exclusive`] for why it does.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Direction {
-        Input,
-        Output,
-    }
-
     /// `name`'s **exclusive-mode** configurations in `direction`, as that device reports them,
     /// narrowed to the formats [`acceptable_formats`] names for exclusive mode.
     ///
@@ -1120,7 +1133,7 @@ mod cpal_impl {
     /// device's own refusal), an empty set, and a set whose ranges are all for some other rate or
     /// channel count. Erring towards `Unsupported` is the direction that cannot produce a mode
     /// indicator that lies.
-    pub(super) fn exclusive_outcome(
+    pub(crate) fn exclusive_outcome(
         probed: Result<Vec<SupportedConfigRange>, AudioIoError>,
         params: StreamParams,
     ) -> ExclusiveModeOutcome {
@@ -1268,20 +1281,21 @@ mod cpal_impl {
         /// see this module's doc comment and `docs/manual-tests/fr-io-020-wasapi-exclusive-mode.md`
         /// for that verification, which is now history rather than current behaviour.
         ///
-        /// # Why it probes both directions
+        /// # Why the probe takes a direction (issue #228)
         ///
-        /// [`AudioBackend::supports_exclusive`] is asked per *device* and carries no direction; the
-        /// caller ([`crate::app::run`]) asks once for the input device and once for the output one.
-        /// On WASAPI — the only backend where the question means anything — a device *is* a single
-        /// endpoint, capture or render, so a name resolves in exactly one of the two lists and only
-        /// that direction is probed. A host where one name really is both directions (ALSA's
-        /// `default`) gets both probed and the answers ANDed, which is the conservative reading:
-        /// answering `Engaged` off the one direction that happened to say yes would be the mode
-        /// indicator lying about the other.
+        /// The caller ([`crate::app::negotiate_share_mode`]) asks once for the input device and
+        /// once for the output one, with each direction's own settled `params`. The probe must
+        /// consult **that** direction's exclusive ranges and no other: on WASAPI a device *is* a
+        /// single endpoint, capture or render, so a name resolves in exactly one of the two
+        /// lists. A host where one name really is both directions (ALSA's `default`) has two
+        /// independent endpoints of that name, and each direction's exclusive capability is its
+        /// own — before #228, both lists were walked for one probe and every answering direction
+        /// had to cover the *other* direction's channel count, which refused asymmetric duplex
+        /// interfaces in both directions on a check that could not succeed.
         ///
-        /// A name in neither list is `Unsupported`, not an error — this method has no error channel
-        /// and, per its trait doc comment, exists precisely so a caller never has to recover from a
-        /// failed open.
+        /// A name absent from `direction`'s list is `Unsupported`, not an error — this method
+        /// has no error channel and, per its trait doc comment, exists precisely so a caller
+        /// never has to recover from a failed open.
         ///
         /// # What it probes against
         ///
@@ -1292,37 +1306,27 @@ mod cpal_impl {
         /// and buffer size are what the user picks and persists). A device whose exclusive-mode
         /// format list does not happen to include that settled rate or channel count therefore
         /// answers `Unsupported` and the session runs shared, even though some *other* rate or
-        /// channel count would have opened exclusively. Re-negotiating rate and buffer per
-        /// share mode is a larger change to the settings path than M11 takes on; recorded here
-        /// so it is not mistaken for a bug in the probe. The audio settings panel's share-mode
-        /// control (issue #193) reads this same answer as its capability gate: its reason text
-        /// ("at the current configuration") and the `EXCLUSIVE_MODE_UNAVAILABLE` remedy carry
-        /// the same qualifier, pointing the user at the device, sample-rate or channel-count
-        /// change that re-runs the probe with different params.
+        /// channel count would have opened exclusively — that limitation is issue #227's fix,
+        /// not this one.
+        ///
+        /// The audio settings panel's share-mode control (issues #193, #227) reads this same
+        /// answer as its capability gate, and `EXCLUSIVE_MODE_UNAVAILABLE`'s remedy is written
+        /// against it — a cross-reference PR #226's review recorded, kept here because
+        /// `error_codes.rs` still cites this method for the limitation it documented.
         fn supports_exclusive(
             &self,
             host: &HostInfo,
             device: &DeviceInfo,
+            direction: Direction,
             params: StreamParams,
         ) -> ExclusiveModeOutcome {
             let Ok(cpal_host) = resolve_host(host) else {
                 return ExclusiveModeOutcome::Unsupported;
             };
-            let mut answered = false;
-            for direction in [Direction::Input, Direction::Output] {
-                let Some(probed) = exclusive_configs(&cpal_host, &device.name, direction) else {
-                    continue;
-                };
-                if exclusive_outcome(probed, params) != ExclusiveModeOutcome::Engaged {
-                    return ExclusiveModeOutcome::Unsupported;
-                }
-                answered = true;
-            }
-            if answered {
-                ExclusiveModeOutcome::Engaged
-            } else {
-                ExclusiveModeOutcome::Unsupported
-            }
+            let Some(probed) = exclusive_configs(&cpal_host, &device.name, direction) else {
+                return ExclusiveModeOutcome::Unsupported;
+            };
+            exclusive_outcome(probed, params)
         }
 
         /// Opens in whichever format `chosen_format` settles on. Shared mode always takes the
@@ -1537,6 +1541,13 @@ mod cpal_impl {
         )
     }
 }
+
+/// Re-exported for `stream::FakeBackend`, whose probe must apply the real backend's own
+/// decision rule rather than a copy of it (two copies of the covering test is the pair that
+/// drifts — `cpal_impl`'s doc comment says so about the probe and the open). `cfg(test)`-gated
+/// like the fake itself: no non-test code names this path.
+#[cfg(test)]
+pub(crate) use cpal_impl::exclusive_outcome;
 
 #[cfg(test)]
 mod tests {
@@ -1820,6 +1831,7 @@ mod tests {
                     name: "no such device".to_string(),
                     is_default: true,
                 },
+                Direction::Input,
                 params(),
             ),
             ExclusiveModeOutcome::Unsupported,
@@ -1831,6 +1843,7 @@ mod tests {
                     name: "no such device".to_string(),
                     is_default: true,
                 },
+                Direction::Input,
                 params(),
             ),
             ExclusiveModeOutcome::Unsupported,
@@ -1840,13 +1853,16 @@ mod tests {
             if host.name == WASAPI_HOST_NAME {
                 continue;
             }
-            assert_eq!(
-                backend.supports_exclusive(&host, &device, params()),
-                ExclusiveModeOutcome::Unsupported,
-                "host {:?}, device {:?}",
-                host.name,
-                device.name,
-            );
+            for direction in [Direction::Input, Direction::Output] {
+                assert_eq!(
+                    backend.supports_exclusive(&host, &device, direction, params()),
+                    ExclusiveModeOutcome::Unsupported,
+                    "host {:?}, device {:?}, direction {:?}",
+                    host.name,
+                    device.name,
+                    direction,
+                );
+            }
         }
     }
 
@@ -1873,6 +1889,7 @@ mod tests {
             let asked_shared = backend.supports_exclusive(
                 &host,
                 &device,
+                Direction::Input,
                 StreamParams {
                     share_mode: ShareMode::Shared,
                     ..params()
@@ -1880,7 +1897,7 @@ mod tests {
             );
             assert_eq!(
                 asked_shared,
-                backend.supports_exclusive(&host, &device, params()),
+                backend.supports_exclusive(&host, &device, Direction::Input, params()),
                 "host {:?}, device {:?}",
                 host.name,
                 device.name,

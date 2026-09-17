@@ -456,18 +456,27 @@ pub(crate) fn negotiate_share_mode(
     // would have made the probe answer yes — re-creating exactly the trap the narrowed
     // `EXCLUSIVE_MODE_UNAVAILABLE` remedy (a device or configuration change re-runs the probe)
     // and FR-IO-020's manual step 15 (re-selecting the AudioBox re-probes to yes) point out of.
-    let ask = |device: &DeviceInfo, params: StreamParams| {
+    let ask = |device: &DeviceInfo, params: StreamParams, direction: crate::audio_io::Direction| {
         backend.supports_exclusive(
             host,
             device,
+            direction,
             StreamParams {
                 share_mode: ShareMode::Exclusive,
                 ..params
             },
         )
     };
-    let input = ask(input_device, input_params);
-    let output = ask(output_device, output_params);
+    let input = ask(
+        input_device,
+        input_params,
+        crate::audio_io::Direction::Input,
+    );
+    let output = ask(
+        output_device,
+        output_params,
+        crate::audio_io::Direction::Output,
+    );
     let supported =
         input == ExclusiveModeOutcome::Engaged && output == ExclusiveModeOutcome::Engaged;
 
@@ -1128,6 +1137,22 @@ mod tests {
         )
     }
 
+    /// One exclusive-mode config range for `channels`, covering 48 kHz with a real buffer range —
+    /// the shape every exclusive-mode test negotiates against. Module-level since #228: the
+    /// faithful fake's probe decides by these ranges, so they are shared by the backend-builder
+    /// and the tests that hand `reporting_exclusive_configs` its per-direction answers directly.
+    fn exclusive(channels: u16) -> Vec<crate::audio_io::SupportedConfigRange> {
+        vec![crate::audio_io::SupportedConfigRange {
+            channels,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }]
+    }
+
     /// A backend whose exclusive-mode ranges differ from its shared ones — the WASAPI shape
     /// (issue #190). Shared reports `BufferSizeRange::Unknown`, so no buffer size can be picked;
     /// exclusive reports a real range, out of which `PREFERRED_BUFFER_FRAMES` (256) is chosen.
@@ -1136,20 +1161,27 @@ mod tests {
     /// the output its two, as the shared answers already do — so a test can tell a direction
     /// mix-up in the enumeration from correct wiring. A single shared answer could not.
     fn backend_with_two_faces() -> FakeBackend {
-        let exclusive = |channels: u16| {
-            vec![crate::audio_io::SupportedConfigRange {
-                channels,
-                min_sample_rate_hz: 48_000,
-                max_sample_rate_hz: 48_000,
-                buffer_size: crate::audio_io::BufferSizeRange::Range {
-                    min: 144,
-                    max: 240_000,
-                },
-            }]
-        };
         FakeBackend::new()
             .with_devices(vec![device(IN)], vec![device(OUT)])
             .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
+    }
+
+    /// **Issue #228.** The probe is asked per direction and a direction's answer comes from that
+    /// direction's own exclusive ranges. The old `CpalBackend` implementation walked both
+    /// directions for one probe and demanded every answering direction engage at the *other*
+    /// direction's channel count — `backend_with_two_faces` is exactly the asymmetric shape that
+    /// was refused in both directions. The fake now derives its answer from the same per-direction
+    /// ranges its enumeration reports, so the seam the real bug lived behind is what this pins.
+    #[test]
+    fn an_asymmetric_duplex_grants_exclusive_mode_to_both_directions() {
+        let backend = backend_with_two_faces();
+        let negotiated = negotiated(&backend, true);
+
+        assert_eq!(negotiated.share_mode.mode, ShareMode::Exclusive);
+        assert_eq!(
+            negotiated.share_mode.refusal_detail, None,
+            "an asymmetric duplex is not a refusal"
+        );
     }
 
     fn negotiated(backend: &FakeBackend, exclusive_mode: bool) -> AudioNegotiation {
@@ -1175,9 +1207,7 @@ mod tests {
     /// that reports no usable buffer range at all — is what reached FR-IO-040's list.
     #[test]
     fn an_exclusive_session_negotiates_against_the_exclusive_ranges() {
-        let backend = backend_with_two_faces()
-            .granting_exclusive_to(IN)
-            .granting_exclusive_to(OUT);
+        let backend = backend_with_two_faces();
         let negotiated = negotiated(&backend, true);
 
         assert_eq!(negotiated.share_mode.mode, ShareMode::Exclusive);
@@ -1188,12 +1218,15 @@ mod tests {
         );
     }
 
-    /// The degrade path: exclusive was asked for, the devices refused, so the session runs shared
-    /// — and every negotiated value has to come from the *shared* ranges. Negotiating against
-    /// exclusive ranges and then opening shared is the same class of bug in the other direction.
+    /// The degrade path: exclusive was asked for, the devices have no exclusive endpoint at
+    /// all (the webcam shape), so the session runs shared — and every negotiated value has to
+    /// come from the *shared* ranges. This is the no-endpoint refusal shape (like the executed
+    /// run's webcam). The other two-pass shape — both directions answer the exclusive query but
+    /// their lists share no rate, so `settle`'s 48 kHz fallback is refused by one side — is
+    /// restored below in `a_refusal_after_a_real_exclusive_answer_enumerates_a_second_time`.
     #[test]
     fn a_refused_exclusive_request_renegotiates_against_the_shared_ranges() {
-        let backend = backend_with_two_faces();
+        let backend = FakeBackend::new().with_devices(vec![device(IN)], vec![device(OUT)]);
         let negotiated = negotiated(&backend, true);
 
         assert_eq!(negotiated.share_mode.mode, ShareMode::Shared);
@@ -1203,7 +1236,7 @@ mod tests {
         );
         assert_eq!(
             negotiated.buffer_frames, None,
-            "the exclusive range must not survive into a shared session"
+            "the shared ranges, which offer no buffer size, are what the session runs on"
         );
     }
 
@@ -1211,9 +1244,7 @@ mod tests {
     /// device that would report them.
     #[test]
     fn a_shared_session_negotiates_against_the_shared_ranges() {
-        let backend = backend_with_two_faces()
-            .granting_exclusive_to(IN)
-            .granting_exclusive_to(OUT);
+        let backend = backend_with_two_faces();
         let negotiated = negotiated(&backend, false);
 
         assert_eq!(negotiated.share_mode.mode, ShareMode::Shared);
@@ -1225,9 +1256,7 @@ mod tests {
     /// issue #190 fixed one level up, so it is asserted rather than assumed.
     #[test]
     fn each_direction_is_enumerated_in_its_own_right() {
-        let backend = backend_with_two_faces()
-            .granting_exclusive_to(IN)
-            .granting_exclusive_to(OUT);
+        let backend = backend_with_two_faces();
         let negotiated = negotiated(&backend, true);
 
         assert_eq!(
@@ -1248,14 +1277,37 @@ mod tests {
         );
     }
 
-    /// **The second pass runs only when there is something to re-enumerate.** Here the device
-    /// answered the exclusive query for real and *then* refused the mode, so the first pass'
-    /// ranges do not apply to the shared session that will run.
+    /// The **joint-rate** refusal: the devices' exclusive lists share no sample rate, so
+    /// `negotiate_shared_sample_rate` answers `None` and `settle` falls back to the hardcoded
+    /// 48 000 Hz. Both directions enumerated real exclusive ranges — the input's 48 kHz-only
+    /// list covers it, the output's 44.1 kHz-only list refuses — and the first pass' ranges do
+    /// not apply to the shared session that will run, so the second pass must re-enumerate.
     #[test]
     fn a_refusal_after_a_real_exclusive_answer_enumerates_a_second_time() {
-        let backend = backend_with_two_faces();
-        let _ = negotiated(&backend, true);
+        let exclusive_48k = vec![crate::audio_io::SupportedConfigRange {
+            channels: 1,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }];
+        let exclusive_44_1k = vec![crate::audio_io::SupportedConfigRange {
+            channels: 2,
+            min_sample_rate_hz: 44_100,
+            max_sample_rate_hz: 44_100,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }];
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive_48k), Some(exclusive_44_1k));
+        let negotiated = negotiated(&backend, true);
 
+        assert_eq!(negotiated.share_mode.mode, ShareMode::Shared);
         assert_eq!(
             backend.enumerations(),
             vec![
@@ -1263,7 +1315,8 @@ mod tests {
                 (Direction::Output, ShareMode::Exclusive),
                 (Direction::Input, ShareMode::Shared),
                 (Direction::Output, ShareMode::Shared),
-            ]
+            ],
+            "a real exclusive answer with no common rate forces the second pass"
         );
     }
 
@@ -1325,6 +1378,44 @@ mod tests {
         );
     }
 
+    /// The probe can tell two devices in the same direction apart (PR #229 review): the webcam
+    /// shape is a per-device fact, so a sibling output endpoint with exclusive ranges must
+    /// still grant. `with_no_exclusive_endpoint` models only the absence; the positive answer
+    /// always comes from the direction's ranges.
+    #[test]
+    fn a_device_without_an_exclusive_endpoint_refuses_even_when_a_sibling_grants() {
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT), device("webcam")])
+            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
+            .with_no_exclusive_endpoint("webcam");
+
+        let with_webcam = negotiate_share_mode(
+            &backend,
+            &host(),
+            &device(IN),
+            params(1),
+            &device("webcam"),
+            params(2),
+            true,
+        );
+        assert_eq!(with_webcam.mode, ShareMode::Shared);
+        assert!(
+            with_webcam.refusal_detail.unwrap().contains("webcam"),
+            "the endpointless device is the one named"
+        );
+
+        let with_interface = negotiate_share_mode(
+            &backend,
+            &host(),
+            &device(IN),
+            params(1),
+            &device(OUT),
+            params(2),
+            true,
+        );
+        assert_eq!(with_interface.mode, ShareMode::Exclusive);
+    }
+
     /// **Issue #88: the `cpal` error callback allocates nothing.** This is the closure a real
     /// stream invokes on its own thread when a device is lost or a driver faults, and it used to
     /// `format!` a notice detail and `mpsc::Sender::send` it — two heap allocations on an audio
@@ -1384,9 +1475,7 @@ mod tests {
     /// nothing to report, even on a backend that would have granted exclusive mode.
     #[test]
     fn a_session_that_never_asked_for_exclusive_mode_settles_on_shared_with_no_notice() {
-        let backend = FakeBackend::new()
-            .granting_exclusive_to(IN)
-            .granting_exclusive_to(OUT);
+        let backend = backend_with_two_faces();
         let decision = negotiate(&backend, false);
         assert_eq!(decision.mode, ShareMode::Shared);
         assert!(decision.refusal_detail.is_none());
@@ -1412,18 +1501,22 @@ mod tests {
     /// short-circuit that only checks one side fails here.
     #[test]
     fn exclusive_granted_on_only_one_device_settles_both_on_shared() {
-        for granted in [IN, OUT] {
-            let backend = FakeBackend::new().granting_exclusive_to(granted);
+        for (input, output, refusing) in [
+            (Some(exclusive(1)), None, OUT),
+            (None, Some(exclusive(2)), IN),
+        ] {
+            let backend = FakeBackend::new()
+                .with_devices(vec![device(IN)], vec![device(OUT)])
+                .reporting_exclusive_configs(input, output);
             let decision = negotiate(&backend, true);
             assert_eq!(
                 decision.mode,
                 ShareMode::Shared,
-                "exclusive granted only on {granted} must not engage the session"
+                "exclusive granted only on the {refusing}-side device must not engage the session"
             );
             let detail = decision
                 .refusal_detail
                 .expect("a partial grant is a refusal");
-            let refusing = if granted == IN { OUT } else { IN };
             assert!(detail.contains(refusing), "{detail}");
         }
     }
@@ -1432,9 +1525,7 @@ mod tests {
     /// exclusive and there is nothing to warn about.
     #[test]
     fn exclusive_granted_on_both_devices_settles_the_session_on_exclusive() {
-        let backend = FakeBackend::new()
-            .granting_exclusive_to(IN)
-            .granting_exclusive_to(OUT);
+        let backend = backend_with_two_faces();
         let decision = negotiate(&backend, true);
         assert_eq!(decision.mode, ShareMode::Exclusive);
         assert!(decision.refusal_detail.is_none());
@@ -1463,9 +1554,7 @@ mod tests {
     /// still comes from it.
     #[test]
     fn assemble_stream_config_produces_the_values_a_stream_opens_with() {
-        let backend = backend_with_two_faces()
-            .granting_exclusive_to(IN)
-            .granting_exclusive_to(OUT);
+        let backend = backend_with_two_faces();
 
         let assembled = assemble_stream_config(&negotiated(&backend, true));
 

@@ -85,7 +85,10 @@ use crate::xrun::XrunCounter;
 const STREAM_ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Which side of the duplex path a [`StreamFailure`] came from — FR-IO-070's report needs to say
-/// which device was lost, and the input/output callbacks share the same failure type.
+/// which device was lost, and the input/output callbacks share the same failure type. Distinct
+/// from `crate::audio_io::Direction` (same shape, different side of the seam): `stream` is the
+/// open machinery and cannot reuse `audio_io`'s type by the module-direction rule recorded
+/// there; mixing the two is caught as a type error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// The input (capture) stream.
@@ -718,24 +721,24 @@ pub(crate) struct FakeBackend {
     /// direction's enumeration *after* an earlier successful pass, which is the only way to
     /// reach the reappearance-and-disappearance shape the no-device reopen arm exists for.
     enumeration_failures: std::sync::Mutex<Vec<Direction>>,
-    /// Which device names answer [`ExclusiveModeOutcome::Engaged`] to
-    /// `supports_exclusive`. Every other name answers `Unsupported` — what the real
-    /// [`crate::audio_io::CpalBackend`] answers for any device with no exclusive-capable WASAPI
-    /// endpoint behind it, so a test that says nothing about exclusive mode gets the conservative
-    /// answer rather than an optimistic one.
-    exclusive_devices: Vec<String>,
     /// The [`ShareMode`] each direction's `build_*_stream` was actually handed —
     /// the observable that distinguishes "the session settled on exclusive" from "the session
     /// settled on exclusive and then opened shared anyway".
     asked_share_modes: std::sync::Mutex<Vec<(Direction, ShareMode)>>,
     /// What this backend reports when asked for **exclusive** configs, per direction. `None`
     /// means "the same ranges as shared", which is what a backend with no WASAPI endpoint behind
-    /// it does. Per direction rather than per backend for the same reason
-    /// [`FakeBackend::granting_exclusive_to`] is per device: a single shared answer cannot catch
-    /// a direction mix-up in the code it exercises, and picking the wrong direction is precisely
-    /// the class of bug issue #190 was.
+    /// it does. Per direction rather than per backend for the same reason the probe is per
+    /// direction (issue #228): a single shared answer cannot catch a direction mix-up in the
+    /// code it exercises, and picking the wrong direction is precisely the class of bug issue
+    /// #190 was.
     exclusive_input_configs: Option<Vec<SupportedConfigRange>>,
     exclusive_output_configs: Option<Vec<SupportedConfigRange>>,
+    /// Devices that have no WASAPI exclusive endpoint at all (the webcam shape), by device
+    /// name — a per-device fact, since the real backend resolves `device.name` and one direction
+    /// can hold an interface beside a webcam. Only the *absence* can be declared here: the
+    /// positive answer always comes from the direction's exclusive ranges
+    /// ([`FakeBackend::reporting_exclusive_configs`]), exactly as the enumeration reports them.
+    devices_without_exclusive_endpoints: Vec<String>,
     /// Every `(direction, share_mode)` a config query was made with, in call order — the
     /// observable for *which mode was enumerated*, and the only way to see issue #190's two-pass
     /// sequence. [`FakeBackend::asked_share_modes`] is its counterpart for the stream open.
@@ -770,11 +773,11 @@ impl FakeBackend {
             shared_input_configs: None,
             shared_output_configs: None,
             exclusive_output_configs: None,
+            devices_without_exclusive_endpoints: Vec::new(),
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream,
             open_failures: Vec::new(),
             enumeration_failures: std::sync::Mutex::new(Vec::new()),
-            exclusive_devices: Vec::new(),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
             input_devices: Vec::new(),
             output_devices: Vec::new(),
@@ -804,13 +807,6 @@ impl FakeBackend {
         self
     }
 
-    /// Makes `device_name` answer `Engaged` to `supports_exclusive`. Per device, not per backend,
-    /// so a test can grant exclusive mode to one direction and refuse it on the other.
-    pub(crate) fn granting_exclusive_to(mut self, device_name: &str) -> Self {
-        self.exclusive_devices.push(device_name.to_string());
-        self
-    }
-
     /// Configures the input and output devices reported by this backend.
     pub(crate) fn with_devices(
         mut self,
@@ -819,6 +815,18 @@ impl FakeBackend {
     ) -> Self {
         self.input_devices = input_devices;
         self.output_devices = output_devices;
+        self
+    }
+
+    /// Declares that `device_name` has no WASAPI exclusive endpoint at all — the webcam shape.
+    /// Per device rather than per direction because the real backend resolves `device.name`:
+    /// two devices in the **same** direction can differ (an interface beside a webcam). ONLY the
+    /// absence can be expressed: the positive answer always comes from the direction's exclusive
+    /// ranges ([`FakeBackend::reporting_exclusive_configs`]), exactly as the enumeration reports
+    /// them.
+    pub(crate) fn with_no_exclusive_endpoint(mut self, device_name: &str) -> Self {
+        self.devices_without_exclusive_endpoints
+            .push(device_name.to_string());
         self
     }
 
@@ -1101,12 +1109,30 @@ impl AudioBackend for FakeBackend {
         &self,
         _host: &HostInfo,
         device: &DeviceInfo,
-        _params: StreamParams,
+        direction: crate::audio_io::Direction,
+        params: StreamParams,
     ) -> ExclusiveModeOutcome {
-        if self.exclusive_devices.contains(&device.name) {
-            ExclusiveModeOutcome::Engaged
-        } else {
-            ExclusiveModeOutcome::Unsupported
+        // A device can differ from a sibling in its own direction: "no WASAPI exclusive
+        // endpoint at all" is a per-device fact (`with_no_exclusive_endpoint`). Only the
+        // absence can be declared — the positive answer always comes from the direction's
+        // exclusive ranges, exactly as the enumeration reports them.
+        if self
+            .devices_without_exclusive_endpoints
+            .contains(&device.name)
+        {
+            return ExclusiveModeOutcome::Unsupported;
+        }
+        // The absence check is the one per-device fact: a name registered with
+        // `with_no_exclusive_endpoint` answers `Unsupported` even when a sibling in the same
+        // direction has exclusive ranges. Every other answer derives from the direction's
+        // exclusive ranges, so the probe and the enumeration cannot disagree about capability.
+        let ranges = match direction {
+            crate::audio_io::Direction::Input => self.exclusive_input_configs.as_ref(),
+            crate::audio_io::Direction::Output => self.exclusive_output_configs.as_ref(),
+        };
+        match ranges {
+            Some(ranges) => crate::audio_io::exclusive_outcome(Ok(ranges.clone()), params),
+            None => ExclusiveModeOutcome::Unsupported,
         }
     }
     fn build_input_stream(
