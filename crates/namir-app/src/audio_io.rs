@@ -722,6 +722,10 @@ pub trait AudioBackend: Send + Sync {
     /// exclusive mode is possible, so the caller ([`crate::app`]) passes the rest of the
     /// configuration (rate, buffer, channels) that an exclusive open would have to satisfy
     /// natively.
+    ///
+    /// `direction` is the endpoint direction the caller is asking about; implementations answer
+    /// from that direction's exclusive capability only (see [`CpalBackend::supports_exclusive`]
+    /// for why consulting both directions is a trap).
     fn supports_exclusive(
         &self,
         host: &HostInfo,
