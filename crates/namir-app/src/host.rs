@@ -665,18 +665,18 @@ impl AppHost {
             );
         }
         // FR-IO-020 / issue #227: an exclusive reopen can move the sample rate the settings
-        // file asked for — the devices' exclusive lists do not cover it, so the exclusive pass
-        // settled on one they do. Disclosed as a notice rather than left to be discovered: a
-        // silent rate move is worse than a greyed entry. Mirrors `crate::app::run`'s start-up
-        // posting; keep the pair in step. `None` means the user never asked for a rate, so
-        // there is nothing to have moved.
+        // file asked for — the requested rate could not be settled in exclusive mode across
+        // the devices, so the exclusive pass landed on one that could. Disclosed as a notice
+        // rather than left to be discovered: a silent rate move is worse than a greyed entry.
+        // Mirrors `crate::app::run`'s start-up posting; keep the pair in step. `None` means the
+        // user never asked for a rate, so there is nothing to have moved.
         if let (crate::audio_io::ShareMode::Exclusive, Some(requested)) =
             (share_mode.mode, self.settings.sample_rate_hz)
             && requested != sample_rate_hz
         {
             self.push_notice(
                 crate::error_codes::EXCLUSIVE_MODE_SAMPLE_RATE_CHANGED,
-                format!("{sample_rate_hz} Hz; {requested} Hz is not available in exclusive mode on this device"),
+                format!("{sample_rate_hz} Hz; the requested {requested} Hz could not be settled in exclusive mode on these devices"),
             );
         }
 

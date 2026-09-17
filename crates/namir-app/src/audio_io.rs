@@ -303,8 +303,9 @@ pub enum ShareMode {
 /// the real backend: [`CpalBackend::supports_exclusive`] asks the device through D-13.4's fork
 /// rather than answering from a constant. [`Unsupported`](Self::Unsupported) means "no exclusive
 /// format at all" — no WASAPI endpoint or an exclusive list Namir cannot open; a list that
-/// misses only the probed configuration is [`PossibleAtAnotherConfiguration`](Self::PossibleAtAnotherConfiguration) — a different
-/// rate or channel count, in a format Namir can open.
+/// misses only the probed configuration is
+/// [`PossibleAtAnotherConfiguration`](Self::PossibleAtAnotherConfiguration) — a different rate
+/// or channel count, in a format Namir can open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExclusiveModeOutcome {
     /// The stream was opened in exclusive mode.
@@ -1317,7 +1318,7 @@ mod cpal_impl {
         /// requested (issue #190), and from the **shared-enumerated** ones when no exclusive
         /// request was made (FR-IO-040 settles before FR-IO-020's share mode, since the rate
         /// and buffer size are what the user picks and persists). A device whose exclusive-mode
-/// format list does not happen to include that settled rate or channel count answers
+        /// format list does not happen to include that settled rate or channel count answers
         /// [`ExclusiveModeOutcome::PossibleAtAnotherConfiguration`] rather than a refusal
         /// (issue #227) — the mode decision still settles on shared, but the panel's share-mode
         /// control gates on possibility, so choosing Exclusive re-negotiates through the
