@@ -730,6 +730,12 @@ pub(crate) struct FakeBackend {
     /// #190 was.
     exclusive_input_configs: Option<Vec<SupportedConfigRange>>,
     exclusive_output_configs: Option<Vec<SupportedConfigRange>>,
+    /// Devices that have no WASAPI exclusive endpoint at all (the webcam shape), by device
+    /// name — a per-device fact, since the real backend resolves `device.name` and one direction
+    /// can hold an interface beside a webcam. Only the *absence* can be declared here: the
+    /// positive answer always comes from the direction's exclusive ranges
+    /// ([`FakeBackend::reporting_exclusive_configs`]), exactly as the enumeration reports them.
+    devices_without_exclusive_endpoints: Vec<String>,
     /// Every `(direction, share_mode)` a config query was made with, in call order — the
     /// observable for *which mode was enumerated*, and the only way to see issue #190's two-pass
     /// sequence. [`FakeBackend::asked_share_modes`] is its counterpart for the stream open.
@@ -764,6 +770,7 @@ impl FakeBackend {
             shared_input_configs: None,
             shared_output_configs: None,
             exclusive_output_configs: None,
+            devices_without_exclusive_endpoints: Vec::new(),
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream,
             open_failures: Vec::new(),
@@ -805,6 +812,18 @@ impl FakeBackend {
     ) -> Self {
         self.input_devices = input_devices;
         self.output_devices = output_devices;
+        self
+    }
+
+    /// Declares that `device_name` has no WASAPI exclusive endpoint at all — the webcam shape.
+    /// Per device rather than per direction because the real backend resolves `device.name`:
+    /// two devices in the **same** direction can differ (an interface beside a webcam). ONLY the
+    /// absence can be expressed: the positive answer always comes from the direction's exclusive
+    /// ranges ([`FakeBackend::reporting_exclusive_configs`]), exactly as the enumeration reports
+    /// them.
+    pub(crate) fn with_no_exclusive_endpoint(mut self, device_name: &str) -> Self {
+        self.devices_without_exclusive_endpoints
+            .push(device_name.to_string());
         self
     }
 
@@ -1086,10 +1105,20 @@ impl AudioBackend for FakeBackend {
     fn supports_exclusive(
         &self,
         _host: &HostInfo,
-        _device: &DeviceInfo,
+        device: &DeviceInfo,
         direction: crate::audio_io::Direction,
         params: StreamParams,
     ) -> ExclusiveModeOutcome {
+        // A device can differ from a sibling in its own direction: "no WASAPI exclusive
+        // endpoint at all" is a per-device fact (`with_no_exclusive_endpoint`). Only the
+        // absence can be declared — the positive answer always comes from the direction's
+        // exclusive ranges, exactly as the enumeration reports them.
+        if self
+            .devices_without_exclusive_endpoints
+            .contains(&device.name)
+        {
+            return ExclusiveModeOutcome::Unsupported;
+        }
         // The probe derives from the same per-direction exclusive ranges the enumeration
         // reports — the real backend's probe and enumeration are one device walk, so the fake's
         // two answers cannot disagree. `None` for a direction means "no exclusive endpoint at

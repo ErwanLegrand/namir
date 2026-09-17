@@ -1378,6 +1378,44 @@ mod tests {
         );
     }
 
+    /// The probe can tell two devices in the same direction apart (PR #229 review): the webcam
+    /// shape is a per-device fact, so a sibling output endpoint with exclusive ranges must
+    /// still grant. `with_no_exclusive_endpoint` models only the absence; the positive answer
+    /// always comes from the direction's ranges.
+    #[test]
+    fn a_device_without_an_exclusive_endpoint_refuses_even_when_a_sibling_grants() {
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT), device("webcam")])
+            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
+            .with_no_exclusive_endpoint("webcam");
+
+        let with_webcam = negotiate_share_mode(
+            &backend,
+            &host(),
+            &device(IN),
+            params(1),
+            &device("webcam"),
+            params(2),
+            true,
+        );
+        assert_eq!(with_webcam.mode, ShareMode::Shared);
+        assert!(
+            with_webcam.refusal_detail.unwrap().contains("webcam"),
+            "the endpointless device is the one named"
+        );
+
+        let with_interface = negotiate_share_mode(
+            &backend,
+            &host(),
+            &device(IN),
+            params(1),
+            &device(OUT),
+            params(2),
+            true,
+        );
+        assert_eq!(with_interface.mode, ShareMode::Exclusive);
+    }
+
     /// **Issue #88: the `cpal` error callback allocates nothing.** This is the closure a real
     /// stream invokes on its own thread when a device is lost or a driver faults, and it used to
     /// `format!` a notice detail and `mpsc::Sender::send` it — two heap allocations on an audio
