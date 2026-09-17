@@ -175,11 +175,16 @@ pub struct AudioDevicePanelSnapshot {
     /// Zero-based index of the hardware input channel currently feeding the engine (FR-IO-090),
     /// already clamped by the host to `supported_input_channels`.
     pub current_input_channel: u16,
-    /// Whether the current devices can provide WASAPI exclusive mode at the configuration the
-    /// last negotiation settled (FR-IO-020). Settled by the host during negotiation -- never
-    /// probed per frame -- and `false` whenever no negotiation has run *or the last one found
-    /// no usable device*, which disables the panel's share-mode control with a stated reason
-    /// rather than letting it fail after the fact.
+    /// Whether the current devices can provide WASAPI exclusive mode in **some** configuration
+    /// — at any rate and channel count they report, in a format Namir can open (issue #227).
+    /// This is the panel's Share Mode capability gate, deliberately not the point answer: a
+    /// device whose exclusive list misses the configuration the session runs shared at keeps
+    /// the Exclusive entry enabled, because choosing it re-negotiates at a configuration the
+    /// device *can* open exclusively (a notice discloses the rate move if one happens). Settled
+    /// by the host during negotiation — never probed per frame — and `false` whenever no
+    /// negotiation has run *or the last one found no usable device*, which disables the
+    /// panel's share-mode control with a stated reason rather than letting it fail after the
+    /// fact.
     pub exclusive_supported: bool,
     /// Whether exclusive mode is currently *requested* -- the persisted
     /// `AppSettings::exclusive_mode`, and the share-mode control's position. What was actually

@@ -34,26 +34,28 @@ pub const DEVICE_OPEN_FAILED: ErrorCode = ErrorCode::new(
 /// no longer names `audio-settings.json`** (issue #193): the panel's Share Mode control offers
 /// Shared in every state, so "stop asking for it" is always available, and Exclusive becomes
 /// selectable again only when a device *or configuration* change makes the probe answer yes.
-/// The probe answers for the configuration the session settled, so reselecting the same device
-/// at the same settings refuses again (the limitation `CpalBackend::supports_exclusive`
-/// records); the remedy's promise of recovery was narrowed after PR #226's review from "a
-/// device selection re-runs the probe" — true, but the same selection re-answers no — to the
-/// conditions above. The remedy names only actions that actually change that answer: picking
-/// Shared, or changing the selected devices or the settled configuration (sample rate or
-/// channel count — both are probe inputs, so both re-run it with different params). Closing
-/// other applications is *not* one of them — this notice posts on a format-capability walk
-/// (`IsFormatSupported`), which nothing about another process's hold on the endpoint changes.
-/// No restart is required in either direction; the toggle rides the same reopen machinery this
-/// notice's caller already runs.
+/// The probe answers for the configuration the session settled, so a refusal means either the
+/// settled configuration is outside the device's exclusive formats (in which case issue #227's
+/// possibility gate keeps the Exclusive entry enabled and a *different* configuration change —
+/// sample rate or channel count — is what re-probes to yes, and the rate-move notice
+/// (`app.audio_io.exclusive_mode_sample_rate_changed`) discloses what an exclusive reopen
+/// actually settled on) or the device reports no exclusive format at all (in which case only a
+/// different device changes the answer). The remedy names only actions that actually change
+/// that answer: picking Shared, or changing the selected devices or the settled configuration.
+/// Closing other applications is *not* one of them — this notice posts on a format-capability
+/// walk (`IsFormatSupported`), which nothing about another process's hold on the endpoint
+/// changes; an open-time `AUDCLNT_E_DEVICE_IN_USE` refusal is a different failure class that
+/// arrives from the stream open, not from this probe. No restart is required in either
+/// direction; the toggle rides the same reopen machinery this notice's caller already runs.
 pub const EXCLUSIVE_MODE_UNAVAILABLE: ErrorCode = ErrorCode::new(
     "app.audio_io.exclusive_mode_unavailable",
     Severity::Warning,
     "Exclusive mode is not available, so the device was opened in shared mode ({detail}).",
     "Choose Shared under Share Mode in the Audio Settings panel to run shared and stop asking \
-     for exclusive mode — it is selectable in every state, with no restart. Exclusive mode \
-     becomes available again only when a change of device or of the settled configuration \
-     (sample rate or channel count) makes the probe answer yes; the same selection will refuse \
-     again.",
+     for exclusive mode — it is selectable in every state, with no restart. If the device \
+     supports exclusive mode at another sample rate or channel count, changing the settled \
+     configuration makes the probe answer yes; if it reports no exclusive format at all, only \
+     a different device will. The same selection will refuse again.",
 );
 
 /// FR-IO-020, issue #227: exclusive mode was granted, but at a sample rate the settings did

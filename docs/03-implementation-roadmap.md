@@ -6829,3 +6829,24 @@ backend — which is how the asymmetric case is tested with no hardware
 share-mode steps 10-15 remain NOT EXECUTED per the 2026-09-13 note's worse-of rule; nothing
 here changes what that run exercised. #227 — the other gap the same gate had — is the next
 PR in the stack.
+
+### The share-mode gate answers possibility; a rate move is disclosed (issue #227), 2026-09-17
+
+Appended per this document's convention; nothing above is edited. Issue #227 removed the
+limitation the 2026-09-13 note's gate carried (and PR #226's review had narrowed into
+documentation): the panel's Share Mode control gated on the probe's *point* answer, so a
+device running shared at 44 100 Hz whose exclusive-mode format list reports only 48 000 Hz
+had its Exclusive entry greyed — and because no request was ever made, the exclusive-
+enumerated pass that would have settled 48 000 never ran. The probe now answers three
+shapes (`crates/namir-app/src/audio_io.rs`): `Engaged`, `PossibleAtAnotherConfiguration`
+(issue #227's gate stays open), and `Unsupported` (no exclusive format at all). Choosing
+Exclusive on such a device re-negotiates at a rate the device opens exclusively, and the new
+`app.audio_io.exclusive_mode_sample_rate_changed` notice (Info) discloses the move from the
+same two call sites the refusal notice uses. No additional device I/O: the possibility answer
+derives from the same `exclusive_configs` walk as the point answer, so the ~43 ms probe cost
+the 2026-09-13 note recorded is unchanged.
+
+**No §14 cell moves.** FR-IO-020's cell still rests on the 2026-08-11 executed run; steps
+10-16 remain NOT EXECUTED under the worse-of convention of the 2026-09-13 note, and the
+traced document now describes what the gate actually does rather than the qualifier this
+issue removed.
