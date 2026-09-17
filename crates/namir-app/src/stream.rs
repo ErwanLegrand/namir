@@ -1122,12 +1122,10 @@ impl AudioBackend for FakeBackend {
         {
             return ExclusiveModeOutcome::Unsupported;
         }
-        // The probe derives from the same per-direction exclusive ranges the enumeration
-        // reports — the real backend's probe and enumeration are one device walk, so the fake's
-        // two answers cannot disagree. `None` for a direction means "no exclusive endpoint at
-        // all", the same fact the configs query reports as a shared answer. `device` is
-        // deliberately unused: `reporting_exclusive_configs` is per backend, and every device
-        // behind it shares its ranges, which is the granularity the negotiation actually needs.
+        // The absence check is the one per-device fact: a name registered with
+        // `with_no_exclusive_endpoint` answers `Unsupported` even when a sibling in the same
+        // direction has exclusive ranges. Every other answer derives from the direction's
+        // exclusive ranges, so the probe and the enumeration cannot disagree about capability.
         let ranges = match direction {
             crate::audio_io::Direction::Input => self.exclusive_input_configs.as_ref(),
             crate::audio_io::Direction::Output => self.exclusive_output_configs.as_ref(),
