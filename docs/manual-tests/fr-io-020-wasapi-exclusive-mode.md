@@ -349,8 +349,8 @@ Steps continue the executed run's numbering.
     be demonstrated on that device and is recorded as not run with that reason rather than as
     a pass.
 
-**Result: NOT EXECUTED.** Steps 10-15 were written 2026-09-13 with the control and await a human
-run on the §2 reference machine. The executed 2026-08-11 run above predates the control and
+**Result: NOT EXECUTED.** Steps 10-15 were written 2026-09-13 with the control; step 16 was
+added 2026-09-17 (issue #227). All await a human run on the §2 reference machine. The executed 2026-08-11 run above predates the control and
 remains the evidence for the steps it covered; under this document's worse-of convention the
 gate reads this section's verdict until those steps record a run.
 
