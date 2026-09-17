@@ -262,7 +262,9 @@ pub struct StreamParams {
 }
 
 /// The two stream directions. Owned here — not `crate::stream`'s `Direction` — because the
-/// `cpal` boundary must not depend on the open machinery (D-5.1's layering table). `pub` rather
+/// `cpal` boundary must not depend on the open machinery: `stream` already depends on
+/// `audio_io` (it imports `StreamParams`, `ExclusiveModeOutcome` and the trait itself), so the
+/// edge cannot go the other way. `pub` rather
 /// than `pub(crate)` because callers outside this module name it — this crate's `app`, the test
 /// `FakeBackend`, the `list_devices` example, and `namir-clap`'s harness backend — while
 /// `cpal_impl` uses it through `use super::Direction`.
@@ -1306,6 +1308,11 @@ mod cpal_impl {
         /// answers `Unsupported` and the session runs shared, even though some *other* rate or
         /// channel count would have opened exclusively — that limitation is issue #227's fix,
         /// not this one.
+        ///
+        /// The audio settings panel's share-mode control (issues #193, #227) reads this same
+        /// answer as its capability gate, and `EXCLUSIVE_MODE_UNAVAILABLE`'s remedy is written
+        /// against it — a cross-reference PR #226's review recorded, kept here because
+        /// `error_codes.rs` still cites this method for the limitation it documented.
         fn supports_exclusive(
             &self,
             host: &HostInfo,

@@ -85,7 +85,10 @@ use crate::xrun::XrunCounter;
 const STREAM_ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Which side of the duplex path a [`StreamFailure`] came from — FR-IO-070's report needs to say
-/// which device was lost, and the input/output callbacks share the same failure type.
+/// which device was lost, and the input/output callbacks share the same failure type. Distinct
+/// from `crate::audio_io::Direction` (same shape, different side of the seam): `stream` is the
+/// open machinery and cannot reuse `audio_io`'s type by the module-direction rule recorded
+/// there; mixing the two is caught as a type error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// The input (capture) stream.
