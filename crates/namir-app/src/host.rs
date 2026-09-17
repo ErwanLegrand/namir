@@ -3874,7 +3874,10 @@ mod tests {
         // Only the input answers the exclusive query; the output has no exclusive endpoint (a
         // capture device with a WASAPI exclusive path beside a render device without one), so
         // pass 1's exclusive ranges belong to a session that will not run: this refusal
-        // genuinely needs the second pass, and it is the only remaining shape that does.
+        // genuinely needs the second pass. It is one of the two two-pass shapes — this is the
+        // one-direction-without-endpoint one; the other (both directions answer for real but
+        // share no sample rate, so `settle`'s 48 kHz fallback is refused) is pinned by
+        // app.rs's `a_refusal_after_a_real_exclusive_answer_enumerates_a_second_time`.
         let backend = Arc::new(
             crate::stream::FakeBackend::new()
                 .with_devices(

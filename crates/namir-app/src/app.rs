@@ -1220,9 +1220,10 @@ mod tests {
 
     /// The degrade path: exclusive was asked for, the devices have no exclusive endpoint at
     /// all (the webcam shape), so the session runs shared — and every negotiated value has to
-    /// come from the *shared* ranges. Since #228 this is the only refusal shape left: the fake's
-    /// probe derives from the same per-direction ranges its enumeration reports (one walk, as in
-    /// the real backend), so "enumerated exclusive, then refused" no longer exists to test.
+    /// come from the *shared* ranges. This is the no-endpoint refusal shape (like the executed
+    /// run's webcam). The other two-pass shape — both directions answer the exclusive query but
+    /// their lists share no rate, so `settle`'s 48 kHz fallback is refused by one side — is
+    /// restored below in `a_refusal_after_a_real_exclusive_answer_enumerates_a_second_time`.
     #[test]
     fn a_refused_exclusive_request_renegotiates_against_the_shared_ranges() {
         let backend = FakeBackend::new().with_devices(vec![device(IN)], vec![device(OUT)]);
@@ -1276,10 +1277,48 @@ mod tests {
         );
     }
 
-    // (The "answered the exclusive query for real, then refused" state no longer exists since
-    // #228: the settled configuration is derived from the enumerated ranges, so a real exclusive
-    // answer always engages. `one_direction_answering_exclusive_is_enough_to_force_the_second_pass`
-    // owns the remaining two-pass shape — one direction with no endpoint.)
+    /// The **joint-rate** refusal: the devices' exclusive lists share no sample rate, so
+    /// `negotiate_shared_sample_rate` answers `None` and `settle` falls back to the hardcoded
+    /// 48 000 Hz. Both directions enumerated real exclusive ranges — the input's 48 kHz-only
+    /// list covers it, the output's 44.1 kHz-only list refuses — and the first pass' ranges do
+    /// not apply to the shared session that will run, so the second pass must re-enumerate.
+    #[test]
+    fn a_refusal_after_a_real_exclusive_answer_enumerates_a_second_time() {
+        let exclusive_48k = vec![crate::audio_io::SupportedConfigRange {
+            channels: 1,
+            min_sample_rate_hz: 48_000,
+            max_sample_rate_hz: 48_000,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }];
+        let exclusive_44_1k = vec![crate::audio_io::SupportedConfigRange {
+            channels: 2,
+            min_sample_rate_hz: 44_100,
+            max_sample_rate_hz: 44_100,
+            buffer_size: crate::audio_io::BufferSizeRange::Range {
+                min: 144,
+                max: 240_000,
+            },
+        }];
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive_48k), Some(exclusive_44_1k));
+        let negotiated = negotiated(&backend, true);
+
+        assert_eq!(negotiated.share_mode.mode, ShareMode::Shared);
+        assert_eq!(
+            backend.enumerations(),
+            vec![
+                (Direction::Input, ShareMode::Exclusive),
+                (Direction::Output, ShareMode::Exclusive),
+                (Direction::Input, ShareMode::Shared),
+                (Direction::Output, ShareMode::Shared),
+            ],
+            "a real exclusive answer with no common rate forces the second pass"
+        );
+    }
 
     /// The other way to reach a refused exclusive request: the device could not answer the
     /// exclusive query at all, so the first pass already returned the shared ranges. Re-running it
