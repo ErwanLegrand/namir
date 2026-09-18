@@ -172,11 +172,12 @@ pub(crate) fn negotiate_audio(
         Some((input, output))
     };
 
-    let requested = if prefs.exclusive_mode {
-        ShareMode::Exclusive
-    } else {
-        ShareMode::Shared
-    };
+    let requested =
+        if prefs.exclusive_mode && crate::audio_io::host_has_share_mode_concept(host_info) {
+            ShareMode::Exclusive
+        } else {
+            ShareMode::Shared
+        };
     let (input, output) = enumerate(requested)?;
     let settled = settle(&input, &output, prefs);
 
@@ -455,6 +456,10 @@ pub(crate) fn negotiate_share_mode(
     // decision at once without probing: `possible: false` keeps the panel's capability gate
     // false, `concept: false` tells the panel to hide the control, and the session settles on
     // shared with no refusal detail — nothing was refused, nothing was even asked for.
+    // Through [`negotiate_audio`] this is unreachable-by-construction: its `requested` is
+    // derived from the same [`host_has_share_mode_concept`] answer, so a concept-less host is
+    // never enumerated in exclusive mode either — this guard is for a future caller that
+    // passes `requested: true` against a concept-less host.
     if !crate::audio_io::host_has_share_mode_concept(host) {
         return ShareModeDecision {
             mode: ShareMode::Shared,

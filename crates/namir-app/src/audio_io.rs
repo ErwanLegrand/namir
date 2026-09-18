@@ -1600,6 +1600,23 @@ mod tests {
     /// it), and D-13.4's fork is deliberately free of them for the same reason.
     const WASAPI_HOST_NAME: &str = "WASAPI";
 
+    /// Pins the runtime coupling [`host_has_share_mode_concept`]'s probe key rests on: the
+    /// `host.name == "WASAPI"` compare keys against `HostId::name()`'s spelling (via
+    /// [`crate::app::resolve_host`]), and a future cpal rebase that re-spells it would silently
+    /// withdraw exclusive mode on Windows — no compile error (it is a string), no test failure
+    /// (the fakes supply their own name), no `xtask` gate. A runtime scan of what the fork
+    /// actually compiled in, which is the only legal shape here: no `cfg` attribute, since
+    /// `xtask layering` keeps platform `cfg` out of this crate. Empty on builds without WASAPI,
+    /// which asserts nothing and is fine.
+    #[test]
+    fn the_wasapi_host_name_the_probe_key_compares_is_the_one_cpal_spells() {
+        for id in cpal::available_hosts() {
+            if id.name().eq_ignore_ascii_case("wasapi") {
+                assert_eq!(id.name(), WASAPI_HOST_NAME);
+            }
+        }
+    }
+
     fn params() -> StreamParams {
         StreamParams {
             sample_rate_hz: 48_000,

@@ -3,9 +3,17 @@
 //! (`fix(jack): never block stream drop on deactivation`), `jack_deactivate` could block the
 //! caller forever on Jack2/Windows — one 4-minute hang in 40 rounds — leaving the sibling
 //! client streaming into a dead consumer (namir's window-close hang; see D-13.4's M15
-//! follow-up note). The fork now deactivates on a detached thread; a drop stuck past 5 s is
-//! the bug returning, and exits non-zero. Run whenever the cpal pin is bumped (R-10's
-//! highest-risk operation). Requires a running JACK server.
+//! follow-up note). The fork now deactivates on a detached thread.
+//!
+//! The rounds (40) match the sample the pre-fix evidence was gathered at; a drop stuck past
+//! 5 s is the bug returning. Exit status is the file's contract: **0** — every drop clean
+//! across all rounds; **1** — one or more drops exceeded the ceiling, the regression is back;
+//! **2** — the environment cannot run the probe (no JACK host or default device compiled in,
+//! an enumeration, open or play failure — a machine with no server running lands here), which
+//! a caller that only reads the status must not mistake for the race.
+//!
+//! Run whenever the cpal pin is bumped (R-10's highest-risk operation). Requires a running
+//! JACK server.
 //!
 //! ```text
 //! cargo run -p namir-app --example jack_drop_probe
@@ -20,19 +28,24 @@ const MAX_WAIT: Duration = Duration::from_secs(5);
 fn main() -> Result<(), String> {
     let backend = CpalBackend::new();
     let Some(host) = backend.hosts().into_iter().find(|h| &h.name == "JACK") else {
-        return Err("no JACK host compiled; nothing to probe".to_string());
+        eprintln!("SKIP: no JACK host compiled; nothing to probe");
+        std::process::exit(2);
     };
     let Ok(inputs) = backend.input_devices(&host) else {
-        return Err("input enumeration failed".to_string());
+        eprintln!("SKIP: input enumeration failed");
+        std::process::exit(2);
     };
     let Ok(outputs) = backend.output_devices(&host) else {
-        return Err("output enumeration failed".to_string());
+        eprintln!("SKIP: output enumeration failed");
+        std::process::exit(2);
     };
     let Some(input) = inputs.into_iter().find(|d| d.is_default) else {
-        return Err("no default JACK input device".to_string());
+        eprintln!("SKIP: no default JACK input device");
+        std::process::exit(2);
     };
     let Some(output) = outputs.into_iter().find(|d| d.is_default) else {
-        return Err("no default JACK output device".to_string());
+        eprintln!("SKIP: no default JACK output device");
+        std::process::exit(2);
     };
     let params = StreamParams {
         sample_rate_hz: 48_000,
@@ -41,7 +54,9 @@ fn main() -> Result<(), String> {
         share_mode: ShareMode::Shared,
     };
     let mut hung = 0usize;
-    for round in 0..=20 {
+    let mut attempted = 0usize;
+    for round in 0..40 {
+        attempted += 1;
         let Ok(input_stream) = backend.build_input_stream(
             &host,
             &input,
@@ -50,7 +65,8 @@ fn main() -> Result<(), String> {
             Box::new(move |_failure: namir_app::audio_io::StreamFailure| {}),
             Duration::from_secs(2),
         ) else {
-            return Err(format!("round {round}: input open failed"));
+            eprintln!("SKIP: round {round}: input open failed");
+            std::process::exit(2);
         };
         let Ok(output_stream) = backend.build_output_stream(
             &host,
@@ -60,13 +76,16 @@ fn main() -> Result<(), String> {
             Box::new(move |_failure: namir_app::audio_io::StreamFailure| {}),
             Duration::from_secs(2),
         ) else {
-            return Err(format!("round {round}: output open failed"));
+            eprintln!("SKIP: round {round}: output open failed");
+            std::process::exit(2);
         };
         let Ok(_) = input_stream.play() else {
-            return Err(format!("round {round}: input play failed"));
+            eprintln!("SKIP: round {round}: input play failed");
+            std::process::exit(2);
         };
         let Ok(_) = output_stream.play() else {
-            return Err(format!("round {round}: output play failed"));
+            eprintln!("SKIP: round {round}: output play failed");
+            std::process::exit(2);
         };
         std::thread::sleep(Duration::from_millis(150));
 
@@ -93,10 +112,10 @@ fn main() -> Result<(), String> {
     }
     if hung > 0 {
         return Err(format!(
-            "{hung} drops exceeded the 5 s ceiling — the jack_deactivate race is back (see \
-             D-13.4's M15 follow-up note)"
+            "{hung} drops exceeded the 5 s ceiling in {attempted} rounds — the jack_deactivate \
+             race is back (see D-13.4's M15 follow-up note)"
         ));
     }
-    eprintln!("done, hung drops: {hung}");
+    eprintln!("done, hung drops: {hung} in {attempted} rounds");
     Ok(())
 }
