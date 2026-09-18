@@ -1018,9 +1018,13 @@ impl AudioBackend for FakeBackend {
     fn hosts(&self) -> Vec<HostInfo> {
         vec![]
     }
+    /// `"WASAPI"` is the concept-bearing name [`crate::audio_io::host_has_share_mode_concept`]
+    /// keys on, so a host built from this default is "the host under test"; a test that needs a
+    /// host that is definitely **not** it (a concept-less JACK-shaped one) must name another
+    /// string, as [`crate::app`]'s `negotiate_on` helper's doc comment says.
     fn default_host(&self) -> HostInfo {
         HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         }
     }
     fn input_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
@@ -1201,7 +1205,7 @@ pub(crate) fn fake_duplex_setup_with_share_mode(
     StreamSetup {
         backend,
         input_host: HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         },
         input_device: DeviceInfo {
             name: "in".to_string(),
@@ -1214,7 +1218,7 @@ pub(crate) fn fake_duplex_setup_with_share_mode(
             share_mode,
         },
         output_host: HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         },
         output_device: DeviceInfo {
             name: "out".to_string(),

@@ -281,14 +281,13 @@ pub enum Direction {
 /// [`crate::stream::Direction`], [`crate::settings::ChannelMapping`]) of naming a choice instead of
 /// encoding it.
 ///
-/// Meaningful on WASAPI only. Every other host API this build enumerates (ALSA, CoreAudio, ...) has
-/// no equivalent concept, which is not a special case this crate has to spell out: a backend that
-/// cannot provide exclusive mode answers [`ExclusiveModeOutcome::Unsupported`] to
-/// [`AudioBackend::supports_exclusive`] and the session settles on [`Shared`](Self::Shared), the
-/// same path a Windows device that refuses exclusive mode takes. That is also why nothing here is
-/// conditionally compiled per platform — D-5.1 confines platform `cfg` attributes to
-/// `namir-platform` and `xtask layering` enforces it, so this seam is runtime-dispatched by
-/// construction rather than by preference.
+/// Meaningful on WASAPI only. Every other host API this build enumerates (ALSA, CoreAudio,
+/// JACK) has exactly one access mode, with the server itself owning device access — the
+/// *host-wide* answer [`host_has_share_mode_concept`] carries, distinct from the per-device
+/// [`ExclusiveModeOutcome::Unsupported`] a WASAPI device can give for "no exclusive
+/// endpoint". That is also why nothing here is conditionally compiled per platform — D-5.1
+/// confines platform `cfg` attributes to `namir-platform` and `xtask layering` enforces it, so
+/// this seam is runtime-dispatched by construction rather than by preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShareMode {
     /// The device is shared with every other application on the system — the working default
@@ -297,6 +296,28 @@ pub enum ShareMode {
     Shared,
     /// This process holds the device exclusively for the lifetime of the stream.
     Exclusive,
+}
+
+/// Whether `host`'s API has a share-mode concept **at all** — FR-IO-020's exclusive mode is a
+/// WASAPI property, and every other host API this build enumerates (ALSA, CoreAudio, JACK) has
+/// exactly one access mode, the server itself owning device access. A host answering `false`
+/// must never be asked for exclusive mode (the probe would be a pointless device round trip —
+/// a fresh JACK client connect), must never receive the "exclusive mode is not available"
+/// degradation notice, and the audio panel hides the Share Mode control entirely. This is the
+/// *host-wide* answer; [`ExclusiveModeOutcome::Unsupported`] is the per-device one — a WASAPI
+/// device with no exclusive endpoint — which keeps the control visible and disabled. The two
+/// must never be conflated: "the choice does not exist on this API" is not "this device
+/// refused the choice".
+///
+/// A function rather than an [`AudioBackend`] method: the answer is a pure function of the
+/// host name (the trait exists to dispatch on `self`, which nothing here would use), and the
+/// one settle point, [`crate::app::negotiate_share_mode`], already holds the [`HostInfo`].
+/// FR-IO-020 scopes exclusive mode to WASAPI; FR-IO-030 (ALSA/CoreAudio) never asks for it;
+/// and JACK's server owns device access. If the ASIO backend is ever built (Should, requires
+/// the user-supplied SDK), revisit whether its driver model is a second concept rather than
+/// extending this match.
+pub(crate) fn host_has_share_mode_concept(host: &HostInfo) -> bool {
+    host.name == "WASAPI"
 }
 
 /// FR-IO-020's exclusive-mode request outcome. Since M11 all three variants are reachable from
@@ -1578,6 +1599,28 @@ mod tests {
     /// keeps platform attributes out of every crate but `namir-platform` (`xtask layering` enforces
     /// it), and D-13.4's fork is deliberately free of them for the same reason.
     const WASAPI_HOST_NAME: &str = "WASAPI";
+
+    /// Pins the runtime coupling [`host_has_share_mode_concept`]'s probe key rests on: the
+    /// `host.name == "WASAPI"` compare keys against `HostId::name()`'s spelling (via
+    /// [`crate::app::resolve_host`]), and a future cpal rebase that re-spells it would silently
+    /// withdraw exclusive mode on Windows — no compile error (it is a string), no test failure
+    /// (the fakes supply their own name), no `xtask` gate. The discriminator is therefore the
+    /// **derived `Debug` of the variant** (`format!("{id:?}") == "Wasapi"`), which
+    /// `impl_platform_host!` keeps independent of the display name (the fork's `platform/mod.rs`
+    /// passes `Wasapi` and `"WASAPI"` as separate arguments) — comparing on `name()` itself
+    /// would guard and assert on the same value, catching only a case flip and passing vacuously
+    /// on the rename it exists to catch. A runtime scan of what the fork actually compiled in,
+    /// which is the only legal shape here: no `cfg` attribute, since `xtask layering` keeps
+    /// platform `cfg` out of this crate. Empty on builds without WASAPI, which asserts nothing
+    /// and is fine.
+    #[test]
+    fn the_wasapi_host_name_the_probe_key_compares_is_the_one_cpal_spells() {
+        for id in cpal::available_hosts() {
+            if format!("{id:?}") == "Wasapi" {
+                assert_eq!(id.name(), WASAPI_HOST_NAME);
+            }
+        }
+    }
 
     fn params() -> StreamParams {
         StreamParams {

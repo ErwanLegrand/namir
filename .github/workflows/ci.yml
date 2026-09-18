@@ -91,9 +91,13 @@ jobs:
       # verified against a real GitHub-hosted runner (no CI execution available while authoring
       # this crate) -- verified only against `alsa-sys-0.4.0`'s own `build.rs` source, which names
       # this exact package for exactly this failure.
-      - name: Install ALSA development headers (Linux only, for cpal's alsa-sys)
+      # M15: the cpal JACK host (`features = ["jack"]` in `namir-app`) adds a sibling requirement
+      # with the same shape -- `jack-sys`'s `build.rs` calls `pkg-config --probe jack` and
+      # hard-unwraps the result on Linux. `libjack-jackd2-dev` provides `jack.pc`. Windows/macOS
+      # builds don't need it (`jack-sys` resolves libjack at runtime via `libloading`).
+      - name: Install ALSA and JACK development headers (Linux only, for cpal's alsa-sys and jack-sys)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -644,9 +648,10 @@ jobs:
 
       # See `build-test`'s identical step: `namir-app` takes `cpal`, whose ALSA backend needs real
       # development headers at build time, and this job builds the whole workspace in release.
-      - name: Install ALSA development headers (Linux only, for cpal's alsa-sys)
+      # `libjack-jackd2-dev` is the same requirement for cpal's JACK host via `jack-sys` (added M15).
+      - name: Install ALSA and JACK development headers (Linux only, for cpal's alsa-sys and jack-sys)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -795,8 +800,8 @@ jobs:
 
       # See `build-test`'s identical step for why this is needed as of M6 (`namir-app`'s `cpal`
       # dependency, ALSA backend).
-      - name: Install ALSA development headers (for cpal's alsa-sys)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install ALSA and JACK development headers (for cpal's alsa-sys and jack-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - name: Read rust-version from root Cargo.toml
         id: msrv
@@ -832,11 +837,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # See `build-test`'s identical step for why this is needed as of M6. Installed *before* the
+      # See `build-test`'s identical step for why this is needed as of M6 (`cpal`'s ALSA) and M15
+      # (`jack-sys`'s JACK, same pkg-config-on-Linux pattern). Installed *before* the
       # g++/clang++ removal below on the theory that apt itself should run against an ordinary,
       # unmodified toolchain rather than one this job has already started deleting pieces of.
-      - name: Install ALSA development headers (for cpal's alsa-sys)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install ALSA and JACK development headers (for cpal's alsa-sys and jack-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1031,9 +1037,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # See `build-test`'s identical step for why this is needed as of M6.
-      - name: Install ALSA development headers (for cpal's alsa-sys)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # See `build-test`'s identical step for why this is needed as of M6 (`cpal`'s ALSA) and M15
+      # (`jack-sys`'s JACK, same pkg-config-on-Linux pattern).
+      - name: Install ALSA and JACK development headers (for cpal's alsa-sys and jack-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -1127,8 +1134,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install ALSA development headers (for cpal's alsa-sys)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # See `build-test`'s identical step for why this is needed as of M6 (`cpal`'s ALSA) and M15
+      # (`jack-sys`'s JACK, same pkg-config-on-Linux pattern).
+      - name: Install ALSA and JACK development headers (for cpal's alsa-sys and jack-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - uses: Swatinem/rust-cache@v2
 

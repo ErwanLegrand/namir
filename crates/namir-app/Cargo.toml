@@ -61,7 +61,27 @@ namir-ui = { path = "../namir-ui", version = "0.1.0" }
 # one as the other is a factor of 2^8 -- output ~48 dB too quiet, and capture 256x too large, which
 # pinned the input meter on anything above near-silence. Both directions confirmed by ear and by
 # meter before the fix; both are corrected in the fork, where the container layout is actually known.
-cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "381cf1d32e5593fef2fadbbaaf439c05f6055877" }
+# `features = ["jack"]` compiles cpal's JACK host on every platform (`HostId::Jack`, registered
+# in cpal's per-OS `platform_impl`). `jack`/`jack-sys` default to `dynamic_loading`: libjack is
+# resolved at runtime via libloading, so only *Linux* builds have a build-time requirement --
+# `jack-sys`'s own `build.rs` hard-fails where pkg-config cannot find `jack` (CI installs
+# `libjack-jackd2-dev` at all seven apt sites: the six `ci.yml` ones plus `release.yml`'s Linux
+# job, which is tag-triggered and invisible to PR CI). The runtime-loading conclusion itself
+# rests on `jack` 0.13.5's `default = ["dynamic_loading", "log"]` re-enabling a feature that
+# `jack-sys`'s own mis-spelled `default_features` table key never activates — re-check both at
+# the next rebase. On Windows and macOS nothing is needed to build; at runtime, opening a
+# JACK host needs the Jack2 client library present (Windows: `libjack64.dll`) and a server
+# reaching back. `default_host()` still returns WASAPI/ALSA/CoreAudio, so this changes nothing
+# for sessions that never name the JACK host.
+#
+# Bumped `381cf1d` -> `fabe84d` (fork commit `fix(jack): never block stream drop on
+# deactivation`, 2026-09-18): `jack_deactivate` waits for the JACK process callback thread to
+# acknowledge, and on Jack2/Windows that acknowledgement can take unbounded time or never
+# arrive -- observed as namir's window-close hang (process alive, input client streaming into a
+# dead bridge, xrun storm) on the §2 reference machine. The fork now deactivates on a detached
+# thread so `Drop` never blocks. Reproduced by `crates/namir-app/examples/jack_drop_probe.rs`
+# (open/drop JACK duplex pairs in a loop) before the fix; see D-13.4's M15 consequence note.
+cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "fabe84d04bf43c609afd44a99d545d4c868d919a", features = ["jack"] }
 # The input-callback -> output-callback bridge (`bridge.rs`): the two cpal callbacks run on two
 # different OS-owned threads with no ordering relationship, so getting a captured block from the
 # input thread to the output thread needs its own wait-free SPSC ring, distinct from

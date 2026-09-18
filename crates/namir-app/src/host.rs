@@ -464,6 +464,10 @@ pub struct AppHost {
     /// on every reopen, so the panel's share-mode control reads a settled capability rather
     /// than ever probing a device itself. `false` until the first negotiation runs.
     exclusive_supported: bool,
+    /// [`ShareModeDecision::concept`] carried out of the negotiation — whether the session
+    /// host has a share-mode concept at all. `false` on every non-WASAPI host; the panel hides
+    /// the Share Mode control on that answer, where `exclusive_supported` only disables it.
+    exclusive_mode_concept: bool,
     settings: AppSettings,
     /// Bumped on every `initiate_audio_reopen` and carried through the command/event round
     /// trip, so an `AppEvent::AudioStreamReady` overtaken by a newer reopen is ignored.
@@ -522,6 +526,7 @@ impl AppHost {
             input_channel_count: 0,
             current_input_channel: 0,
             exclusive_supported: false,
+            exclusive_mode_concept: false,
             settings: AppSettings::default(),
             reopen_generation: 0,
             audio_reopen: None,
@@ -608,12 +613,18 @@ impl AppHost {
         // posting a notice for the failed configuration attempt.
         let Some(negotiated) = negotiated else {
             self.audio_mode = None;
-            // The negotiation found no device, so its previous capability answer is void: the
-            // contract on `namir_ui::AudioDevicePanelSnapshot::exclusive_supported` calls for
-            // `false` whenever no device is open, and leaving a stale `true` would keep the
+            // The negotiation found no device, so its previous device-level capability answer
+            // is void: the contract on
+            // `namir_ui::AudioDevicePanelSnapshot::exclusive_supported` calls for `false`
+            // whenever no device is open, and leaving a stale `true` would keep the
             // share-mode control enabled — able to dispatch a request against a configuration
             // with no device (PR #226 review).
             self.exclusive_supported = false;
+            // The *concept* answer is a host-API property, not a device one, and the failed
+            // negotiation had a host: it is recorded from that host rather than voided, so a
+            // WASAPI host with no usable device keeps its (disabled) share-mode row and its
+            // remedy text, and a JACK host never shows one.
+            self.exclusive_mode_concept = crate::audio_io::host_has_share_mode_concept(&host_info);
             self.push_notice(
                 crate::error_codes::NO_AUDIO_DEVICE,
                 "no audio device was found or could be opened",
@@ -644,7 +655,7 @@ impl AppHost {
         // FR-IO-020: the same probe that settled this session's mode also answered whether the
         // devices could do exclusive at all — at some rate and channel count they report, not
         // necessarily the settled one (issue #227) — and the panel's control reads that answer.
-        self.exclusive_supported = share_mode.possible;
+        self.record_share_mode_capability(&share_mode);
 
         if sample_rate.is_none() {
             self.audio_mode = None;
@@ -965,14 +976,18 @@ impl AppHost {
         self.current_input_channel
     }
 
-    /// Records `negotiate_share_mode`'s capability answer for the devices start-up just
+    /// Records `negotiate_share_mode`'s two share-mode answers for the devices start-up just
     /// negotiated (issues #193, #227): the negotiation's possibility answer, not the point
-    /// answer — see [`crate::app::ShareModeDecision::possible`]. The reopen path updates the
-    /// same field from its own negotiation in `initiate_audio_reopen`; nothing else writes
-    /// it, so the panel's control cannot disagree with the negotiation that is actually
-    /// running.
-    pub(crate) fn set_exclusive_supported(&mut self, possible: bool) {
-        self.exclusive_supported = possible;
+    /// answer — see [`crate::app::ShareModeDecision::possible`] — and the host's concept
+    /// answer ([`crate::app::ShareModeDecision::concept`]). The reopen path updates the same
+    /// fields from its own negotiation in `initiate_audio_reopen`; nothing else writes them,
+    /// so the panel's control cannot disagree with the negotiation that is actually running.
+    pub(crate) fn record_share_mode_capability(
+        &mut self,
+        decision: &crate::app::ShareModeDecision,
+    ) {
+        self.exclusive_supported = decision.possible;
+        self.exclusive_mode_concept = decision.concept;
     }
 
     /// Persists current `AppSettings` to `<config_dir>/audio-settings.json`.
@@ -1411,6 +1426,7 @@ impl UiHost for AppHost {
                 supported_input_channels: self.input_channel_count,
                 current_input_channel: self.current_input_channel,
                 exclusive_supported: self.exclusive_supported,
+                exclusive_mode_concept: self.exclusive_mode_concept,
                 exclusive_requested: self.settings.exclusive_mode,
             }),
         }
@@ -2805,7 +2821,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: backend as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns: Arc::new(XrunCounter::new()),
         });
@@ -2861,7 +2877,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: backend as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns: Arc::new(XrunCounter::new()),
         });
@@ -3263,7 +3279,7 @@ mod tests {
                 .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2))),
         );
         let host_info = HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         };
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
@@ -3690,7 +3706,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns,
         });
@@ -3784,7 +3800,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns: Arc::new(XrunCounter::new()),
         });
@@ -3863,7 +3879,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns: Arc::new(XrunCounter::new()),
         });
@@ -3953,7 +3969,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns: Arc::new(XrunCounter::new()),
         });
@@ -4144,7 +4160,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns,
         });
@@ -4191,7 +4207,7 @@ mod tests {
         host.enable_audio_reopen(AudioReopenContext {
             backend: Arc::clone(&backend) as Arc<dyn AudioBackend>,
             host_info: HostInfo {
-                name: "fake".to_string(),
+                name: "WASAPI".to_string(),
             },
             xruns,
         });

@@ -943,6 +943,7 @@ fn panel(supported_input_channels: u16) -> UiSnapshot {
             supported_input_channels,
             current_input_channel: 0,
             exclusive_supported: true,
+            exclusive_mode_concept: true,
             exclusive_requested: false,
         }),
         ..Default::default()

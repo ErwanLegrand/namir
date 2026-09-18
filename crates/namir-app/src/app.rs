@@ -172,11 +172,12 @@ pub(crate) fn negotiate_audio(
         Some((input, output))
     };
 
-    let requested = if prefs.exclusive_mode {
-        ShareMode::Exclusive
-    } else {
-        ShareMode::Shared
-    };
+    let requested =
+        if prefs.exclusive_mode && crate::audio_io::host_has_share_mode_concept(host_info) {
+            ShareMode::Exclusive
+        } else {
+            ShareMode::Shared
+        };
     let (input, output) = enumerate(requested)?;
     let settled = settle(&input, &output, prefs);
 
@@ -405,6 +406,13 @@ pub(crate) struct ShareModeDecision {
     /// at a configuration the device *can* open exclusively. Carried out of the negotiation so
     /// no caller ever has to probe a device from a render or snapshot path.
     pub(crate) possible: bool,
+    /// Whether the host this session runs on has a share-mode concept **at all** —
+    /// [`crate::audio_io::host_has_share_mode_concept`]. `false` (every host except WASAPI:
+    /// ALSA, CoreAudio, JACK) means exclusive mode was never requested and never refused, no
+    /// degradation notice exists for the host, and the panel hides the Share Mode control —
+    /// the distinction from `possible`, which is a device's answer within a host that *has*
+    /// the concept.
+    pub(crate) concept: bool,
 }
 
 /// The seam can now tell the two refusal shapes apart (issue #227): a device whose exclusive
@@ -442,6 +450,25 @@ pub(crate) fn negotiate_share_mode(
     output_params: StreamParams,
     requested: bool,
 ) -> ShareModeDecision {
+    // The share-mode question is a WASAPI question (FR-IO-020); on any other host — ALSA,
+    // CoreAudio, JACK — the probe below would be a pointless device round trip (a fresh JACK
+    // client connect per query) against a choice the API cannot express. Answer the whole
+    // decision at once without probing: `possible: false` keeps the panel's capability gate
+    // false, `concept: false` tells the panel to hide the control, and the session settles on
+    // shared with no refusal detail — nothing was refused, nothing was even asked for.
+    // Through [`negotiate_audio`] this is unreachable-by-construction: its `requested` is
+    // derived from the same [`host_has_share_mode_concept`] answer, so a concept-less host is
+    // never enumerated in exclusive mode either — this guard is for a future caller that
+    // passes `requested: true` against a concept-less host.
+    if !crate::audio_io::host_has_share_mode_concept(host) {
+        return ShareModeDecision {
+            mode: ShareMode::Shared,
+            refusal_detail: None,
+            possible: false,
+            concept: false,
+        };
+    }
+
     // Asked in every session now, requested or not: the audio settings panel's share-mode
     // control (issues #193, #227) has to know whether exclusive mode is possible at all — not
     // merely at the configuration this session settles — before the fact, instead of failing
@@ -504,6 +531,7 @@ pub(crate) fn negotiate_share_mode(
             mode: ShareMode::Shared,
             refusal_detail: None,
             possible,
+            concept: true,
         };
     }
 
@@ -512,6 +540,7 @@ pub(crate) fn negotiate_share_mode(
             mode: ShareMode::Exclusive,
             refusal_detail: None,
             possible,
+            concept: true,
         };
     }
 
@@ -538,6 +567,7 @@ pub(crate) fn negotiate_share_mode(
         mode: ShareMode::Shared,
         refusal_detail: Some(format!("{}; continuing in shared mode", refused.join("; "),)),
         possible,
+        concept: true,
     }
 }
 
@@ -794,7 +824,7 @@ pub fn run() {
     );
     // FR-IO-020: what the negotiation's probe settled about this session's devices, for the
     // panel's share-mode control. The reopen path records its own in `initiate_audio_reopen`.
-    host.set_exclusive_supported(share_mode.possible);
+    host.record_share_mode_capability(&share_mode);
     // FR-IO-090: the index this stream opens with is the host's own settled answer, so the
     // selector and the capture below read the same channel (the reopen path settles its own in
     // `AppHost::apply_audio_reopen`, through the same `clamp_input_channel`).
@@ -1135,9 +1165,11 @@ mod tests {
     const IN: &str = "fake in";
     const OUT: &str = "fake out";
 
+    /// The WASAPI-shaped host every exclusive-mode test negotiates against: the shared/exclusive
+    /// two-config shape (`reporting_exclusive_configs`) is that host API's fact.
     fn host() -> HostInfo {
         HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         }
     }
 
@@ -1158,15 +1190,52 @@ mod tests {
     }
 
     fn negotiate(backend: &FakeBackend, requested: bool) -> ShareModeDecision {
+        negotiate_on(backend, &host(), requested)
+    }
+
+    /// As [`negotiate`], against the host named `host_name` — how a JACK/ALSA/CoreAudio host is
+    /// stood in (`host_has_share_mode_concept` keys on the name).
+    fn negotiate_on(backend: &FakeBackend, host: &HostInfo, requested: bool) -> ShareModeDecision {
         negotiate_share_mode(
             backend,
-            &host(),
+            host,
             &device(IN),
             params(1),
             &device(OUT),
             params(2),
             requested,
         )
+    }
+
+    /// JACK/ALSA/CoreAudio shape: the host has no share-mode concept at all, so the session
+    /// settles shared without probing — an `exclusive_mode` request from a WASAPI leftover
+    /// settings file must neither be honoured nor refused-with-a-notice, and the panel hides
+    /// the control on `concept: false`.
+    #[test]
+    fn a_conceptless_host_settles_shared_without_probing() {
+        let backend = FakeBackend::new()
+            .with_devices(vec![device(IN)], vec![device(OUT)])
+            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)));
+        let decision = negotiate_on(
+            &backend,
+            &HostInfo {
+                name: "JACK".to_string(),
+            },
+            true,
+        );
+        assert_eq!(decision.mode, ShareMode::Shared);
+        assert_eq!(
+            decision.refusal_detail, None,
+            "nothing was refused — nothing was asked"
+        );
+        assert!(
+            !decision.possible,
+            "no capability gate on a host without the concept"
+        );
+        assert!(
+            !decision.concept,
+            "the panel must hide the control on this host"
+        );
     }
 
     /// One exclusive-mode config range for `channels`, covering 48 kHz with a real buffer range —

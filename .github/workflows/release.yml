@@ -369,10 +369,13 @@ jobs:
       - uses: actions/checkout@v7
 
       # `cpal`'s ALSA backend (`alsa-sys`) needs real ALSA development headers at build time; see
-      # `ci.yml`'s identical step. The *installed* product needs only `libasound.so.2` at run time,
-      # which is what `packaging/linux/README.md` is at pains to distinguish.
-      - name: Install ALSA development headers (for cpal's alsa-sys)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # `ci.yml`'s identical step, and its M15 follow-up: enabling the JACK host adds `jack-sys`,
+      # which hard-fails `pkg-config --probe jack` on Linux build-time the same way, so JACK's dev
+      # headers join this step. The *installed* product needs only `libasound.so.2` at run time
+      # (plus the Jack2 client library for a JACK session), which is what
+      # `packaging/linux/README.md` is at pains to distinguish.
+      - name: Install ALSA and JACK development headers (for cpal's alsa-sys and jack-sys)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
