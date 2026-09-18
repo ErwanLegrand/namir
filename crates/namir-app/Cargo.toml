@@ -65,7 +65,11 @@ namir-ui = { path = "../namir-ui", version = "0.1.0" }
 # in cpal's per-OS `platform_impl`). `jack`/`jack-sys` default to `dynamic_loading`: libjack is
 # resolved at runtime via libloading, so only *Linux* builds have a build-time requirement --
 # `jack-sys`'s own `build.rs` hard-fails where pkg-config cannot find `jack` (CI installs
-# `libjack-jackd2-dev`). On Windows and macOS nothing is needed to build; at runtime, opening a
+# `libjack-jackd2-dev` at all seven apt sites: the six `ci.yml` ones plus `release.yml`'s Linux
+# job, which is tag-triggered and invisible to PR CI). The runtime-loading conclusion itself
+# rests on `jack` 0.13.5's `default = ["dynamic_loading", "log"]` re-enabling a feature that
+# `jack-sys`'s own mis-spelled `default_features` table key never activates — re-check both at
+# the next rebase. On Windows and macOS nothing is needed to build; at runtime, opening a
 # JACK host needs the Jack2 client library present (Windows: `libjack64.dll`) and a server
 # reaching back. `default_host()` still returns WASAPI/ALSA/CoreAudio, so this changes nothing
 # for sessions that never name the JACK host.

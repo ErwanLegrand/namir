@@ -1604,14 +1604,19 @@ mod tests {
     /// `host.name == "WASAPI"` compare keys against `HostId::name()`'s spelling (via
     /// [`crate::app::resolve_host`]), and a future cpal rebase that re-spells it would silently
     /// withdraw exclusive mode on Windows — no compile error (it is a string), no test failure
-    /// (the fakes supply their own name), no `xtask` gate. A runtime scan of what the fork
-    /// actually compiled in, which is the only legal shape here: no `cfg` attribute, since
-    /// `xtask layering` keeps platform `cfg` out of this crate. Empty on builds without WASAPI,
-    /// which asserts nothing and is fine.
+    /// (the fakes supply their own name), no `xtask` gate. The discriminator is therefore the
+    /// **derived `Debug` of the variant** (`format!("{id:?}") == "Wasapi"`), which
+    /// `impl_platform_host!` keeps independent of the display name (the fork's `platform/mod.rs`
+    /// passes `Wasapi` and `"WASAPI"` as separate arguments) — comparing on `name()` itself
+    /// would guard and assert on the same value, catching only a case flip and passing vacuously
+    /// on the rename it exists to catch. A runtime scan of what the fork actually compiled in,
+    /// which is the only legal shape here: no `cfg` attribute, since `xtask layering` keeps
+    /// platform `cfg` out of this crate. Empty on builds without WASAPI, which asserts nothing
+    /// and is fine.
     #[test]
     fn the_wasapi_host_name_the_probe_key_compares_is_the_one_cpal_spells() {
         for id in cpal::available_hosts() {
-            if id.name().eq_ignore_ascii_case("wasapi") {
+            if format!("{id:?}") == "Wasapi" {
                 assert_eq!(id.name(), WASAPI_HOST_NAME);
             }
         }
