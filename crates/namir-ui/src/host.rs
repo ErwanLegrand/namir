@@ -186,6 +186,14 @@ pub struct AudioDevicePanelSnapshot {
     /// panel's share-mode control with a stated reason rather than letting it fail after the
     /// fact.
     pub exclusive_supported: bool,
+    /// Whether the session host has a share-mode concept **at all** — WASAPI does; ALSA,
+    /// CoreAudio and JACK do not (a "share mode" is meaningless for a client of a server that
+    /// owns device access). `false` hides the Share Mode row entirely, reason included, so a
+    /// JACK session neither offers a meaningless choice nor explains an "unavailability" that
+    /// is not one. The distinction from [`Self::exclusive_supported`], which only *disables*
+    /// the Exclusive entry on a WASAPI device that cannot serve it, is what lets the panel
+    /// tell "the choice does not exist on this API" from "this device refused the choice".
+    pub exclusive_mode_concept: bool,
     /// Whether exclusive mode is currently *requested* -- the persisted
     /// `AppSettings::exclusive_mode`, and the share-mode control's position. What was actually
     /// **granted** is [`UiSnapshot::audio_mode`], never this: a request that was refused stays

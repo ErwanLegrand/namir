@@ -244,7 +244,11 @@ fn audio_settings_panel(
                 });
             });
 
-            // Share Mode selector (FR-IO-020). The position is what was *requested*; what was
+            // Share Mode selector (FR-IO-020). The row exists only when the host has a share-mode
+            // concept at all (`exclusive_mode_concept`); on ALSA/CoreAudio/JACK a mode choice is
+            // meaningless — the server owns the device — so the whole row, reason included, is
+            // omitted rather than disabled and no "exclusive mode is not available" degradation
+            // notice ever exists for such a host. The position is what was *requested*; what was
             // granted is the mode indicator, and a refused request stays requested here with its
             // notice explaining -- the same separation the snapshot's field pair documents.
             // Shared stays selectable in every state: a refused Exclusive request must not trap
@@ -254,33 +258,36 @@ fn audio_settings_panel(
             // carried in the snapshot, so this control never probes a device from the UI
             // thread. Reselecting a device re-negotiates and re-probes, which is what re-enables
             // Exclusive.
-            ui.horizontal(|ui| {
-                ui.label("Share Mode:");
-                let exclusive = panel.exclusive_requested;
-                egui::ComboBox::from_id_salt("namir_audio_share_mode")
-                    .selected_text(if exclusive { "Exclusive" } else { "Shared" })
-                    .show_ui(ui, |ui| {
-                        let mut chosen: Option<bool> = None;
-                        if ui.selectable_label(!exclusive, "Shared").clicked() {
-                            chosen = Some(false);
-                        }
-                        ui.add_enabled_ui(panel.exclusive_supported, |ui| {
-                            if ui.selectable_label(exclusive, "Exclusive").clicked() {
-                                chosen = Some(true);
+            if panel.exclusive_mode_concept {
+                ui.horizontal(|ui| {
+                    ui.label("Share Mode:");
+                    let exclusive = panel.exclusive_requested;
+                    egui::ComboBox::from_id_salt("namir_audio_share_mode")
+                        .selected_text(if exclusive { "Exclusive" } else { "Shared" })
+                        .show_ui(ui, |ui| {
+                            let mut chosen: Option<bool> = None;
+                            if ui.selectable_label(!exclusive, "Shared").clicked() {
+                                chosen = Some(false);
+                            }
+                            ui.add_enabled_ui(panel.exclusive_supported, |ui| {
+                                if ui.selectable_label(exclusive, "Exclusive").clicked() {
+                                    chosen = Some(true);
+                                }
+                            });
+                            if let Some(exclusive) = chosen {
+                                intents.push(UiIntent::SelectShareMode { exclusive });
                             }
                         });
-                        if let Some(exclusive) = chosen {
-                            intents.push(UiIntent::SelectShareMode { exclusive });
-                        }
-                    });
-            });
-            // The stated reason the Exclusive entry above is disabled: written out rather than
-            // hidden behind a hover tooltip, so it is readable (and testable) without a pointer.
-            if !panel.exclusive_supported {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(EXCLUSIVE_UNSUPPORTED_REASON).weak())
-                        .wrap(),
-                );
+                });
+                // The stated reason the Exclusive entry above is disabled: written out rather
+                // than hidden behind a hover tooltip, so it is readable (and testable) without
+                // a pointer.
+                if !panel.exclusive_supported {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(EXCLUSIVE_UNSUPPORTED_REASON).weak())
+                            .wrap(),
+                    );
+                }
             }
 
             // Input Channel selector (FR-IO-090). The snapshot's indices are zero-based, as the
@@ -1556,12 +1563,88 @@ mod tests {
                 supported_input_channels: 2,
                 current_input_channel: 0,
                 exclusive_supported: true,
+                exclusive_mode_concept: true,
                 exclusive_requested: false,
             }),
             ..Default::default()
         };
         let mut intents = Vec::new();
         headless_frame(&mut view, &snapshot, &mut intents);
+    }
+
+    /// A host without a share-mode concept (JACK/ALSA/CoreAudio) omits the Share Mode row
+    /// entirely — even when a WASAPI leftover `exclusive_mode: true` is still in the settings,
+    /// which the host correctly reports as the *requested* position. The row must not render,
+    /// because an "Exclusive" entry that can never be granted is not a choice on such a host,
+    /// and the reason label must not render either (its text promises a device change, which
+    /// is not the answer).
+    #[test]
+    fn a_conceptless_host_hides_the_share_mode_row() {
+        let mut driver = Driver::new(UiSnapshot {
+            audio_panel_open: true,
+            audio_panel: Some(AudioDevicePanelSnapshot {
+                input_devices: vec![],
+                output_devices: vec![],
+                current_input_device: None,
+                current_output_device: None,
+                supported_sample_rates: vec![],
+                current_sample_rate: 48_000,
+                supported_buffer_sizes: vec![],
+                current_buffer_size: None,
+                supported_input_channels: 0,
+                current_input_channel: 0,
+                exclusive_supported: false,
+                exclusive_mode_concept: false,
+                exclusive_requested: true,
+            }),
+            ..Default::default()
+        });
+        driver.frame(Vec::new());
+        let output = driver.frame(Vec::new());
+        assert!(
+            find_text(&output, "Share Mode:").is_none(),
+            "the share-mode row must not exist on a concept-less host; painted: {:?}",
+            painted_texts(&output)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The WASAPI contrast to [`a_conceptless_host_hides_the_share_mode_row`]: a device that
+    /// *refuses* exclusive mode keeps the row (disabled), because the choice exists and only
+    /// this device cannot serve it.
+    #[test]
+    fn a_wasapi_host_without_device_capability_keeps_the_share_mode_row() {
+        let mut driver = Driver::new(UiSnapshot {
+            audio_panel_open: true,
+            audio_panel: Some(AudioDevicePanelSnapshot {
+                input_devices: vec![],
+                output_devices: vec![],
+                current_input_device: None,
+                current_output_device: None,
+                supported_sample_rates: vec![],
+                current_sample_rate: 48_000,
+                supported_buffer_sizes: vec![],
+                current_buffer_size: None,
+                supported_input_channels: 0,
+                current_input_channel: 0,
+                exclusive_supported: false,
+                exclusive_mode_concept: true,
+                exclusive_requested: false,
+            }),
+            ..Default::default()
+        });
+        driver.frame(Vec::new());
+        let output = driver.frame(Vec::new());
+        assert!(
+            find_text(&output, "Share Mode:").is_some(),
+            "a WASAPI device that cannot serve exclusive keeps the row, disabled; painted: {:?}",
+            painted_texts(&output)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

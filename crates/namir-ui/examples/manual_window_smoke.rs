@@ -137,6 +137,7 @@ impl UiHost for SmokeHost {
                 supported_input_channels: 8,
                 current_input_channel: 5,
                 exclusive_supported: true,
+                exclusive_mode_concept: true,
                 exclusive_requested: false,
             }),
             ..UiSnapshot::default()

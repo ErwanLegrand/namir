@@ -2058,6 +2058,50 @@ reference machine against Jack2 **1.9.22** (jackdmp, PortAudio driver, ASIO Audi
    asking for it. FR-IO-030's "PipeWire and/or JACK support is **Should**" is Linux-scoped, so
    this changes no Must's status; this note is the evidence record.
 
+*Follow-up (added M15, 2026-09-18 — three defects the first Jack2 session found, the same
+day):*
+
+1. **JACK has no share-mode concept, and the session was offering one.** A WASAPI leftover
+   `"exclusive_mode": true` in `audio-settings.json` made the JACK session print
+   `app.audio_io.exclusive_mode_unavailable` on every launch and left the panel's Share Mode
+   control disabled-but-present — "inoperant", per the first test report. Exclusive mode is a
+   WASAPI property (FR-IO-020's scope); a JACK client has no share mode to choose — the server
+   owns the device. Fixed by a new [`AudioBackend::exclusive_mode_is_a_concept`] answer
+   (`WASAPI` is currently the only host with a concept; revisit when/if the ASIO backend is
+   ever built), carried through [`ShareModeDecision::concept`] into
+   `AudioDevicePanelSnapshot::exclusive_mode_concept`: a concept-less host settles shared
+   **without probing** (the probe is a fresh JACK client connect — a pointless round trip and
+   itself a hang surface), never prints the degradation notice — nothing was refused, nothing
+   was asked — and the panel omits the Share Mode row entirely, reason text included. The
+   reason label's "only a device change is promised" promise is a device-level fact and would
+   have lied about a JACK server.
+2. **Window close could hang, and the hang printed an xrun storm** (that test report's second
+   half). `RunningStreams::drop` stops the output stream first (issue #194); dropping a JACK
+   stream drops the `AsyncClient`, whose `Drop` calls `jack_deactivate` — a call that blocks
+   the caller until the JACK process callback thread acknowledges deactivation, and on
+   Jack2/Windows that acknowledgement can take unbounded time or never arrive. The close hung
+   in that call with the **input** client still live, whose process callback overran the now
+   unread bridge at exactly one xrun per callback — the storm — while `XrunLog` kept printing
+   because main never reached its stop. Reproduced in the loop probe
+   `crates/namir-app/examples/jack_drop_probe.rs` (open/drop JACK duplex pairs: the 40-round
+   run hung past 4 minutes pre-fix). Fixed in the fork (`fabe84d`,
+   *`fix(jack): never block stream drop on deactivation`*): the jack `Stream`'s `Drop` hands
+   the client to a detached thread and returns in microseconds, instead of deactivating on
+   the caller's thread. Post-fix: probe drops 50–70 µs (was 2–8 ms), 21/21 rounds clean, and
+   the real app closed with exit 0 about one second after `CloseMainWindow`, no storm, no
+   leftover clients. One consequence accepted: a mid-session stream swap can briefly have the
+   new client registered beside the old one; JACK client names are not unique, so the new
+   client takes over the old name and the server kicks the old client.
+3. **A 512-frame JACK session "echoed"** — recorded because the arithmetic is the answer: 512
+   frames at 48 kHz is 10.7 ms, which is precisely the delay at which a dry input mixed beside
+   the processed output separates into an audible slap. The dry path is not Namir's: nothing
+   in this crate delays or repeats signal, and the JACK graph held no loop. A hardware or
+   driver monitor path (the AudioBox's own monitor mix, or the PortAudio/ASIO device's) is the
+   suspect — test by unplugging the monitor path or unconnecting `namir_out` from
+   `system:playback_*` while keeping the input connected: a persisting echo proves it is not
+   Namir's. At 128 frames (~2.7 ms) the same dry+processed mix fuses and reads as "responsive",
+   which is why the same session heard no echo there.
+
 **Decision D-13.5 (2026-09-10, from issue #190)** — **Device configurations are enumerated in the
 share mode the session is going to open in**, and when an exclusive request is refused the
 enumeration *and* the negotiation that followed it are run again against the shared ranges. The
@@ -2589,7 +2633,7 @@ All facts verified 2026-08-04 against crates.io and GitHub, except `assert_no_al
 | Crate | Version | Licence | Verified activity | Role | Risk |
 |---|---|---|---|---|---|
 | `egui` | 0.36.2 | MIT OR Apache-2.0 | 2026-08-20, ~4.8 M recent downloads | UI | Low |
-| `cpal` (Namir fork) | 0.19.0 (`381cf1d`) | Apache-2.0 | 2026-09-08 | Standalone audio I/O; WASAPI exclusive mode; JACK host compiled in from 2026-09-18 (`features = ["jack"]` — brings `jack` 0.13.5 / `jack-sys` 0.5.1, both MIT, runtime-loaded; see D-13.4's M15 consequence note) | **High — maintained fork of an upstream that keeps moving; reverted from `Low` on 2026-09-11 (issue #200)** because nothing made this fork less risky since M11 — R-10's own M11 status note records the rebase burden running *higher* than D-13.4 predicted, and #188's 0.18.1 → 0.19.0 rebase is the exact event R-10 warns "can silently regress the Windows audio path". See R-10 and the detailed M11 fork row below |
+| `cpal` (Namir fork) | 0.19.0 (`fabe84d` — `381cf1d` plus the 2026-09-18 JACK drop fix) | Apache-2.0 | 2026-09-08 | Standalone audio I/O; WASAPI exclusive mode; JACK host compiled in from 2026-09-18 (`features = ["jack"]` — brings `jack` 0.13.5 / `jack-sys` 0.5.1, both MIT, runtime-loaded; see D-13.4's M15 consequence note) | **High — maintained fork of an upstream that keeps moving; reverted from `Low` on 2026-09-11 (issue #200)** because nothing made this fork less risky since M11 — R-10's own M11 status note records the rebase burden running *higher* than D-13.4 predicted, and #188's 0.18.1 → 0.19.0 rebase is the exact event R-10 warns "can silently regress the Windows audio path". See R-10 and the detailed M11 fork row below |
 | `rubato` | 4.0.0 | MIT OR Apache-2.0 | 2026-07-09, ~3.0 M | Resampling | Low |
 | `rustfft` | 6.4.1 | MIT OR Apache-2.0 | 2025-09-18, ~6.0 M | FFT for convolution | Low — stale but mature and stable |
 | `hound` | 3.5.1 | Apache-2.0 | 2023-09-25, ~4.0 M | WAV decode (FR-IR-010) | Low — unmaintained, but WAV is a frozen format |
@@ -4474,3 +4518,4 @@ drift was findable.
 | 0.64 | 2026-09-13 | **The audio panel reports the block size the session actually runs at, not a literal of its own (issue #213).** When `negotiate_shared_buffer_size` returned `None` — the device named no buffer-size preference and the settings file none either — the panel displayed "256 frames" from a bare `unwrap_or(256)` in two places, `AppHost::apply_audio_reopen` and `app::run`'s `configure_audio_devices` call, while the engine ran 512-frame blocks from `block_frames(None)` → `DEFAULT_BLOCK_FRAMES`. Both display sites now call **`audio_io::block_frames` itself** rather than re-deriving from the constant, so its own doc comment's intent — one constant rather than two literals, so those two can never disagree about how big a block is — holds across the display path too, and the number a user compares against their interface's control panel is no longer one the app invented. Calling the function rather than copying its `unwrap_or` also closes a second disagreement of the same class, found in PR #222's review and reachable rather than theoretical: `settings::load` does not validate `buffer_size_frames`, and `accepts_buffer_size` accepts anything against a `BufferSizeRange::Unknown` device, so a settings file carrying `0` makes the negotiation answer `Some(0)` — the panel read "0 frames" while `PrepareContext::max_block_size` was `block_frames`' floor of 1. Measured on the reopen path with a fake `Unknown`-reporting backend: the panel now reports 1, and reports 0 if the `unwrap_or` form is put back. **Not fixed, and left deliberately:** an `Unknown`/`Range` pair whose intersecting standard sizes exclude 512 (measured: input `Unknown` against output `Range { min: 600, max: 1024 }` offers `[1024]`) still shows a selected size absent from its own dropdown; the issue's own preferred remedy is `AudioDevicePanelSnapshot::current_buffer_size` becoming `Option<u32>` rendered as "Device default" in `namir-ui`, which is a wider change than the misreported number this row records. The two remaining `256` literals — `AppHost::new`'s initialiser and `open_window_without_audio` — are pre-stream placeholders behind a disabled combo and are not the same defect. |
 | 0.65 | 2026-09-13 | **M15 review sweep (PR #225): R-10's baseview branch-pin status resolved inside the fork, the dependency register corrected, the Escape flag re-scoped to frames, and the git-sources gate wired into CI and README.** R-10's 2026-09-11 correction said the `baseview` rev pin is "not takable inside this repository" and tracked it as an open action on the fork; **#214 settled it in the fork** — `egui-baseview`'s own manifest now pins `baseview` by `rev = "c0870cb…"`, so `Cargo.lock`'s three git sources all carry `?rev=` and the branch spec is gone (`672ea81`, `6cec5c8`). The new `xtask git-sources` subcommand (issue #215) enforces the `?rev=` rule at the lockfile level with no `toml` dependency, and this pass adds it to CI's layering job and README's local-gate block. §17's `egui-baseview` row updated to the rev-pinned commit `4a46c0a`. On the UI side, the Escape-suppression flag is re-scoped from `cumulative_pass_nr` to `cumulative_frame_nr` with frame-expiry; `remove_temp` no longer consumes unconditionally, so a multi-pass layout frame cannot spend the suppression before FR-UI-040's late commit fires. |
 | 0.66 | 2026-09-18 | **The standalone's cpal dependency gains the JACK host: `features = ["jack"]` on the pinned fork edge.** The backend was already in the fork (inherited from upstream trunk); this change compiles it on every platform and verifies it on §2's machine against Jack2 1.9.22 (jackdmp, PortAudio/ASIO AudioBox 22VSL, 48 kHz/256): no-server degradation through the ordinary FR-IO-080 notice path, real enumeration at the server's single rate/buffer, and a duplex session opening `cpal_client_<pid>_in`/`_out` auto-connected to `system:capture_*`/`system:playback_*` with xrun reporting on `CallbackInfo::xrun`. Build cost: `jack`/`jack-sys` default to runtime dynamic loading, so only Linux builds need a library present (`libjack-jackd2-dev` added at CI's four apt sites); Windows/macOS resolve `libjack64.dll`/`libjack.0.dylib` at runtime. Full record: D-13.4's `*Consequence (added M15, 2026-09-18)*` note and §17's `cpal` row. FR-IO-030's JACK clause is Linux-scoped, so no Must status changes. |
+| 0.67 | 2026-09-18 | **First Jack2 test session's three defects, fixed the same day.** (1) JACK has no share-mode concept — a leftover `"exclusive_mode": true` printed `app.audio_io.exclusive_mode_unavailable` every launch and left the Share Mode control disabled-but-present. New `AudioBackend::exclusive_mode_is_a_concept` (WASAPI-only; ASIO still unbuilt) carried through `ShareModeDecision::concept`/`AudioDevicePanelSnapshot::exclusive_mode_concept`: concept-less hosts settle shared **without probing** and never print the notice, the panel omits the row. (2) Window close could hang: dropping a JACK stream calls `jack_deactivate`, which waits for the process callback thread and can block forever on Jack2/Windows — the input client then overran the dead bridge at one xrun per callback, the storm. Fork commit `fabe84d` (`fix(jack): never block stream drop on deactivation`) deactivates on a detached thread; the drop probe (`crates/namir-app/examples/jack_drop_probe.rs`) measured 50–70 µs drops post-fix (was 2–8 ms, one 4-minute hang in 40 rounds) and the real app closed cleanly ~1 s after window close. (3) A 512-frame session echoed: 512 frames @ 48 kHz is 10.7 ms — the delay at which dry input mixed beside the processed output becomes an audible slap; nothing in Namir delays or repeats, and the graph held no loop, so the dry path is a hardware/driver monitor (test: disconnect `namir_out` while keeping `namir_in`). Rev bump `381cf1d` → `fabe84d`, same fork, same deny allowance. |
