@@ -94,6 +94,8 @@ they are never linked into a release binary.
 | is-wsl | 0.4.0 | MIT |
 | itertools | 0.15.0 | MIT OR Apache-2.0 |
 | itoa | 1.0.18 | MIT OR Apache-2.0 |
+| jack | 0.13.5 | MIT |
+| jack-sys | 0.5.1 | MIT OR Apache-2.0 |
 | jni | 0.22.4 | MIT OR Apache-2.0 |
 | jni-macros | 0.22.4 | MIT OR Apache-2.0 |
 | jni-sys | 0.3.1 | MIT OR Apache-2.0 |
@@ -102,7 +104,9 @@ they are never linked into a release binary.
 | js-sys | 0.3.103 | MIT OR Apache-2.0 |
 | keyboard-types | 0.8.3 | MIT OR Apache-2.0 |
 | kurbo | 0.13.1 | Apache-2.0 OR MIT |
+| lazy_static | 1.5.0 | MIT OR Apache-2.0 |
 | libc | 0.2.189 | MIT OR Apache-2.0 |
+| libloading | 0.7.4 | ISC |
 | libloading | 0.8.9 | ISC |
 | libredox | 0.1.19 | MIT |
 | linebender_resource_handle | 0.1.1 | Apache-2.0 OR MIT |
@@ -221,6 +225,9 @@ they are never linked into a release binary.
 | web-sys | 0.3.103 | MIT OR Apache-2.0 |
 | web-time | 1.1.0 | MIT OR Apache-2.0 |
 | wide | 1.7.0 | Zlib OR Apache-2.0 OR MIT |
+| winapi | 0.3.9 | MIT/Apache-2.0 |
+| winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
+| winapi-x86_64-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
 | windows | 0.62.2 | MIT OR Apache-2.0 |
 | windows-collections | 0.3.2 | MIT OR Apache-2.0 |
 | windows-core | 0.62.2 | MIT OR Apache-2.0 |

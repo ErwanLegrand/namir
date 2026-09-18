@@ -455,7 +455,7 @@ pub(crate) fn negotiate_share_mode(
     // decision at once without probing: `possible: false` keeps the panel's capability gate
     // false, `concept: false` tells the panel to hide the control, and the session settles on
     // shared with no refusal detail — nothing was refused, nothing was even asked for.
-    if !crate::audio_io::host_has_share_mode_concept(&host) {
+    if !crate::audio_io::host_has_share_mode_concept(host) {
         return ShareModeDecision {
             mode: ShareMode::Shared,
             refusal_detail: None,
