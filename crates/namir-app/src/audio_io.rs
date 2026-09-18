@@ -283,8 +283,8 @@ pub enum Direction {
 ///
 /// Meaningful on WASAPI only. Every other host API this build enumerates (ALSA, CoreAudio,
 /// JACK) has exactly one access mode, with the server itself owning device access — the
-/// *host-wide* answer [`AudioBackend::exclusive_mode_is_a_concept`] carries, distinct from the
-/// per-device [`ExclusiveModeOutcome::Unsupported`] a WASAPI device can give for "no exclusive
+/// *host-wide* answer [`host_has_share_mode_concept`] carries, distinct from the per-device
+/// [`ExclusiveModeOutcome::Unsupported`] a WASAPI device can give for "no exclusive
 /// endpoint". That is also why nothing here is conditionally compiled per platform — D-5.1
 /// confines platform `cfg` attributes to `namir-platform` and `xtask layering` enforces it, so
 /// this seam is runtime-dispatched by construction rather than by preference.
@@ -296,6 +296,28 @@ pub enum ShareMode {
     Shared,
     /// This process holds the device exclusively for the lifetime of the stream.
     Exclusive,
+}
+
+/// Whether `host`'s API has a share-mode concept **at all** — FR-IO-020's exclusive mode is a
+/// WASAPI property, and every other host API this build enumerates (ALSA, CoreAudio, JACK) has
+/// exactly one access mode, the server itself owning device access. A host answering `false`
+/// must never be asked for exclusive mode (the probe would be a pointless device round trip —
+/// a fresh JACK client connect), must never receive the "exclusive mode is not available"
+/// degradation notice, and the audio panel hides the Share Mode control entirely. This is the
+/// *host-wide* answer; [`ExclusiveModeOutcome::Unsupported`] is the per-device one — a WASAPI
+/// device with no exclusive endpoint — which keeps the control visible and disabled. The two
+/// must never be conflated: "the choice does not exist on this API" is not "this device
+/// refused the choice".
+///
+/// A function rather than an [`AudioBackend`] method: the answer is a pure function of the
+/// host name (the trait exists to dispatch on `self`, which nothing here would use), and the
+/// one settle point, [`crate::app::negotiate_share_mode`], already holds the [`HostInfo`].
+/// FR-IO-020 scopes exclusive mode to WASAPI; FR-IO-030 (ALSA/CoreAudio) never asks for it;
+/// and JACK's server owns device access. If the ASIO backend is ever built (Should, requires
+/// the user-supplied SDK), revisit whether its driver model is a second concept rather than
+/// extending this match.
+pub(crate) fn host_has_share_mode_concept(host: &HostInfo) -> bool {
+    host.name == "WASAPI"
 }
 
 /// FR-IO-020's exclusive-mode request outcome. Since M11 all three variants are reachable from
@@ -715,19 +737,8 @@ pub trait AudioBackend: Send + Sync {
         share_mode: ShareMode,
     ) -> Result<EnumeratedConfigs, AudioIoError>;
 
-    /// Whether `host` has a share-mode concept **at all** — FR-IO-020's exclusive mode is a
-    /// WASAPI property, and every other host API (ALSA, CoreAudio, JACK) has exactly one access
-    /// mode, the server itself owning device access. A host answering `false` must not be
-    /// asked for exclusive mode (the probe would be a pointless device round trip — a fresh
-    /// JACK client connect), must not receive the "exclusive mode is not available"
-    /// degradation notice, and the audio panel hides the Share Mode control entirely. This is
-    /// the *host-wide* answer; [`ExclusiveModeOutcome::Unsupported`] is the per-device one —
-    /// a WASAPI device with no exclusive endpoint — which keeps the control visible and
-    /// disabled. The two must never be conflated: "the choice does not exist on this API" is
-    /// not "this device refused the choice".
-    fn exclusive_mode_is_a_concept(&self, host: &HostInfo) -> bool;
-
     /// FR-IO-020: would `device` open in [`ShareMode::Exclusive`] at `params`? Answered **before**
+    /// any stream is built, and this ordering is load-bearing rather than stylistic.
     ///
     /// The obvious alternative — open exclusive, and fall back to shared if it fails — cannot be
     /// written against this crate's own wiring. [`crate::stream::open`] takes its
@@ -1339,16 +1350,6 @@ mod cpal_impl {
         /// answer as its capability gate, and `EXCLUSIVE_MODE_UNAVAILABLE`'s remedy is written
         /// against it — a cross-reference PR #226's review recorded, kept here because
         /// `error_codes.rs` still cites this method for the limitation it documented.
-        fn exclusive_mode_is_a_concept(&self, host: &HostInfo) -> bool {
-            // FR-IO-020 scopes exclusive mode to WASAPI, FR-IO-030 (ALSA/CoreAudio) never asks
-            // for it, and JACK's server owns device access — a "share mode" is meaningless for
-            // a client of any of them. The name match is the literal encoding of that product
-            // rule. If the ASIO backend is ever built (Should, requires the user-supplied SDK),
-            // revisit whether its driver model is a second concept rather than extending this
-            // match.
-            host.name == "WASAPI"
-        }
-
         fn supports_exclusive(
             &self,
             host: &HostInfo,

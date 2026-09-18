@@ -1,7 +1,11 @@
-//! Throwaway diagnostic (issue: JACK window-close hang): opens a JACK duplex pair and drops it,
-//! repeatedly, timing both sides of the drop. The suspected race is `jack_deactivate` (the jack
-//! crate's `AsyncClient::drop`) blocking indefinitely on Jack2/Windows; a drop stuck past the
-//! 5 s ceiling is the bug. Requires a running JACK server.
+//! Standing regression probe for the JACK stream-drop race: opens a JACK duplex pair and drops
+//! it, repeatedly, timing both sides of each drop. Before cpal fork commit `fabe84d`
+//! (`fix(jack): never block stream drop on deactivation`), `jack_deactivate` could block the
+//! caller forever on Jack2/Windows — one 4-minute hang in 40 rounds — leaving the sibling
+//! client streaming into a dead consumer (namir's window-close hang; see D-13.4's M15
+//! follow-up note). The fork now deactivates on a detached thread; a drop stuck past 5 s is
+//! the bug returning, and exits non-zero. Run whenever the cpal pin is bumped (R-10's
+//! highest-risk operation). Requires a running JACK server.
 //!
 //! ```text
 //! cargo run -p namir-app --example jack_drop_probe
@@ -86,6 +90,12 @@ fn main() -> Result<(), String> {
         if hung >= 3 {
             break;
         }
+    }
+    if hung > 0 {
+        return Err(format!(
+            "{hung} drops exceeded the 5 s ceiling — the jack_deactivate race is back (see \
+             D-13.4's M15 follow-up note)"
+        ));
     }
     eprintln!("done, hung drops: {hung}");
     Ok(())

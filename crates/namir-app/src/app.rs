@@ -406,7 +406,7 @@ pub(crate) struct ShareModeDecision {
     /// no caller ever has to probe a device from a render or snapshot path.
     pub(crate) possible: bool,
     /// Whether the host this session runs on has a share-mode concept **at all** —
-    /// [`AudioBackend::exclusive_mode_is_a_concept`]. `false` (every host except WASAPI:
+    /// [`crate::audio_io::host_has_share_mode_concept`]. `false` (every host except WASAPI:
     /// ALSA, CoreAudio, JACK) means exclusive mode was never requested and never refused, no
     /// degradation notice exists for the host, and the panel hides the Share Mode control —
     /// the distinction from `possible`, which is a device's answer within a host that *has*
@@ -455,7 +455,7 @@ pub(crate) fn negotiate_share_mode(
     // decision at once without probing: `possible: false` keeps the panel's capability gate
     // false, `concept: false` tells the panel to hide the control, and the session settles on
     // shared with no refusal detail — nothing was refused, nothing was even asked for.
-    if !backend.exclusive_mode_is_a_concept(&host) {
+    if !crate::audio_io::host_has_share_mode_concept(&host) {
         return ShareModeDecision {
             mode: ShareMode::Shared,
             refusal_detail: None,
@@ -1160,9 +1160,11 @@ mod tests {
     const IN: &str = "fake in";
     const OUT: &str = "fake out";
 
+    /// The WASAPI-shaped host every exclusive-mode test negotiates against: the shared/exclusive
+    /// two-config shape (`reporting_exclusive_configs`) is that host API's fact.
     fn host() -> HostInfo {
         HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         }
     }
 
@@ -1183,9 +1185,15 @@ mod tests {
     }
 
     fn negotiate(backend: &FakeBackend, requested: bool) -> ShareModeDecision {
+        negotiate_on(backend, &host(), requested)
+    }
+
+    /// As [`negotiate`], against the host named `host_name` — how a JACK/ALSA/CoreAudio host is
+    /// stood in (`host_has_share_mode_concept` keys on the name).
+    fn negotiate_on(backend: &FakeBackend, host: &HostInfo, requested: bool) -> ShareModeDecision {
         negotiate_share_mode(
             backend,
-            &host(),
+            host,
             &device(IN),
             params(1),
             &device(OUT),
@@ -1202,9 +1210,14 @@ mod tests {
     fn a_conceptless_host_settles_shared_without_probing() {
         let backend = FakeBackend::new()
             .with_devices(vec![device(IN)], vec![device(OUT)])
-            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)))
-            .with_exclusive_mode_concept(false);
-        let decision = negotiate(&backend, true);
+            .reporting_exclusive_configs(Some(exclusive(1)), Some(exclusive(2)));
+        let decision = negotiate_on(
+            &backend,
+            &HostInfo {
+                name: "JACK".to_string(),
+            },
+            true,
+        );
         assert_eq!(decision.mode, ShareMode::Shared);
         assert_eq!(
             decision.refusal_detail, None,

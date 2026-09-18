@@ -77,9 +77,6 @@ namir-ui = { path = "../namir-ui", version = "0.1.0" }
 # dead bridge, xrun storm) on the §2 reference machine. The fork now deactivates on a detached
 # thread so `Drop` never blocks. Reproduced by `crates/namir-app/examples/jack_drop_probe.rs`
 # (open/drop JACK duplex pairs in a loop) before the fix; see D-13.4's M15 consequence note.
-# Share-mode note: exclusive mode is a WASAPI concept — JACK/ALSA/CoreAudio sessions never
-# request it, the panel hides the control, and no degradation notice is printed (FR-IO-020's
-# scope; recorded in the same consequence note).
 cpal = { git = "https://github.com/ErwanLegrand/cpal", rev = "fabe84d04bf43c609afd44a99d545d4c868d919a", features = ["jack"] }
 # The input-callback -> output-callback bridge (`bridge.rs`): the two cpal callbacks run on two
 # different OS-owned threads with no ordering relationship, so getting a captured block from the

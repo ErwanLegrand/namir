@@ -1601,13 +1601,19 @@ mod tests {
         });
         driver.frame(Vec::new());
         let output = driver.frame(Vec::new());
+        let painted = painted_texts(&output)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>();
         assert!(
             find_text(&output, "Share Mode:").is_none(),
-            "the share-mode row must not exist on a concept-less host; painted: {:?}",
-            painted_texts(&output)
-                .into_iter()
-                .map(|(text, _)| text)
-                .collect::<Vec<_>>()
+            "the share-mode row must not exist on a concept-less host; painted: {painted:?}"
+        );
+        assert!(
+            !painted
+                .iter()
+                .any(|t| t.contains("Exclusive mode is not available")),
+            "the unavailability reason must be gated with the row, not escape it; painted: {painted:?}"
         );
     }
 
@@ -1637,13 +1643,19 @@ mod tests {
         });
         driver.frame(Vec::new());
         let output = driver.frame(Vec::new());
+        let painted = painted_texts(&output)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>();
         assert!(
             find_text(&output, "Share Mode:").is_some(),
-            "a WASAPI device that cannot serve exclusive keeps the row, disabled; painted: {:?}",
-            painted_texts(&output)
-                .into_iter()
-                .map(|(text, _)| text)
-                .collect::<Vec<_>>()
+            "a WASAPI device that cannot serve exclusive keeps the row, disabled; painted: {painted:?}"
+        );
+        assert!(
+            painted
+                .iter()
+                .any(|t| t.contains("Exclusive mode is not available")),
+            "the disabled row must state its device-level reason; painted: {painted:?}"
         );
     }
 

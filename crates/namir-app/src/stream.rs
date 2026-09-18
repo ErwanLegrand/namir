@@ -739,11 +739,6 @@ pub(crate) struct FakeBackend {
     /// positive answer always comes from the direction's exclusive ranges
     /// ([`FakeBackend::reporting_exclusive_configs`]), exactly as the enumeration reports them.
     devices_without_exclusive_endpoints: Vec<String>,
-    /// Whether this backend's host has a share-mode concept at all — the WASAPI attribute
-    /// [`crate::audio_io::AudioBackend::exclusive_mode_is_a_concept`] encodes. Default `true`,
-    /// the WASAPI shape most tests exercise; [`FakeBackend::with_exclusive_mode_concept`]
-    /// turns it off to stand in for JACK/ALSA/CoreAudio.
-    exclusive_mode_is_a_concept: bool,
     /// Every `(direction, share_mode)` a config query was made with, in call order — the
     /// observable for *which mode was enumerated*, and the only way to see issue #190's two-pass
     /// sequence. [`FakeBackend::asked_share_modes`] is its counterpart for the stream open.
@@ -779,7 +774,6 @@ impl FakeBackend {
             shared_output_configs: None,
             exclusive_output_configs: None,
             devices_without_exclusive_endpoints: Vec::new(),
-            exclusive_mode_is_a_concept: true,
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream,
             open_failures: Vec::new(),
@@ -833,14 +827,6 @@ impl FakeBackend {
     pub(crate) fn with_no_exclusive_endpoint(mut self, device_name: &str) -> Self {
         self.devices_without_exclusive_endpoints
             .push(device_name.to_string());
-        self
-    }
-
-    /// Declares that this backend's host has no share-mode concept — the JACK/ALSA/CoreAudio
-    /// shape, where the session settles shared without probing and the panel hides the Share
-    /// Mode control. The default `true` is the WASAPI shape most tests exercise.
-    pub(crate) fn with_exclusive_mode_concept(mut self, concept: bool) -> Self {
-        self.exclusive_mode_is_a_concept = concept;
         self
     }
 
@@ -1034,7 +1020,7 @@ impl AudioBackend for FakeBackend {
     }
     fn default_host(&self) -> HostInfo {
         HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         }
     }
     fn input_devices(&self, _host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
@@ -1119,10 +1105,6 @@ impl AudioBackend for FakeBackend {
             }),
         })
     }
-    fn exclusive_mode_is_a_concept(&self, _host: &HostInfo) -> bool {
-        self.exclusive_mode_is_a_concept
-    }
-
     fn supports_exclusive(
         &self,
         _host: &HostInfo,
@@ -1219,7 +1201,7 @@ pub(crate) fn fake_duplex_setup_with_share_mode(
     StreamSetup {
         backend,
         input_host: HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         },
         input_device: DeviceInfo {
             name: "in".to_string(),
@@ -1232,7 +1214,7 @@ pub(crate) fn fake_duplex_setup_with_share_mode(
             share_mode,
         },
         output_host: HostInfo {
-            name: "fake".to_string(),
+            name: "WASAPI".to_string(),
         },
         output_device: DeviceInfo {
             name: "out".to_string(),
