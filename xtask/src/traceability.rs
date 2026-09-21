@@ -1,8 +1,8 @@
 //! NFR-QUAL-010 (Must): "Every requirement [...] marked Must shall be covered by at least one
 //! automated test, except where the Verify field states M, in which case it shall be covered by
 //! a written manual test script." FRS §10 spells out a three-level mapping (architecture doc ->
-//! component, `03-test-plan.md` -> test identifiers, test source -> machine-readable annotation).
-//! `docs/03-test-plan.md` never existed (the roadmap document took the "03" slot instead) -- this
+//! component, `05-test-plan.md` -> test identifiers, test source -> machine-readable annotation).
+//! `docs/05-test-plan.md` never existed (the roadmap document took the "03" slot instead) -- this
 //! module generates it rather than asking anyone to hand-maintain a document that would drift the
 //! moment a test moved, following the same generate-and-diff precedent `params.lock` already
 //! established. See `docs/01-functional-requirements.md` §10's `*Consequence (added M7)*` note and
@@ -84,7 +84,7 @@ pub struct Requirement {
 /// misspelt (`*Verify*`, `*Verify :*`) or demoted to prose scanned straight through the following
 /// `(Should)`/`(Could)` requirements and adopted the first method it found -- silently recording
 /// that neighbour's code as the Must's own. Since 31 Shoulds and 3 Coulds are interleaved with the
-/// 130 Musts, that is not a hypothetical: the bar `docs/03-test-plan.md` states for the Must would
+/// 130 Musts, that is not a hypothetical: the bar `docs/05-test-plan.md` states for the Must would
 /// have been whatever the Should asked for, and nothing anywhere would have said so. Inheriting a
 /// method is never right, so the boundary is every requirement line.
 pub fn parse_must_requirements(frs_text: &str) -> Result<Vec<Requirement>, String> {
@@ -255,7 +255,7 @@ fn is_verify_continuation(line: &str) -> bool {
 /// for a text [`verify_line_text`] accepted.
 ///
 /// **This returns a set because eight of the FRS's 130 Musts state a compound method** and this
-/// module kept only the first code of one until issue #27 -- so `docs/03-test-plan.md` stated a
+/// module kept only the first code of one until issue #27 -- so `docs/05-test-plan.md` stated a
 /// weaker bar than the FRS for every one of them, and FR-STATE-040 (`M plus S (schema check)`)
 /// read fully covered on its manual document alone while the `S` half was executed by nothing.
 ///
@@ -1327,7 +1327,7 @@ pub fn partial_row_ids(requirements: &[Requirement], report: &Report) -> Vec<Str
     ids
 }
 
-/// Renders the generated `docs/03-test-plan.md` body. Sorted by id for a stable, diffable file.
+/// Renders the generated `docs/05-test-plan.md` body. Sorted by id for a stable, diffable file.
 pub fn render_test_plan(requirements: &[Requirement], report: &Report) -> String {
     let mut sorted: Vec<&Requirement> = requirements.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1545,7 +1545,7 @@ pub fn exit_ok(required_half: bool, coverage_clean: bool, allow_uncovered: bool)
 // §14's Must-count column and its row set are *derived from the FRS*, not maintained by hand --
 // they were wrong in two rows the day they were written, drifted in three more within one FRS
 // revision, and omitted two sections entirely. This half generates the counts, emits them into
-// `docs/03-test-plan.md`, and fails the build when §14's `### M9a re-audit` table disagrees. The
+// `docs/05-test-plan.md`, and fails the build when §14's `### M9a re-audit` table disagrees. The
 // three verdict columns stay hand-adjudicated and are outside this check (D-23.2, §22 R-14).
 // ---------------------------------------------------------------------------------------------
 
@@ -1560,7 +1560,7 @@ pub struct SectionCount {
 /// Groups `reqs` by FRS section, in first-appearance (i.e. FRS document) order.
 ///
 /// Insertion-ordered by construction rather than by iterating a `HashMap`: this order reaches a
-/// checked-in generated file, and a nondeterministic one would make `docs/03-test-plan.md` differ
+/// checked-in generated file, and a nondeterministic one would make `docs/05-test-plan.md` differ
 /// between a local run and CI -- the same class of bug `main.rs`'s `read_dir` sort already fixed.
 ///
 /// Two conditions are hard errors rather than a silently-plausible wrong denominator. Neither
@@ -1618,7 +1618,7 @@ fn area_token(id: &str) -> Result<String, String> {
     Ok(parts[1].to_string())
 }
 
-/// The `## Must requirements per FRS section` block appended to `docs/03-test-plan.md`.
+/// The `## Must requirements per FRS section` block appended to `docs/05-test-plan.md`.
 ///
 /// Deliberately mirrors §14's row-label form and its bolded `**Total**` row so the generated block
 /// and the hand-maintained table are diffable against each other by eye, not only by the tool.
@@ -2014,7 +2014,7 @@ mod tests {
     /// The gap the M15 review found: the forward scan broke on the next **Must**, so a Must with
     /// no method line of its own read straight through the `(Should)` between them and adopted
     /// **its** `*Verify:*`. `FR-X-010` here would have been recorded as `Verify: B` -- a code the
-    /// FRS never wrote for it -- and `docs/03-test-plan.md` would have stated that bar with
+    /// FRS never wrote for it -- and `docs/05-test-plan.md` would have stated that bar with
     /// nothing anywhere saying where it came from. Inheritance is never the right answer, so this
     /// is an error.
     #[test]
@@ -2671,7 +2671,7 @@ mod tests {
         // `fr-io-040-sample-rate-and-buffer-size.md`, both `NOT EXECUTED`. Neither was ever read:
         // the lookup was a `find`, and `fr-io-010-device-enumeration.md` -- which declares both
         // ids and records a pass earned against the pre-panel surface -- comes first. So both
-        // Musts read plainly covered in `docs/03-test-plan.md` on the strength of a script that
+        // Musts read plainly covered in `docs/05-test-plan.md` on the strength of a script that
         // does not exercise what the panel added.
         let reqs = vec![
             Requirement {

@@ -290,7 +290,7 @@ jobs:
       #
       # The two halves are genuinely independent and are ready on different dates:
       #
-      #   * **Required, from today.** The generated `docs/03-test-plan.md` matches what the tool
+      #   * **Required, from today.** The generated `docs/05-test-plan.md` matches what the tool
       #     generates, and Section 14's `### M9a re-audit` denominators match the FRS (D-23.2's
       #     derived half rides here, not on the informational one). Both are mechanical and
       #     satisfiable right now: `--write` regenerates the plan, and Section 14's row set is

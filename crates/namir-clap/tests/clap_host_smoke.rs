@@ -2,7 +2,7 @@
 //!
 //! This file deliberately carries **no** `// trace:` or `// trace-partial:` annotation. The six
 //! M9b CLAP tests that follow each own one requirement and each write their own tag; a tag here
-//! would put a claim into `docs/03-test-plan.md` that this file's assertions do not support.
+//! would put a claim into `docs/05-test-plan.md` that this file's assertions do not support.
 //!
 //! It exists so that a breakage in the shared harness surfaces as one obviously-harness-shaped
 //! failure rather than as six confusing ones, and so the `host-ext-tests` feature path is proven
