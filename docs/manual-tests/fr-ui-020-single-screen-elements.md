@@ -213,7 +213,7 @@ FR-CLAP-110. Neither D-13.x, `gui.rs`'s own comment, nor FR-CLAP-110's text note
   publish it as `telemetry.trim.peak_hold_db` and `telemetry.out.ch<n>.peak_hold_db` — so the value
   a display could use is computed, published, and then dropped. This is an independent observation
   of the gap FR-IN-020's own `trace-partial:` already records
-  (`crates/namir-dsp/src/meter.rs:160`, and `docs/03-test-plan.md`'s FR-IN-020 row), now seen on
+  (`crates/namir-dsp/src/meter.rs:160`, and `docs/05-test-plan.md`'s FR-IN-020 row), now seen on
   screen rather than argued from the source. FR-IN-020's `Verify:` is "U for the measurement; M for
   the display"; the display half remains unbuilt, and it closes at M8.
 - **Notices never expire, and in the plugin that compounds the fixed editor.** A notice occupies

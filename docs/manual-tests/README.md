@@ -34,7 +34,7 @@ was not. The token is what the tool reads; the prose is what the next person rea
 Four consequences worth knowing before you write one:
 
 - **Only `PASS` credits its requirement.** For a `Verify: M` Must, this document *is* the traced
-  artifact (D-18.6), so anything else leaves that requirement uncovered in `docs/03-test-plan.md`
+  artifact (D-18.6), so anything else leaves that requirement uncovered in `docs/05-test-plan.md`
   and in the gate's own uncovered list. That is the point: before M15 the gate matched a filename
   and printed `clean -- all 130 Must requirements are covered` while six of those Musts' scripts
   recorded `NOT EXECUTED`, `PARTIAL` or `FAIL` (issue #34).

@@ -854,11 +854,11 @@ fn traceability_outcome(root: &Path, write: bool, allow_uncovered: bool) -> Trac
         &source_hits,
         &partial_hits,
     );
-    let test_plan_path = root.join("docs/03-test-plan.md");
+    let test_plan_path = root.join("docs/05-test-plan.md");
     let expected = traceability::render_test_plan(&requirements, &report);
 
     // Deliberately *not* gated on `write`. `--write` forces `plan_up_to_date` true below because it
-    // regenerates `docs/03-test-plan.md`; it cannot regenerate §14, which D-23.2 keeps
+    // regenerates `docs/05-test-plan.md`; it cannot regenerate §14, which D-23.2 keeps
     // hand-maintained by design. Suppressing this under `--write` would make the flag a one-step
     // bypass of the very gate that decision creates.
     let section_table_ok = check_section_table(&requirements, &roadmap_text);
@@ -1064,7 +1064,7 @@ fn partial_count_lines(
     if !unrendered.is_empty() {
         lines.push(format!(
             "traceability: {} further `// trace-partial:` annotation(s) name a requirement \
-             docs/03-test-plan.md carries no `**PARTIAL**` row for -- the plan's rows are the FRS's \
+             docs/05-test-plan.md carries no `**PARTIAL**` row for -- the plan's rows are the FRS's \
              Must requirements, so a partial on a Should, a Could or an unlisted id renders \
              nowhere. Outside the count above, which names exactly the rendered rows (R-13), and \
              printed rather than dropped -- each is still a recorded gap:",
@@ -1135,7 +1135,7 @@ fn check_section_table(requirements: &[traceability::Requirement], roadmap_text:
         "traceability: docs/03-implementation-roadmap.md \u{a7}14's `### M9a re-audit` table \
          disagrees with the\n  Must counts derived from docs/01-functional-requirements.md \
          (D-23.2). The FRS is the source of\n  truth; fix the roadmap table by hand -- `--write` \
-         regenerates docs/03-test-plan.md and never\n  touches the roadmap. Do not edit the \
+         regenerates docs/05-test-plan.md and never\n  touches the roadmap. Do not edit the \
          superseded M0 table above it:"
     );
     for defect in &defects {
@@ -1702,7 +1702,7 @@ mod tests {
             );
             make_plan_fresh(&dir);
             if !fresh {
-                std::fs::write(dir.join("docs/03-test-plan.md"), "deliberately stale\n").unwrap();
+                std::fs::write(dir.join("docs/05-test-plan.md"), "deliberately stale\n").unwrap();
             }
             assert_eq!(
                 run_traceability(&dir, false, allow),
@@ -1915,7 +1915,7 @@ mod tests {
             "a partial counts as coverage for the ordinary run (D-23.1)"
         );
 
-        let plan = std::fs::read_to_string(dir.join("docs/03-test-plan.md")).unwrap();
+        let plan = std::fs::read_to_string(dir.join("docs/05-test-plan.md")).unwrap();
         assert!(
             plan.contains(&format!(
                 "| FR-CHAIN-010 | U | **PARTIAL** — `namir-engine`: {joined} |"
@@ -1959,7 +1959,7 @@ mod tests {
             )]
         );
 
-        let plan = std::fs::read_to_string(dir.join("docs/03-test-plan.md")).unwrap();
+        let plan = std::fs::read_to_string(dir.join("docs/05-test-plan.md")).unwrap();
         assert!(
             plan.contains("| FR-CHAIN-010 | U | **UNRESOLVED** |"),
             "{plan}"
@@ -2025,7 +2025,7 @@ mod tests {
             "the Must's partial is coverage for the ordinary run"
         );
 
-        let plan = std::fs::read_to_string(dir.join("docs/03-test-plan.md")).unwrap();
+        let plan = std::fs::read_to_string(dir.join("docs/05-test-plan.md")).unwrap();
         let rows = plan
             .lines()
             .filter(|line| line.starts_with("| ") && line.contains("**PARTIAL**"))
@@ -2081,7 +2081,7 @@ mod tests {
                 "Verify: {verify}: the run aborts before R-13's block"
             );
             assert!(
-                !dir.join("docs/03-test-plan.md").exists(),
+                !dir.join("docs/05-test-plan.md").exists(),
                 "Verify: {verify}: a plan must never be written from a tag the tool refused"
             );
 
@@ -2117,7 +2117,7 @@ mod tests {
             let run = traceability_outcome(&dir, true, true);
             assert!(!run.ok, "{name}");
             assert!(
-                !dir.join("docs/03-test-plan.md").exists(),
+                !dir.join("docs/05-test-plan.md").exists(),
                 "{name}: a plan must never be written from a verdict the tool refused"
             );
 
@@ -2146,7 +2146,7 @@ mod tests {
             traceability_outcome(&dir, true, true).ok,
             "and it is a coverage gap, which is exactly what --allow-uncovered relaxes"
         );
-        let plan = std::fs::read_to_string(dir.join("docs/03-test-plan.md")).unwrap();
+        let plan = std::fs::read_to_string(dir.join("docs/05-test-plan.md")).unwrap();
         assert!(
             plan.contains(
                 "**UNRESOLVED** — `docs/manual-tests/fr-chain-010-signal-chain.md` \

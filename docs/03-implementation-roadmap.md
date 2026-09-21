@@ -1324,7 +1324,7 @@ files rather than assumed from this section's own prose.
   zero `UNKNOWN` licences. Closes *production* of the artifact and its CI freshness gate; physical
   bundling into a release installer stays open — no packaging pipeline exists yet (M8).
 - **NFR-QUAL-010's traceability check** — the substantial piece. FRS §10 names a
-  `docs/03-test-plan.md` this project never actually had (the roadmap document took the "03" slot
+  `docs/05-test-plan.md` this project never actually had (the roadmap document took the "03" slot
   instead — a real, previously unrecorded inconsistency). `cargo run -p xtask -- traceability
   [--write]` now generates it: every `**FR-*/NFR-* (Must)**` + `*Verify:*` pair parsed from the
   FRS, reconciled against `docs/manual-tests/*.md` (`Verify: M`) or a `// trace: ID` comment /
@@ -1383,7 +1383,7 @@ sweep is comment-only, zero test behavior changed.
   with confidence, so the table below is left as M6 recorded it for this one row, with this
   paragraph standing in as the honest record until that re-audit happens.
 
-**A real bug found by this PR's own first CI run, not by local testing**: `docs/03-test-plan.md`
+**A real bug found by this PR's own first CI run, not by local testing**: `docs/05-test-plan.md`
 reported "stale" on Linux CI despite being freshly regenerated and committed from this session's
 Windows machine, even though the missing-Musts count matched exactly. Root cause not fully
 confirmed (Linux access unavailable to this session), but the most likely mechanism —
@@ -1403,7 +1403,7 @@ prevent.
 **Confirmed by this PR's second CI run** (after the sort-before-search fix, commit `f8f72d9`): all
 19 checks pass, including `layering + params.lock + attribution` as a whole. Reading that job's own
 Linux log directly (not inferring from the green checkmark) shows `xtask traceability` printing
-`docs/03-test-plan.md is up to date` on `ubuntu-latest` — the cross-platform staleness false
+`docs/05-test-plan.md is up to date` on `ubuntu-latest` — the cross-platform staleness false
 positive is gone — immediately followed by the same 16-item missing-Musts list as the local Windows
 run, exiting 1 as designed and tolerated only by `continue-on-error`. Both halves of the fix hold:
 the determinism bug is actually fixed, not just no-longer-observed, and the real gap count is
@@ -1416,7 +1416,7 @@ cross-builds and the new `fuzz-smoke-ir`/`network-free`/`attribution` jobs) — 
 assumed green, per this project's own standard of not claiming untested behavior works. NFR-QUAL-010's
 traceability check is real and running, but does not yet report zero uncovered Musts: 16 remain,
 each individually investigated and confirmed as a genuine gap (not a tagging miss) by name above and
-in `docs/03-test-plan.md`'s own generated output. AQ-4 and the user guide close in full. The milestone
+in `docs/05-test-plan.md`'s own generated output. AQ-4 and the user guide close in full. The milestone
 is far more complete than it started, closes real infrastructure gaps M1 never had a target for, and
 converts several previously-invisible gaps (the CLAP CI-gating finding, the WASAPI/resampling-quality
 gaps already known) into named, tracked ones — which is what NFR-QUAL-010 existing at all is for.
@@ -1786,7 +1786,7 @@ audit starts from them rather than rediscovering them:
   existing rows' contents.
 
 Until that audit lands, **treat every cell in this table as a claim of unknown age rather than as
-current status.** `cargo run -p xtask -- traceability` and its generated `docs/03-test-plan.md` are
+current status.** `cargo run -p xtask -- traceability` and its generated `docs/05-test-plan.md` are
 the mechanically regenerated view of the same question and are the more trustworthy of the two
 today — with the caveat that §11's own appended correction records that at least three of the
 sixteen Musts that tool reports as uncovered are tagging misses rather than gaps, so it currently
@@ -1810,7 +1810,7 @@ prose beneath the table, exactly as the six prior sessions did to the M0 snapsho
 nobody's evidence has touched stays where M9a left it rather than drifting quietly.
 
 **The denominators are derived, not counted by hand.** `xtask traceability` already parses every
-`**ID (Must)**` line in the FRS and emits all of them into `docs/03-test-plan.md`; per D-23.2 it now
+`**ID (Must)**` line in the FRS and emits all of them into `docs/05-test-plan.md`; per D-23.2 it now
 also emits the per-section counts below and fails if this table disagrees with them or omits a
 section that has Musts. That check rides on the **required plan-diff half** of D-18.5's split gate
 from M9a — it is mechanical and satisfiable immediately — while the zero-uncovered half stays
@@ -1849,7 +1849,7 @@ does not need to be, since every cell below is re-derived from evidence rather t
 section whose three requirements carry ordinary `*Verify:*` codes exactly like every other. Its
 absence is an oversight from M0, not a scoping choice — and a consequential one: **FR-CFG-020** is
 named both in §12's M8 exit checklist as the final integration test and in §16 as a deliverable, and
-`docs/03-test-plan.md` reports it UNRESOLVED. It has been gated by a table it has never appeared in.
+`docs/05-test-plan.md` reports it UNRESOLVED. It has been gated by a table it has never appeared in.
 
 All eight requirements added on 2026-08-08 will enter as **Not started** when M9a fills the verdicts
 — they are requirements *for* M10/M12/M13's work, and none of that work has run — and this pass does
@@ -2508,7 +2508,7 @@ requirement is met by *running* its script, not by the file existing, and under 
 is the requirement's whole traced artifact — so the file's existence moves the tool's reading and
 nothing else. The mechanical gate and the honest verdict disagree here, §14 is the place that
 disagreement is resolved in the requirement's favour rather than the tool's, and a later reader must
-not "reconcile" these two cells by promoting them to match `docs/03-test-plan.md`. Both stay
+not "reconcile" these two cells by promoting them to match `docs/05-test-plan.md`. Both stay
 **Partial**, where M9a put them; 5.13 UI stays **1 / 6 / 0**, unchanged for the second milestone
 running and for the same reason M13 recorded.
 
@@ -2687,7 +2687,7 @@ that happens to depend on them first.
    reduction has been recorded honestly since M6 — in that module's own doc comment and in
    `docs/manual-tests/fr-clap-030-audio-ports-negotiation.md` — but only as an implementation note,
    never as a decision, and M9a's split-evidence tagging (`02-architecture.md` **D-18.6**) will make
-   the row read green in `docs/03-test-plan.md` while the reduction is still in force. Three answers:
+   the row read green in `docs/05-test-plan.md` while the reduction is still in force. Three answers:
    implement `audio-ports-config` and declare all three, which is the only one that meets the
    requirement as written; declare Stereo only and record it as an accepted, FRS-level scope
    reduction with a Consequence note at FR-CLAP-030 itself; or keep the current silence, which is the
@@ -2897,7 +2897,7 @@ that happens to depend on them first.
       "against the error catalogue of FR-ERR-020". That script walks no catalogue. The credit was a
       noun in a parenthesis.
 
-    **Effect on the ledger, stated because it goes the unpopular way.** `docs/03-test-plan.md` moves
+    **Effect on the ledger, stated because it goes the unpopular way.** `docs/05-test-plan.md` moves
     exactly two rows, FR-UI-020 and FR-UI-070, from a manual-test filename to `**UNRESOLVED**`, and
     the informational uncovered count goes **15 → 17**. Neither requirement lost any verification it
     had; both lost a credit for verification that never happened. **No §14 cell moves**: M9a's
@@ -3146,7 +3146,7 @@ that happens to depend on them first.
     building FR-ERR-030's static check. **Six** Musts state a compound method: FR-STATE-040
     (`M plus S (schema check)`), FR-CLAP-090 (`I plus B`), FR-CLAP-130 (`S plus I`), FR-ERR-030
     (`S plus I`), NFR-RT-020 (`S plus code review`) and NFR-PERF-010 (`B, as a CI regression gate`).
-    The parser records only the first, so `docs/03-test-plan.md` shows a weaker bar than the FRS
+    The parser records only the first, so `docs/05-test-plan.md` shows a weaker bar than the FRS
     states for all six. **Five self-correct and one cannot, and the difference is structural.** For
     the five whose first code is not `M`, the annotation author can write the missing half into the
     `uncovered:` field, and at M9b four of them do exactly that, naming the `B` half, the `S` half,
@@ -3303,7 +3303,7 @@ this subsection, §4's, §12's and §14's notes, §15's new items, the FRS's §1
 a file which was renamed. None of it changes what any gate sees. The second is the tooling change
 and everything that depends on it: `--allow-uncovered` and the printed owner attribution, D-23.1's
 two integrity fixes and its `trace-partial` parsing, D-23.2's denominator emitter, the three
-annotations under 3 below, the regenerated `docs/03-test-plan.md`, `ci.yml`'s two steps,
+annotations under 3 below, the regenerated `docs/05-test-plan.md`, `ci.yml`'s two steps,
 `clack-host`'s manifest entry, and `docs/manual-tests/fr-lib-020-ui-responsiveness-during-scan.md`.
 Those cannot land piecemeal: the commit that makes the plan-diff half required is the same commit
 that changes three rows of the generated plan and invokes a flag `xtask` does not have today
@@ -3318,7 +3318,7 @@ discovered at its close. Three problems, and only the first is arithmetic.
 
 *Nine of the twenty-four uncovered Musts are not M9's to close, and ten after this pass's own scope
 change.* Counted from the checked-in generated plan rather than estimated —
-`docs/03-test-plan.md` carries 24 `**UNRESOLVED**` rows against 130 Must rows (a raw `grep -c`
+`docs/05-test-plan.md` carries 24 `**UNRESOLVED**` rows against 130 Must rows (a raw `grep -c`
 returns 25; the legend line matches too) — with each attribution checked against the owning
 milestone's own text:
 
@@ -3356,7 +3356,7 @@ catch it — it runs `fmt` and `check` only, by design.
 
 **Restated acceptance:**
 
-- **Required from M9a, on every merge — the plan-diff half.** `docs/03-test-plan.md` matches what
+- **Required from M9a, on every merge — the plan-diff half.** `docs/05-test-plan.md` matches what
   the tool generates. This is the regression gate: it makes coverage a ratchet from M9a onward
   regardless of how many gaps remain, and it is the half that is enforceable *today*. It needs
   `--allow-uncovered` to exist in `xtask` first; today's single exit value cannot express the split.
@@ -3402,7 +3402,7 @@ flip a gate whose remaining gaps are not its to close.
 
 *An allowlist or exemption register is rejected, not overlooked.* The obvious way to make "zero
 uncovered Musts" pass today is a file of known-exempt ids the gate skips. Three reasons not to. The
-artifact it would duplicate already exists: `docs/03-test-plan.md` is generated, checked in,
+artifact it would duplicate already exists: `docs/05-test-plan.md` is generated, checked in,
 hand-editing-forbidden by its own header, and diffed on every run, so the current set of gaps is
 already a reviewed, versioned document and any change to it is a legible line in a pull request. An
 exemption list inverts the default, turning "uncovered" from something you can only remove by
@@ -3488,7 +3488,7 @@ partial.
 *Two tool-integrity fixes land before M9a's first tag, not after.* `trace_annotations` finds the
 marker anywhere in a line with no id-shape filter (`xtask/src/traceability.rs:115-131`), and the
 function-name fallback is a whole-file substring test — so string literals in `xtask`'s own tests put
-`xtask` in `docs/03-test-plan.md` as a component of FR-NAM-070, which it does not test. That false
+`xtask` in `docs/05-test-plan.md` as a component of FR-NAM-070, which it does not test. That false
 positive is live and checked in. Tagging under a doctrine while the tool still counts a string
 literal as a tag would put a false attribution into the same generated file the doctrine relies on
 for visibility.
@@ -3506,7 +3506,7 @@ green rows red on the same commit that makes the plan-diff half required. The ru
 in a `benches/*.rs` target as an anchor explicitly.
 
 **Correction 1 — the count above is stale, and "16 uncovered Musts" understates it.**
-`docs/03-test-plan.md` lists **24**. The difference is M8-planning's own new requirements, added to
+`docs/05-test-plan.md` lists **24**. The difference is M8-planning's own new requirements, added to
 the FRS after the sixteen were counted. The re-audit deliverable is sized against 24, of which 14 are
 M9's own.
 
@@ -3589,7 +3589,7 @@ reading the source this session, not by re-reading an earlier summary:
 
 The sweep deliverable is unaffected in scope and gains a home: every partially-spanned Must it finds
 is recorded as a `// trace-partial:`/`// uncovered:` pair at the covering test, rendered into
-`docs/03-test-plan.md`, rather than in a table in this document that would go stale the way §14's
+`docs/05-test-plan.md`, rather than in a table in this document that would go stale the way §14's
 did. FR-NAM-030 is the sweep's first, naming LSTM as the uncovered member and M10 Phase 4 as its
 closing milestone; FR-LIB-020's, above, is the first this pass writes.
 
@@ -3794,7 +3794,7 @@ D-23.1's two questions. The tally moves from **108 plain / 2 partial / 20 uncove
 requirement lost its coverage, 54 lost the claim that their coverage was *complete*. Every one of
 the 54 carries the `// uncovered:` field D-23.1 makes mandatory, naming the specific unspanned
 member or unexecuted half and a closing milestone, and every field is rendered verbatim into
-checked-in `docs/03-test-plan.md`. **The diff is comment-only** — no test logic changed, no
+checked-in `docs/05-test-plan.md`. **The diff is comment-only** — no test logic changed, no
 assertion was added, removed or loosened. What changed is what the ledger claims, not what the
 suite does.
 
@@ -4519,7 +4519,7 @@ class of error M9a's sweep existed to find, committed by the milestone that inhe
 
 **Nine `uncovered:` fields asserted facts that were false when read.** D-23.1 makes this field the
 ledger entry a Partial is retired against, and it is rendered verbatim into checked-in
-`docs/03-test-plan.md`, so a stale field is a false statement in a generated document. Four were
+`docs/05-test-plan.md`, so a stale field is a false statement in a generated document. Four were
 falsified by M9b's own work, because the re-booking commit changed the milestone token in 104 lines
 and re-validated none of the text: **FR-CLAP-090** said this crate "has no benches directory" when
 M9b had just added one; **NFR-RT-010** said `namir-clap`'s `process()` runs under no
@@ -5243,7 +5243,7 @@ the most useful thing in this section.** The FR-UI-110 manual-test document ment
 in passing prose. `xtask traceability` resolves a `Verify: M` requirement against a manual-test
 file's **whole content** (`xtask/src/traceability.rs`'s `build_report`), so that bare mention
 marked an unrelated Must — the Windows installer's per-user/system-wide scope — as covered in
-checked-in `docs/03-test-plan.md`, and dropped the informational uncovered count from 15 to 14.
+checked-in `docs/05-test-plan.md`, and dropped the informational uncovered count from 15 to 14.
 Reworded; the count is 15 again. **The durable fix is not made**: the whole-content match should be
 narrowed to a declared-ids line, which is left for M9b or M13 as a note here rather than done in a
 milestone that had no other business in that tool. Three further over-claims the same review caught
@@ -5549,7 +5549,7 @@ claims. Its test grew the `Namir.app` assertions and a negative case mirroring t
 one — a bare Mach-O named `Namir.app` is reported, with the microphone reason in the message —
 because that test is where a produced macOS tree already exists to assert against, and its doc
 comment says in as many words which of its assertions the tag covers. No annotation moved, so
-`docs/03-test-plan.md` is unchanged; the uncovered count stays 15 and the partial count 60.
+`docs/05-test-plan.md` is unchanged; the uncovered count stays 15 and the partial count 60.
 
 ### M13 status — the rest of the milestone, 2026-08-11
 
@@ -6734,7 +6734,7 @@ This addendum supersedes in place the earlier M14 planning and scoping passages 
   `docs/manual-tests/fr-io-010-device-selection.md` and
   `docs/manual-tests/fr-io-040-sample-rate-and-buffer-size.md` (both `NOT EXECUTED`) had been masked
   because `fr-io-010-device-enumeration.md` sorts first and records PASS. Both are now marked
-  `**UNRESOLVED**` in `docs/03-test-plan.md`, bringing the uncovered set to six: FR-IN-020,
+  `**UNRESOLVED**` in `docs/05-test-plan.md`, bringing the uncovered set to six: FR-IN-020,
   FR-IO-010, FR-IO-030, FR-IO-040, FR-IO-050, FR-UI-030 (42 trace-partials; §14's denominator check
   still passes at 24 rows / 130 Musts).
 - **No §14 cell moves for this:** §14's `5.11 IO — 2 / 6 / 0` bullet already counted
@@ -6788,7 +6788,7 @@ document remains NOT EXECUTED.
 credits them — a human's written record of a run on one machine, unreproducible by CI by
 construction. `xtask traceability` confirms the mechanical half only: the uncovered-Must count falls
 from 8 to 4 (FR-IN-020, FR-IO-030, FR-IO-050, FR-UI-030 remain), and the generated
-`docs/03-test-plan.md` was regenerated rather than hand-edited.
+`docs/05-test-plan.md` was regenerated rather than hand-edited.
 
 ### The share-mode control lands; FR-IO-020's gate verdict reopens, 2026-09-13
 

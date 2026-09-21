@@ -45,7 +45,7 @@ Three documents in `docs/` form a strict hierarchy; where they conflict, the ear
   `xtask traceability`; a disagreement fails the required half of that gate and is fixed by hand in
   the roadmap, never by `--write`. Its three verdict columns are hand-adjudicated against each
   requirement's own text and stated `Verify:` method, every cell naming its evidence by file path,
-  and are outside every gate (§22 **R-14**) — so read `docs/03-test-plan.md` (generated) for the
+  and are outside every gate (§22 **R-14**) — so read `docs/05-test-plan.md` (generated) for the
   mechanical view, and treat a verdict cell as current only as of the milestone whose own evidence
   last moved it: M9a re-derives the whole table from evidence as of M9a, and every milestone after
   it — M9b included — moves only the cells its own evidence justifies.
@@ -88,7 +88,7 @@ cargo test --workspace --no-fail-fast   # --no-fail-fast: see below, it hides fa
 
 # README says which subcommands take --write to regenerate rather than verify; the one with a
 # hand-edit hazard worth repeating:
-cargo run -p xtask -- traceability --write   # regenerates docs/03-test-plan.md; never hand-edit it
+cargo run -p xtask -- traceability --write   # regenerates docs/05-test-plan.md; never hand-edit it
 
 # traceability's second flag: keep only the required half of its exit status (see below).
 # `--write --allow-uncovered` is the regenerate-and-still-exit-0 combination.
@@ -126,7 +126,7 @@ one failure in `namir-dsp` and another in `namir-params` reports only the first 
 with the flag.
 
 **`xtask traceability` is two gates behind one exit status (D-18.5).** The **required** half is the
-generated-plan diff — `docs/03-test-plan.md` matching what the tool would write — **and** D-23.2's
+generated-plan diff — `docs/05-test-plan.md` matching what the tool would write — **and** D-23.2's
 denominator check, that §14's `### M9a re-audit` table agrees with the Musts parsed out of the FRS
 (`required = plan_up_to_date && section_table_ok`, in `traceability_outcome`,
 `xtask/src/main.rs`). The other half is zero
@@ -327,7 +327,7 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   its owning milestone, which is the correct disposition for a requirement whose implementing
   milestone has not run. A partial counts as covered for the ordinary run — the teeth are elsewhere,
   and they are real: it renders as a `**PARTIAL**` row carrying its `uncovered:` text verbatim into
-  checked-in `docs/03-test-plan.md`, every run prints the partial count and each partial's declared
+  checked-in `docs/05-test-plan.md`, every run prints the partial count and each partial's declared
   closing milestone (§22 **R-13**), the zero-uncovered gate goes required at M14's close-out, and
   under D-23.2 a Partial is not **Done** for §14 or for M8's exit checklist. FR-NAM-030 ("for
   **each** supported architecture… match the reference NAM implementation") is the standing
@@ -362,7 +362,7 @@ in the roadmap for the full investigation). Before trusting a benchmark number:
   was **130 Musts = 54 plain, 56 partial, 20 with no tag at all**; M10 through M14 have all moved
   it since, and the number to trust is what `cargo run -p xtask -- traceability` prints today, not
   this sentence. A `**PARTIAL**` row in
-  `docs/03-test-plan.md` is the ordinary mid-project state of a requirement, not a defect someone
+  `docs/05-test-plan.md` is the ordinary mid-project state of a requirement, not a defect someone
   forgot to clean up. The way to retire one is to close the gap its `// uncovered:` field names and
   then promote the tag; promoting the tag on its own deletes the ledger entry and is the failure
   mode D-23.1 exists to prevent.
