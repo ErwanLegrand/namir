@@ -766,6 +766,18 @@ around the resource slot with `try_lock` on the audio thread — `try_lock` is w
 failed acquisition means the swap silently doesn't happen, which is a worse failure than the
 problem it solves.
 
+*Consequence (added M15, 2026-09-24, from the second Jack2 session) — "the old callback must stop"
+is now enforced rather than assumed, and the condition it is enforced against is one this decision
+did not contemplate.* This decision and D-15.3 both rest on the old pair's callbacks having
+stopped before the instance is replaced; the reopen path established that by returning from
+`Drop`, which is a backend call and can be a call that never returns (jack2 on Windows). A stop
+that does not come back now leaves the host unable to prove the requirement — so a later reopen is
+**refused**, with `app.audio_io.stream_stop_timed_out`, instead of rebuilding the engine under a
+callback that may still be reading the old one. The refusal is polled per attempt and clears itself
+when the worker finishes; nothing waits on it, because waiting is the thing being removed. See
+D-13.4's M15 follow-up items 6–8 for the evidence and for the two namir-side changes that came with
+it (host caching, and open/stop on a bounded worker thread).
+
 **Decision D-8.2 (answers OQ-8)** — A process-global resource cache maps **content hash →
 `Weak<Prepared*>`. It is guarded by an ordinary mutex, and the audio thread never touches it.**
 
@@ -2115,6 +2127,71 @@ day):*
    and nothing mechanical can ever catch the next such gap there (its `xtask traceability`
    exclusion is roadmap §15 item 10) — the site-count annotations in the 0.67 changelog row
    (4 → 6 → 7) are the only record.
+
+6. **Item 2's diagnosis was wrong in its detail, and the fork's `fabe84d` is a defence rather than
+   a repair** (added 2026-09-24, on a second Jack2 session whose evidence is the items below).
+   Stack-verified against Jack2 1.9.22 on §2's machine with a probe built on this crate's own
+   `CpalBackend` and no-op callbacks — nothing of namir's engine or bridge in the picture: the
+   frozen thread is in **`jack_client_close`**, not `jack_deactivate`, blocked in a named-pipe
+   `ReadFile` inside `libjack64.dll`, reached from `<Client as Drop>::drop` and below that from
+   cpal's jack `Stream` drop. jackd's own log for the same event shows the server running the close
+   and then failing to deliver its reply — `JackRequest::ClientClose write error ref = N` — with its
+   own close path timing out first (`JackEngine::ClientCloseAux wait error ref = N`) and the client's
+   pipe then closed (`JackClientPipeThread::ClientRemove`, `JackClientPipeThread::Close`) while the
+   client's read stays pending: closing the server's side of the pipe did not release it. There is
+   no deadline on either side — jack2's client-side `ServerSyncCall` reads with a NULL
+   `OVERLAPPED` and its `SetReadTimeOut` is commented out. Two corrections to item 2's wording
+   follow. **jackd never waits for a client's process callback**: `JackEngine::ClientDeactivate`'s
+   wait is *bounded* (`fTimeOutUsecs * 10`) and the reply is written regardless of its result, so
+   "waits for the JACK process callback thread to acknowledge" is not the mechanism — what the fork
+   removed was a hard block on the caller, and the reasoning behind it was a guess. And the fork's
+   own comment that "the new client takes over the old name and the server kicks the old one" is
+   contradicted by the server, which **suffixes** the duplicate (`cpal_client_<pid>_in` →
+   `..._in-01`, in the log and in `jack_lsp`) and leaves the older client registered. The block
+   itself is real, and the detached drop does remove it from `Drop`'s caller — but it *relocates*
+   it: with `fabe84d`, the leaked teardown thread holds the `jack` crate's global
+   `CREATE_OR_DESTROY_CLIENT_MUTEX` for as long as its `jack_client_close` is stuck (`impl Drop for
+   Client` takes that mutex and calls `jack_client_close` while holding it), so the next
+   `jack::Client::new` anywhere in the process blocks forever — observed as the main thread frozen
+   in `Host::new`, reached from this crate's own `resolve_host`, with a detached thread parked in
+   `jack_client_close`. The churn that provokes it is namir's: **every** `resolve_host` call built a
+   fresh `cpal::Host`, which on the JACK host opens two throw-away JACK clients (one per direction,
+   cpal's own "dummy client to find out the sample rate of the server"), and that function has seven
+   call sites, most of them inside one enumeration-and-negotiation round and all of them again on
+   every reopen. Repeated same-named create/destroy in one process is the pattern jack2 mishandles
+   on Windows (upstream #955 is this exact symptom; #658, #710 and #1023 the family).
+7. **A resolved `cpal::Host` is cached per name** (`CpalBackend::resolve_host`,
+   `crates/namir-app/src/audio_io.rs`, added 2026-09-24): one `Arc<cpal::Host>` per host name for
+   the life of the backend, so the *dummy* client pair cpal's jack backend opens per host build is
+   paid once per session instead of once per query. The two *stream* clients a duplex session needs
+   are unaffected — they are one per stream, and a reopen replaces them — so what this removes is
+   the churn around them, which is the churn every enumeration and negotiation round used to add.
+   The cache is per instance and never invalidated (`available_hosts` only grows as host APIs are
+   compiled in), and the test pins it by `Arc::ptr_eq` on two resolutions, there being no JACK
+   server to count clients against. This removes the half of the churn namir controls; what it
+   cannot remove is jack2's own behaviour under any churn at all.
+8. **The two stream calls that can block forever no longer run on the caller's thread**
+   (`crate::stream::OffThreadJob` and `STREAM_JOB_TIMEOUT`, added 2026-09-24). Opening a duplex pair
+   — cpal's two `build_*_stream` calls, the ones that open and activate a backend client — and
+   stopping one are each handed to a worker thread and waited for with a bound; *starting* it is
+   not, because `StreamTrait::play` is not a backend client call (on JACK it is an atomic store) and
+   a worker that only ever built a pair leaves nothing to play if it answers after the deadline,
+   which is what makes abandoning an open harmless rather than a pair that starts playing behind the
+   app's back. A wait that expires is reported, and the job is left to the worker, which disposes of
+   whatever it produces. Two catalogued notices: `app.audio_io.stream_open_timed_out` (**Error** —
+   the session has no audio, and the device did not refuse, the backend never answered) and
+   `app.audio_io.stream_stop_timed_out` (**Warning** — audio may still be running). A stop that has
+   not returned also **refuses the next reopen**, with that same notice: D-8.1 and D-15.3 require
+   the old callback to have stopped before the engine is replaced, and a stop that never returned is
+   exactly the case where that is not established — so the reopen is declined rather than allowed to
+   rebuild under a callback still reading the old engine. The gate is polled, never waited on, and
+   clears itself when the worker finally finishes. Window close is the one path that does not wait
+   at all: the process is going away and a wait could only buy a frozen window. **What this does not
+   cover**, and is worth stating where the rest of the diagnosis is: device and config enumeration,
+   and the first `cpal::Host` build behind them, still run on the calling thread — a server already
+   wedged *before* the window opens hangs namir there, and no notice can be shown because the window
+   does not exist yet. Bounding that path means moving enumeration off the caller, which this change
+   does not do.
 
 **Decision D-13.5 (2026-09-10, from issue #190)** — **Device configurations are enumerated in the
 share mode the session is going to open in**, and when an exclusive request is refused the
@@ -4534,3 +4611,4 @@ drift was findable.
 | 0.66 | 2026-09-13 | **The audio panel's buffer-size field is now `Option<u32>`, so "no device open" and "no negotiated answer" render as "Device default" rather than an invented number (issue #223).** Recorded 2026-09-17 for work merged in PR #225: the change rode that PR as a review item, 0.65's sweep row does not name it, and the issue itself was never linked there — the gap this row closes. 0.64 had left two pre-stream `256` placeholders — `AppHost::new`'s initialiser and `open_window_without_audio`'s `configure_audio_devices` call — on the argument that the combo renders disabled, missing that `add_enabled_ui(false)` still paints the `selected_text`: a greyed "256 frames" is exactly what the audio-failure window a user stares at displays. `AudioDevicePanelSnapshot::current_buffer_size` (`crates/namir-ui/src/host.rs`) is now `Option<u32>`, both placeholder sites pass `None`, and the combo renders `None` as "Device default" (`crates/namir-ui/src/app.rs`), the same vocabulary `buffer_decline_detail` already used; `SelectBufferSize` needs no change, since a user can only select a listed size and the `None` state is display-only. `PREFERRED_BUFFER_FRAMES` gains the doc comment this issue asked for — the negotiation's unconfigured starting point, not a display fallback (`crates/namir-app/src/device_state.rs`). One divergence from the issue's own table, recorded here as deliberately chosen: the reopen path reports `Some(block_frames(pending.buffer_frames))` — the block size the engine actually runs at, preserving 0.64's assertion — so a negotiation `None` still reads "512 frames" rather than "Device default"; in the mixed `Unknown`/`Range` pair 0.64 measured (dropdown `[1024]`, display "512 frames") that number can still be absent from its own list, but it is now derived and truthful rather than invented. |
 | 0.67 | 2026-09-18 | **The standalone's cpal dependency gains the JACK host: `features = ["jack"]` on the pinned fork edge.** The backend was already in the fork (inherited from upstream trunk); this change compiles it on every platform and verifies it on §2's machine against Jack2 1.9.22 (jackdmp, PortAudio/ASIO AudioBox 22VSL, 48 kHz/256): no-server degradation through the ordinary FR-IO-080 notice path, real enumeration at the server's single rate/buffer, and a duplex session opening `cpal_client_<pid>_in`/`_out` auto-connected to `system:capture_*`/`system:playback_*` with xrun reporting on `CallbackInfo::xrun`. Build cost: `jack`/`jack-sys` default to runtime dynamic loading, so only Linux builds need a library present (`libjack-jackd2-dev` added at CI's four apt sites); Windows/macOS resolve `libjack64.dll`/`libjack.0.dylib` at runtime. Full record: D-13.4's `*Consequence (added M15, 2026-09-18)*` note and §17's `cpal` row. FR-IO-030's JACK clause is Linux-scoped, so no Must status changes. |
 | 0.68 | 2026-09-18 | **First Jack2 test session's three defects, fixed the same day.** (1) JACK has no share-mode concept — a leftover `"exclusive_mode": true` printed `app.audio_io.exclusive_mode_unavailable` every launch and left the Share Mode control disabled-but-present. New `host_has_share_mode_concept` (WASAPI-only; ASIO still unbuilt — first drafted on the `AudioBackend` trait, moved to a free function by review) carried through `ShareModeDecision::concept`/`AudioDevicePanelSnapshot::exclusive_mode_concept`: concept-less hosts settle shared **without probing** and never print the notice, the panel omits the row. (2) Window close could hang: dropping a JACK stream calls `jack_deactivate`, which waits for the process callback thread and can block forever on Jack2/Windows — the input client then overran the dead bridge at one xrun per callback, the storm. Fork commit `fabe84d` (`fix(jack): never block stream drop on deactivation`) deactivates on a detached thread; the drop probe (`crates/namir-app/examples/jack_drop_probe.rs`) measured 50–70 µs drops post-fix (was 2–8 ms, one 4-minute hang in 40 rounds) and the real app closed cleanly ~1 s after window close. (3) A 512-frame session echoed: 512 frames @ 48 kHz is 10.7 ms — the delay at which dry input mixed beside the processed output becomes an audible slap; nothing in Namir delays or repeats, and the graph held no loop, so the dry path is a hardware/driver monitor (test: disconnect `namir_out` while keeping `namir_in`). Rev bump `381cf1d` → `fabe84d`, same fork, same deny allowance. **Review sweep (same commit):** the two Linux jobs that had not been updated with the feature — `coverage` and `nfr-perf-030-startup-bench` — got `libjack-jackd2-dev` too (six apt sites in total, not the four the 0.66 row says), the share-mode concept moved off the `AudioBackend` trait onto a free `host_has_share_mode_concept` (pure function of the host name — no `self` to dispatch on, and it removes the fake-backend knob), the no-device reopen path records the concept from the host instead of voiding it, and the drop probe gained a failing exit and a standing-regression label. **Review round 2 (same commit):** the enumeration path derives its requested mode from the same `host_has_share_mode_concept` answer, so a concept-less host is never even enumerated for exclusive mode (the `negotiate_share_mode` guard becoming defense-in-depth); the probe's exit status is now a stated contract (0 clean / 1 hung drop — the regression / 2 environment can't run it, `SKIP:`), its rounds match the 40 the pre-fix evidence was gathered at, and a new runtime pin (`the_wasapi_host_name_the_probe_key_compares_is_the_one_cpal_spells`) asserts the `"WASAPI"` probe key still matches what the fork's `HostId::name()` spells — keyed on the derived `Debug` variant identifier, never the display name, so a re-spelling fails the test instead of silencing it. **Review round 3 (same commit): the apt count above was still wrong in the other direction** — `release.yml`'s Linux distribution job is a seventh site (`cargo build --release --workspace` on ubuntu-latest), tag-triggered and therefore invisible to every PR check; it got `libjack-jackd2-dev` too — seven apt sites in all, the six `ci.yml` ones plus the release workflow's. |
+| 0.69 | 2026-09-24 | **The Jack2 window-close hang is diagnosed properly, and the two namir-side causes of it are removed: the resolved host is cached, and stream open and stop run off the UI thread.** A second Jack2 session re-ran the drop probe on this crate's own `CpalBackend` with no-op callbacks — nothing of namir's engine or bridge in the picture — and stack-verified what the first session's fork commit had guessed at: the frozen call is **`jack_client_close`** (a named-pipe `ReadFile` inside `libjack64.dll`, reached from `<Client as Drop>::drop`), and it has no deadline on either side — jackd's log shows the server running the close and then failing to deliver its reply (`JackRequest::ClientClose write error ref = N`, with the server's own close path timing out first and its pipe then closed), while the client's read stays pending even after that. So D-13.4's item 2 was wrong about the mechanism twice over: jackd never waits on a client's process callback (its deactivate wait is bounded and the reply is written either way), and the fork's "the new client takes over the old name" claim is contradicted by the server, which **suffixes** the duplicate (`cpal_client_<pid>_in` → `..._in-01`). The detached drop stays — it does remove the block from `Drop`'s caller, and the probe's 50–70 µs drops are real — but it *relocates* the wait: the leaked teardown thread holds the `jack` crate's global `CREATE_OR_DESTROY_CLIENT_MUTEX` for as long as it is stuck (`impl Drop for Client` takes that mutex across `jack_client_close`), so the next `jack::Client::new` anywhere in the process blocks forever — observed as the main thread frozen in `Host::new` from this crate's own `resolve_host`. Two changes fix the trigger and the caller. **`CpalBackend::resolve_host` caches one `Arc<cpal::Host>` per host name**: on the JACK host a host *build* is two throw-away JACK clients (cpal's own "dummy client to find out the sample rate of the server"), and that function has seven call sites in all — most of them inside one enumeration-and-negotiation round, all of them again on every reopen — so a session went from two JACK client create/destroy cycles to dozens; and repeated same-named cycles in one process is what jack2 1.9.22 mishandles on Windows (#955 is this symptom; #658, #710 and #1023 the family). **`crate::stream::OffThreadJob` moves the open and the stop onto a worker thread with a bounded wait** (`STREAM_JOB_TIMEOUT`, the same 5 s budget `cpal` is asked for and jack2 does not honour: its client-side `ServerSyncCall` reads with a NULL `OVERLAPPED` and `SetReadTimeOut` is commented out), reporting `app.audio_io.stream_open_timed_out` (Error — no audio, and the *device* did not refuse, the backend never answered) or `app.audio_io.stream_stop_timed_out` (Warning — audio may still be running) and abandoning the job, whose late value is dropped **by the worker**: a `RunningStreams` built after the deadline therefore runs its output-side-first stop off the UI thread rather than on it. `play` is deliberately *not* on the worker — it is not a backend client call (on JACK an atomic store), and a worker that only ever built a pair leaves nothing to play if it answers late, so an abandoned open cannot start playing behind the app's back. A stop that has not returned also **refuses the next reopen**, with that same notice, rather than rebuilding the engine under callbacks that have not stopped (D-8.1, D-15.3 — a consequence note is appended at D-8.1); window close is the one path that does not wait at all. Tests: `resolving_a_host_twice_hands_back_the_same_host` (`Arc::ptr_eq`, the only way to see the cache without a JACK server to count clients on), the two `OffThreadJob` contracts (the value inside the deadline; a late value disposed of on the worker's thread, with the `take` in `wait` as the line the assertions have teeth against), and two host-level tests over the fake backend — a stalled stop reported and refusing the next reopen without re-enumerating, and a stalled open reported as a stall rather than as `DEVICE_OPEN_FAILED`. D-13.4's M15 follow-up gains items 6–8 (the full evidence, the corrections, and both changes) and `crates/namir-app/Cargo.toml`'s pin comment is corrected in place. No requirement's verdict moves: FR-IO-070's "shall not crash or hang" is *more* covered than before, and its `trace-partial:` fields are unchanged. |

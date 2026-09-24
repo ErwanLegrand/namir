@@ -883,37 +883,24 @@ pub fn run() {
         host.report(crate::error_codes::INPUT_CHANNEL_DECLINED, detail);
     }
 
-    let stream_setup = StreamSetup {
-        backend: backend.as_ref(),
-        input_host: host_info.clone(),
-        input_device: input.device.clone(),
-        input_params,
-        output_host: host_info.clone(),
-        output_device: output.device.clone(),
-        output_params,
-        channel_config,
-        input_channel_index: input_channel,
-        output_channel_left: settings.channel_mapping.output_channel_left.unwrap_or(0),
-        output_channel_right: settings.channel_mapping.output_channel_right.unwrap_or(1),
-        max_block_size,
-    };
-
-    // The two device names the failure notice needs, captured before `stream_setup` is consumed.
-    // Issue #44's smallest half: the app knew which device and which direction had failed and
-    // dropped both, so the notice a human read on 2026-08-27 named neither. They are handed to
-    // `AppHost` rather than into the callbacks (issue #88), because that is where the notice is
-    // now built -- on the UI thread, where formatting a string is allowed.
+    // The two device names the failure notice needs, captured before `input`/`output` are moved
+    // into the worker closure below. Issue #44's smallest half: the app knew which device and
+    // which direction had failed and dropped both, so the notice a human read on 2026-08-27 named
+    // neither. They are handed to `AppHost` rather than into the callbacks (issue #88), because
+    // that is where the notice is now built -- on the UI thread, where formatting a string is
+    // allowed.
     let failed_input_name = input.device.name.clone();
     let failed_output_name = output.device.name.clone();
     let (input_failure_tx, input_failure_rx) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
     let (output_failure_tx, output_failure_rx) = rtrb::RingBuffer::new(STREAM_FAILURE_RING_SLOTS);
-    let running = stream::open(
-        stream_setup,
-        engine,
-        Arc::clone(&xruns),
-        stream_failure_sink(input_failure_tx),
-        stream_failure_sink(output_failure_tx),
-    );
+    // Handed to `AppHost` rather than kept in a local (issue #24): FR-IO-070 requires the stream
+    // to be stopped cleanly when a device is lost, and this function is about to block inside
+    // `namir_ui::open_blocking` for the whole life of the window. The UI thread is the only one
+    // that both learns of the loss (it drains the failure rings) and may act on it -- see
+    // `AppHost::hold_streams`. The host drops the path when the window closes, which is where
+    // this local used to drop it. Installed *before* the open since the open moved off this
+    // thread, so a failure raised while the worker opens the pair is already in the ring when the
+    // first frame drains it.
     host.watch_stream_failures(crate::host::StreamFailureWatch::new(
         input_failure_rx,
         output_failure_rx,
@@ -921,56 +908,98 @@ pub fn run() {
         failed_output_name,
     ));
 
-    // Handed to `AppHost` rather than kept in a local (issue #24): FR-IO-070 requires the stream
-    // to be stopped cleanly when a device is lost, and this function is about to block inside
-    // `namir_ui::open_blocking` for the whole life of the window. The UI thread is the only one
-    // that both learns of the loss (it drains the failure rings) and may act on it -- see
-    // `AppHost::hold_streams`. The host drops the path when the window closes, which is where
-    // this local used to drop it.
-    match running {
-        Ok(running) => {
+    // Opened *and* started on a worker thread with a bounded wait (see `stream::OffThreadJob`):
+    // both are `cpal` calls a backend is free to block on forever, and a start-up that never
+    // returned would be an unkillable process rather than a slow one. Read before the closure
+    // because it cannot borrow anything of this function's.
+    let mut opening = stream::OffThreadJob::spawn({
+        let backend = Arc::clone(&backend);
+        let xruns = Arc::clone(&xruns);
+        let host_info = host_info.clone();
+        let input_device = input.device.clone();
+        let output_device = output.device.clone();
+        let output_channel_left = settings.channel_mapping.output_channel_left.unwrap_or(0);
+        let output_channel_right = settings.channel_mapping.output_channel_right.unwrap_or(1);
+        move || {
+            let setup = StreamSetup {
+                backend: backend.as_ref(),
+                input_host: host_info.clone(),
+                input_device,
+                input_params,
+                output_host: host_info,
+                output_device,
+                output_params,
+                channel_config,
+                input_channel_index: input_channel,
+                output_channel_left,
+                output_channel_right,
+                max_block_size,
+            };
+            // Deliberately **not** played here: a worker that only ever *built* a pair leaves
+            // nothing to play if it answers after the deadline, which is what makes abandoning an
+            // open harmless (see `stream::OffThreadJob`). `play` is called by the caller below.
+            stream::open(
+                setup,
+                engine,
+                xruns,
+                stream_failure_sink(input_failure_tx),
+                stream_failure_sink(output_failure_tx),
+            )
+        }
+    });
+
+    // Started on this thread rather than on the worker: `play` is not a backend client call (on
+    // JACK it is an atomic store), and a play failure drops the pair here exactly as it did
+    // before the open moved off this thread.
+    let started = match opening.wait(stream::STREAM_JOB_TIMEOUT) {
+        Some(Ok(running)) => Some(running.play().map(|()| running)),
+        Some(Err(e)) => Some(Err(e)),
+        None => None,
+    };
+
+    match started {
+        Some(Ok(running)) => {
             // Issue #76: D-13.2's elevation outcome is produced inside the first output callback
             // and cannot be reported from there (see `stream::ThreadPriorityReport`), so the
             // report is handed to the host, which polls it and writes the record from the UI
-            // thread. Before `play()`, because that is what makes the first callback run.
+            // thread.
             host.watch_thread_priority(running.thread_priority());
-            match running.play() {
-                Ok(()) => {
-                    // NFR-PERF-030's marking event, emitted before the log line below so the
-                    // measured interval ends where the requirement says it does:
-                    // `RunningStreams::play` returning `Ok(())` is, in its own doc comment's
-                    // words, "the one call that actually makes audio flow". A no-op outside a
-                    // measurement run.
-                    startup_probe::audible(library_index_entries, default_state_params);
-                    eprintln!("namir: audio stream started");
-                    host.hold_streams(running);
-                    // FR-IO-080: persist the negotiated device/rate/channel configuration
-                    // immediately so the next launch starts from what worked. The buffer size is
-                    // not among them since issue #167 — see `AppHost::persist_negotiated_audio`.
-                    host.persist_negotiated_audio(
-                        &host_info.name,
-                        &input.device.name,
-                        &output.device.name,
-                        sample_rate_hz,
-                    );
-                }
-                Err(e) => {
-                    // The detail is carried on the marker, not left to the notice alone: a probed
-                    // launch opens no window, so `host.report` below has no reader.
-                    startup_probe::not_audible(
-                        startup_probe::REASON_STREAM_NOT_STARTED,
-                        &e.to_string(),
-                    );
-                    host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
-                    // Not held: a path that never started is dropped here, which stops the half
-                    // of it that did open (FR-IO-070's "stop the stream cleanly" for the
-                    // failed-to-start case, and `RunningStreams`' own drop contract).
-                }
-            }
+            // NFR-PERF-030's marking event, emitted before the log line below so the measured
+            // interval ends where the requirement says it does: the worker returning a started
+            // stream is, in `RunningStreams::play`'s own doc comment's words, "the one call that
+            // actually makes audio flow". A no-op outside a measurement run.
+            startup_probe::audible(library_index_entries, default_state_params);
+            eprintln!("namir: audio stream started");
+            host.hold_streams(running);
+            // FR-IO-080: persist the negotiated device/rate/channel configuration immediately so
+            // the next launch starts from what worked. The buffer size is not among them since
+            // issue #167 — see `AppHost::persist_negotiated_audio`.
+            host.persist_negotiated_audio(
+                &host_info.name,
+                &input.device.name,
+                &output.device.name,
+                sample_rate_hz,
+            );
         }
-        Err(e) => {
+        Some(Err(e)) => {
+            // The detail is carried on the marker, not left to the notice alone: a probed launch
+            // opens no window, so `host.report` below has no reader. Nothing to hold: the worker
+            // dropped the path it could not start, on its own thread, which is FR-IO-070's "stop
+            // the stream cleanly" for the failed-to-start case (`RunningStreams`' own drop
+            // contract).
             startup_probe::not_audible(startup_probe::REASON_STREAM_NOT_STARTED, &e.to_string());
             host.report(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
+        }
+        None => {
+            // As above, and for the same reason: the pair, if the worker ever builds one, is
+            // dropped by the worker. What the user is told is the difference between this arm and
+            // the one above -- the device did not refuse, the backend never answered.
+            let detail = format!(
+                "the backend did not answer within {} s",
+                stream::STREAM_JOB_TIMEOUT.as_secs()
+            );
+            startup_probe::not_audible(startup_probe::REASON_STREAM_NOT_STARTED, &detail);
+            host.report(crate::error_codes::STREAM_OPEN_TIMED_OUT, detail);
         }
     }
 

@@ -62,6 +62,8 @@
 
 use std::sync::Arc;
 #[cfg(test)]
+use std::sync::atomic::AtomicU64;
+#[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::time::Duration;
@@ -83,6 +85,73 @@ use crate::xrun::XrunCounter;
 /// How long `cpal`'s own stream construction waits before giving up — FR-IO-070's "a device
 /// failing to open ... shall be handled" needs a bound, not an indefinite hang.
 const STREAM_ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a stream **open or stop** may take off the calling thread before the caller gives up
+/// on it, reports the degradation, and leaves the job to the worker ([`OffThreadJob`]).
+///
+/// The same budget as [`STREAM_ACTIVATION_TIMEOUT`], and the difference between the two is the
+/// point: `cpal` is *asked* to honour that one and cannot be relied on to, because its own
+/// activation timeout does not cover the client-library calls underneath it. On Jack2/Windows
+/// `jack_client_open`/`jack_client_close`/`jack_deactivate` are named-pipe round trips with no
+/// deadline anywhere in their code (jack2 1.9.22's `ServerSyncCall` does a blocking `ReadFile`; its
+/// own `SetReadTimeOut` is commented out), so a backend that never answers never returns and no
+/// value of `STREAM_ACTIVATION_TIMEOUT` changes that. The only place this bound can be *enforced*
+/// is around the call, on a thread the caller can afford to walk away from.
+pub(crate) const STREAM_JOB_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// One piece of stream work on its own thread, so a backend call that can block forever never
+/// blocks the caller — how [`crate::app`] and [`crate::host`] open and stop the duplex path.
+///
+/// **The value belongs to the worker until the caller receives it.** `wait`'s channel is a
+/// rendezvous (`sync_channel(0)`) and `wait` *drops* the receiving end when its deadline expires,
+/// so a worker that finishes late finds nobody to hand its value to and drops it on its own thread.
+/// That is the half that matters here: a [`RunningStreams`] the backend only got round to building
+/// after the deadline is disposed of off the caller's thread rather than on it, and the disposal it
+/// runs is `Drop`'s output-side-first stop. A buffered channel would have made that a race whose
+/// loser is the caller.
+///
+/// The thread is detached and never joined: a backend stuck in a call it does not time out is the
+/// case this exists for, so there is nothing to join. [`OffThreadJob::finished`] is everything a
+/// caller may ask afterwards — whether the work completed, never what it produced.
+pub(crate) struct OffThreadJob<T> {
+    /// `None` once [`OffThreadJob::wait`] has given up, which is what makes a late worker's `send`
+    /// fail with `Err` and hands it back its own value to drop.
+    value: Option<std::sync::mpsc::Receiver<T>>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl<T: Send + 'static> OffThreadJob<T> {
+    /// Starts `work` on its own thread. Never blocks.
+    pub(crate) fn spawn(work: impl FnOnce() -> T + Send + 'static) -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        let handle = std::thread::spawn(move || {
+            // `Err` means the caller has given up: the value is dropped here, on this thread.
+            let _ = tx.send(work());
+        });
+        Self {
+            value: Some(rx),
+            handle,
+        }
+    }
+
+    /// `work`'s value if it arrived within `limit`, `None` if it did not — in which case the worker
+    /// keeps running and disposes of its own result. Taking the value unblocks the worker, so a
+    /// `Some` means the job is about to finish and a `None` means it may not finish at all.
+    ///
+    /// A **second** call returns `None` whether or not the first took a value: the receiving end is
+    /// gone by then, which is what entitles the worker to dispose of whatever it produces.
+    pub(crate) fn wait(&mut self, limit: Duration) -> Option<T> {
+        let rx = self.value.take()?;
+        rx.recv_timeout(limit).ok()
+    }
+
+    /// Whether the work has completed. The caller's own abandonment is not completion: a worker
+    /// still blocked in the backend call reports `false` until that call returns, the abandoned
+    /// value is dropped, and the thread ends.
+    pub(crate) fn finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+}
 
 /// Which side of the duplex path a [`StreamFailure`] came from — FR-IO-070's report needs to say
 /// which device was lost, and the input/output callbacks share the same failure type. Distinct
@@ -715,6 +784,11 @@ pub(crate) struct FakeBackend {
     /// Directions whose `build_*_stream` fails outright rather than returning a stream — the
     /// open-failure half of FR-IO-070's fault injection. See [`FakeBackend::failing_to_open`].
     open_failures: Vec<Direction>,
+    /// Directions whose `build_*_stream` blocks for this long before answering — the *stalled*
+    /// open, which [`crate::host::AppHost`]'s bounded open exists to survive, and which a failing
+    /// open cannot stand in for (an error is an answer). See
+    /// [`FakeBackend::blocking_open_for`].
+    open_delays: Vec<(Direction, Duration)>,
     /// Directions whose `input_devices`/`output_devices` answer `Err` — the enumeration
     /// counterpart of [`FakeBackend::open_failures`], for tests that need `negotiate_audio`'s
     /// "no device found" path (`NO_AUDIO_DEVICE`). Interior-mutable so a test can fail a
@@ -777,6 +851,7 @@ impl FakeBackend {
             enumerated_share_modes: std::sync::Mutex::new(Vec::new()),
             output_stream,
             open_failures: Vec::new(),
+            open_delays: Vec::new(),
             enumeration_failures: std::sync::Mutex::new(Vec::new()),
             asked_share_modes: std::sync::Mutex::new(Vec::new()),
             input_devices: Vec::new(),
@@ -855,6 +930,25 @@ impl FakeBackend {
         self
     }
 
+    /// Makes `direction`'s `build_*_stream` block for `delay` before answering — a backend that
+    /// never gets round to opening the stream, which is the case
+    /// [`crate::host::AppHost`]'s bounded open exists for. Deliberately distinct from
+    /// [`FakeBackend::failing_to_open`]: that one *answers*, and the whole difference between the
+    /// two failure classes is whether an answer ever comes back.
+    pub(crate) fn blocking_open_for(mut self, direction: Direction, delay: Duration) -> Self {
+        self.open_delays.push((direction, delay));
+        self
+    }
+
+    /// How long `direction`'s open blocks for, or zero.
+    fn open_delay(&self, direction: Direction) -> Duration {
+        self.open_delays
+            .iter()
+            .find(|(d, _)| *d == direction)
+            .map(|(_, delay)| *delay)
+            .unwrap_or(Duration::ZERO)
+    }
+
     /// Makes `direction`'s device enumeration answer `Err` — FR-IO-070's "no device found or
     /// openable", the shape that sends `negotiate_audio` down its `None` path. Interior-mutable
     /// (`&self`, not `mut self`) so a test can arm it after an already-successful pass; the
@@ -928,6 +1022,12 @@ pub(crate) struct FakeStreamLog {
     stops: AtomicUsize,
     pause_tick: AtomicUsize,
     stop_tick: AtomicUsize,
+    /// How long this direction's `Drop` blocks, in milliseconds. Zero for every stream a test does
+    /// not deliberately stall, which is all of them but the two that reach
+    /// [`crate::host::AppHost`]'s bounded stop: a backend whose close never returns (jack2 on
+    /// Windows) is the case that code exists for, and there is no other way to produce it from a
+    /// test.
+    stop_delay_ms: AtomicU64,
     /// The clock shared with the other direction's log. Ticks are 1-based, so 0 in the two fields
     /// above reads as "this never happened".
     clock: Arc<AtomicUsize>,
@@ -946,6 +1046,7 @@ impl FakeStreamLog {
                 stops: AtomicUsize::new(0),
                 pause_tick: AtomicUsize::new(0),
                 stop_tick: AtomicUsize::new(0),
+                stop_delay_ms: AtomicU64::new(0),
                 clock,
             })
         };
@@ -976,6 +1077,20 @@ impl FakeStreamLog {
     pub(crate) fn stop_tick(&self) -> Option<usize> {
         Some(self.stop_tick.load(Ordering::Relaxed)).filter(|t| *t > 0)
     }
+
+    /// Makes this direction's `Drop` block for `delay` — the stalled-teardown shape jack2 produces
+    /// on Windows, where closing a client can go unanswered and the `cpal` drop never returns.
+    /// Set after the streams are open (the log is shared with the live [`FakeStream`]), which is
+    /// what lets a test stall the stop without stalling the open.
+    pub(crate) fn blocking_stop_for(&self, delay: Duration) -> &Self {
+        self.stop_delay_ms
+            .store(delay.as_millis() as u64, Ordering::Relaxed);
+        self
+    }
+
+    fn stop_delay(&self) -> Duration {
+        Duration::from_millis(self.stop_delay_ms.load(Ordering::Relaxed))
+    }
 }
 
 #[cfg(test)]
@@ -1000,6 +1115,13 @@ impl AudioStream for FakeStream {
 #[cfg(test)]
 impl Drop for FakeStream {
     fn drop(&mut self) {
+        // Before the count: a stalled drop is a drop that has not happened yet, which is what the
+        // stop tick's own "did this direction stop" question asks about. Zero unless a test aimed
+        // `blocking_stop_for` at this direction.
+        let delay = self.log.stop_delay();
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
         self.log.stops.fetch_add(1, Ordering::Relaxed);
         let tick = self.log.tick();
         self.log.stop_tick.store(tick, Ordering::Relaxed);
@@ -1156,6 +1278,10 @@ impl AudioBackend for FakeBackend {
         // Before the callbacks are stored: a real backend that refuses the open never received
         // them either, and a test asserting the teardown must not find a live callback behind a
         // failed open.
+        let open_delay = self.open_delay(Direction::Input);
+        if !open_delay.is_zero() {
+            std::thread::sleep(open_delay);
+        }
         self.open_outcome(Direction::Input)?;
         *self.input_data.lock().unwrap() = Some(on_data);
         *self.input_error.lock().unwrap() = Some(on_error);
@@ -1176,6 +1302,10 @@ impl AudioBackend for FakeBackend {
             .lock()
             .unwrap()
             .push((Direction::Output, params.share_mode));
+        let open_delay = self.open_delay(Direction::Output);
+        if !open_delay.is_zero() {
+            std::thread::sleep(open_delay);
+        }
         self.open_outcome(Direction::Output)?;
         *self.output_data.lock().unwrap() = Some(on_data);
         *self.output_error.lock().unwrap() = Some(on_error);
@@ -1264,6 +1394,80 @@ mod tests {
         default_test_engine as engine, fake_duplex_setup as setup,
         fake_duplex_setup_with_share_mode as setup_with_share_mode,
     };
+
+    /// [`OffThreadJob::wait`] hands the value back when the work arrives inside the deadline.
+    ///
+    /// Deliberately says nothing about [`OffThreadJob::finished`] straight afterwards: a `send`
+    /// through the rendezvous channel returns as soon as the receiver has taken the value, and the
+    /// worker's thread may not have been *marked* finished yet at the next instruction, so
+    /// asserting it here would be a race. `finished`'s own behaviour — including that a worker
+    /// still inside its call is not finished — is pinned, and polled, by the test below.
+    #[test]
+    fn an_off_thread_job_returns_its_value_inside_the_deadline() {
+        let mut job = OffThreadJob::spawn(|| 7u32);
+        assert_eq!(job.wait(STREAM_JOB_TIMEOUT), Some(7));
+    }
+
+    /// A job past its deadline is abandoned, the worker — not the caller — disposes of whatever it
+    /// produces afterwards, and the job reports itself finished only once that has happened.
+    ///
+    /// **This is the contract the type exists for.** A `RunningStreams` a backend only gets round
+    /// to building after the deadline must be dropped on the worker's thread, where dropping it is
+    /// the stop this crate already accepts as possibly-blocking, rather than on the UI thread that
+    /// walked away. The `Disposal` count is the whole assertion: it can only reach 1 from the
+    /// worker, because the caller held nothing but an abandoned receiver.
+    ///
+    /// **Teeth, because the disposal depends on one line in `wait`.** Without `self.value.take()`
+    /// the receiver would outlive the timeout, so the rendezvous `send` below would park forever,
+    /// the value would never be dropped at all, and both assertions would fail — which is why the
+    /// count is checked twice, once while the worker is still in its call and once after it
+    /// returns.
+    #[test]
+    fn a_job_past_its_deadline_disposes_of_its_value_on_its_own_thread() {
+        struct Disposal(Arc<AtomicUsize>);
+        impl Drop for Disposal {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let disposed = Arc::new(AtomicUsize::new(0));
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut job = OffThreadJob::spawn({
+            let disposed = Arc::clone(&disposed);
+            move || {
+                blocked.recv().ok();
+                Disposal(disposed)
+            }
+        });
+
+        assert!(
+            job.wait(Duration::ZERO).is_none(),
+            "work that has not finished by the deadline must time out"
+        );
+        assert_eq!(
+            disposed.load(Ordering::Relaxed),
+            0,
+            "nothing is disposed of while the worker is still inside its call"
+        );
+        assert!(
+            !job.finished(),
+            "a worker still blocked in its call has not finished"
+        );
+
+        release.send(()).unwrap();
+        let mut waited = Duration::ZERO;
+        while !job.finished() && waited < STREAM_JOB_TIMEOUT {
+            std::thread::sleep(Duration::from_millis(1));
+            waited += Duration::from_millis(1);
+        }
+        assert!(job.finished(), "the worker must end once its call returns");
+        assert_eq!(
+            disposed.load(Ordering::Relaxed),
+            1,
+            "the value produced after the deadline is dropped by the worker"
+        );
+    }
 
     /// Wiring proof: input capture reaches the output buffer, duplicated into both channels
     /// (`ChannelConfig::MonoToStereo`), with no crash and no underrun when supply matches demand.

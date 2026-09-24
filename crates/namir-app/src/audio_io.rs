@@ -59,6 +59,8 @@
 //! itself offers no more stable a public identifier that survives a restart on every backend this
 //! targets either, since `DeviceId`'s stability is backend-dependent).
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod convert;
@@ -798,13 +800,22 @@ pub trait AudioBackend: Send + Sync {
 
 /// The real backend, over D-13.4's `cpal` fork (0.19.0 plus WASAPI share-mode support), pinned by
 /// commit hash in this crate's `Cargo.toml`.
-pub struct CpalBackend;
+pub struct CpalBackend {
+    /// One resolved `cpal::Host` per host name, built at most once each — see
+    /// [`CpalBackend::resolve_host`] for what building one costs on the JACK host, and what that
+    /// cost has to do with a hang this crate cannot fix. `Arc` because `cpal::Host` is neither
+    /// `Clone` nor `Copy`: a caller borrows through the handle, and it is the handle that is
+    /// cloned rather than the host.
+    hosts: Mutex<HashMap<String, Arc<cpal::Host>>>,
+}
 
 impl CpalBackend {
-    /// Builds the real backend. Cheap — `cpal` enumerates hosts/devices lazily, per call, not at
-    /// construction.
+    /// Builds the real backend. Cheap — nothing is resolved, and no host is built, until the
+    /// first query (see [`CpalBackend::resolve_host`]).
     pub fn new() -> Self {
-        Self
+        Self {
+            hosts: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -815,6 +826,7 @@ impl Default for CpalBackend {
 }
 
 mod cpal_impl {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use cpal::platform::wasapi_ext::{WasapiDeviceExt, WasapiStreamOptions};
@@ -828,15 +840,63 @@ mod cpal_impl {
         StreamFailure, StreamParams, SupportedConfigRange,
     };
 
-    /// Resolves `host`'s name to a live `cpal::Host`. `cpal::available_hosts`/`host_from_id`
-    /// re-enumerate every call rather than caching anything, matching this trait's own "not
-    /// RT-safe, may do real work" contract.
-    fn resolve_host(host: &HostInfo) -> Result<cpal::Host, AudioIoError> {
-        cpal::available_hosts()
-            .into_iter()
-            .find(|id| id.name() == host.name)
-            .and_then(|id| cpal::host_from_id(id).ok())
-            .ok_or_else(|| AudioIoError::HostUnavailable(host.name.clone()))
+    impl CpalBackend {
+        /// Resolves `host`'s name to a live `cpal::Host`, **reusing one entry per name**.
+        ///
+        /// Two threads racing the very first build may both build, and the loser's host is dropped
+        /// when it loses the `entry` insert — one duplicated dummy pair, at most once, in exchange
+        /// for never making a second caller wait on a build (see the comment at the build).
+        ///
+        /// `cpal::available_hosts`/`host_from_id` re-enumerate on every call, which is as cheap
+        /// as it looks on every other host this build compiles. The JACK host is the exception:
+        /// cpal's jack backend builds its `Host` by opening **two throw-away clients**, one per
+        /// direction — its own `Device::new_device` calls them "a dummy client to find out the
+        /// sample rate of the server" — and this crate resolves the host on every device query,
+        /// every config query, every capability probe and every stream build: seven call sites,
+        /// several inside one enumeration-and-negotiation round, and all of them again on every
+        /// reopen. The cache turns a session's dozens of JACK client create/destroy cycles into
+        /// two.
+        ///
+        /// **That is worth more than the client count.** Repeatedly opening and closing
+        /// same-named JACK clients in one process is the pattern jack2 1.9.22 mishandles on
+        /// Windows (upstream #658, #710, #1023): the server stops completing the exchange, and a
+        /// client stuck in `jack_client_close` blocks forever while holding the `jack` crate's
+        /// global create/destroy mutex. Bounding the *client* half of that is
+        /// `crate::stream::OffThreadJob`'s job; removing the churn this crate controls is this
+        /// function's.
+        ///
+        /// Never invalidated: `available_hosts` only grows as host APIs are compiled in, and a host
+        /// that resolved once keeps resolving for the life of the process.
+        pub(super) fn resolve_host(
+            &self,
+            host: &HostInfo,
+        ) -> Result<Arc<cpal::Host>, AudioIoError> {
+            let cached = self
+                .hosts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&host.name)
+                .cloned();
+            if let Some(cached) = cached {
+                return Ok(cached);
+            }
+            // Built **outside** the lock, deliberately: a build is a backend call — two JACK
+            // clients on that host — and a resolver that made every other thread wait for it
+            // would move the stall this cache exists to avoid onto a mutex. Two threads racing
+            // to build the same host at worst duplicate one pair of clients, once; the loser's
+            // build is dropped.
+            let built = cpal::available_hosts()
+                .into_iter()
+                .find(|id| id.name() == host.name)
+                .and_then(|id| cpal::host_from_id(id).ok())
+                .ok_or_else(|| AudioIoError::HostUnavailable(host.name.clone()))?;
+            let mut hosts = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(Arc::clone(
+                hosts
+                    .entry(host.name.clone())
+                    .or_insert_with(|| Arc::new(built)),
+            ))
+        }
     }
 
     fn device_name(device: &cpal::Device) -> String {
@@ -1219,7 +1279,7 @@ mod cpal_impl {
         }
 
         fn input_devices(&self, host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
-            let cpal_host = resolve_host(host)?;
+            let cpal_host = self.resolve_host(host)?;
             let default_name = cpal_host.default_input_device().map(|d| device_name(&d));
             let devices = cpal_host
                 .input_devices()
@@ -1234,7 +1294,7 @@ mod cpal_impl {
         }
 
         fn output_devices(&self, host: &HostInfo) -> Result<Vec<DeviceInfo>, AudioIoError> {
-            let cpal_host = resolve_host(host)?;
+            let cpal_host = self.resolve_host(host)?;
             let default_name = cpal_host.default_output_device().map(|d| device_name(&d));
             let devices = cpal_host
                 .output_devices()
@@ -1254,7 +1314,7 @@ mod cpal_impl {
             device: &DeviceInfo,
             share_mode: ShareMode,
         ) -> Result<EnumeratedConfigs, AudioIoError> {
-            let cpal_host = resolve_host(host)?;
+            let cpal_host = self.resolve_host(host)?;
             if let Some(ranges) =
                 exclusive_configs_when_asked(&cpal_host, &device.name, Direction::Input, share_mode)
             {
@@ -1282,7 +1342,7 @@ mod cpal_impl {
             device: &DeviceInfo,
             share_mode: ShareMode,
         ) -> Result<EnumeratedConfigs, AudioIoError> {
-            let cpal_host = resolve_host(host)?;
+            let cpal_host = self.resolve_host(host)?;
             if let Some(ranges) = exclusive_configs_when_asked(
                 &cpal_host,
                 &device.name,
@@ -1357,7 +1417,7 @@ mod cpal_impl {
             direction: Direction,
             params: StreamParams,
         ) -> ExclusiveModeOutcome {
-            let Ok(cpal_host) = resolve_host(host) else {
+            let Ok(cpal_host) = self.resolve_host(host) else {
                 return ExclusiveModeOutcome::Unsupported;
             };
             let Some(probed) = exclusive_configs(&cpal_host, &device.name, direction) else {
@@ -1378,7 +1438,7 @@ mod cpal_impl {
             mut on_error: Box<dyn FnMut(StreamFailure) + Send>,
             activation_timeout: Duration,
         ) -> Result<Box<dyn AudioStream>, AudioIoError> {
-            let cpal_host = resolve_host(host)?;
+            let cpal_host = self.resolve_host(host)?;
             let devices = cpal_host
                 .input_devices()
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
@@ -1436,7 +1496,7 @@ mod cpal_impl {
             mut on_error: Box<dyn FnMut(StreamFailure) + Send>,
             activation_timeout: Duration,
         ) -> Result<Box<dyn AudioStream>, AudioIoError> {
-            let cpal_host = resolve_host(host)?;
+            let cpal_host = self.resolve_host(host)?;
             let devices = cpal_host
                 .output_devices()
                 .map_err(|e| AudioIoError::OpenFailed(e.to_string()))?;
@@ -1923,6 +1983,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Two queries for the same host name hand back the same `cpal::Host`, not two builds of it.
+    ///
+    /// **What that buys, and why it is asserted at all.** On the JACK host a *build* is two
+    /// throw-away JACK clients — cpal's jack backend opens one per direction just to read the
+    /// server's rate and buffer size — and this crate resolves the host at seven call sites, most
+    /// of them reached within one enumeration-and-negotiation round and all of them again on every
+    /// reopen. So the difference the cache makes is between two JACK client create/destroy cycles
+    /// per session and dozens, and repeated same-named cycles are what jack2 1.9.22 mishandles on
+    /// Windows (`CpalBackend::resolve_host`'s own doc comment has the upstream references). With no
+    /// JACK server to count clients on, `Arc::ptr_eq` is the only way a test can see it — and it
+    /// sees exactly the mechanism, since a rebuilt host is a different allocation.
+    #[test]
+    fn resolving_a_host_twice_hands_back_the_same_host() {
+        let backend = CpalBackend::new();
+        let host = backend
+            .hosts()
+            .into_iter()
+            .next()
+            .expect("this build compiles at least one host API");
+        let first = backend.resolve_host(&host).expect("the first resolve");
+        let second = backend.resolve_host(&host).expect("the second resolve");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a second query for {} built the host again",
+            host.name
+        );
     }
 
     /// The query answers from what the device reports, not from what it was handed — a caller

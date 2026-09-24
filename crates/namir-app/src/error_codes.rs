@@ -165,6 +165,43 @@ pub const INPUT_CHANNEL_DECLINED: ErrorCode = ErrorCode::new(
     "Choose an available input channel in audio settings.",
 );
 
+/// The audio backend was handed the stream open and never came back with an answer inside
+/// [`crate::stream::STREAM_JOB_TIMEOUT`], so there is no audio: at start-up the window opens
+/// without a pair, and on a reopen the old pair has already been stopped by then (see
+/// [`crate::host::AppHost`]'s reopen phase 1), so the session is left with none either.
+///
+/// **`Error`, not `Warning`:** the outcome is no audio at all, which is what
+/// [`DEVICE_OPEN_FAILED`] is an `Error` for. Separate from that entry because the *cause* and the
+/// remedy differ: the device did not refuse — the backend never answered, which on Jack2/Windows
+/// is a client-library call with no deadline anywhere in it, or a JACK server that has stopped
+/// servicing requests. Nothing about the device, and nothing the user can fix by choosing another
+/// one.
+pub const STREAM_OPEN_TIMED_OUT: ErrorCode = ErrorCode::new(
+    "app.audio_io.stream_open_timed_out",
+    Severity::Error,
+    "The audio backend did not finish opening the stream in time ({detail}).",
+    "Restart Namir. If this session was using JACK, restart the JACK server first: a JACK client \
+     that hung while closing can leave the server unable to answer new ones, and Namir will not \
+     finish opening a stream until it can.",
+);
+
+/// Stopping the running pair did not come back inside [`crate::stream::STREAM_JOB_TIMEOUT`], so
+/// the old pair is still being closed on a worker thread and any further audio-settings change is
+/// refused until it finishes.
+///
+/// **`Warning`, not `Error`:** audio may still be running, and the refusal is the degradation.
+/// Rebuilding the engine while the old callbacks are unaccounted for is what D-8.1 and D-15.3
+/// forbid, so the alternative is not "proceed anyway" — it is "proceed and get the resource
+/// handover wrong", which is the worse failure of the two.
+pub const STREAM_STOP_TIMED_OUT: ErrorCode = ErrorCode::new(
+    "app.audio_io.stream_stop_timed_out",
+    Severity::Warning,
+    "The previous audio stream did not finish closing in time ({detail}).",
+    "Wait a moment and choose that setting again. If it stays refused, restart Namir: a backend \
+     stuck closing a stream will not finish on its own, and audio settings changes stay refused \
+     for the rest of the session until it does.",
+);
+
 /// FR-IO-080: the settings file on disk could not be parsed (corrupted, from an incompatible
 /// future version). Degrades to [`crate::settings::AppSettings::default`] (P8) rather than
 /// refusing to start — and, since M14, only after the unreadable file has been preserved beside
@@ -203,6 +240,8 @@ const ALL: &[ErrorCode] = &[
     REMEMBERED_DEVICE_UNAVAILABLE,
     BUFFER_SIZE_DECLINED,
     INPUT_CHANNEL_DECLINED,
+    STREAM_OPEN_TIMED_OUT,
+    STREAM_STOP_TIMED_OUT,
     SETTINGS_UNREADABLE,
     SETTINGS_UNWRITABLE,
 ];

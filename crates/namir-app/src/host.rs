@@ -434,6 +434,16 @@ pub struct AppHost {
     /// stop (issue #24). `None` before [`AppHost::hold_streams`] is called, on the
     /// `open_window_without_audio` path, and again after a device loss has stopped it.
     streams: Option<RunningStreams>,
+    /// A stop handed to a worker thread that has not come back yet — see
+    /// [`crate::stream::OffThreadJob`] for why the stop never runs on this thread at all. Kept so
+    /// a later reopen can refuse to rebuild the engine while the old callbacks are unaccounted for
+    /// (D-8.1, D-15.3); cleared as soon as the worker reports itself finished.
+    streams_stop: Option<crate::stream::OffThreadJob<()>>,
+    /// How long this host waits for a stream open or stop before giving up on it. Production
+    /// leaves this at [`crate::stream::STREAM_JOB_TIMEOUT`] for the life of the host; only the
+    /// tests that reach a timeout path set anything else, there being no way to produce a stalled
+    /// backend on demand other than to stop waiting for it.
+    stream_job_timeout: Duration,
     /// D-13.2's thread-elevation outcome, posted by the output callback and reported from here
     /// (issue #76). Cleared once reported, so the notice is written once per session rather than
     /// once per frame.
@@ -511,6 +521,8 @@ impl AppHost {
             pending_overwrite: None,
             stream_failures: None,
             streams: None,
+            streams_stop: None,
+            stream_job_timeout: crate::stream::STREAM_JOB_TIMEOUT,
             thread_priority: None,
             notices: Vec::new(),
             next_notice_id: AtomicU64::new(1),
@@ -557,16 +569,43 @@ impl AppHost {
     pub fn hold_streams(&mut self, streams: RunningStreams) {
         // This assignment never drops a live pair, which is worth stating because issue #194's
         // own cause section says it does: on the reopen path `initiate_audio_reopen` has already
-        // set `self.streams = None` before the engine rebuild is requested (D-15.3, D-8.1 — the
-        // old callback must stop before the instance is replaced), and at start-up the field is
-        // `None` too. So the reopen path does not overlap two live pairs, and the teardown it
-        // does perform is the one at that earlier drop, in `RunningStreams::drop`'s
-        // output-side-first order.
+        // taken the old pair out of `self.streams` (through `stop_streams`, off this thread and
+        // with a bound) before the engine rebuild is requested (D-15.3, D-8.1 — the old callback
+        // must stop before the instance is replaced), and at start-up the field is `None` too. So
+        // the reopen path does not overlap two live pairs, and the teardown it does perform is the
+        // one `RunningStreams::drop` runs in its output-side-first order.
         self.streams = Some(streams);
     }
     /// Enables dynamic audio stream re-opening when device or format settings change.
     pub fn enable_audio_reopen(&mut self, context: AudioReopenContext) {
         self.audio_reopen = Some(context);
+    }
+
+    /// Sets how long this host waits for a stream open or stop — the seam
+    /// [`crate::stream::OffThreadJob`]'s two timeout paths need, since reaching either requires a
+    /// stalled backend and a deadline short enough to outlast deliberately.
+    #[cfg(test)]
+    pub(crate) fn set_stream_job_timeout(&mut self, limit: Duration) {
+        self.stream_job_timeout = limit;
+    }
+
+    /// Clears a stop that has finished, and answers whether the engine may be replaced.
+    ///
+    /// `true` means nothing is in flight — the ordinary case — or the worker has finished, and a
+    /// reopen may proceed. `false` means the previous pair's stop has not returned: the old
+    /// callbacks may still be running, so D-8.1/D-15.3's "the old callback must stop before the
+    /// instance is replaced" is not established, and a reopen is refused rather than allowed to
+    /// swap the engine under them. **Polled, never waited on**: a stop that does not return is
+    /// precisely the case this exists for, so waiting here would put the caller back where it
+    /// started.
+    fn stream_stop_settled(&mut self) -> bool {
+        match &self.streams_stop {
+            Some(job) if !job.finished() => false,
+            _ => {
+                self.streams_stop = None;
+                true
+            }
+        }
     }
 
     /// Phase 1 of the async stream-reopen flow: runs on the GUI thread.
@@ -576,6 +615,22 @@ impl AppHost {
     /// to the worker. The worker builds the engine (Phase 2) and sends back
     /// `AppEvent::AudioStreamReady`; `apply_audio_reopen` (Phase 3) opens the new stream.
     fn initiate_audio_reopen(&mut self) {
+        // Nothing to reopen with. Checked before the gate below so a host with no reopen path
+        // never reports a stall it is not going to act on.
+        if self.audio_reopen.is_none() {
+            return;
+        }
+        // A stop from an earlier reopen or a device loss that has not returned: the engine may not
+        // be replaced while the old pair's callbacks are unaccounted for (D-8.1, D-15.3), so this
+        // attempt is refused rather than allowed to swap the engine under them. Reported, because
+        // the user asked for a settings change and this is why they did not get one.
+        if !self.stream_stop_settled() {
+            self.push_notice(
+                crate::error_codes::STREAM_STOP_TIMED_OUT,
+                "the previous audio stream is still closing; try again in a moment",
+            );
+            return;
+        }
         let Some(reopen) = &self.audio_reopen else {
             return;
         };
@@ -691,9 +746,21 @@ impl AppHost {
             );
         }
 
-        // Drop old streams before the engine is rebuilt — the old audio callback must stop
-        // before the instance is replaced on the worker thread (D-15.3, D-8.1).
-        self.streams = None;
+        // Stop the old pair before the engine is rebuilt — the old audio callback must stop before
+        // the instance is replaced on the worker thread (D-15.3, D-8.1) — but off this thread and
+        // with a bound: stopping a stream is dropping it, and that drop is a `cpal` call a backend
+        // is free to block on forever (see `crate::stream::OffThreadJob`). A stop that does not
+        // return inside `stream_job_timeout` abandons this reopen rather than rebuilding the
+        // engine under callbacks that may still be running; `stop_streams` has already reported it.
+        self.stop_streams();
+        if !self.stream_stop_settled() {
+            // `stream_failures` is deliberately **not** cleared on this path: the old pair is still
+            // alive on the worker and its callbacks may still report, and a failure it reports is
+            // still worth surfacing. The settled path clears the watch just below, and the next
+            // successful reopen replaces it either way.
+            self.audio_mode = None;
+            return;
+        }
         self.stream_failures = None;
 
         let engine_slot = EngineSlot::new();
@@ -771,28 +838,18 @@ impl AppHost {
         let (output_failure_tx, output_failure_rx) =
             rtrb::RingBuffer::new(crate::app::STREAM_FAILURE_RING_SLOTS);
 
-        let stream_setup = StreamSetup {
-            backend: backend.as_ref(),
-            input_host: host_info.clone(),
-            input_device: pending.input_device,
-            input_params: pending.input_params,
-            output_host: host_info,
-            output_device: pending.output_device,
-            output_params: pending.output_params,
-            channel_config: pending.channel_config,
-            input_channel_index: input_channel,
-            output_channel_left: self
-                .settings
-                .channel_mapping
-                .output_channel_left
-                .unwrap_or(0),
-            output_channel_right: self
-                .settings
-                .channel_mapping
-                .output_channel_right
-                .unwrap_or(1),
-            max_block_size: pending.max_block_size,
-        };
+        // Read before the closure below: `self` cannot be captured by a thread, and the reopen
+        // path's own settled index is `input_channel` above.
+        let output_channel_left = self
+            .settings
+            .channel_mapping
+            .output_channel_left
+            .unwrap_or(0);
+        let output_channel_right = self
+            .settings
+            .channel_mapping
+            .output_channel_right
+            .unwrap_or(1);
 
         self.watch_stream_failures(StreamFailureWatch::new(
             input_failure_rx,
@@ -801,73 +858,110 @@ impl AppHost {
             output_name.clone(),
         ));
 
-        let running = crate::stream::open(
-            stream_setup,
-            engine,
-            Arc::clone(&xruns),
-            crate::app::stream_failure_sink(input_failure_tx),
-            crate::app::stream_failure_sink(output_failure_tx),
-        );
-
-        match running {
-            Ok(running) => {
-                self.watch_thread_priority(running.thread_priority());
-                match running.play() {
-                    Ok(()) => {
-                        self.audio_mode = Some(AudioModeStatus {
-                            share_mode: pending.share_mode_mode.into(),
-                            device_name: output_name.clone(),
-                        });
-                        self.current_input_device = Some(input_name.clone());
-                        self.current_output_device = Some(output_name.clone());
-                        self.current_sample_rate = pending.sample_rate_hz;
-                        // A stream is open, so the panel reports the block size the engine
-                        // actually runs at: `block_frames` owns both the floor and the
-                        // None -> DEFAULT_BLOCK_FRAMES resolution (issue #213). `None` in
-                        // this field means "no device open" (#223), which the reopen path
-                        // cannot produce.
-                        self.current_buffer_size =
-                            Some(crate::audio_io::block_frames(pending.buffer_frames) as u32);
-                        self.input_channel_count = pending.input_channel_count;
-                        self.current_input_channel = input_channel;
-                        if let Some(requested) = self.settings.channel_mapping.input_channel
-                            && let Some(detail) = crate::audio_io::input_channel_decline_detail(
-                                requested,
-                                input_channel,
-                            )
-                        {
-                            self.push_notice(crate::error_codes::INPUT_CHANNEL_DECLINED, detail);
-                        }
-                        self.supported_sample_rates = pending.supported_sample_rates;
-                        self.supported_buffer_sizes = pending.supported_buffer_sizes;
-                        self.hold_streams(running);
-                        if let Some(requested) = self.settings.buffer_size_frames
-                            && let Some(detail) = crate::audio_io::buffer_decline_detail(
-                                requested,
-                                pending.buffer_frames,
-                            )
-                        {
-                            self.push_notice(crate::error_codes::BUFFER_SIZE_DECLINED, detail);
-                        }
-                        // FR-IO-080: persist the negotiated device/rate/channel configuration so
-                        // the next launch starts from what worked, while preserving any requested
-                        // buffer size (D-18.6 R-FR-IO-080).
-                        self.persist_negotiated_audio(
-                            &host_info_name,
-                            &input_name,
-                            &output_name,
-                            pending.sample_rate_hz,
-                        );
-                    }
-                    Err(e) => {
-                        self.audio_mode = None;
-                        self.push_notice(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
-                    }
-                }
+        // Opened *and* started on a worker thread with a bounded wait — both are `cpal` calls a
+        // backend is free to block on forever (see `crate::stream::OffThreadJob`), and this one is
+        // on the UI thread. The setup is built inside the closure because it borrows the backend,
+        // which the closure owns a handle on.
+        let mut opening = crate::stream::OffThreadJob::spawn({
+            let backend = Arc::clone(&backend);
+            let xruns = Arc::clone(&xruns);
+            move || {
+                let setup = StreamSetup {
+                    backend: backend.as_ref(),
+                    input_host: host_info.clone(),
+                    input_device: pending.input_device,
+                    input_params: pending.input_params,
+                    output_host: host_info,
+                    output_device: pending.output_device,
+                    output_params: pending.output_params,
+                    channel_config: pending.channel_config,
+                    input_channel_index: input_channel,
+                    output_channel_left,
+                    output_channel_right,
+                    max_block_size: pending.max_block_size,
+                };
+                // Deliberately **not** played here — see `crate::stream::OffThreadJob`: an
+                // abandoned open then leaves a silent pair rather than one that starts playing
+                // behind the app's back. `play` is called by `apply_audio_reopen` below.
+                crate::stream::open(
+                    setup,
+                    engine,
+                    xruns,
+                    crate::app::stream_failure_sink(input_failure_tx),
+                    crate::app::stream_failure_sink(output_failure_tx),
+                )
             }
-            Err(e) => {
+        });
+
+        // Started on this thread, not on the worker: `play` is not a backend client call (on JACK
+        // it is an atomic store), and a play failure drops the pair here exactly as it did before
+        // the open moved off this thread.
+        let started = match opening.wait(self.stream_job_timeout) {
+            Some(Ok(running)) => Some(running.play().map(|()| running)),
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        };
+
+        match started {
+            Some(Ok(running)) => {
+                self.watch_thread_priority(running.thread_priority());
+                self.audio_mode = Some(AudioModeStatus {
+                    share_mode: pending.share_mode_mode.into(),
+                    device_name: output_name.clone(),
+                });
+                self.current_input_device = Some(input_name.clone());
+                self.current_output_device = Some(output_name.clone());
+                self.current_sample_rate = pending.sample_rate_hz;
+                // A stream is open, so the panel reports the block size the engine
+                // actually runs at: `block_frames` owns both the floor and the
+                // None -> DEFAULT_BLOCK_FRAMES resolution (issue #213). `None` in
+                // this field means "no device open" (#223), which the reopen path
+                // cannot produce.
+                self.current_buffer_size =
+                    Some(crate::audio_io::block_frames(pending.buffer_frames) as u32);
+                self.input_channel_count = pending.input_channel_count;
+                self.current_input_channel = input_channel;
+                if let Some(requested) = self.settings.channel_mapping.input_channel
+                    && let Some(detail) =
+                        crate::audio_io::input_channel_decline_detail(requested, input_channel)
+                {
+                    self.push_notice(crate::error_codes::INPUT_CHANNEL_DECLINED, detail);
+                }
+                self.supported_sample_rates = pending.supported_sample_rates;
+                self.supported_buffer_sizes = pending.supported_buffer_sizes;
+                self.hold_streams(running);
+                if let Some(requested) = self.settings.buffer_size_frames
+                    && let Some(detail) =
+                        crate::audio_io::buffer_decline_detail(requested, pending.buffer_frames)
+                {
+                    self.push_notice(crate::error_codes::BUFFER_SIZE_DECLINED, detail);
+                }
+                // FR-IO-080: persist the negotiated device/rate/channel configuration so
+                // the next launch starts from what worked, while preserving any requested
+                // buffer size (D-18.6 R-FR-IO-080).
+                self.persist_negotiated_audio(
+                    &host_info_name,
+                    &input_name,
+                    &output_name,
+                    pending.sample_rate_hz,
+                );
+            }
+            Some(Err(e)) => {
                 self.audio_mode = None;
                 self.push_notice(crate::error_codes::DEVICE_OPEN_FAILED, e.to_string());
+            }
+            None => {
+                // The pair is still being built — or is stuck being built — on that worker, which
+                // disposes of whatever it produces when (if) the backend answers. No streams are
+                // installed, which is the state a failed open leaves too; what differs is why.
+                self.audio_mode = None;
+                self.push_notice(
+                    crate::error_codes::STREAM_OPEN_TIMED_OUT,
+                    format!(
+                        "the backend did not answer within {} s",
+                        self.stream_job_timeout.as_secs()
+                    ),
+                );
             }
         }
     }
@@ -1146,8 +1240,29 @@ impl AppHost {
     /// would turn a warning into a silent session. A loss is different in kind: the endpoint is
     /// gone, the callbacks are running against nothing, and `DEVICE_LOST`'s own remedy already
     /// tells the user that audio does not resume by itself.
+    ///
+    /// **Off this thread, with a bound** (see [`crate::stream::OffThreadJob`]): stopping is
+    /// dropping, [`crate::audio_io::AudioStream`]'s own contract is that dropping stops the stream,
+    /// and that drop is a backend call free to block forever — on Jack2/Windows a client's close is
+    /// a named-pipe round trip with no deadline in it. A stop that does not return inside
+    /// [`AppHost::stream_job_timeout`] is reported and its job kept, so the next reopen refuses to
+    /// rebuild the engine while the old callbacks are unaccounted for; the worker keeps ownership
+    /// of the pair and disposes of it when the backend finally answers.
     fn stop_streams(&mut self) {
-        drop(self.streams.take());
+        let Some(streams) = self.streams.take() else {
+            return;
+        };
+        let mut job = crate::stream::OffThreadJob::spawn(move || drop(streams));
+        if job.wait(self.stream_job_timeout).is_none() {
+            self.streams_stop = Some(job);
+            self.push_notice(
+                crate::error_codes::STREAM_STOP_TIMED_OUT,
+                format!(
+                    "the backend did not answer within {} s",
+                    self.stream_job_timeout.as_secs()
+                ),
+            );
+        }
     }
 
     /// Queues one FR-UI-070 notice **and writes the matching FR-ERR-010 log record**.
@@ -1240,10 +1355,13 @@ impl AppHost {
                 // The *classification* picks the entry (issue #44); the direction is carried in
                 // `detail`, which `crate::app`'s callback builds naming both it and the device.
                 let code = local_error_codes::stream_failure_code(&failure);
+                // Reported first, stopped second: the report is what the user needs, and since the
+                // stop moved off this thread (see `crate::stream::OffThreadJob`) it is also the
+                // only order in which a stop that never returns cannot delay the notice.
+                self.push_notice(code, detail);
                 if code.id == crate::error_codes::DEVICE_LOST.id {
                     self.stop_streams();
                 }
-                self.push_notice(code, detail);
             }
             AppEvent::AudioStreamReady { generation } => self.apply_audio_reopen(generation),
         }
@@ -1369,6 +1487,20 @@ impl AppHost {
         }
         if let Some(avg) = out_average {
             self.output_meter.rms_db = avg;
+        }
+    }
+}
+
+/// Window close: hand the running pair to a worker thread and do **not** wait for it.
+///
+/// Deliberately unbounded, where [`AppHost::stop_streams`] is bounded: the process is going away,
+/// so a wait could only buy a frozen window, and there is nobody left to read a notice. The worker
+/// disposes of the pair itself when (if) the backend's close returns — the same thing an abandoned
+/// bounded stop does, minus the deadline.
+impl Drop for AppHost {
+    fn drop(&mut self) {
+        if let Some(streams) = self.streams.take() {
+            let _ = crate::stream::OffThreadJob::spawn(move || drop(streams));
         }
     }
 }
@@ -2023,6 +2155,150 @@ mod tests {
         host.hold_streams(running);
     }
 
+    /// A stop that never returns does not block the caller, is reported, and refuses the next
+    /// reopen until it does return — the Jack2-on-Windows shape, where closing a client can go
+    /// unanswered so the `cpal` drop never comes back.
+    ///
+    /// Two things have to hold at once, and they pull in opposite directions: the caller must not
+    /// wait for the backend (a settings change that hangs the window is the defect this path
+    /// exists to remove), and the *engine* must not be replaced while the old callbacks are
+    /// unaccounted for (D-15.3, D-8.1). So the stop is bounded and the reopen is refused, not
+    /// attempted without it.
+    ///
+    /// **Deterministic rather than timed**: the injected deadline is `Duration::ZERO`, so the
+    /// first dispatch times out by construction, and the fake's drop blocks for 300 ms so the stop
+    /// is still in flight when the second dispatch arrives. Nothing here waits for that drop —
+    /// the worker finishes it after the test has moved on, which is the point.
+    #[test]
+    fn a_stream_stop_that_never_returns_is_reported_and_refuses_the_next_reopen() {
+        let dir = temp_dir("stream_stop_timeout");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")]),
+        );
+        let (mut host, _engine) =
+            host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
+        open_fake_duplex(&mut host, &backend);
+
+        backend
+            .stream_log(Direction::Output)
+            .blocking_stop_for(Duration::from_millis(300));
+        host.set_stream_job_timeout(Duration::ZERO);
+
+        host.dispatch(UiIntent::SelectInputDevice {
+            name: "Mic".to_string(),
+        });
+        let first_round = backend.enumerations();
+        let snapshot = host.snapshot();
+        assert!(
+            snapshot
+                .notices
+                .iter()
+                .any(|n| n.code.id == crate::error_codes::STREAM_STOP_TIMED_OUT.id),
+            "the stalled stop must be reported: {:?}",
+            snapshot.notices
+        );
+        assert!(
+            snapshot.audio_mode.is_none(),
+            "a pair this host no longer holds is not one it may report as running"
+        );
+
+        // The stop is still inside the fake's drop, so the reopen is refused before it does any
+        // work at all — enumeration is the first thing `initiate_audio_reopen` does past the gate,
+        // so a second round of it would mean the gate let the attempt through.
+        host.dispatch(UiIntent::SelectInputDevice {
+            name: "Mic".to_string(),
+        });
+        let snapshot = host.snapshot();
+        assert_eq!(
+            backend.enumerations(),
+            first_round,
+            "a refused reopen must not re-enumerate the devices"
+        );
+        assert_eq!(
+            snapshot
+                .notices
+                .iter()
+                .filter(|n| n.code.id == crate::error_codes::STREAM_STOP_TIMED_OUT.id)
+                .count(),
+            2,
+            "each refusal is reported on its own dispatch: {:?}",
+            snapshot.notices
+        );
+        assert!(
+            snapshot.audio_mode.is_none(),
+            "nothing was reopened, so nothing may be reported as running"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stalled *open* is reported as such — the arm that distinguishes "the backend never
+    /// answered" from "the device refused" ([`crate::error_codes::DEVICE_OPEN_FAILED`]).
+    ///
+    /// The stop here is an ordinary one, so the reopen reaches the open; the deadline is short
+    /// enough to expire inside the fake's 300 ms build, and the notice names the timeout rather
+    /// than the device.
+    #[test]
+    fn a_stream_open_that_never_returns_is_reported_as_a_stall_not_a_refusal() {
+        let dir = temp_dir("stream_open_timeout");
+        let device = |name: &str| crate::audio_io::DeviceInfo {
+            name: name.to_string(),
+            is_default: true,
+        };
+        let backend = Arc::new(
+            crate::stream::FakeBackend::new()
+                .with_devices(vec![device("Mic")], vec![device("Speakers")])
+                .blocking_open_for(Direction::Input, Duration::from_millis(300)),
+        );
+        let (mut host, _engine) =
+            host_with_reopen(&dir, Arc::clone(&backend), AppSettings::default());
+        open_fake_duplex(&mut host, &backend);
+        host.set_stream_job_timeout(Duration::from_millis(20));
+
+        host.dispatch(UiIntent::SelectInputDevice {
+            name: "Mic".to_string(),
+        });
+        // Phase 3 arrives with the worker's engine rebuild, so the notice is polled for rather than
+        // read straight after the dispatch (the same reason the reopen tests use
+        // `await_reopened_stream`).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let snapshot = loop {
+            let snapshot = host.snapshot();
+            if snapshot
+                .notices
+                .iter()
+                .any(|n| n.code.id == crate::error_codes::STREAM_OPEN_TIMED_OUT.id)
+            {
+                break snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the stalled open must be reported as a stall: {:?}",
+                snapshot.notices
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(
+            !snapshot
+                .notices
+                .iter()
+                .any(|n| n.code.id == crate::error_codes::DEVICE_OPEN_FAILED.id),
+            "the device did not refuse, and saying it did would be false: {:?}",
+            snapshot.notices
+        );
+        assert!(
+            snapshot.audio_mode.is_none(),
+            "no stream was installed, so none may be reported as running"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **FR-IO-070 through its own stated apparatus (issue #24, §22 R-5).** The requirement's
     /// method is *"I with a virtual device that can be made to fail on demand"*, and until this
     /// test no such device existed: the tagged artifact asserted that selecting from an empty
@@ -2041,9 +2317,10 @@ mod tests {
     ///
     /// Three of the requirement's four clauses are asserted: no crash or hang (the test completes),
     /// the condition is reported (one `DEVICE_LOST` notice naming the side and the device), and the
-    /// stream is stopped cleanly (both directions' streams dropped exactly once, from the UI
-    /// thread, and not before the report). The fourth is `select_device`'s re-selection, in the
-    /// test below.
+    /// stream is stopped cleanly (both directions' streams dropped exactly once — the stop is
+    /// handed off from this thread and run on its own worker, see `crate::stream::OffThreadJob`,
+    /// but `stop_streams` returns only once the drop has happened). The fourth is
+    /// `select_device`'s re-selection, in the test below.
     // trace-partial: FR-IO-070
     // uncovered: FR-IO-070 — "allow the user to select another device" is now built and tested:
     // uncovered: UiIntent::SelectInputDevice reopens the stream in-session (PR #159, issue #26),
