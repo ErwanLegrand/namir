@@ -46,6 +46,29 @@ on:
 permissions:
   contents: read
 
+# ---------------------------------------------------------------------------------------------
+# sccache. Every job below that runs `cargo` installs
+# `mozilla-actions/sccache-action` and sets `RUSTC_WRAPPER=sccache` with `SCCACHE_GHA_ENABLED=true`,
+# which keeps compiled crates in the Actions cache. It sits *beside* `Swatinem/rust-cache` rather
+# than replacing it, because the two answer different questions. rust-cache restores `target/` under
+# a key that includes the job name, so a dozen jobs each built the same dependency graph from
+# scratch and a `Cargo.lock` change threw all of it away; sccache's key is the rustc invocation
+# itself, so the first job to compile a crate populates entries the rest reuse, and a lockfile
+# change now misses only what actually changed.
+#
+# Three things worth knowing rather than rediscovering:
+#   * The two share one budget -- the Actions cache is 10 GB per repository, LRU-evicted, across
+#     both. Their keys do not collide, but they do compete for room.
+#   * A hit restores the bytes that rustc invocation produced, so the informational benchmark jobs'
+#     numbers are unaffected by this.
+#   * Cache scope is per ref: a run reads its base branch's entries and writes to its own, so a
+#     brand-new pull request starts cold. The wins are `trunk` pushes, re-runs, and the dozen jobs
+#     of one run sharing each other's compiled crates.
+#
+# `license-audit` and `network-free` are left out deliberately: they run cargo-deny and no rustc.
+# `clap-validator` turns it on after the pinned validator install, for the reason its own comment
+# gives.
+
 jobs:
   # Covers D-18.1's "build + test on Windows/Linux/macOS" and "formatting and lints as errors"
   # (NFR-QUAL-060). Also covers D-18.1's "the RT-allocation harness": D-7.5's harness is just
@@ -80,6 +103,9 @@ jobs:
         # tests would need a dedicated AArch64 matrix leg.
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -104,6 +130,7 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       # trace: NFR-QUAL-060
       - name: cargo fmt --check
@@ -168,12 +195,16 @@ jobs:
   layering-and-params:
     name: layering + rt-logging + comment-width + params.lock + attribution + identity
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: xtask layering (D-5.2)
         run: cargo run -p xtask -- layering
@@ -372,12 +403,16 @@ jobs:
   headless-window:
     name: headless window smoke (FR-UI-010, issue #143)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Install Xvfb and a software GL driver
         run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri
@@ -559,6 +594,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       # Installed after `rust-cache` so the binary is not in `~/.cargo/bin` while that action takes
       # its inventory. Re-running with an unchanged rev is cheap by cargo's own bookkeeping: it
@@ -569,6 +605,20 @@ jobs:
           --git https://github.com/free-audio/clap-validator
           --rev b2f1d9b79b1d264a5747f46707d72b1aa40a02ef
           clap-validator
+
+      # sccache is switched on *here*, after the install, and not job-wide like every other
+      # compiling job -- the supply-chain comment above records that the validator is
+      # "deliberately **not** cached", its install being a from-source build on every run. Setting
+      # the two variables job-wide would cache that build too and falsify that sentence. The
+      # plugin build below is a different matter and is cached like everything else; see this
+      # file's header note on sccache.
+      #
+      # Written to `$GITHUB_ENV` rather than `env:` because env vars set that way apply to the
+      # *following* steps only, which is exactly the ordering wanted here.
+      - name: Enable sccache for the rest of this job
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Build the plugin (cdylib)
         run: cargo build --release -p namir-clap --lib
@@ -643,6 +693,9 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -656,6 +709,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       # D-18.3's fixed order, first two steps: build, then bundle. `xtask bundle` copies artifacts
       # a release build has already produced and builds nothing itself, so a debug build here would
@@ -795,6 +849,9 @@ jobs:
   msrv:
     name: MSRV check
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -819,6 +876,7 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo check --workspace --all-targets (on the MSRV toolchain)
         run: cargo check --workspace --all-targets
@@ -834,6 +892,9 @@ jobs:
   no-cxx-toolchain:
     name: build with no C++ compiler (NFR-PORT-040)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -847,6 +908,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Remove g++/clang++ (leave gcc/cc in place)
         # `apt-get remove` pulls in a full system dependency resolution, which on the current
@@ -960,6 +1022,9 @@ jobs:
   mobile-cross-build-android:
     name: mobile cross-build (aarch64-linux-android)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -968,6 +1033,7 @@ jobs:
           targets: aarch64-linux-android
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Point cc-rs at the preinstalled Android NDK
         # Verified locally while writing this workflow (this machine has no NDK installed): a
@@ -1004,6 +1070,9 @@ jobs:
   mobile-cross-build-ios:
     name: mobile cross-build (aarch64-apple-ios)
     runs-on: macos-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -1012,6 +1081,7 @@ jobs:
           targets: aarch64-apple-ios
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo build --target aarch64-apple-ios (library crates only)
         # Unlike the Android job, this needs no extra env wiring: macos-latest ships Xcode, and
@@ -1034,6 +1104,9 @@ jobs:
   coverage:
     name: coverage (informational)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -1049,6 +1122,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo llvm-cov --workspace
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
@@ -1090,12 +1164,16 @@ jobs:
   nfr-perf-010-chain-bench:
     name: NFR-PERF-010 chain benchmark (informational)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo bench -p namir-engine --bench six_stage_chain
         env:
@@ -1129,6 +1207,9 @@ jobs:
   nfr-perf-030-startup-bench:
     name: NFR-PERF-030 start-up benchmark (informational, cannot certify)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
 
@@ -1140,6 +1221,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev
 
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo bench -p namir-app --bench startup_to_audible
         env:
