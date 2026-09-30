@@ -952,6 +952,17 @@ promoted, and no device work is done. §22's **R-5** already records that device
 weak in any cross-platform audio library and that the happy path is not the thing to test; that
 remains true and untested against a failable virtual device.
 
+*Consequence (added 2026-09-30, M16's planning pass) — recorded, not a decision, and promoting
+nothing.* The note above is unchanged in what it records and superseded in what follows it:
+roadmap §15 item 16 was answered by construction (PR #159, the audio-device panel), and **M16**
+(`03-implementation-roadmap.md` §23) is where the third clause — "allow the user to select another
+device" — finally gets the two things it was waiting on: an on-demand refresh (**FR-IO-120**) and,
+the load-bearing half, an `AppHost` built by `crate::app::open_window_without_audio` that arms the
+reopen path at all. Until M16 that window receives every `Select*Device` intent and can act on none
+of them (`AppHost::audio_reopen` stays `None`), which is the mechanical reason a restart was
+required when the interface was absent at launch. This note moves no tag and no §14 cell; M16's own
+evidence does that.
+
 **FR-IO-080 (Must)** — Audio device selection, sample rate, buffer size and channel mapping shall
 persist between sessions, and the application shall degrade gracefully to a working default if the
 remembered device is unavailable at start-up.
@@ -964,6 +975,22 @@ engine and which hardware output channels receive it.
 **FR-IO-100 (Could)** — The application shall be able to play a backing track file through the
 output alongside the processed input, with independent level.
 *Verify:* M.
+
+**FR-IO-110 (Must)** — The user shall be able to select which audio **host API** (backend) Namir
+uses, from those the platform provides — on Windows WASAPI and JACK, on Linux ALSA and JACK, on
+macOS CoreAudio — and the selection shall persist between sessions and take effect without
+restarting Namir. A host API a platform does not provide shall be absent from the list rather than
+offered and then refused.
+*Verify:* M per platform.
+
+**FR-IO-120 (Must)** — The audio-device panel shall offer a refresh action that re-enumerates the
+available host APIs and devices on demand, so that a device connected after Namir started, or a
+host service started after it (for example the JACK server), becomes selectable without restarting
+Namir. The refresh shall be available, and shall be able to lead to a working stream, on a session
+that started with **no** audio device as well as on one already running; when the refresh finds no
+usable device it shall say so and leave the selection open.
+*Verify:* I — with a backend whose enumeration changes between calls; M per platform for the
+device-or-server-arrives-later case.
 
 ### 5.12 CLAP plugin integration (CLAP)
 
@@ -1617,7 +1644,7 @@ Recorded here to prevent scope drift. Each is a **Won't** for 1.0, not a rejecti
 | User-reorderable or branching signal chain | Section 5.1 is fixed for 1.0. Planned: RD-2. |
 | More than one NAM stage, or more than two IR stages | One NAM, two IR slots (FR-IR-080) for 1.0. Planned: RD-2. |
 | Additional effects: delay, reverb, modulation, pitch | Not in the chosen chain. |
-| Tuner, metronome, looper | Live-performance features deferred. |
+| Tuner, metronome, drone player, looper | Live-performance features deferred. The first three are specified as RD-5 to RD-7 in Section 7.2 and scheduled post-1.0; the looper has no specification yet. |
 | Multi-channel amp/preset switching for live use | Deferred with the above. |
 | NAM model training or capture | A different product. |
 | Online model/IR browsing and download, including the Tone3000 API | Excluded from 1.0 by FR-ERR-060. Planned: RD-1. |
@@ -1663,6 +1690,26 @@ a foreign plugin, because Namir cannot guarantee real-time safety for code it di
 1.0 and is what keeps this reachable. Note that RD-3 is largely incompatible with iOS, which does
 not permit loading arbitrary third-party dynamic libraries; the two roadmap items must not be
 allowed to entangle.
+
+**RD-5 — Tuner.** A chromatic instrument tuner that names the detected note and its deviation in
+cents, usable across the guitar and bass range down to a low B of about 31 Hz, in the standalone
+application only.
+*Constrains now:* the trimmed instrument signal must remain available for analysis without altering
+chain state or the parameter system, and `namir-ui` must be able to render a reading the host
+computes for it without depending on any DSP crate (D-5.1). Nothing else may be taken from this
+entry for 1.0.
+
+**RD-6 — Metronome.** A click track with tempo, level, an accented downbeat, tap tempo and a time
+signature, in the standalone application only.
+*Constrains now:* the engine must expose a post-chain **monitor mix point** that can sum a generated
+source into the output without that source becoming a member of FR-CHAIN-010's fixed chain (see
+`02-architecture.md` D-6.3); and the click's clock must be derived from the audio callback's own
+sample count so no timer or second thread enters the audio path (NFR-RT-010).
+
+**RD-7 — Drone player.** A continuous reference tone at a chosen root and interval, with level, for
+players of fretless instruments and for singers, in the standalone application only.
+*Constrains now:* nothing beyond RD-6's monitor mix point, which it shares; its sources are
+real-time safe and allocation-free like any other code on the audio path.
 
 ---
 
@@ -1878,3 +1925,4 @@ constant must land in one commit, or D-18.5's required plan-diff half goes red.
 | 0.9 | 2026-09-07 | M15. **FR-CHAIN-010's original chain order is restored and the M9a amendment superseded in turn**, by an appended `*Consequence (added M15, 2026-09-07)*` note: `input → input trim → noise gate → NAM → IR → EQ → output level → output`. `02-architecture.md` **D-9.8** is withdrawn in the same pass and `build_default_chain` (`crates/namir-engine/src/stages/mod.rs`) is rebuilt to match, so requirement and code now agree without either being amended to the other — the first time since `875068e`. **The reason is the argument M9a's own note recorded and did not weigh**: Gate is mono-core, copying channel 0 over every other channel to establish FR-CHAIN-050's invariant, so ordering it ahead of Trim — the chain's only cross-channel mixing — destroyed the right channel before the sum could reach it, making the first of FR-CHAIN-060's two permitted Stereo inputs unreachable except by switching the gate off. **The cost is stated, not argued away**: the gate's threshold now references the trimmed signal, which is exactly what D-9.8 was written to prevent. **FR-CHAIN-070 gains its own note**: still unimplemented, still no chooser, but the fixed behaviour its absent chooser falls back to moves from the left channel to the −6 dB sum, so its "default shall be left channel" clause is unmet too — recorded because M14's note settling roadmap §15 item 18 rests part of its case on left-only being what ships. FR-CHAIN-060 is unaffected and stays satisfied on the other of its two options; no Must changes disposition. Also corrected here: the M9a note's claim that no probe signal has ever been put through this chain, true when written and superseded by M14's `chain_probes.rs`; and `crates/namir-engine/src/stages/trim.rs`'s "FR-CHAIN-060's default" comment, which M14's note identified and declined to touch. **Unrelated to the order, in the same commit**: `trim.gain_db`'s display name becomes "Input Level" (its key and `ParamId` are unchanged), and FR-UI-020's screen puts both meters and both level controls at the top, each meter beneath the control it measures the output of. **The defect underneath the reorder's stereo argument is fixed with it, on its own footing** (raised in review): the annihilation was not a property of the gate's *position* but of the gate gating channel 0 and **copying the result over every other channel**, which is strictly more than FR-CHAIN-050 asks — that requirement is about the core processing a single channel, not about the gate erasing the others. `GateStage` now derives one gain curve from channel 0 (`namir_dsp::NoiseGate::compute_gains`) and multiplies every channel by it; channel 0's result is bit-identical to the old path, asserted in `namir-dsp`. `2 ch summed` is consequently reachable under **either** order, so the reorder is not load-bearing for it and no future reordering can restore the old behaviour by itself. |
 | 0.10 | 2026-09-09 | FR-UI-030 accessibility scope narrowed (issue #35, PR #188). **FR-UI-030 is amended** to explicitly specify assistive technology exposure on Windows and macOS, with Linux/X11 recorded as a compiled no-op, matching Decision D-15.4. Appended M14 note marked settled with respect to adapter implementation. |
 | 0.11 | 2026-09-21 | **`docs/03-test-plan.md` renumbered to `docs/05-test-plan.md`**, closing the two-`03` collision Section 10's M7 note records: the roadmap took the "03" slot at M1 and the plan was created at "03" anyway at M7. Section 10's point 2 is corrected in place and a `*Consequence (added 2026-09-21)*` note appended; every path reference in the tree is updated in the same commit. The plan moved rather than the roadmap because the roadmap's number is cited as provenance by 39 files against the plan's 11, and the plan's generated body never names its own file, so the rename changes no generated byte. |
+| 0.12 | 2026-09-30 | **M16 / M17–M19 planning intake.** Section 5.11 gains **FR-IO-110** (host-API selection, Must) and **FR-IO-120** (on-demand re-enumeration, Must), and a `*Consequence*` note is appended at **FR-IO-070** recording that its third clause becomes reachable through FR-IO-120 and the reopen path M16 arms on the no-audio window. Section 7.1's deferred row gains the drone player, and Section 7.2 gains **RD-5** (tuner), **RD-6** (metronome) and **RD-7** (drone player), all standalone-only and post-1.0. No existing requirement's text, priority or `*Verify:*` line changes. Roadmap §14's Must denominator moves 130 → 132 and `docs/05-test-plan.md` is regenerated in the same commit; the two new Musts enter §14 as **Not started**, which is why the table's Not-started column goes 0 → 2. |

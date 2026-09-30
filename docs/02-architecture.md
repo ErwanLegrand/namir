@@ -517,6 +517,28 @@ handle arbitrary block sizes, and what M9b reported was an implementation that h
 it, which is why roadmap §15 item 13's branch policy sent the failure to the engine rather than to
 the FRS.
 
+**Decision D-6.3 (2026-09-30, from M16/M17–M19 planning)** — A **monitor mix point** exists in the
+engine, distinct from the chain: sources that are not part of the amp simulation — the metronome
+click and the drone tone of FRS RD-6/RD-7 — are summed into the output after the chain's last stage
+and are **not** `Stage` implementations inside FR-CHAIN-010's ordered chain.
+
+*Rationale:* The chain is what FR-CHAIN-010 fixes and what FR-CFG-020's golden vectors exercise. A
+click or a reference tone routed through it would put both in question — the chain would no longer be
+the six stages the requirement names, and every bit-identity vector would have to account for a
+source whose entire purpose is to be irrelevant to the tone. Keeping such sources out costs one mix
+point and buys a chain that neither requirement has to be amended for.
+
+*Consequence:* The mix point is subject to NFR-RT-010 like everything else on the audio path — it
+allocates nothing, takes no lock, runs no unbounded loop — and it is **inactive by default**, so a
+session that uses neither feature produces byte-identical output to one that predates this decision
+and FR-CFG-020 is unaffected. Its level is a parameter of the monitor, not of any chain stage.
+
+*Consequence for RD-5:* the tuner needs the same shape of exception read in the other direction — an
+**analysis tap** on the trimmed instrument signal that observes it without altering it, and so is
+neither a stage nor a chain parameter. D-6.1's two-lifecycle split (`prepare` may allocate, `process`
+may not) applies to anything placed there. This decision fixes only that such a tap must not perturb
+the chain; the tuner's own placement is decided when RD-5 is built.
+
 ---
 
 ## 7. Threading and real-time strategy
@@ -1749,6 +1771,18 @@ until they set one. No migration is possible (the field is the only record and i
 construction) and none is attempted; the alternative, dropping every existing `buffer_size_frames`
 on first load, would discard genuine hand edits to fix a cosmetic notice.
 
+*Consequence (added 2026-09-30, from M16 planning) — the host API becomes a user-visible choice.*
+`AudioBackend::hosts()`/`default_host()` and the persisted `AppSettings::host_name` have existed
+since M6: the host was resolved from the settings file at start-up and `default_host()` used
+otherwise (`crates/namir-app/src/app.rs`), with no interactive surface over it — JACK could be
+selected only by hand-editing `audio-settings.json`. **FR-IO-110** makes choosing the host a Must and
+**FR-IO-120** makes re-enumerating it on demand one. Nothing below this decision changes to support
+that: `resolve_host` already resolves a name through `cpal::available_hosts()`, so the list the panel
+shows is the same `HostId::name()` set the reopen path already keys on, which is also why a host a
+platform does not provide is absent from the list rather than offered and then refused
+(`AudioIoError::HostUnavailable`). A host whose service is not running enumerates no devices and
+degrades through this decision's ordinary no-device path (FR-IO-080).
+
 **Decision D-13.3 (2026-09-07, from issue #166)** — **The output stream asks the device for its own
 buffer** (`cpal::BufferSize::Default`), never a size Namir picked. The negotiated buffer size still
 sizes the engine's block (`audio_io::block_frames`) and the input stream; it no longer sets the
@@ -2264,8 +2298,16 @@ automatic rescan.
 
 *Consequence (added M15, 2026-09-06)* — Audio device configuration overlay panel (FR-UI-020). The
 audio device settings window is rendered as an overlay panel over the main view in accordance with
-FR-UI-020 (all controls accessible without navigating away from the main view). In embedded plugin
+FR-IO-020 (all controls accessible without navigating away from the main view). In embedded plugin
 hosts (`namir-clap`), `UiSnapshot::audio_panel` is `None`, omitting the button and panel entirely.
+
+*Consequence (added 2026-09-30, from M16 planning)* — the audio-device overlay gains a **host-API
+selector** and a **refresh action** (FR-IO-110, FR-IO-120). `AudioDevicePanelSnapshot` carries the
+enumerated host names and the current one, and two intents — `SelectHost` and `RefreshAudioConfig` —
+ride the reopen machinery the four `Select*` intents already use; a refresh updates the panel's
+lists **without** opening a stream, which is what makes it meaningful on the no-audio window this
+overlay is shown on, where there is no stream to reopen. The panel stays standalone-only:
+`namir-clap` still passes `audio_panel: None`.
 
 **Decision D-15.4 (added 2026-09-09, issue #35)** — **Accessibility support (FR-UI-030) is scoped to Windows and macOS.** On Linux (X11), accessibility events and AccessKit tree updates are a compiled no-op in the windowing stack (`baseview` and `egui-baseview`).
 
@@ -4534,3 +4576,4 @@ drift was findable.
 | 0.66 | 2026-09-13 | **The audio panel's buffer-size field is now `Option<u32>`, so "no device open" and "no negotiated answer" render as "Device default" rather than an invented number (issue #223).** Recorded 2026-09-17 for work merged in PR #225: the change rode that PR as a review item, 0.65's sweep row does not name it, and the issue itself was never linked there — the gap this row closes. 0.64 had left two pre-stream `256` placeholders — `AppHost::new`'s initialiser and `open_window_without_audio`'s `configure_audio_devices` call — on the argument that the combo renders disabled, missing that `add_enabled_ui(false)` still paints the `selected_text`: a greyed "256 frames" is exactly what the audio-failure window a user stares at displays. `AudioDevicePanelSnapshot::current_buffer_size` (`crates/namir-ui/src/host.rs`) is now `Option<u32>`, both placeholder sites pass `None`, and the combo renders `None` as "Device default" (`crates/namir-ui/src/app.rs`), the same vocabulary `buffer_decline_detail` already used; `SelectBufferSize` needs no change, since a user can only select a listed size and the `None` state is display-only. `PREFERRED_BUFFER_FRAMES` gains the doc comment this issue asked for — the negotiation's unconfigured starting point, not a display fallback (`crates/namir-app/src/device_state.rs`). One divergence from the issue's own table, recorded here as deliberately chosen: the reopen path reports `Some(block_frames(pending.buffer_frames))` — the block size the engine actually runs at, preserving 0.64's assertion — so a negotiation `None` still reads "512 frames" rather than "Device default"; in the mixed `Unknown`/`Range` pair 0.64 measured (dropdown `[1024]`, display "512 frames") that number can still be absent from its own list, but it is now derived and truthful rather than invented. |
 | 0.67 | 2026-09-18 | **The standalone's cpal dependency gains the JACK host: `features = ["jack"]` on the pinned fork edge.** The backend was already in the fork (inherited from upstream trunk); this change compiles it on every platform and verifies it on §2's machine against Jack2 1.9.22 (jackdmp, PortAudio/ASIO AudioBox 22VSL, 48 kHz/256): no-server degradation through the ordinary FR-IO-080 notice path, real enumeration at the server's single rate/buffer, and a duplex session opening `cpal_client_<pid>_in`/`_out` auto-connected to `system:capture_*`/`system:playback_*` with xrun reporting on `CallbackInfo::xrun`. Build cost: `jack`/`jack-sys` default to runtime dynamic loading, so only Linux builds need a library present (`libjack-jackd2-dev` added at CI's four apt sites); Windows/macOS resolve `libjack64.dll`/`libjack.0.dylib` at runtime. Full record: D-13.4's `*Consequence (added M15, 2026-09-18)*` note and §17's `cpal` row. FR-IO-030's JACK clause is Linux-scoped, so no Must status changes. |
 | 0.68 | 2026-09-18 | **First Jack2 test session's three defects, fixed the same day.** (1) JACK has no share-mode concept — a leftover `"exclusive_mode": true` printed `app.audio_io.exclusive_mode_unavailable` every launch and left the Share Mode control disabled-but-present. New `host_has_share_mode_concept` (WASAPI-only; ASIO still unbuilt — first drafted on the `AudioBackend` trait, moved to a free function by review) carried through `ShareModeDecision::concept`/`AudioDevicePanelSnapshot::exclusive_mode_concept`: concept-less hosts settle shared **without probing** and never print the notice, the panel omits the row. (2) Window close could hang: dropping a JACK stream calls `jack_deactivate`, which waits for the process callback thread and can block forever on Jack2/Windows — the input client then overran the dead bridge at one xrun per callback, the storm. Fork commit `fabe84d` (`fix(jack): never block stream drop on deactivation`) deactivates on a detached thread; the drop probe (`crates/namir-app/examples/jack_drop_probe.rs`) measured 50–70 µs drops post-fix (was 2–8 ms, one 4-minute hang in 40 rounds) and the real app closed cleanly ~1 s after window close. (3) A 512-frame session echoed: 512 frames @ 48 kHz is 10.7 ms — the delay at which dry input mixed beside the processed output becomes an audible slap; nothing in Namir delays or repeats, and the graph held no loop, so the dry path is a hardware/driver monitor (test: disconnect `namir_out` while keeping `namir_in`). Rev bump `381cf1d` → `fabe84d`, same fork, same deny allowance. **Review sweep (same commit):** the two Linux jobs that had not been updated with the feature — `coverage` and `nfr-perf-030-startup-bench` — got `libjack-jackd2-dev` too (six apt sites in total, not the four the 0.66 row says), the share-mode concept moved off the `AudioBackend` trait onto a free `host_has_share_mode_concept` (pure function of the host name — no `self` to dispatch on, and it removes the fake-backend knob), the no-device reopen path records the concept from the host instead of voiding it, and the drop probe gained a failing exit and a standing-regression label. **Review round 2 (same commit):** the enumeration path derives its requested mode from the same `host_has_share_mode_concept` answer, so a concept-less host is never even enumerated for exclusive mode (the `negotiate_share_mode` guard becoming defense-in-depth); the probe's exit status is now a stated contract (0 clean / 1 hung drop — the regression / 2 environment can't run it, `SKIP:`), its rounds match the 40 the pre-fix evidence was gathered at, and a new runtime pin (`the_wasapi_host_name_the_probe_key_compares_is_the_one_cpal_spells`) asserts the `"WASAPI"` probe key still matches what the fork's `HostId::name()` spells — keyed on the derived `Debug` variant identifier, never the display name, so a re-spelling fails the test instead of silencing it. **Review round 3 (same commit): the apt count above was still wrong in the other direction** — `release.yml`'s Linux distribution job is a seventh site (`cargo build --release --workspace` on ubuntu-latest), tag-triggered and therefore invisible to every PR check; it got `libjack-jackd2-dev` too — seven apt sites in all, the six `ci.yml` ones plus the release workflow's. |
+| 0.69 | 2026-09-30 | **M16/M17–M19 planning: one decision and two consequences added, none of it built.** This row records *plans*, not results — the same direction §24's 0.18 row took for M9–M13 — and each item needs its own status note when the work runs. **D-6.3** establishes a post-chain **monitor mix point** for sources that are not part of the amp simulation (FRS RD-6's metronome, RD-7's drone) and an **analysis tap** for RD-5's tuner, so neither enters FR-CHAIN-010's chain nor perturbs FR-CFG-020's golden vectors; it is inactive by default. Two `*Consequence*` notes record the surfaces the FRS gained in the same pass: **D-13.1** gains the host-API selection and on-demand re-enumeration (FR-IO-110, FR-IO-120 — the host was already resolvable and persisted, never selectable), and **D-15.3** gains the panel's host list, `SelectHost` and `RefreshAudioConfig`, whose whole point is that a refresh need not open a stream and so works on the no-audio window. No dependency changes; the persistence field and the `HostId::name()` enumeration both already exist. |

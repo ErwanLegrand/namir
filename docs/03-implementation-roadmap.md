@@ -1538,11 +1538,24 @@ established for M9 through M13, and for the same reason: renumbering would destr
 that every existing reference to M8 forms. Nothing above this note is rewritten, M8 keeps its number
 and its text, and §21 states its own depends-on and blocks relationships in its header line.
 
+*Consequence (added 2026-09-30, M16/M17–M19 planning)* — the arrow is **extended, not replaced**.
+Two milestones join the pre-1.0 line: **M16**, which the two new FRS §5.11 Musts (FR-IO-110,
+FR-IO-120) name, and **M15**, a label in use since 2026-08-28 that never had a section here and
+gets one retroactively at §22. Both are pre-1.0, so both run before the gate:
+
+> **M9a → M10 → M11 → M12 → M13 → M9b → M14 → M15 → M16 → M8.**
+
+Three further milestones — **M17**, **M18**, **M19**, the tuner, metronome and drone player — are
+**post-1.0** and run after M8: their scope is FRS RD-5 through RD-7, which are RD entries by
+construction and are not requirements, so they gate nothing and §14 does not count them. Nothing
+above is rewritten, M8 keeps its number, its text and its position as the last thing executed for
+1.0, and §22–§26 each state their own depends-on and blocks relationships in their header line.
+
 ---
 
 ## 13. Explicit non-goals for this roadmap (restated, not re-decided)
 
-Everything in FRS §7.1 (Won't for 1.0) and §7.2 (RD-1 through RD-4, post-1.0 direction) stays
+Everything in FRS §7.1 (Won't for 1.0) and §7.2 (RD-1 through RD-7, post-1.0 direction) stays
 exactly as scoped there. Nothing above should be read as sneaking any of it in early. Specifically
 worth restating because M1–M7 touch adjacent territory:
 
@@ -1554,11 +1567,18 @@ worth restating because M1–M7 touch adjacent territory:
   non-reorderable.
 - **RD-3 (hosting foreign CLAP plugins)** — not part of M6's `namir-clap`; that crate hosts
   Namir's own chain in a host, it does not host other plugins itself.
+- **RD-5, RD-6, RD-7 (tuner, metronome, drone player)** — planned at §24–§26 and deliberately
+  **post-1.0**: they run after M8. Their one 1.0-relevant consequence is architectural, not
+  work — D-6.3's post-chain monitor mix point — and nothing in M1–M16 builds a monitor source.
 - **Should/Could requirements** (ASIO, PipeWire/JACK, AIFF/FLAC, dual IR slots with blend, IR
   normalization, output limiter, MIDI program-change preset selection, host-resize GUI, themes,
   etc.) are not tabled milestone-by-milestone above the way Musts are. Pick them up opportunistically
   within whichever milestone owns their area (e.g. the output limiter fits naturally into M2's Out
-  stage) if the size budget allows; none of them gate M8.
+  stage) if the size budget allows; none of them gate M8. **One exception to read carefully:**
+  FR-IO-030's *JACK on Linux* clause is still the Should it always was, but the host-API **selection
+  surface** is now a Must of its own — FRS **FR-IO-110** and **FR-IO-120**, added 2026-09-30 and
+  owned by **M16** (§23). Selecting among the hosts a platform provides is not the same requirement
+  as any particular host being provided.
 
 ---
 
@@ -1836,7 +1856,8 @@ written (one CHAIN, one CLAP, three CFG), and eight are requirements the FRS gai
 | + 6.5 LIC — NFR-LIC-070 (FRS 0.3) | +1 |
 | + 6.8 DOC — NFR-DOC-040 (FRS 0.3) | +1 |
 | + 5.15 PKG — FR-PKG-010/-020/-030/-040, an entirely new FRS section (FRS 0.3) | +4 |
-| **= the FRS today** | **130** |
+| + 5.11 IO — FR-IO-110, FR-IO-120 (FRS 0.12) | +2 |
+| **= the FRS today** | **132** |
 
 **5.12 CLAP's count is an original M0 error, not drift — the same species as 5.1 CHAIN's, and this
 section's own 2026-08-08 note left that open.** The FRS at commit `984b0b6` already contained 11
@@ -1868,7 +1889,7 @@ not adjudicate them further.
 | 5.8 PARAM | 5 | 3 | 2 | 0 |
 | 5.9 STATE | 7 | 3 | 4 | 0 |
 | 5.10 LIB | 5 | 3 | 2 | 0 |
-| 5.11 IO | 8 | 2 | 6 | 0 |
+| 5.11 IO | 10 | 2 | 6 | 2 |
 | 5.12 CLAP | 11 | 4 | 7 | 0 |
 | 5.13 UI | 7 | 6 | 1 | 0 |
 | 5.14 ERR | 6 | 3 | 3 | 0 |
@@ -1881,7 +1902,7 @@ not adjudicate them further.
 | 6.6 SEC | 3 | 1 | 2 | 0 |
 | 6.7 BUILD | 2 | 0 | 2 | 0 |
 | 6.8 DOC | 3 | 1 | 2 | 0 |
-| **Total** | **130** | **69** | **61** | **0** |
+| **Total** | **132** | **69** | **61** | **2** |
 
 Every other row's denominator was already correct and is carried forward unchanged — checked against
 the FRS row by row this session, not assumed.
@@ -2041,7 +2062,8 @@ form, so the ledger and the source agree.
   (`crates/namir-library/src/scan.rs:423`, `:545`) but the third member of the requirement's own set,
   files that **are added** while Namir is running, is spanned by nothing;
   `crates/namir-fixtures/src/library.rs:590` was generated for exactly this trio and has no consumer.
-- **5.11 IO — 2 / 6 / 0** (FR-IO-020's cell was moved at M11, 2026-08-11; every other cell in this
+- **5.11 IO — 2 / 6 / 2** (FR-IO-020's cell was moved at M11, 2026-08-11; the two Not-started cells
+  are FR-IO-110 and FR-IO-120, added at M16's planning intake 2026-09-30; every other cell in this
   bullet is M9a's and untouched)**.** *Done:* FR-IO-080 — all four enumerated members round-tripped
   (`crates/namir-app/src/settings.rs:171`) plus the graceful-degrade clause
   (`crates/namir-app/src/device_state.rs:226`), with an executed PASS across all six steps
@@ -2078,7 +2100,11 @@ form, so the ledger and the source agree.
   induction is covered (`crates/namir-app/src/stream.rs:531`); "resettable by the user" has no path,
   `XrunCounter::reset` having no caller outside its own tests. FR-IO-070 — the method's named
   apparatus, a virtual device that can be made to fail on demand, does not exist, and the tagged test
-  opens no device (`crates/namir-app/src/device_state.rs:247`).
+  opens no device (`crates/namir-app/src/device_state.rs:247`). *Not started:* FR-IO-110 and
+  FR-IO-120, added to the FRS on 2026-09-30 as M16's requirements (§23) with no artifact of any
+  kind — 110's host list and 120's on-demand refresh both await that milestone, and neither
+  requirement has a covering test or a manual document yet, which is why they render UNRESOLVED
+  rather than PARTIAL in `docs/05-test-plan.md`.
 - **5.12 CLAP — 2 / 9 / 0.** *Done:* FR-CLAP-010 and FR-CLAP-020 — the reference validator the
   `Verify:` lines name, run as a blocking CI job (`.github/workflows/ci.yml:270-312`). This cell was
   first written on a local 32-of-32 run and **the gate's own first CI run falsified it within the
@@ -2421,6 +2447,18 @@ per this document's convention, and corrected here rather than there. It is wort
 means: **the milestone built to enforce a tagging doctrine shipped two tags that failed it**, which
 is the second time M9's own phases have done exactly that — M9a's `### M9a status` records the same
 thing happening to NFR-PERF-050, caught the same way, by adversarial review rather than by any gate.
+
+**M16 planning intake, 2026-09-30 — the denominator grows, and two cells enter Not started.** FRS
+§5.11 gains **FR-IO-110** (host-API selection) and **FR-IO-120** (on-demand re-enumeration), both
+Musts, so 5.11 IO becomes **2 / 6 / 2** (was 2 / 6 / 0) and **Total** becomes **132 / 69 / 61 / 2**
+(was 130 / 69 / 61 / 0). This is the first intake since M9b to move the Not-started column off zero,
+and for an everyday reason: these are requirements *for* M16's work (§23), none of it has run, so
+nothing covers them and they carry no tag in any form — D-23.1's correct disposition for a
+requirement whose milestone has not run. The tool's uncovered-Must count rises by two, each printed
+beside **M16**; the required half of the gate is satisfied by this table plus the regenerated
+`docs/05-test-plan.md`, and the zero-uncovered half stays informational. No other row moves and no
+existing requirement's verdict changes; the 5.11 evidence bullet below names both new ids, as D-23.2
+requires.
 
 - **FR-CFG-020: Partial → Done.** The M9a bullet above named the gap in full — "no golden vector
   exists anywhere in the tree and nothing runs one through both configurations".
@@ -6850,3 +6888,191 @@ the 2026-09-13 note recorded is unchanged.
 10-16 remain NOT EXECUTED under the worse-of convention of the 2026-09-13 note, and the
 traced document now describes what the gate actually does rather than the qualifier this
 issue removed.
+
+---
+
+## 22. M15 — Post-M14 hardening (retro-recorded 2026-09-30)
+
+**Size: XL, as executed.** **Depends on:** M14 — the sprint began as the issue-by-issue follow-through
+after M14's ledger work. **Blocks:** M16, and through it M8.
+
+**This section is written after the fact and says so.** `M15` has been used as a milestone label
+since 2026-08-28 — in commit subjects (`M15: …`) and in `02-architecture.md` §24's
+`*Consequence (added M15, …)*` notes — while this document never gained a section for it. A label
+with no section is invisible to every mechanism that reads this file: §14 does not count it, §15
+does not list it, and a reader of §16–§21's "Milestones added …" sections would conclude the plan
+stops at M14. What follows is a **summary with pointers, not a reconstruction**: the per-change record
+is §24's changelog rows 0.35–0.68 (each carrying its own M15 notes at the decision it touched) and the
+issue-linked commits, and deriving a deliverable list from merged diffs would be an invention wearing
+the costume of a plan.
+
+**What it was.** The post-M14 sprint of issue-driven hardening and small features, tracked per issue
+rather than per phase. Its themes, each with the record that owns the detail:
+
+- **Audio-path defects:** output-clock slip from a forced period (0.56/#166, D-13.3), buffer-size
+  persistence overwriting user requests (0.55/#167), a stream stop counting its own xrun (0.57/#194),
+  activation transients counted as dropouts (0.60/#189), backend-detected xruns going uncounted
+  (0.62/#200 item 6).
+- **Configuration assembly and the panel:** one enumerate→negotiate→assemble function shared by
+  start-up and reopen (0.61/#192), per-mode enumeration (D-13.5/#190), buffer-size display routed
+  through `block_frames` (0.64/#213), `current_buffer_size: Option<u32>` (0.66/#223).
+- **Chain and model work:** FR-CHAIN-010's order restored and D-9.8 withdrawn (0.40), IR loudness
+  normalisation and D-9.9 (0.41), A2 real-model parity with two parser fixes (0.43/#169, #170),
+  silent prewarm and D-9.13 (0.44).
+- **Surfaces and platforms:** the audio-device panel and in-session reopen (0.50, PR #159), the
+  share-mode control (2026-09-13 note/#193), the exclusive-mode possibility and directional gates
+  (2026-09-17 notes/#227, #228), accessibility forks (0.52/#35), and the JACK host compiled in and
+  verified against Jack2 (0.67, 0.68).
+- **Gates and identity:** `xtask git-sources` (0.65/#215), the comment-width check (#176), the
+  baseview `?rev=` pin resolved inside the fork (0.65/#214), R-10's register row corrected
+  (0.65/#200).
+
+**What it moved in §14, and what it did not.** No §14 verdict cell moved *for M15 as a milestone*.
+The cells that moved during this period moved under the milestone that owned their evidence, and each
+is recorded in the notes beneath §14's table or in §21's appended status notes — the 2026-09-08 UI
+run, the 2026-09-13 and 2026-09-17 share-mode notes, every one of them explicitly "No §14 cell
+moves". What M15 did change about the ledger is topical: it closed or narrowed several §15 items and
+§22 risks issue by issue (R-10 above all), and each closure is recorded at the item it closed rather
+than restated here.
+
+**Status: recorded, not closed out.** This section supplies the section M15 never had; it does not
+declare the sprint finished. Work still carrying an M15-shaped scope lives in the issue tracker, and
+if any of it grows a scope worth planning it belongs in a new section rather than appended here.
+
+---
+
+## 23. M16 — Audio host selection and in-session recovery
+
+**Size: M.** **Depends on:** M15 — the panel, the in-session reopen machinery and the compiled-in
+JACK host all landed there. **Blocks:** M8 directly: §14's 5.11 IO row carries the two Musts this
+milestone owns.
+
+**New requirements this milestone closes:** **FR-IO-110**, **FR-IO-120** (both added to FRS §5.11 on
+2026-09-30).
+
+**Deliverables**
+
+- **Host-API selection (FR-IO-110).** `AudioDevicePanelSnapshot` gains the enumerated host names and
+  the current one, sourced from `AudioBackend::hosts()` so a host the platform does not provide is
+  absent rather than offered; a new `UiIntent::SelectHost` persists `AppSettings::host_name` and rides
+  `AppHost::initiate_audio_reopen`, so the change takes effect without a restart. Selection stores the
+  existing `HostId::name()` keying (`audio_io::resolve_host`), so no new device-identity surface
+  appears.
+- **On-demand re-enumeration (FR-IO-120).** A new `UiIntent::RefreshAudioConfig` re-enumerates hosts
+  and devices into the panel **without** opening a stream — which is what makes it meaningful on a
+  window that has no stream to reopen. When the enumeration finds no usable device it reports through
+  the existing error catalogue and leaves the selection open.
+- **Arm the reopen path on the no-audio window.** `crate::app::open_window_without_audio` calls
+  `AppHost::enable_audio_reopen` (and `watch_stream_failures` where a stream can exist), so a session
+  that started with no device — the interface unplugged at launch, or jackd not yet running — can
+  recover through the panel instead of needing a restart. This is the mechanical half of the reported
+  problem: today that window receives every `Select*Device` intent and can act on none of them because
+  `AppHost::audio_reopen` stays `None`.
+- **Verification.** An in-process test for FR-IO-120's `I` half against a backend whose enumeration
+  changes between calls; `namir-ui` snapshot/intent tests for both new intents and the panel fields;
+  `namir-app` tests for `SelectHost`/`RefreshAudioConfig` dispatch and for the no-audio window's
+  reopen arming. Two manual scripts, which are the traced artifact for the `Verify: M` halves:
+  `docs/manual-tests/fr-io-110-host-api-selection.md` and
+  `docs/manual-tests/fr-io-120-audio-config-refresh.md`.
+- **Documentation.** `docs/user-guide.md` gains the host selector, the refresh action and the
+  jackd-not-running case, since FR-UI-070's remedy text points a user at them.
+
+**Acceptance criteria**
+
+- FR-IO-110 and FR-IO-120 are covered by the artifacts above — a plain `// trace:` where the artifact
+  spans the requirement by its own `Verify:` method, otherwise a `// trace-partial:` carrying an
+  `uncovered:` field — and both ids leave `docs/05-test-plan.md`'s UNRESOLVED set.
+- §14's 5.11 IO row's two **Not started** cells move to their adjudicated verdicts; no other row moves
+  except where this milestone's own evidence justifies it.
+- On the §2 reference machine: WASAPI and JACK both selectable and both taking effect without a
+  restart; with jackd stopped, the JACK host selectable and degrading through the ordinary no-device
+  notice; `RefreshAudioConfig` populating the panel after jackd is started, after which a session
+  opens JACK without restarting namir.
+- `cargo run -p xtask -- traceability` green on its required half, and `docs/05-test-plan.md`
+  regenerated rather than hand-edited.
+
+**What this milestone does not claim.** FR-IO-070's third clause — "allow the user to select another
+device" — becomes *reachable* here, because the panel already exists and M16 arms the reopen path it
+dispatches into. But FR-IO-070's own `Verify: I` method names an apparatus that still does not exist —
+"a virtual device that can be made to fail on demand", missing per §14 and R-5 — so **FR-IO-070's cell
+does not move on M16's work alone.** Whether M16 also builds that failable virtual device is a scope
+question for the owner; this section does not assume it.
+
+---
+
+## 24. M17 — Tuner (post-1.0)
+
+**Size: M.** **Depends on:** M8, being post-1.0 by construction, and on `02-architecture.md` D-6.3's
+analysis tap. **Blocks:** nothing; independent of M18/M19.
+
+**Scope:** FRS **RD-5**.
+
+**Deliverables**
+
+- An autocorrelation/YIN pitch detector in `namir-dsp`, hand-rolled with **no new dependency**. An
+  FFT-based detector is rejected explicitly for the low end: a ≈31 Hz fundamental needs a window far
+  longer than a real-time display can afford at the bin resolution an FFT of practical length gives.
+- An analysis tap on the trimmed instrument signal in `namir-engine`, per D-6.3, that does not perturb
+  the chain or the parameter system.
+- A tuner view in `namir-ui` driven by a new snapshot field — note name, cents deviation, a stability
+  indication — with no DSP-crate dependency (D-5.1). Mute is optional and off by default.
+
+**Acceptance criteria**
+
+- Detects a low B (≈31 Hz) and the full guitar range; the accuracy target is stated in this
+  milestone's own status note once measured against `namir-fixtures`-generated tones.
+- Real-time safety proven by the existing `assert_no_alloc` harness on the audio path; no allocation
+  in `process`.
+- Standalone only: `namir-clap`'s `UiSnapshot` is unchanged.
+
+---
+
+## 25. M18 — Metronome (post-1.0)
+
+**Size: M.** **Depends on:** M8 and `02-architecture.md` D-6.3's monitor mix point. **Blocks:** M19,
+which shares that mix point.
+
+**Scope:** FRS **RD-6**.
+
+**Deliverables**
+
+- A click generator in `namir-dsp`: beep, level, accented downbeat.
+- The post-chain monitor mix point in `namir-engine` per D-6.3, **inactive by default**, so
+  FR-CFG-020's vectors are untouched by its existence.
+- BPM, level, tap-tempo and time-signature controls in `namir-ui`, with the clock derived from the
+  audio callback's own sample count — no timer and no second thread on the audio path.
+
+**Acceptance criteria**
+
+- No allocation on the audio path; tempo accuracy over a long run measured and recorded; the tap-tempo
+  tolerance stated and tested.
+- Enabling the metronome alters no chain stage's output, and FR-CFG-020's vectors still pass with it
+  off.
+- Standalone only.
+
+---
+
+## 26. M19 — Drone player (post-1.0)
+
+**Size: S.** **Depends on:** M18, whose monitor mix point it shares. **Blocks:** nothing.
+
+**Scope:** FRS **RD-7**.
+
+**Deliverables**
+
+- A tone source (root plus a configurable interval) in `namir-dsp`, summed through M18's monitor mix.
+- Root, interval and level controls in `namir-ui`.
+
+**Acceptance criteria**
+
+- The emitted tone matches the selected frequency within a stated tolerance, asserted against a
+  generated reference; no allocation on the audio path.
+- Sums with the metronome on the monitor bus without breaching the output ceiling.
+- Standalone only.
+
+---
+
+**One note that applies to §24–§26.** Their scope is FRS RD-5–RD-7, which are **RD entries and not
+requirements**: they gate nothing, §14 does not count them, and no `trace:` tag resolves to them. If
+the owner later wants any of them expressed as a Must or Should, that is an FRS change with its own
+identifier, `Verify:` method and §14 denominator movement — deliberately not taken here.
