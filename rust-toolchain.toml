@@ -1,0 +1,18 @@
+# Pins the compiler for every machine that builds this repo, which is what lets one sccache cluster
+# agree across Windows, FreeBSD and the Raspberry Pi: sccache's cache key includes the compiler
+# version, so an unpinned toolchain never shares an entry between them, and benchmark figures
+# measured on one machine stop being comparable with another's.
+#
+# CI deliberately opts out and keeps tracking the latest stable. Read the note above the
+# workflow-level `env:` block in `.github/workflows/ci.yml` before removing that opt-out: the
+# `targets`/`components` inputs those jobs pass to `dtolnay/rust-toolchain` land on the toolchain
+# that action installs, and a pinned `1.99.0-x86_64-...` is a separate rustup installation from
+# `stable-x86_64-...`, so the pin and the mobile cross builds cannot both be in force at once.
+#
+# Keep the channel at or above `[workspace.package].rust-version` in Cargo.toml: that is
+# NFR-PORT-010's MSRV floor, enforced separately by the `msrv` CI job, and this pin must never
+# undercut it. Bumping the channel is a deliberate act, not routine maintenance -- expect every
+# machine's sccache to go cold and CI's cache to gain a second copy of the dependency graph.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

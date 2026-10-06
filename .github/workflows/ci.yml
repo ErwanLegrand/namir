@@ -46,6 +46,23 @@ on:
 permissions:
   contents: read
 
+# ---------------------------------------------------------------------------------------------
+# Toolchain. `rust-toolchain.toml` at the repo root pins the compiler for developer machines, so
+# that one sccache cluster agrees across them. This workflow deliberately opts out of that pin and
+# keeps tracking the latest stable, because `RUSTUP_TOOLCHAIN` outranks a toolchain file in
+# rustup's resolution order and the two cannot be in force together:
+#   * The `targets`/`components` inputs below land on the toolchain `dtolnay/rust-toolchain`
+#     installs. A pinned `1.99.0-x86_64-...` is a separate rustup installation from
+#     `stable-x86_64-...`, so with the pin in force those inputs install onto a toolchain cargo
+#     then ignores -- and the mobile cross builds and the coverage job fail on a target or
+#     component that never reached the compiler actually in use.
+#   * Tracking stable is also the point: it is how a newer compiler's breakage is found here
+#     rather than on a developer's machine after the pin is bumped.
+# The `msrv` job overrides this again, from the other direction, to stay on Cargo.toml's floor.
+# ---------------------------------------------------------------------------------------------
+env:
+  RUSTUP_TOOLCHAIN: stable
+
 jobs:
   # Covers D-18.1's "build + test on Windows/Linux/macOS" and "formatting and lints as errors"
   # (NFR-QUAL-060). Also covers D-18.1's "the RT-allocation harness": D-7.5's harness is just
@@ -820,7 +837,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The workflow-level `RUSTUP_TOOLCHAIN: stable` above would otherwise beat this job to the
+      # compiler and, through it, to `rust-toolchain.toml`'s channel -- making this job a second
+      # copy of the stable one while still reporting on NFR-PORT-010. Naming the toolchain the
+      # step above installed keeps the check on `rust-version` itself.
       - name: cargo check --workspace --all-targets (on the MSRV toolchain)
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
         run: cargo check --workspace --all-targets
 
   # Covers D-18.1's "a build in a container with no C++ compiler present" (NFR-PORT-040's
